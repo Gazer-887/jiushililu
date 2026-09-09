@@ -79,7 +79,7 @@ DIARY/
 ## 三、目录约定（根目录保持干净）
 
 **根目录整洁铁律**：根目录只放「工具硬性要求 or 约定俗成」的少量文件，其余一律收纳进子目录。
-允许留在根目录的文件：`package.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.gitignore`、`.git/`。
+允许留在根目录的文件：`package.json`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.gitignore`、`.gitattributes`、`.npmrc`、`.git/`。
 所有构建/类型/检查配置进 `config/`，CI 进 `.github/workflows/`，禁止在根目录堆散装单文件。
 
 | 目录 | 用途 | 入 git |
@@ -112,11 +112,11 @@ config/
   tsconfig.base.json       公共 TS 预设
   tsconfig.main.json       主进程 TS 配置（extends base）
   tsconfig.renderer.json   渲染进程 TS 配置（extends base）
-  tsconfig.node.json       工具链 TS 配置（extends base）
   eslint.config.js         ESLint 扁平配置
   .prettierrc.json         Prettier 配置
   vitest.config.ts         单元测试配置
-  playwright.config.ts     端到端测试配置
+  （待建）tsconfig.node.json       工具链 TS 配置（P1）
+  （待建）playwright.config.ts     端到端测试配置（P2 e2e）
 ```
 
 > 注：P0 落地时新建这些配置文件并写入 `config/`，同步在 `package.json` 脚本里用 `--config` / `build.config` 指回，避免根目录散装。

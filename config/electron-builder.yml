@@ -7,16 +7,23 @@ productName: 九十里路
 directories:
   output: dist
 
-# 打包内容用"默认全含 + 排除"风格：生产依赖 node_modules 由 electron-builder 自动裁剪保留。
-# 注意 DIARY/NOTEBOOK/PLAN 是本机目录，不排除会被塞进安装包。
+# 打包内容：正面包含构建产物（防 .gitignore 类过滤误伤），排除源码/本机目录；
+# 生产依赖 node_modules 由 electron-builder 自动裁剪保留（zod 在 devDeps 会被 vite 打进 bundle，无需外置）。
+# 图标走 extraResources 放到 asar 外（窗口图标用 process.resourcesPath 取）。
 files:
+  - 'out/**'
   - '!src/**'
   - '!tests/**'
   - '!config/**'
   - '!docs/**'
   - '!scripts/**'
+  - '!resources/**'
   - '!{README.md,AGENTS.md,CLAUDE.md,.gitattributes,.npmrc,.prettierrc.json}'
   - '!{NOTEBOOK,PLAN,DIARY,.workbuddy,.github}/**'
+
+extraResources:
+  - from: resources/icon.ico
+    to: icon.ico
 
 win:
   icon: resources/icon.ico

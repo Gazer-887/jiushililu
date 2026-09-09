@@ -3,51 +3,10 @@ import { z } from 'zod'
 import { IPC, type ChatMessage, type SettingsSaveInput, type TestResult } from '@shared/ipc'
 import { getDecryptedApiKey, getSettingsView, hasApiKey, saveSettings } from './store/settings'
 import { createProvider } from './providers'
+import { chatMessagesSchema, settingsSchema } from './schemas'
 
-// 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外（zod 词条见 DIARY 术语词典）。
-
-const settingsSchema = z.object({
-  providerType: z.enum(['openai-compatible', 'anthropic']),
-  baseURL: z
-    .string()
-    .min(1)
-    .max(500)
-    // 用户可能懒得写协议头，自动补 https://（教材级体验）
-    .transform((v) => (v.startsWith('http://') || v.startsWith('https://') ? v : `https://${v}`))
-    .refine((v) => {
-      try {
-        new URL(v)
-        return true
-      } catch {
-        return false
-      }
-    }, '接口地址不是合法 URL'),
-  model: z.string().min(1).max(200),
-  // 采样三兄弟可留空：null = 不发送，跟随厂商默认
-  temperature: z.number().min(0).max(2).nullable(),
-  topP: z.number().min(0).max(1).nullable(),
-  topK: z.number().int().min(1).max(200).nullable(),
-  // 防手误闸门，不替厂商定上限（2026-09 查证：DeepSeek V4 最大输出 384K，未来模型可能更大）
-  maxTokens: z.number().int().min(1).max(1_000_000),
-  timeoutMs: z.number().int().min(1000).max(600000),
-  stream: z.boolean(),
-  // 上下文窗口是客户端元数据（不发给模型），封顶 1000 万同样只防手误
-  contextWindow: z.number().int().min(1024).max(10_000_000),
-  reasoningEffort: z.enum(['default', 'low', 'medium', 'high', 'max']),
-  maxToolRounds: z.number().int().min(1).max(10000),
-  supportsImages: z.boolean(),
-  apiKey: z.string().max(400).optional()
-})
-
-const chatMessagesSchema = z
-  .array(
-    z.object({
-      role: z.enum(['system', 'user', 'assistant']),
-      content: z.string().min(1).max(200000)
-    })
-  )
-  .min(1)
-  .max(200)
+// 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。
+// schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
 
 const activeChats = new Map<number, AbortController>()
 
@@ -121,6 +80,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.chatSend, async (e, raw: unknown) => {
     const messages = friendlyParse(chatMessagesSchema, raw) as ChatMessage[]
     const settings = getSettingsView()
+
+    // IPC 层并发防护：渲染层的 streaming 标志只是软约束，这里才是硬闸
+    if (activeChats.has(e.sender.id)) {
+      e.sender.send(IPC.chatError, '已有任务在进行：请先点「停止」或等待完成')
+      return
+    }
 
     if (!settings.baseURL || !settings.model) {
       e.sender.send(IPC.chatError, '还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')

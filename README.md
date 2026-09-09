@@ -22,10 +22,13 @@ npm install        # Electron 二进制自动走 .npmrc 里的国内镜像
 npm run dev        # 开发模式（热更新）
 npm run build      # 构建（产物在 out/）
 npm start          # 运行构建产物（冷启动）
+npm run dist       # 打包 Windows 安装包 + 便携版（产物在 dist/）
 npm test           # 单元测试
 npm run typecheck  # 类型检查
 npm run lint       # ESLint
 ```
+
+> 换应用图标：替换 `resources/icon-source.jpg` 后运行 `D:/MiniConda3/envs/ai_env/python.exe scripts/make_icons.py`（需 Pillow），重新 `npm run dist` 即可。
 
 ## 目录结构
 

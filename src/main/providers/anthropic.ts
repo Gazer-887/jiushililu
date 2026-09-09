@@ -12,11 +12,13 @@ const EFFORT_BUDGET: Record<Exclude<ReasoningEffort, 'default'>, number> = {
   max: 65536
 }
 
-// 纯函数：default 不开思考；其余按强度给预算，且硬性保证 max_tokens > budget_tokens
+// 纯函数：default 不开思考；其余按强度给预算。
+// Anthropic 硬性要求 max_tokens > budget_tokens：空间不足 2048 时空间不够，干脆不开思考。
 export function thinkingBudgetFor(effort: ReasoningEffort, maxTokens: number): number | null {
   if (effort === 'default') return null
-  const budget = Math.min(EFFORT_BUDGET[effort], maxTokens - 1024)
-  return Math.max(1024, budget)
+  const ceiling = maxTokens - 1024
+  if (ceiling < 1024) return null
+  return Math.min(EFFORT_BUDGET[effort], ceiling)
 }
 
 // 纯函数：Anthropic 的 system 是顶层字段，不走 messages 数组（单元测试覆盖）

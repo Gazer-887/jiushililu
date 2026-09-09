@@ -177,8 +177,9 @@ describe('thinkingBudgetFor（思考预算方言映射）', () => {
     expect(thinkingBudgetFor('max', 65536)).toBe(64512)
   })
 
-  it('max_tokens 太小时保底 1024（Anthropic 硬性要求 max_tokens > budget）', () => {
-    expect(thinkingBudgetFor('high', 2000)).toBe(1024)
+  it('max_tokens 不足 2048 时空间不够，直接不开思考', () => {
+    expect(thinkingBudgetFor('high', 2000)).toBe(null)
+    expect(thinkingBudgetFor('max', 1024)).toBe(null)
   })
 })
 
