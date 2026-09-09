@@ -42,6 +42,32 @@ const chatMessagesSchema = z
 
 const activeChats = new Map<number, AbortController>()
 
+// 把 zod 的英文校验错误翻译成人话（设置页直接展示，不再甩原始 JSON）
+const fieldLabels: Record<string, string> = {
+  providerType: '协议类型',
+  baseURL: '接口地址',
+  model: '模型名',
+  apiKey: 'API Key',
+  temperature: 'temperature（随机性，0~2）',
+  maxTokens: 'max_tokens（单次回答上限）',
+  timeoutMs: '超时（毫秒）',
+  stream: '流式开关',
+  messages: '消息列表'
+}
+
+function friendlyParse<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const result = schema.safeParse(raw)
+  if (result.success) return result.data
+  const issue = result.error.issues[0]
+  const path = issue.path.join('.')
+  const label = fieldLabels[path] ?? (path || '参数')
+  const bounds = issue as { maximum?: number; minimum?: number }
+  let detail = issue.message
+  if (issue.code === 'too_big' && bounds.maximum !== undefined) detail = `不能大于 ${bounds.maximum}`
+  else if (issue.code === 'too_small' && bounds.minimum !== undefined) detail = `不能小于 ${bounds.minimum}`
+  throw new Error(`参数不合法：${label} —— ${detail}`)
+}
+
 function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): string {
   if (timedOut) return `请求超时（${timeoutMs}ms）：可在设置页调大超时时间，或检查网络 / 代理`
   if (err instanceof Error && err.name === 'AbortError') return '已停止生成'
@@ -52,12 +78,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
 
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
-    const input = settingsSchema.parse(raw) as SettingsSaveInput
+    const input = friendlyParse(settingsSchema, raw) as SettingsSaveInput
     return saveSettings(input)
   })
 
   ipcMain.handle(IPC.settingsTest, async (_e, raw: unknown): Promise<TestResult> => {
-    const input = settingsSchema.parse(raw) as SettingsSaveInput
+    const input = friendlyParse(settingsSchema, raw) as SettingsSaveInput
     const apiKey = input.apiKey && input.apiKey.length > 0 ? input.apiKey : getDecryptedApiKey()
     if (!apiKey) {
       return { ok: false, message: '还没有 API Key：请先在下方填写并保存，或填好后直接点「测试连接」' }
@@ -78,7 +104,7 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.chatSend, async (e, raw: unknown) => {
-    const messages = chatMessagesSchema.parse(raw) as ChatMessage[]
+    const messages = friendlyParse(chatMessagesSchema, raw) as ChatMessage[]
     const settings = getSettingsView()
 
     if (!settings.baseURL || !settings.model) {

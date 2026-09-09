@@ -121,10 +121,11 @@ export default function SettingsView() {
           />
         </label>
         <label>
-          max_tokens
+          max_tokens（单次回答上限，常用 1024~8192，最大 200000）
           <input
             type="number"
             min="1"
+            max="200000"
             value={draft.maxTokens}
             onChange={(e) => update('maxTokens', num(e.target.value))}
           />

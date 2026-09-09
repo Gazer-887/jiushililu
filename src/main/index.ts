@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'node:path'
 import { registerIpcHandlers } from './ipc'
 
@@ -31,6 +31,8 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // 去掉默认的 File/Edit/View 菜单栏（P0 用不到，界面更干净）
+  Menu.setApplicationMenu(null)
   registerIpcHandlers()
   createWindow()
   app.on('activate', () => {
