@@ -23,6 +23,7 @@ out/
 dist/
 build/
 *.tsbuildinfo
+electron.vite.config.*.mjs
 
 # —— 测试与覆盖率 ——
 .pytest_cache/
