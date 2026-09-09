@@ -93,7 +93,7 @@ export default function SettingsView() {
         模型名
         <input
           value={draft.model}
-          placeholder="如 deepseek-chat（要与厂商菜单一字不差）"
+          placeholder="如 deepseek-v4-flash（要与厂商菜单一字不差）"
           onChange={(e) => update('model', e.target.value)}
         />
       </label>
@@ -121,11 +121,11 @@ export default function SettingsView() {
           />
         </label>
         <label>
-          max_tokens（单次回答上限，常用 1024~8192，最大 200000）
+          max_tokens（单次回答上限，按厂商文档填——如 DeepSeek V4 最大 384000）
           <input
             type="number"
             min="1"
-            max="200000"
+            max="1000000"
             value={draft.maxTokens}
             onChange={(e) => update('maxTokens', num(e.target.value))}
           />

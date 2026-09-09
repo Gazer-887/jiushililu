@@ -24,7 +24,8 @@ const settingsSchema = z.object({
     }, '接口地址不是合法 URL'),
   model: z.string().min(1).max(200),
   temperature: z.number().min(0).max(2),
-  maxTokens: z.number().int().min(1).max(200000),
+  // 防手误闸门，不替厂商定上限（2026-09 查证：DeepSeek V4 最大输出 384K，未来模型可能更大）
+  maxTokens: z.number().int().min(1).max(1_000_000),
   timeoutMs: z.number().int().min(1000).max(600000),
   stream: z.boolean(),
   apiKey: z.string().max(400).optional()
