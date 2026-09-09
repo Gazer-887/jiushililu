@@ -12,6 +12,8 @@ function createWindow(): void {
     minHeight: 640,
     title: '九十里路',
     show: false,
+    // dev 与打包版都指向 <app>/resources/icon.ico（app.getAppPath() 两种形态都对）
+    icon: join(app.getAppPath(), 'resources/icon.ico'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

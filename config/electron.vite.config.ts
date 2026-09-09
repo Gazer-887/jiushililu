@@ -7,6 +7,11 @@ import { resolve } from 'node:path'
 //（vite 会把配置文件打包到临时目录执行，__dirname 会失真）。
 const r = (p: string): string => resolve(process.cwd(), p)
 
+// WorkBuddy 等 AI 终端宿主会给 node 注入 safe-delete 钩子，vite 的 emptyOutDir
+// 批量删除会被拦。设 JSL_NO_EMPTY_OUT_DIR=1 跳过自清空，配合构建前手动清目录。
+// 正常终端 / CI 不设此变量，行为不变。
+const noEmptyOutDir = process.env['JSL_NO_EMPTY_OUT_DIR'] === '1'
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -15,6 +20,7 @@ export default defineConfig({
     },
     build: {
       outDir: r('out/main'),
+      emptyOutDir: !noEmptyOutDir,
       rollupOptions: { input: { index: r('src/main/index.ts') } }
     }
   },
@@ -25,6 +31,7 @@ export default defineConfig({
     },
     build: {
       outDir: r('out/preload'),
+      emptyOutDir: !noEmptyOutDir,
       rollupOptions: { input: { index: r('src/preload/index.ts') } }
     }
   },
@@ -36,6 +43,7 @@ export default defineConfig({
     },
     build: {
       outDir: r('out/renderer'),
+      emptyOutDir: !noEmptyOutDir,
       rollupOptions: { input: { index: r('src/renderer/index.html') } }
     }
   }
