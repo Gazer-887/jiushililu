@@ -140,7 +140,9 @@ config/
 ## 六、Git 规范
 
 - 用 **Bash（Git Bash）** 执行 git，不用 PowerShell / cmd
-- 默认分支 `master`；用户 `Gazer / gazer@users.noreply.github.com`
+- 默认分支 `master`；远端 `github.com/Gazer-887/jiushililu`（公开）
+- **身份（2026-09-10 修正）**：`Gazer-887 / 226356882+Gazer-887@users.noreply.github.com`
+  ⚠️ **禁用 `gazer@users.noreply.github.com`**——那是撞名账号 "Gazer"（Ricardo Markiewicz）的专属 noreply 地址，用它 = 每个提交都署名给陌生人（本项目曾因此 11 个提交全算到他头上，已重写）
 - 提交走 `/commit` 技能，推送开 PR 走 `/commit-push-pr`
 - 提交信息末尾附 `Co-Authored-By: Anan (WorkBuddy) <noreply@local>`
 - 查询操作直接执行；commit/push/merge 需用户确认
