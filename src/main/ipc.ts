@@ -28,6 +28,9 @@ const settingsSchema = z.object({
   maxTokens: z.number().int().min(1).max(1_000_000),
   timeoutMs: z.number().int().min(1000).max(600000),
   stream: z.boolean(),
+  // 上下文窗口是客户端元数据（不发给模型），封顶 1000 万同样只防手误
+  contextWindow: z.number().int().min(1024).max(10_000_000),
+  reasoningEffort: z.enum(['default', 'low', 'medium', 'high', 'max']),
   apiKey: z.string().max(400).optional()
 })
 
@@ -53,6 +56,8 @@ const fieldLabels: Record<string, string> = {
   maxTokens: 'max_tokens（单次回答上限）',
   timeoutMs: '超时（毫秒）',
   stream: '流式开关',
+  contextWindow: '上下文窗口（客户端元数据）',
+  reasoningEffort: '思考强度',
   messages: '消息列表'
 }
 

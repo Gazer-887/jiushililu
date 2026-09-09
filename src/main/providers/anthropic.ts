@@ -1,8 +1,23 @@
-import type { ChatMessage, ModelSettings, TestResult } from '@shared/ipc'
+import type { ChatMessage, ModelSettings, ReasoningEffort, TestResult } from '@shared/ipc'
 import { createSSEParser } from './sse'
 import { ProviderError, isAbortError, mapHttpError } from './errors'
 import { resolveApiUrl } from './url'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
+
+// 思考强度 → Anthropic extended thinking 预算（方言映射）
+const EFFORT_BUDGET: Record<Exclude<ReasoningEffort, 'default'>, number> = {
+  low: 8192,
+  medium: 16384,
+  high: 32768,
+  max: 65536
+}
+
+// 纯函数：default 不开思考；其余按强度给预算，且硬性保证 max_tokens > budget_tokens
+export function thinkingBudgetFor(effort: ReasoningEffort, maxTokens: number): number | null {
+  if (effort === 'default') return null
+  const budget = Math.min(EFFORT_BUDGET[effort], maxTokens - 1024)
+  return Math.max(1024, budget)
+}
 
 // 纯函数：Anthropic 的 system 是顶层字段，不走 messages 数组（单元测试覆盖）
 export function mapAnthropicMessages(
@@ -25,12 +40,15 @@ export function buildAnthropicBody(
   stream: boolean
 ): Record<string, unknown> {
   const { system, messages: rest } = mapAnthropicMessages(messages)
+  const budget = thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens)
   return {
     model: settings.model,
     max_tokens: settings.maxTokens,
-    temperature: settings.temperature,
+    // Anthropic 思考模式下不允许改 temperature，必须走默认值
+    ...(budget ? {} : { temperature: settings.temperature }),
     stream,
     ...(system ? { system } : {}),
+    ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
     messages: rest
   }
 }

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { resolveApiUrl } from '@main/providers/url'
 import { buildOpenAIChatBody } from '@main/providers/openai'
-import { buildAnthropicBody, mapAnthropicMessages } from '@main/providers/anthropic'
+import {
+  buildAnthropicBody,
+  mapAnthropicMessages,
+  thinkingBudgetFor
+} from '@main/providers/anthropic'
 import { maskKey } from '@main/store/mask'
 import type { ChatMessage, ModelSettings } from '@shared/ipc'
 
@@ -12,7 +16,9 @@ const settings: ModelSettings = {
   temperature: 0.3,
   maxTokens: 1024,
   timeoutMs: 60000,
-  stream: true
+  stream: true,
+  contextWindow: 131072,
+  reasoningEffort: 'default'
 }
 
 describe('resolveApiUrl（/v1 归一化，头号 404 坑）', () => {
@@ -58,6 +64,17 @@ describe('buildOpenAIChatBody', () => {
       stream: true
     })
   })
+
+  it('思考强度非 default 时发 reasoning_effort，default 不发', () => {
+    const withEffort = buildOpenAIChatBody(
+      { ...settings, reasoningEffort: 'high' },
+      [{ role: 'user', content: 'hi' }],
+      true
+    )
+    expect(withEffort.reasoning_effort).toBe('high')
+    const without = buildOpenAIChatBody(settings, [{ role: 'user', content: 'hi' }], true)
+    expect('reasoning_effort' in without).toBe(false)
+  })
 })
 
 describe('mapAnthropicMessages', () => {
@@ -96,6 +113,38 @@ describe('buildAnthropicBody', () => {
   it('无 system 时不出 system 字段', () => {
     const body = buildAnthropicBody(settings, [{ role: 'user', content: 'hi' }], false)
     expect('system' in body).toBe(false)
+  })
+
+  it('思考强度 default：无 thinking 块，temperature 正常发', () => {
+    const body = buildAnthropicBody(settings, [{ role: 'user', content: 'hi' }], true)
+    expect('thinking' in body).toBe(false)
+    expect(body.temperature).toBe(0.3)
+  })
+
+  it('思考强度 high：发 thinking 预算且不发 temperature', () => {
+    const body = buildAnthropicBody(
+      { ...settings, reasoningEffort: 'high', maxTokens: 65536 },
+      [{ role: 'user', content: 'hi' }],
+      true
+    )
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 32768 })
+    expect('temperature' in body).toBe(false)
+  })
+})
+
+describe('thinkingBudgetFor（思考预算方言映射）', () => {
+  it('default 不开思考', () => {
+    expect(thinkingBudgetFor('default', 65536)).toBe(null)
+  })
+
+  it('按强度给预算（预算必须小于 max_tokens）', () => {
+    expect(thinkingBudgetFor('low', 65536)).toBe(8192)
+    expect(thinkingBudgetFor('max', 70000)).toBe(65536)
+    expect(thinkingBudgetFor('max', 65536)).toBe(64512)
+  })
+
+  it('max_tokens 太小时保底 1024（Anthropic 硬性要求 max_tokens > budget）', () => {
+    expect(thinkingBudgetFor('high', 2000)).toBe(1024)
   })
 })
 

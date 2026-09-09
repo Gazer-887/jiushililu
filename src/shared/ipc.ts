@@ -2,6 +2,14 @@
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
 
+/**
+ * 思考强度（统一词表，适配层翻译成各厂商方言）：
+ * DeepSeek V4 → reasoning_effort low/high/max（官方示例与 thinking 开关成对）
+ * OpenAI o 系 → reasoning_effort low/medium/high
+ * Anthropic   → thinking budget_tokens（按强度映射预算）
+ */
+export type ReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'max'
+
 export interface ModelSettings {
   providerType: ProviderType
   baseURL: string
@@ -10,6 +18,10 @@ export interface ModelSettings {
   maxTokens: number
   timeoutMs: number
   stream: boolean
+  /** 上下文窗口（客户端元数据，不会发给模型）：历史裁剪 / 压缩决策与成本估算的依据 */
+  contextWindow: number
+  /** 思考强度；default = 跟随厂商默认（不发任何相关字段） */
+  reasoningEffort: ReasoningEffort
 }
 
 /** 设置页看到的视图：Key 永远不明文回传，只给掩码 */

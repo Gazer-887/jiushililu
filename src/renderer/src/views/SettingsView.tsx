@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ProviderType, SettingsSaveInput } from '@shared/ipc'
+import type { ProviderType, ReasoningEffort, SettingsSaveInput } from '@shared/ipc'
 import { useAppStore } from '../store'
 
 export default function SettingsView() {
@@ -140,7 +140,32 @@ export default function SettingsView() {
             onChange={(e) => update('timeoutMs', num(e.target.value))}
           />
         </label>
+        <label>
+          上下文窗口（客户端元数据，如 V4=1000000）
+          <input
+            type="number"
+            min="1024"
+            max="10000000"
+            step="1024"
+            value={draft.contextWindow}
+            onChange={(e) => update('contextWindow', num(e.target.value))}
+          />
+        </label>
       </div>
+
+      <label>
+        思考强度（按厂商支持：DeepSeek low/high/max，OpenAI low/medium/high，Anthropic 折算为思考预算）
+        <select
+          value={draft.reasoningEffort}
+          onChange={(e) => update('reasoningEffort', e.target.value as ReasoningEffort)}
+        >
+          <option value="default">默认（跟随厂商，不发相关字段）</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+      </label>
 
       <label className="checkbox">
         <input

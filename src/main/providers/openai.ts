@@ -15,7 +15,11 @@ export function buildOpenAIChatBody(
     messages,
     temperature: settings.temperature,
     max_tokens: settings.maxTokens,
-    stream
+    stream,
+    // 思考强度方言：OpenAI 系是 reasoning_effort（low/medium/high）；
+    // DeepSeek 同名兼容（官方示例另带 thinking 开关，若实测不生效再补发）。
+    // 'max' 是 DeepSeek 词表，发 给 OpenAI 可能 400——取值依厂商支持。
+    ...(settings.reasoningEffort !== 'default' ? { reasoning_effort: settings.reasoningEffort } : {})
   }
 }
 

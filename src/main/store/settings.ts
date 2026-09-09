@@ -40,6 +40,8 @@ export function getSettingsView(): SettingsView {
     maxTokens: s.maxTokens ?? 4096,
     timeoutMs: s.timeoutMs ?? 120000,
     stream: s.stream ?? true,
+    contextWindow: s.contextWindow ?? 131072,
+    reasoningEffort: s.reasoningEffort ?? 'default',
     hasApiKey: Boolean(s.apiKeyEncrypted),
     apiKeyMasked: maskKey(decryptKey(s))
   }
