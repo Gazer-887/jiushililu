@@ -1,0 +1,44 @@
+# —— 开发过程笔记与计划（内部留痕，不入库）——
+NOTEBOOK/
+PLAN/
+
+# —— 个人学习日记（用户强制约定，不入库）——
+DIARY/
+
+# —— WorkBuddy 内部数据（含 memory/）——
+.workbuddy/
+
+# —— Python ——
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+
+# —— Node ——
+node_modules/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# —— 测试与覆盖率 ——
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# —— 编辑器与系统 ——
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# —— 本地运行时数据（会话、记忆库、日志）——
+*.db
+*.sqlite3
+*.log
+runs/
