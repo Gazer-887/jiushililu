@@ -41,14 +41,23 @@ export function buildAnthropicBody(
 ): Record<string, unknown> {
   const { system, messages: rest } = mapAnthropicMessages(messages)
   const budget = thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens)
+  // Anthropic 规定 temperature 与 top_p 互斥——top_p 设置时优先，temperature 让位；
+  // 思考模式下两者都不发（必须走默认采样）。
+  const sampling: Record<string, unknown> = budget
+    ? {}
+    : settings.topP != null
+      ? { top_p: settings.topP }
+      : settings.temperature != null
+        ? { temperature: settings.temperature }
+        : {}
   return {
     model: settings.model,
     max_tokens: settings.maxTokens,
-    // Anthropic 思考模式下不允许改 temperature，必须走默认值
-    ...(budget ? {} : { temperature: settings.temperature }),
+    ...sampling,
     stream,
     ...(system ? { system } : {}),
     ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
+    ...(settings.topK != null ? { top_k: settings.topK } : {}),
     messages: rest
   }
 }

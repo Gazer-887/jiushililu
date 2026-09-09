@@ -316,3 +316,72 @@ label.checkbox {
   border-radius: 10px;
   font-size: 13px;
 }
+
+.advanced-toggle {
+  text-align: left;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: none;
+  border-radius: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.field-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.with-presets {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.with-presets input {
+  flex: 1;
+}
+
+.presets {
+  display: flex;
+  gap: 10px;
+}
+
+.preset-link {
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  user-select: none;
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+label.radio {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.inline-hint {
+  font-size: 12px;
+}

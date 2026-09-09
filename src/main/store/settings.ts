@@ -36,12 +36,16 @@ export function getSettingsView(): SettingsView {
     providerType: s.providerType ?? 'openai-compatible',
     baseURL: s.baseURL ?? '',
     model: s.model ?? '',
-    temperature: s.temperature ?? 0.7,
+    temperature: s.temperature ?? null,
+    topP: s.topP ?? null,
+    topK: s.topK ?? null,
     maxTokens: s.maxTokens ?? 4096,
     timeoutMs: s.timeoutMs ?? 120000,
     stream: s.stream ?? true,
     contextWindow: s.contextWindow ?? 131072,
     reasoningEffort: s.reasoningEffort ?? 'default',
+    maxToolRounds: s.maxToolRounds ?? 200,
+    supportsImages: s.supportsImages ?? false,
     hasApiKey: Boolean(s.apiKeyEncrypted),
     apiKeyMasked: maskKey(decryptKey(s))
   }

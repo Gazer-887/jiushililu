@@ -10,17 +10,22 @@ export function buildOpenAIChatBody(
   messages: ChatMessage[],
   stream: boolean
 ): Record<string, unknown> {
-  return {
+  const body: Record<string, unknown> = {
     model: settings.model,
     messages,
-    temperature: settings.temperature,
     max_tokens: settings.maxTokens,
-    stream,
-    // 思考强度方言：OpenAI 系是 reasoning_effort（low/medium/high）；
-    // DeepSeek 同名兼容（官方示例另带 thinking 开关，若实测不生效再补发）。
-    // 'max' 是 DeepSeek 词表，发 给 OpenAI 可能 400——取值依厂商支持。
-    ...(settings.reasoningEffort !== 'default' ? { reasoning_effort: settings.reasoningEffort } : {})
+    stream
   }
+  // 采样三兄弟：留空（null）不发，跟随厂商默认
+  if (settings.temperature != null) body['temperature'] = settings.temperature
+  if (settings.topP != null) body['top_p'] = settings.topP
+  // top_k：官方 OpenAI 忽略未知参数；多家兼容端点（智谱/GLM 等）支持，按需填
+  if (settings.topK != null) body['top_k'] = settings.topK
+  // 思考强度方言：OpenAI 系是 reasoning_effort（low/medium/high）；
+  // DeepSeek 同名兼容（官方示例另带 thinking 开关，若实测不生效再补发）。
+  // 'max' 是 DeepSeek 词表，发给 OpenAI 可能 400——取值依厂商支持。
+  if (settings.reasoningEffort !== 'default') body['reasoning_effort'] = settings.reasoningEffort
+  return body
 }
 
 async function throwHttpError(res: Response): Promise<never> {

@@ -14,11 +14,15 @@ const settings: ModelSettings = {
   baseURL: 'https://api.example.com',
   model: 'test-model',
   temperature: 0.3,
+  topP: null,
+  topK: null,
   maxTokens: 1024,
   timeoutMs: 60000,
   stream: true,
   contextWindow: 131072,
-  reasoningEffort: 'default'
+  reasoningEffort: 'default',
+  maxToolRounds: 200,
+  supportsImages: false
 }
 
 describe('resolveApiUrl（/v1 归一化，头号 404 坑）', () => {
@@ -75,6 +79,17 @@ describe('buildOpenAIChatBody', () => {
     const without = buildOpenAIChatBody(settings, [{ role: 'user', content: 'hi' }], true)
     expect('reasoning_effort' in without).toBe(false)
   })
+
+  it('采样参数留空（null）不发，设置则发 snake_case', () => {
+    const body = buildOpenAIChatBody(
+      { ...settings, temperature: null, topP: 0.9, topK: 40 },
+      [{ role: 'user', content: 'hi' }],
+      true
+    )
+    expect('temperature' in body).toBe(false)
+    expect(body.top_p).toBe(0.9)
+    expect(body.top_k).toBe(40)
+  })
 })
 
 describe('mapAnthropicMessages', () => {
@@ -129,6 +144,25 @@ describe('buildAnthropicBody', () => {
     )
     expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 32768 })
     expect('temperature' in body).toBe(false)
+  })
+
+  it('temperature 与 top_p 互斥：top_p 设置时优先', () => {
+    const body = buildAnthropicBody(
+      { ...settings, temperature: 0.3, topP: 0.9 },
+      [{ role: 'user', content: 'hi' }],
+      true
+    )
+    expect(body.top_p).toBe(0.9)
+    expect('temperature' in body).toBe(false)
+  })
+
+  it('top_k 独立发送', () => {
+    const body = buildAnthropicBody(
+      { ...settings, topK: 40 },
+      [{ role: 'user', content: 'hi' }],
+      true
+    )
+    expect(body.top_k).toBe(40)
   })
 })
 

@@ -23,7 +23,10 @@ const settingsSchema = z.object({
       }
     }, '接口地址不是合法 URL'),
   model: z.string().min(1).max(200),
-  temperature: z.number().min(0).max(2),
+  // 采样三兄弟可留空：null = 不发送，跟随厂商默认
+  temperature: z.number().min(0).max(2).nullable(),
+  topP: z.number().min(0).max(1).nullable(),
+  topK: z.number().int().min(1).max(200).nullable(),
   // 防手误闸门，不替厂商定上限（2026-09 查证：DeepSeek V4 最大输出 384K，未来模型可能更大）
   maxTokens: z.number().int().min(1).max(1_000_000),
   timeoutMs: z.number().int().min(1000).max(600000),
@@ -31,6 +34,8 @@ const settingsSchema = z.object({
   // 上下文窗口是客户端元数据（不发给模型），封顶 1000 万同样只防手误
   contextWindow: z.number().int().min(1024).max(10_000_000),
   reasoningEffort: z.enum(['default', 'low', 'medium', 'high', 'max']),
+  maxToolRounds: z.number().int().min(1).max(10000),
+  supportsImages: z.boolean(),
   apiKey: z.string().max(400).optional()
 })
 
@@ -53,6 +58,10 @@ const fieldLabels: Record<string, string> = {
   model: '模型名',
   apiKey: 'API Key',
   temperature: 'temperature（随机性，0~2）',
+  topP: 'Top P（核采样，0~1）',
+  topK: 'Top K（候选词数，1~200）',
+  maxToolRounds: '工具调用轮数',
+  supportsImages: '图片输入支持',
   maxTokens: 'max_tokens（单次回答上限）',
   timeoutMs: '超时（毫秒）',
   stream: '流式开关',

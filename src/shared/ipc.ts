@@ -14,7 +14,14 @@ export interface ModelSettings {
   providerType: ProviderType
   baseURL: string
   model: string
-  temperature: number
+  /**
+   * 采样三兄弟（Trae 式"留空即最佳"）：null = 不发送该参数，跟随厂商默认。
+   * temperature 随机性 0~2；topP 核采样 0~1；topK 只看前 K 个候选词 1~200。
+   * 注意 Anthropic 规定 temperature 与 top_p 互斥，适配层已处理（top_p 优先）。
+   */
+  temperature: number | null
+  topP: number | null
+  topK: number | null
   maxTokens: number
   timeoutMs: number
   stream: boolean
@@ -22,6 +29,10 @@ export interface ModelSettings {
   contextWindow: number
   /** 思考强度；default = 跟随厂商默认（不发任何相关字段） */
   reasoningEffort: ReasoningEffort
+  /** 工具调用轮数上限（客户端元数据，P1 主循环用它防死循环烧钱） */
+  maxToolRounds: number
+  /** 是否支持图片输入（客户端元数据，多模态模型才勾，如 deepseek-v4-flash-vision-exp） */
+  supportsImages: boolean
 }
 
 /** 设置页看到的视图：Key 永远不明文回传，只给掩码 */
