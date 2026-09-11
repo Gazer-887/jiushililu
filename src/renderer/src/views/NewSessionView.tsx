@@ -1,25 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../store'
 import WorkspaceChip from '../components/WorkspaceChip'
-import type { SkillInfo } from '@shared/ipc'
+import PlusMenu from '../components/PlusMenu'
 
-// 新建任务页（P2）：一个简洁的初始选择页——工作区、模型、内置技能，
-// 参考 opencode 的交互：中央输入框 + 下方一排可选 chips，选好直接开跑。
-// 工作区 chip 与对话页共用同一组件（WorkspaceChip），保证两处形态一致。
+// 新建会话页（P2）：极简初始页——一个输入框 + 工作区/模型 + ＋号拓展。
+// 设计原则（用户要求）：技能 / 子 Agent 不直接摆出来，收进「＋」按需选取；
+// 页面上只保留"说清要做什么"必需的元素。
 
-export default function NewTaskView(): JSX.Element {
+export default function NewSessionView(): JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const createConversation = useAppStore((s) => s.createConversation)
 
   const [model, setModel] = useState('')
-  const [skills, setSkills] = useState<SkillInfo[]>([])
   const [picked, setPicked] = useState<string[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    void window.api.listSkills().then(setSkills)
-  }, [])
 
   useEffect(() => {
     if (settings?.model && !model) setModel(settings.model)
@@ -31,7 +26,6 @@ export default function NewTaskView(): JSX.Element {
 
   const start = async (): Promise<void> => {
     if (busy) return
-    // 工作区以 chip 当前值为准（组件自管理；提交时取一次即可）
     const ws = await window.api.getWorkspace()
     if (!ws.path || !model) return
     setBusy(true)
@@ -53,8 +47,8 @@ export default function NewTaskView(): JSX.Element {
   return (
     <div className="new-task">
       <div className="new-task-hero">
-        <h1>新建任务</h1>
-        <p>行百里者半九十。选好工作区与模型，说清你想做的事。</p>
+        <h1>新建会话</h1>
+        <p>行百里者半九十。说清你想做的事。</p>
       </div>
 
       <div className="new-task-box">
@@ -72,6 +66,8 @@ export default function NewTaskView(): JSX.Element {
         />
 
         <div className="new-task-controls">
+          <PlusMenu picked={picked} onToggle={toggleSkill} />
+
           <WorkspaceChip />
 
           <label className="chip chip-model">
@@ -88,28 +84,11 @@ export default function NewTaskView(): JSX.Element {
         </div>
       </div>
 
-      <div className="skill-picker">
-        <div className="skill-title">技能（可多选，本会话启用）</div>
-        {skills.length === 0 ? (
-          <div className="skill-empty">未发现可用技能定义</div>
-        ) : (
-          <div className="skill-list">
-            {skills.map((s) => (
-              <label key={s.name} className={`skill-item ${picked.includes(s.name) ? 'on' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={picked.includes(s.name)}
-                  onChange={() => toggleSkill(s.name)}
-                />
-                <span className="skill-name">{s.name}</span>
-                <span className="skill-desc">{s.description}</span>
-                {s.source === 'user' && <span className="skill-tag">自建</span>}
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
+      {picked.length > 0 && (
+        <div className="picked-hint">
+          已启用能力：{picked.join('、')}
+        </div>
+      )}
     </div>
   )
 }
-

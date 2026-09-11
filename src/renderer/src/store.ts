@@ -6,9 +6,22 @@ import { estimateMessageTokens } from '@shared/tokens'
 
 export type AppView = 'new' | 'chat' | 'settings'
 
+/** 右侧工作台（抽屉）的页签——P2 先立骨架，后续逐个填实现 */
+export type DockTab = 'explorer' | 'terminal' | 'browser'
+
 interface AppState {
   view: AppView
   setView: (view: AppView) => void
+
+  // ── 抽屉侧栏（面板显隐）───────────
+  /** 左侧栏（会话记录 / 设置）是否展开 */
+  sidebarOpen: boolean
+  toggleSidebar: () => void
+  /** 右侧工作台（资源管理器 / 终端 / 浏览器）是否展开 */
+  dockOpen: boolean
+  toggleDock: () => void
+  dockTab: DockTab
+  setDockTab: (tab: DockTab) => void
 
   settings: SettingsView | null
   settingsLoaded: boolean
@@ -19,7 +32,7 @@ interface AppState {
   activeId: string | null
   loadConversations: () => Promise<void>
   openConversation: (id: string) => Promise<void>
-  newTask: () => void
+  newSession: () => void
   createConversation: (input: ConversationCreateInput) => Promise<string>
   renameConversation: (id: string, title: string) => Promise<void>
   removeConversation: (id: string) => Promise<void>
@@ -44,6 +57,13 @@ export function usedTokens(messages: ChatMessage[]): number {
 export const useAppStore = create<AppState>((set, get) => ({
   view: 'new',
   setView: (view) => set({ view }),
+
+  sidebarOpen: true,
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  dockOpen: false,
+  toggleDock: () => set((s) => ({ dockOpen: !s.dockOpen })),
+  dockTab: 'explorer',
+  setDockTab: (dockTab) => set({ dockTab, dockOpen: true }),
 
   settings: null,
   settingsLoaded: false,
@@ -76,7 +96,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ activeId: id, messages: conv.messages, view: 'chat', streamError: null, streaming: false })
   },
 
-  newTask: () => set({ view: 'new', activeId: null, messages: [], streamError: null }),
+  newSession: () => set({ view: 'new', activeId: null, messages: [], streamError: null }),
 
   createConversation: async (input) => {
     const conv = await window.api.createConversation(input)

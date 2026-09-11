@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../store'
 import type { ConversationMeta } from '@shared/ipc'
 
-// 侧边栏（P2）：新建任务入口 + 按工作区分组的会话历史 + 左下角齿轮设置。
+// 侧边栏（P2）：新建会话入口 + 按工作区分组的会话历史 + 左下角齿轮设置。
+// 显隐由顶栏控制（open 受控）；品牌名在顶栏，这里不再重复。
 // 交互参考：opencode 的新建流程、WorkBuddy 的分组历史（去掉专家/连接器等花哨项）。
 
 interface Group {
@@ -28,11 +29,11 @@ function groupConversations(list: ConversationMeta[]): Group[] {
     .sort((a, b) => (b.items[0]?.updatedAt ?? 0) - (a.items[0]?.updatedAt ?? 0))
 }
 
-export default function Sidebar(): JSX.Element {
+export default function Sidebar({ open }: { open: boolean }): JSX.Element {
   const view = useAppStore((s) => s.view)
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
-  const newTask = useAppStore((s) => s.newTask)
+  const newSession = useAppStore((s) => s.newSession)
   const openConversation = useAppStore((s) => s.openConversation)
   const renameConversation = useAppStore((s) => s.renameConversation)
   const removeConversation = useAppStore((s) => s.removeConversation)
@@ -62,18 +63,14 @@ export default function Sidebar(): JSX.Element {
   }
 
   return (
-    <aside className="sidebar">
-      <div className="brand">
-        <div className="brand-name">九十里路</div>
-      </div>
-
-      <button className="new-task-btn" onClick={newTask}>
-        <span className="plus">＋</span> 新建任务
+    <aside className={`sidebar ${open ? '' : 'closed'}`}>
+      <button className="new-task-btn" onClick={newSession}>
+        <span className="plus">＋</span> 新建会话
       </button>
 
       <div className="conv-scroll">
         <div className="section-label">工作区</div>
-        {groups.length === 0 && <div className="conv-empty">还没有会话。点「新建任务」开始。</div>}
+        {groups.length === 0 && <div className="conv-empty">还没有会话。点「新建会话」开始。</div>}
         {groups.map((g) => {
           const isCollapsed = collapsed[g.workspace] ?? false
           return (
@@ -89,8 +86,8 @@ export default function Sidebar(): JSX.Element {
                 </button>
                 <button
                   className="group-add"
-                  title="在此工作区新建对话"
-                  onClick={() => newTask()}
+                  title="在此工作区新建会话"
+                  onClick={() => newSession()}
                 >
                   ＋
                 </button>
