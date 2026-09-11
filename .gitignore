@@ -49,5 +49,7 @@ verify-*.png
 .git-commit-msg.tmp
 dist-stale-*/
 
-# electron-vite 构建时的临时配置副本（构建残留）
-electron.vite.config.*.mjs
+# —— 图片归档（Photo 目录）——
+# 验证脚本的截图每次跑都会重新生成，属"本地归档"不入库；
+# 需要随仓库分发的图片资产（应用图标等）放 resources/ —— 那里是入库的。
+Photo/

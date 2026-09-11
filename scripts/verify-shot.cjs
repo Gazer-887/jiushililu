@@ -13,11 +13,17 @@
  * 数据返回空值即可，本脚本验证的是**布局几何**，不是数据流。
  */
 const { app, BrowserWindow, ipcMain } = require('electron')
-const { writeFileSync } = require('node:fs')
+const { mkdirSync, writeFileSync } = require('node:fs')
 const { join } = require('node:path')
 
 const ROOT = process.cwd()
-const OUT = join(ROOT, 'verify-shot.png')
+/**
+ * 截图统一落这里 —— 用户要求「项目下的图片建档（Photo 目录）收录」：
+ * 验证产出不该散在项目根（此前根目录堆过 17 张）。
+ */
+const SHOTS = join(ROOT, 'Photo')
+mkdirSync(SHOTS, { recursive: true })
+const OUT = join(SHOTS, 'verify-shot.png')
 
 // 让 userData 独立，避免与已安装版本抢目录
 app.setPath('userData', join(ROOT, '.verify-userdata'))
@@ -393,7 +399,7 @@ app.whenReady().then(async () => {
   // 量完立刻 capturePage 可能拿到合成之前的那一帧（实测踩到：拍出来是空画面）
   await new Promise((r) => setTimeout(r, 500))
   const shotTodo = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-todo.png'), shotTodo.toPNG())
+  writeFileSync(join(SHOTS, 'verify-todo.png'), shotTodo.toPNG())
 
   // 折叠：点标题 → 列表消失、面板变矮（DSH 的那个 chevron 行为）
   await win.webContents.executeJavaScript(`
@@ -442,14 +448,14 @@ app.whenReady().then(async () => {
   `)
 
   const shot1 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-wide.png'), shot1.toPNG())
+  writeFileSync(join(SHOTS, 'verify-wide.png'), shot1.toPNG())
 
   // 缩窄窗口，验证自适应（这是本次修复的核心诉求）
   win.setSize(760, 700)
   await new Promise((r) => setTimeout(r, 1200))
   const m2 = await measure()
   const shot2 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-narrow.png'), shot2.toPNG())
+  writeFileSync(join(SHOTS, 'verify-narrow.png'), shot2.toPNG())
 
   // —— 设置页「故障排查」区（plan8 R2）——
   win.setSize(1200, 800)
@@ -523,7 +529,7 @@ app.whenReady().then(async () => {
     `)
     console.log('SETTINGS_SECTION=' + slug + ' ' + JSON.stringify(secInfo))
     const png = await win.webContents.capturePage()
-    writeFileSync(join(ROOT, 'verify-settings-' + slug + '.png'), png.toPNG())
+    writeFileSync(join(SHOTS, 'verify-settings-' + slug + '.png'), png.toPNG())
   }
 
   const m3 = await win.webContents.executeJavaScript(`
@@ -547,7 +553,9 @@ app.whenReady().then(async () => {
     })()
   `)
   const shot3 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-settings.png'), shot3.toPNG())
+  // 不额外存 verify-settings.png：它与下面分区循环里的 trouble 那张**逐字节相同**
+  // （实测哈希一致），纯冗余。要设置页截图，看 verify-settings-*.png 即可。
+  void shot3
 
   // —— 文件变更记录面板（plan8 R4）：真点一遍回滚，验证"改坏能退回" ──
   await win.webContents.executeJavaScript(`
@@ -590,7 +598,7 @@ app.whenReady().then(async () => {
     })()
   `)
   const shot4 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-changes.png'), shot4.toPNG())
+  writeFileSync(join(SHOTS, 'verify-changes.png'), shot4.toPNG())
 
   // 点「整轮回滚」→ 应进入二次确认（不会立刻执行）
   // 注意：React 状态更新是异步的，点击后必须等一拍再读 DOM，
@@ -630,7 +638,7 @@ app.whenReady().then(async () => {
     }))()
   `)
   const shot5 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-rollback.png'), shot5.toPNG())
+  writeFileSync(join(SHOTS, 'verify-rollback.png'), shot5.toPNG())
 
   // —— 危险操作确认对话框（plan8 R5）：真推一次请求，真点一次 ──
   // 用 webContents.send 模拟主进程推送（这就是真实链路：主进程 → preload → React）
@@ -661,7 +669,7 @@ app.whenReady().then(async () => {
     })()
   `)
   const shot6 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-confirm.png'), shot6.toPNG())
+  writeFileSync(join(SHOTS, 'verify-confirm.png'), shot6.toPNG())
 
   // 点「允许这一次」→ 应把 {id:'probe-1', allowed:true} 回传主进程，并关闭对话框
   await win.webContents.executeJavaScript(`
@@ -724,7 +732,7 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 400))
   const afterDrag = await geom()
   const shot7 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-splitter.png'), shot7.toPNG())
+  writeFileSync(join(SHOTS, 'verify-splitter.png'), shot7.toPNG())
 
   // —— 批 A：资源管理器（真点一次展开 + 一次文件预览）——
   await win.webContents.executeJavaScript(`
@@ -794,7 +802,7 @@ app.whenReady().then(async () => {
     })()
   `)
   const shot8 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-explorer.png'), shot8.toPNG())
+  writeFileSync(join(SHOTS, 'verify-explorer.png'), shot8.toPNG())
 
   // —— 资源管理器右键菜单 + 写操作接线（plan7 批 A2）——
   // 验的不是"菜单画出来了"，而是菜单项齐全**且动作真的发下去了**（stub 记流水）
@@ -825,7 +833,7 @@ app.whenReady().then(async () => {
     }))()
   `)
   const shotMenu = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-ex-menu.png'), shotMenu.toPNG())
+  writeFileSync(join(SHOTS, 'verify-ex-menu.png'), shotMenu.toPNG())
 
   // 点「重命名」→ 内联输入框出现，且初值就是原名
   await win.webContents.executeJavaScript(`
@@ -1032,7 +1040,7 @@ app.whenReady().then(async () => {
   // （这个坑踩过两次：待办面板一次、这次预览一次 —— 都是"查询说在、截图里没有"）
   await new Promise((r) => setTimeout(r, 800))
   const shotMd = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-ex-preview.png'), shotMd.toPNG())
+  writeFileSync(join(SHOTS, 'verify-ex-preview.png'), shotMd.toPNG())
 
   // 拖拽手柄：**只验结构**，不验"拖了会不会变高"。
   // 为什么：实测 Chrome 会把**真实鼠标位置**的 mousemove 也派发过来，覆盖合成事件的
@@ -1109,7 +1117,7 @@ app.whenReady().then(async () => {
     })()
   `)
   const shot9 = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-newtask.png'), shot9.toPNG())
+  writeFileSync(join(SHOTS, 'verify-newtask.png'), shot9.toPNG())
 
   // —— 水墨风配色预览（INK=1 时启用）——
   // 用 insertCSS 注入 token 覆盖 + 水印样式，**不改动正式源码** ——
@@ -1170,7 +1178,7 @@ app.whenReady().then(async () => {
       `)
       await new Promise((r) => setTimeout(r, 400))
       const s = await win.webContents.capturePage()
-      writeFileSync(join(ROOT, v.file), s.toPNG())
+      writeFileSync(join(SHOTS, v.file), s.toPNG())
     }
 
     // 再切到对话页截一张（看墨色按钮/选中态/朱砂红在实际界面里的效果）
@@ -1183,7 +1191,7 @@ app.whenReady().then(async () => {
     `)
     await new Promise((r) => setTimeout(r, 900))
     const shotInk2 = await win.webContents.capturePage()
-    writeFileSync(join(ROOT, 'verify-ink-chat.png'), shotInk2.toPNG())
+    writeFileSync(join(SHOTS, 'verify-ink-chat.png'), shotInk2.toPNG())
     console.log('INK_PREVIEW=done')
   }
 
@@ -1237,7 +1245,7 @@ app.whenReady().then(async () => {
     })()
   `)
   const shotTasks = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-tasks.png'), shotTasks.toPNG())
+  writeFileSync(join(SHOTS, 'verify-tasks.png'), shotTasks.toPNG())
 
   await new Promise((r) => setTimeout(r, 900))
 
@@ -1278,7 +1286,7 @@ app.whenReady().then(async () => {
     }))()
   `)
   const shotTheme = await win.webContents.capturePage()
-  writeFileSync(join(ROOT, 'verify-theme-ink.png'), shotTheme.toPNG())
+  writeFileSync(join(SHOTS, 'verify-theme-ink.png'), shotTheme.toPNG())
 
   // 恢复经典（别把状态留在水墨 —— 验证脚本应可重复运行）
   await win.webContents.executeJavaScript(`
