@@ -118,13 +118,14 @@ export function ModelSwitcher(): JSX.Element {
   )
 }
 
-const PERM_LABEL: Record<PermissionPreset, string> = {
+/** 权限档文案（设置页「通用设置」也读它 —— 单一真相源，别写两份） */
+export const PERM_LABEL: Record<PermissionPreset, string> = {
   'read-only': '只读访问',
   write: '可写访问',
   'full-access': '完全访问'
 }
 
-const PERM_HINT: Record<PermissionPreset, string> = {
+export const PERM_HINT: Record<PermissionPreset, string> = {
   'read-only': '模型只能读取，不能修改任何文件',
   write: '可读写工作区内文件；命令执行仍需显式授权',
   'full-access': '含命令执行，不再逐次确认（谨慎使用）'

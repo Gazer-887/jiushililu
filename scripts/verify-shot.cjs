@@ -294,6 +294,69 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 1200))
 
+  // —— R7 形态改造：设置页分区导航（左导航 + 右内容）——
+  // 量导航几何 + 逐个点开分区截图。选中态必须**有背景色**，不能只靠字重区分。
+  const navInfo = await win.webContents.executeJavaScript(`
+    (() => {
+      const items = Array.from(document.querySelectorAll('.settings-nav-item'));
+      const rect = (el) => {
+        const r = el.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.left) };
+      };
+      const nav = document.querySelector('.settings-nav');
+      const body = document.querySelector('.settings-body');
+      const on = document.querySelector('.settings-nav-item.is-on');
+      const idle = items.find((b) => !b.classList.contains('is-on'));
+      return {
+        count: items.length,
+        labels: items.map((b) => b.textContent.trim()),
+        nav: nav ? rect(nav) : null,
+        body: body ? rect(body) : null,
+        active: on ? on.textContent.trim() : null,
+        activeBg: on ? getComputedStyle(on).backgroundColor : null,
+        idleBg: idle ? getComputedStyle(idle).backgroundColor : null,
+        iconCount: document.querySelectorAll('.settings-nav-icon svg').length,
+        h2: document.querySelector('.settings-body h2')?.textContent?.trim() ?? null
+      };
+    })()
+  `)
+  console.log('SETTINGS_NAV=' + JSON.stringify(navInfo))
+
+  for (const [label, slug] of [
+    ['通用设置', 'general'],
+    ['模型', 'model'],
+    ['外观', 'appearance'],
+    ['故障排查', 'trouble']
+  ]) {
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const b = Array.from(document.querySelectorAll('.settings-nav-item'))
+          .find((x) => x.textContent.trim() === ${JSON.stringify(label)});
+        if (b) b.click();
+        return !!b;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const secInfo = await win.webContents.executeJavaScript(`
+      (() => {
+        const cards = Array.from(document.querySelectorAll('.choice-item'));
+        const rects = cards.map((el) => el.getBoundingClientRect());
+        return {
+          h2: document.querySelector('.settings-body h2')?.textContent?.trim() ?? null,
+          choices: cards.length,
+          // 卡片宽度 + 是否同一行（top 相同即一排）——"等宽并排"必须量，不能靠看
+          cardW: rects.map((r) => Math.round(r.width)),
+          sameRow: new Set(rects.map((r) => Math.round(r.top))).size === 1,
+          buttons: Array.from(document.querySelectorAll('.settings-body .actions button'))
+            .map((b) => b.textContent.trim())
+        };
+      })()
+    `)
+    console.log('SETTINGS_SECTION=' + slug + ' ' + JSON.stringify(secInfo))
+    const png = await win.webContents.capturePage()
+    writeFileSync(join(ROOT, 'verify-settings-' + slug + '.png'), png.toPNG())
+  }
+
   const m3 = await win.webContents.executeJavaScript(`
     (() => {
       const pick = (sel) => {
@@ -715,10 +778,21 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 900))
 
+  // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item'))
+        .find((x) => x.textContent.trim() === '外观');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+
   const themeBefore = await win.webContents.executeJavaScript(`
     (() => ({
-      items: Array.from(document.querySelectorAll('.theme-item .theme-name')).map((e) => e.textContent.trim()),
-      checked: document.querySelector('.theme-item[aria-checked="true"] .theme-name')?.textContent?.trim() ?? null,
+      items: Array.from(document.querySelectorAll('.choice-item .choice-name')).map((e) => e.textContent.trim()),
+      checked: document.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null,
       dataTheme: document.documentElement.dataset.theme ?? '(none)'
     }))()
   `)
@@ -726,8 +800,8 @@ app.whenReady().then(async () => {
   // 点「水墨」
   await win.webContents.executeJavaScript(`
     (() => {
-      const btn = Array.from(document.querySelectorAll('.theme-item'))
-        .find((b) => b.querySelector('.theme-name')?.textContent?.trim() === '水墨');
+      const btn = Array.from(document.querySelectorAll('.choice-item'))
+        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '水墨');
       if (btn) btn.click();
       return !!btn;
     })()
@@ -735,7 +809,7 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 700))
   const themeAfter = await win.webContents.executeJavaScript(`
     (() => ({
-      checked: document.querySelector('.theme-item[aria-checked="true"] .theme-name')?.textContent?.trim() ?? null,
+      checked: document.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null,
       dataTheme: document.documentElement.dataset.theme ?? '(none)',
       accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
     }))()
@@ -746,8 +820,8 @@ app.whenReady().then(async () => {
   // 恢复经典（别把状态留在水墨 —— 验证脚本应可重复运行）
   await win.webContents.executeJavaScript(`
     (() => {
-      const btn = Array.from(document.querySelectorAll('.theme-item'))
-        .find((b) => b.querySelector('.theme-name')?.textContent?.trim() === '经典');
+      const btn = Array.from(document.querySelectorAll('.choice-item'))
+        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '经典');
       if (btn) btn.click();
       return !!btn;
     })()
@@ -759,12 +833,18 @@ app.whenReady().then(async () => {
     (() => {
       const sheets = document.styleSheets.length;
       const view = document.querySelector('.settings-view');
+      const nav = document.querySelector('.settings-nav');
+      const body = document.querySelector('.settings-body');
       const cs = view ? getComputedStyle(view) : null;
+      const ns = nav ? getComputedStyle(nav) : null;
+      const bs = body ? getComputedStyle(body) : null;
       return {
         sheets,
-        padding: cs ? cs.paddingTop : null,
-        maxWidth: cs ? cs.maxWidth : null,
-        scrollable: cs ? cs.overflowY : null
+        // 设置页改两栏后，用这几个值判定样式表真生效（裸 HTML 下会退回默认值）
+        display: cs ? cs.display : null, // 期望 flex
+        navWidth: ns ? ns.width : null, // 期望 196px
+        bodyPadding: bs ? bs.paddingTop : null, // 期望 24px
+        scrollable: cs ? cs.overflowY : null // 期望 hidden（滚动交给右栏）
       };
     })()
   `)

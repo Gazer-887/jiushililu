@@ -21,7 +21,38 @@
   --warn-soft: #faeeda;
   --warn-border: #fac775;
   --warn-deep: #854f0b;
-  --radius: 12px;
+
+  /*
+   * ── 尺度 token（plan8 R7，2026-09-12）─────────────────────────────
+   * 收敛前实测（scripts/audit-css.cjs）：font-size 12 种（含 11.5/12.5 半像素）、
+   * border-radius 12 种、padding 56 种、gap 12 种、line-height 7 种。
+   * 收敛方式：**按语义分组**（同类元素同一档），不做机械四舍五入 ——
+   * 既消灭"每处拍一个数"，又不破坏原有的疏密节奏。
+   */
+  --fs-xs: 11px; /* 角标 / 极小的辅助字 */
+  --fs-sm: 12px; /* 次要文字 / 标签 */
+  --fs-md: 13px; /* 控件文字 / 表单标签 */
+  --fs-base: 14px; /* 正文基准 */
+  --fs-lg: 18px; /* 区块标题 */
+  --fs-xl: 24px; /* 页面主标题 / 首屏题辞 */
+
+  --sp-1: 4px; /* 间距按 4·8 阶梯 */
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  --radius-sm: 4px; /* 标签 / 角标 */
+  --radius-md: 8px; /* 按钮 / 输入 / 列表项（主力档） */
+  --radius-lg: 12px; /* 卡片 / 面板 */
+
+  --lh-tight: 1.25;
+  --lh-normal: 1.6;
+  --lh-loose: 1.75;
+
+  /* 旧名保留（存量 7 处引用），指向大档 —— 避免"改了 token 反而变宽" */
+  --radius: var(--radius-lg);
 }
 
 /*
@@ -39,10 +70,10 @@ html[data-theme="ink"] {
   --accent: #1c1c1a;
   --accent-hover: #000000;
   --on-accent: #ffffff;
-  --accent-soft: #efeee9;
+  --accent-soft: #e8e6df;
   --accent-border: #ddd9d0;
   --ok: #1c1c1a;
-  --ok-soft: #efeee9;
+  --ok-soft: #e8e6df;
   --ok-border: #ddd9d0;
   --danger: #a8342c;
   --danger-soft: #f7ece9;
@@ -242,17 +273,86 @@ nav {
   font-size: 14px;
 }
 
+/*
+ * 设置页（plan8 R7 形态改造，2026-09-12 用户意见）：
+ * 由「单页纵向滚动」改为「左分区导航 + 右内容」，形制对齐 DSH 设置页。
+ * 选中项是圆角胶囊高亮（--accent-soft 打底）——水墨主题下即浅灰墨色。
+ */
 .settings-view {
-  padding: 28px 36px;
-  overflow-y: auto;
-  max-width: 720px;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-nav {
+  flex-shrink: 0;
+  width: 196px;
+  max-width: 45%; /* 窄窗保护：主区域保底 320px 时导航不能被撑爆 */
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-1);
+  padding: var(--sp-5) var(--sp-3) var(--sp-3);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.settings-nav-title {
+  padding: 0 var(--sp-2) var(--sp-4);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: 38px;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.settings-nav-item.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings-nav-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.settings-nav .back-btn {
+  margin-top: auto;
+}
+
+.settings-body {
+  flex: 1;
+  min-width: 0;
+  max-width: 720px;
+  overflow-y: auto;
+  padding: var(--sp-5) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
 }
 
 .settings-view h2 {
-  font-size: 18px;
+  font-size: var(--fs-lg);
 }
 
 .hint {
@@ -310,19 +410,14 @@ label.checkbox {
   height: 38px;
 }
 
-/* plan8 R2：设置页「故障排查」区（日志目录入口） */
+/*
+ * 设置分区容器（外观 / 故障排查）。分区制下每屏只有一块内容，
+ * 不再需要"与上文分隔"的硬线 —— 靠留白分隔（水墨逻辑：不靠边框堆层次）。
+ */
 .settings-section {
-  margin-top: 10px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.settings-section h3 {
-  font-size: 14px;
-  color: var(--text);
+  gap: var(--sp-4);
 }
 
 .logs-info {
@@ -2670,45 +2765,50 @@ body[data-resizing] {
   word-break: break-all;
 }
 
-/* ── 设置 · 外观（主题切换，plan7）────────────────────────── */
+/* ── 选项卡片组（设置页通用：主题切换 / 访问权限档）────────── */
 
-.theme-list {
+.choice-list {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-3);
   flex-wrap: wrap;
 }
 
-.theme-item {
+/* 多档并排时要求等宽（横向可比）——窄窗仍靠 min-width 与 wrap 兜底 */
+.choice-list-fill > .choice-item {
+  flex: 1 1 0;
+}
+
+.choice-item {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
-  padding: 10px 14px;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--panel);
   cursor: pointer;
   text-align: left;
   font: inherit;
-  min-width: 132px;
+  min-width: 148px;
 }
 
-.theme-item:hover {
+.choice-item:hover {
   border-color: var(--accent-border);
   background: var(--accent-soft);
 }
 
-.theme-item-on {
+.choice-item.is-on {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.theme-name {
-  font-size: 13px;
+.choice-name {
+  font-size: var(--fs-md);
   color: var(--text);
 }
 
-.theme-desc {
-  font-size: 11px;
+.choice-desc {
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
