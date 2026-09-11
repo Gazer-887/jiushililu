@@ -1,5 +1,6 @@
+import { existsSync } from 'node:fs'
 import { copyFile, mkdir, rename as renameFs, stat, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { basename, dirname, extname, join, relative } from 'node:path'
 import { resolveInsideWorkspace } from './agent/guard'
 
 // 工作区统一写入服务（plan7 批 A2 的前置 —— 全功能资源管理器的地基）——
@@ -86,13 +87,31 @@ export function createWorkspaceWriter(
     },
 
     async copyIn(sourceAbs, rel) {
-      const to = absOf(rel)
+      const wanted = absOf(rel)
       const info = await stat(sourceAbs)
       if (!info.isFile()) throw new Error('目前只支持拖入文件（文件夹请逐个拖入）')
-      hooks.beforeChange?.(rel, to)
+      // **不覆盖**已有文件：同名时自动加序号。
+      // 拖同一个文件两次是很常见的动作，静默覆盖会让人白白丢掉原有内容。
+      const to = await uniquePath(wanted)
+      const finalRel = to === wanted ? rel : relative(workspaceRoot, to).replace(/\\/g, '/')
+      hooks.beforeChange?.(finalRel, to)
       await mkdir(dirname(to), { recursive: true })
       await copyFile(sourceAbs, to)
-      return `已导入 ${rel}（${info.size} 字节）`
+      const renamed = to === wanted ? '' : `（同名已存在，另存为 ${finalRel}）`
+      return `已导入 ${finalRel}（${info.size} 字节）${renamed}`
     }
   }
+}
+
+/** 目标已存在时自动加序号：`a.txt` → `a (2).txt` → `a (3).txt` … */
+async function uniquePath(abs: string): Promise<string> {
+  if (!existsSync(abs)) return abs
+  const dir = dirname(abs)
+  const ext = extname(abs)
+  const stem = basename(abs, ext)
+  for (let i = 2; i < 1000; i++) {
+    const next = join(dir, `${stem} (${i})${ext}`)
+    if (!existsSync(next)) return next
+  }
+  throw new Error('同名文件太多（已有 1000 个），请先清理目标目录')
 }

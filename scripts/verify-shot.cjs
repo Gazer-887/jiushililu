@@ -864,6 +864,44 @@ app.whenReady().then(async () => {
     }))()
   `)
 
+  // —— 拖拽上传（plan7 批 A2 第 3 步）——
+  // 验两件事：① dragover 时落点高亮 ② drop 真的接线（合成 File 没有磁盘路径，
+  // 正确行为是**如实提示**而不是静默什么都不做）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.textContent.includes('归档'));
+      if (row) row.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true }));
+      return !!row;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
+  const exDragOver = await win.webContents.executeJavaScript(`
+    (() => ({
+      highlighted: !!document.querySelector('.ex-row-drop'),
+      cls: document.querySelector('.ex-row-drop')?.className ?? null
+    }))()
+  `)
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.textContent.includes('归档'));
+      if (!row) return false;
+      const dt = new DataTransfer();
+      dt.items.add(new File(['x'], '拖入的测试.txt'));
+      row.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const exDropState = await win.webContents.executeJavaScript(`
+    (() => ({
+      notice: document.querySelector('.ex-notice')?.textContent?.trim() ?? null,
+      highlightGone: !document.querySelector('.ex-row-drop')
+    }))()
+  `)
+
   // —— 新建任务页：内容完全居中 + 旧文案已移除（用户 2026-09-12 美学偏好）——
   await win.webContents.executeJavaScript(`
     (() => {
@@ -1147,6 +1185,8 @@ app.whenReady().then(async () => {
   console.log('EX_ESC=' + JSON.stringify(exEsc))
   console.log('EX_MENU_ROOT=' + JSON.stringify(exMenuRoot))
   console.log('EX_CREATE=' + JSON.stringify(exCreate))
+  console.log('EX_DRAGOVER=' + JSON.stringify(exDragOver))
+  console.log('EX_DROP=' + JSON.stringify(exDropState))
   console.log('EX_OP_LOG=' + JSON.stringify(fsOpLog))
   console.log('TASKS_PANEL=' + JSON.stringify(tasksState))
   console.log('THEME_BEFORE=' + JSON.stringify(themeBefore))

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import type { FsEntry } from '@shared/fs-tree'
 import { formatSize, isTextPreviewable } from '@shared/fs-tree'
 
@@ -49,6 +49,8 @@ export default function ExplorerPanel(): JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null)
   const [editing, setEditing] = useState<Editing | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  /** 拖拽悬停的落点目录（'' = 根）—— 用来给拖放目标加高亮 */
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLInputElement>(null)
 
@@ -174,6 +176,35 @@ export default function ExplorerPanel(): JSX.Element {
     }
   }
 
+  /**
+   * 拖入文件 → 导入工作区（plan7 批 A2 第 3 步）。
+   * 路径要经 preload 的 `webUtils` 拿 —— Electron 32+ 起渲染进程拿不到 File.path。
+   * 同名冲突交给服务层处理（自动加序号，不覆盖）。
+   */
+  const handleDrop = async (e: ReactDragEvent, parentRel: string): Promise<void> => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDropTarget(null)
+    const files = Array.from(e.dataTransfer?.files ?? [])
+    if (files.length === 0) return
+    const outs: Array<{ ok: boolean; message: string }> = []
+    for (const f of files) {
+      const abs = window.api.getPathForFile(f)
+      if (!abs) {
+        // 合成/浏览器拖拽拿不到磁盘路径 —— 如实说，别静默什么都不做
+        outs.push({ ok: false, message: `${f.name}：拿不到磁盘路径，无法导入` })
+        continue
+      }
+      const rel = parentRel ? `${parentRel}/${f.name}` : f.name
+      outs.push(await window.api.importIntoWorkspace(abs, rel))
+    }
+    setNotice({
+      ok: outs.every((o) => o.ok),
+      text: outs.map((o) => o.message).join('；')
+    })
+    if (outs.some((o) => o.ok)) await loadDir(parentRel)
+  }
+
   const copyPath = async (rel: string): Promise<void> => {
     setMenu(null)
     try {
@@ -246,10 +277,20 @@ export default function ExplorerPanel(): JSX.Element {
       ) : (
         <button
           key={e.rel}
-          className={`ex-row ${selected?.rel === e.rel ? 'ex-row-on' : ''}`}
+          className={`ex-row ${selected?.rel === e.rel ? 'ex-row-on' : ''} ${
+            dropTarget === e.rel ? 'ex-row-drop' : ''
+          }`}
           style={{ paddingLeft: 8 + depth * 14 }}
           title={e.rel}
           onClick={() => (e.kind === 'dir' ? void toggleDir(e) : void openFile(e))}
+          onDragOver={(ev) => {
+            ev.preventDefault()
+            ev.stopPropagation()
+            setDropTarget(e.rel)
+          }}
+          onDragLeave={() => setDropTarget((t) => (t === e.rel ? null : t))}
+          // 拖到目录上 → 放进该目录；拖到文件上 → 放进它所在的目录（不是根）
+          onDrop={(ev) => void handleDrop(ev, e.kind === 'dir' ? e.rel : parentOf(e.rel))}
           onContextMenu={(ev) => {
             ev.preventDefault()
             // 贴边时往回收 —— 否则在窗口右下角右键，菜单会跑到窗口外面去
@@ -282,7 +323,14 @@ export default function ExplorerPanel(): JSX.Element {
 
   return (
     <div
-      className="ex-panel"
+      className={`ex-panel ${dropTarget === '' ? 'ex-panel-drop' : ''}`}
+      // 拖到面板空白处 → 放进**工作区根目录**
+      onDragOver={(e) => {
+        e.preventDefault()
+        setDropTarget('')
+      }}
+      onDragLeave={() => setDropTarget((t) => (t === '' ? null : t))}
+      onDrop={(e) => void handleDrop(e, '')}
       onContextMenu={(e) => {
         // 空白处右键 → 针对根目录的菜单（新建 / 刷新）
         if (e.target === e.currentTarget) {
@@ -322,7 +370,7 @@ export default function ExplorerPanel(): JSX.Element {
         ) : rootErr ? (
           <div className="ex-msg ex-err">{rootErr}</div>
         ) : tree.children['']?.length === 0 && !rootTail ? (
-          <div className="ex-msg">这个工作区还是空的。右键或点「新建」开始。</div>
+          <div className="ex-msg">这个工作区还是空的。右键新建，或直接把文件拖进来。</div>
         ) : (
           renderLevel('', 0)
         )}

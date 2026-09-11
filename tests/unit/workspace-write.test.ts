@@ -84,6 +84,20 @@ describe('workspace-write（统一写入服务）', () => {
     expect(readFileSync(join(root, 'imported', 'in.txt'), 'utf8')).toBe('外部内容')
   })
 
+  it('copyIn 同名**不覆盖**，自动加序号（拖两次同一个文件很常见）', async () => {
+    const { root, writer } = setup()
+    const src = join(mkdtempSync(join(tmpdir(), 'jsl-src3-')), 'dup.txt')
+    writeFileSync(src, '第一次', 'utf8')
+    const first = await writer.copyIn(src, 'dup.txt')
+    expect(first).toContain('已导入 dup.txt')
+    // 改掉源文件内容再拖一次：原有文件绝不能被悄悄覆盖
+    writeFileSync(src, '第二次', 'utf8')
+    const second = await writer.copyIn(src, 'dup.txt')
+    expect(second).toContain('另存为 dup (2).txt')
+    expect(readFileSync(join(root, 'dup.txt'), 'utf8')).toBe('第一次')
+    expect(readFileSync(join(root, 'dup (2).txt'), 'utf8')).toBe('第二次')
+  })
+
   it('copyIn 拒绝目录（别把整棵树搬进来）', async () => {
     const { writer } = setup()
     const dir = mkdtempSync(join(tmpdir(), 'jsl-srcdir-'))

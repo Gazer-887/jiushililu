@@ -3088,3 +3088,14 @@ body[data-resizing] {
 .ex-notice-bad {
   color: var(--danger);
 }
+
+/* 拖拽上传：落点高亮（用 inset 描边，不改变布局，避免高亮时行跳动） */
+.ex-row-drop {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.ex-panel-drop {
+  outline: 1px dashed var(--accent);
+  outline-offset: -4px;
+}

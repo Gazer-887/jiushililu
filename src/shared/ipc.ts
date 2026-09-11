@@ -396,6 +396,13 @@ export interface ApiBridge {
   importIntoWorkspace(sourceAbs: string, rel: string): Promise<FsOpResult>
   /** 在系统文件管理器中定位该条目 */
   revealWorkspaceEntry(rel: string): Promise<void>
+  /**
+   * 拖入的文件对象 → 磁盘绝对路径（拖拽上传用）。
+   * Electron 32+ 起 `File.path` 已移除，必须走 preload 的 `webUtils.getPathForFile`。
+   * 参数写成结构化类型而非 DOM 的 `File`：本文件同时被主进程引入，而主进程 tsconfig
+   * 没有 DOM lib（用 `File` 会直接编译不过）。
+   */
+  getPathForFile(file: { name: string }): string
   // ── 待办清单（plan7 批 D 提前落地）──
   /** 当前清单：组件挂载时拉一次，之后靠 onTodoChanged 推送 */
   getTodos(): Promise<TodoItem[]>

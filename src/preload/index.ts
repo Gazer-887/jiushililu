@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import {
@@ -89,6 +89,9 @@ const api: ApiBridge = {
   deleteWorkspacePath: (rel) => ipcRenderer.invoke(IPC.fsDelete, { rel }),
   importIntoWorkspace: (sourceAbs, rel) => ipcRenderer.invoke(IPC.fsImport, { sourceAbs, rel }),
   revealWorkspaceEntry: (rel) => ipcRenderer.invoke(IPC.fsReveal, { rel }),
+  // 拖入的文件对象 → 磁盘绝对路径。Electron 32+ 起 File.path 已移除，
+  // 只能在 preload 里用 webUtils（渲染进程够不到这个能力）
+  getPathForFile: (file) => webUtils.getPathForFile(file as File),
   // ── 待办清单（plan7 批 D 提前落地）──
   getTodos: () => ipcRenderer.invoke(IPC.todoGet),
   onTodoChanged: (cb) => subscribe(IPC.todoChanged, (todos) => cb(todos as TodoItem[])),
