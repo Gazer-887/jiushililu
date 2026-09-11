@@ -15,7 +15,8 @@ import {
   type WorkspaceInfo,
   type Conversation,
   type ConversationMeta,
-  type SkillInfo
+  type SkillInfo,
+  type LogsInfo
 } from '@shared/ipc'
 import {
   getDecryptedApiKey,
@@ -43,6 +44,7 @@ import {
   setBrowserBounds,
   setBrowserVisible
 } from './browser'
+import { getLogDir, listLogFiles, createLogger } from './log'
 import {
   createConversation,
   deleteConversation,
@@ -59,6 +61,8 @@ import {
 const activeChats = new Map<number, AbortController>()
 /** Agent 循环并发闸（按窗口）：同时只允许一个 Agent 任务 */
 const activeAgents = new Set<number>()
+
+const log = createLogger('ipc')
 
 // 把 zod 的英文校验错误翻译成人话（设置页直接展示，不再甩原始 JSON）
 const fieldLabels: Record<string, string> = {
@@ -173,6 +177,12 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
       })
       if (!e.sender.isDestroyed()) e.sender.send(IPC.chatDone)
     } catch (err) {
+      // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
+      log.error('对话执行失败', {
+        timedOut,
+        model: settings.model,
+        error: err instanceof Error ? err.message : String(err)
+      })
       if (!e.sender.isDestroyed()) {
         e.sender.send(IPC.chatError, friendlyChatError(err, timedOut, settings.timeoutMs))
       }
@@ -234,6 +244,7 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
           : {})
       }
     } catch (err) {
+      log.error('Agent 任务失败', { agentName: req.agentName, error: err instanceof Error ? err.message : String(err) })
       return failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err))
     } finally {
       activeAgents.delete(e.sender.id)
@@ -415,5 +426,19 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
       })
       .parse(raw)
     setBrowserBounds(b)
+  })
+
+  // ── 日志（plan8 R2）：排查入口 ──────────────────────────────
+
+  ipcMain.handle(IPC.logsOpen, async (): Promise<boolean> => {
+    const dir = getLogDir()
+    if (!dir) return false
+    const err = await shell.openPath(dir)
+    return err.length === 0
+  })
+
+  ipcMain.handle(IPC.logsInfo, (): LogsInfo => {
+    const dir = getLogDir()
+    return { dir, files: listLogFiles() }
   })
 }

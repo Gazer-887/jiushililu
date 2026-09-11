@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { registerIpcHandlers } from './ipc'
 import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
+import { initLogger, createLogger } from './log'
+import { installCrashGuards } from './crash-guard'
 import {
   browserClick,
   browserCurrentUrl,
@@ -48,10 +50,18 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  const userDataDir = app.getPath('userData')
+
+  // ① 日志系统（plan8 R2）：先于一切初始化，让后续所有环节都能留痕
+  initLogger(join(userDataDir, 'logs'), app.isPackaged ? 'info' : 'debug')
+  // ② 异常兜底（plan8 R1）：依赖日志，故紧随其后
+  installCrashGuards()
+  const log = createLogger('main')
+  log.info('应用启动', { version: app.getVersion(), packaged: app.isPackaged })
+
   // 去掉默认的 File/Edit/View 菜单栏（P0 用不到，界面更干净）
   Menu.setApplicationMenu(null)
   // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
-  const userDataDir = app.getPath('userData')
   const agentCtx = createAgentContext({
     getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
     builtinAgentsDir: app.isPackaged

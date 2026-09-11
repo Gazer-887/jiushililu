@@ -112,6 +112,12 @@ export interface BrowserBounds {
   height: number
 }
 
+/** 日志信息（plan8 R2：排查入口） */
+export interface LogsInfo {
+  dir: string | null
+  files: string[]
+}
+
 /** Agent 模式执行结果（plan6：独立上下文 + 单次报告返回） */
 export interface AgentRunResult {
   ok: boolean
@@ -203,7 +209,10 @@ export const IPC = {
   browserSetVisible: 'browser:set-visible',
   browserSetBounds: 'browser:set-bounds',
   /** 状态变化推送（地址/标题/加载中/前进后退可用性） */
-  browserChanged: 'browser:changed'
+  browserChanged: 'browser:changed',
+  /** 日志（排查入口） */
+  logsOpen: 'logs:open',
+  logsInfo: 'logs:info'
 } as const
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
@@ -250,4 +259,7 @@ export interface ApiBridge {
   /** 同步显示区域（渲染进程用 ResizeObserver 算好再传） */
   setBrowserBounds(bounds: BrowserBounds): Promise<void>
   onBrowserChanged(cb: (s: BrowserState) => void): () => void
+  /** 在系统文件管理器中打开日志目录（排查用） */
+  openLogsDir(): Promise<boolean>
+  getLogsInfo(): Promise<LogsInfo>
 }

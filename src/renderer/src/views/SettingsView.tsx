@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ProviderType, ReasoningEffort, SettingsSaveInput } from '@shared/ipc'
+import type { LogsInfo, ProviderType, ReasoningEffort, SettingsSaveInput } from '@shared/ipc'
 import { useAppStore } from '../store'
 
 // 快捷档位（对标 Trae 模型面板）：点一下直接填值
@@ -25,10 +25,19 @@ export default function SettingsView() {
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  /** 故障排查区（plan8 R2）：日志目录与最近文件，用于"出问题能查" */
+  const [logs, setLogs] = useState<LogsInfo | null>(null)
 
   useEffect(() => {
     if (!useAppStore.getState().settingsLoaded) void loadSettings()
   }, [loadSettings])
+
+  useEffect(() => {
+    window.api
+      .getLogsInfo()
+      .then(setLogs)
+      .catch(() => setLogs({ dir: null, files: [] }))
+  }, [])
 
   useEffect(() => {
     if (settings && !draft) {
@@ -313,6 +322,30 @@ export default function SettingsView() {
       </div>
 
       {notice && <div className={notice.ok ? 'notice-ok' : 'notice-err'}>{notice.text}</div>}
+
+      {/* plan8 R2：故障排查入口。出问题时用户能一键找到日志，而不是只看到"出错了" */}
+      <div className="settings-section">
+        <h3>故障排查</h3>
+        <p className="hint">
+          运行日志会自动记录在本地（已过滤 API Key 等敏感信息，不会明文落盘）。
+          遇到异常时，把最近的日志文件发给开发者即可定位。
+        </p>
+        <div className="logs-info">
+          <span className="logs-path">{logs?.dir ?? '（日志目录尚未创建，产生首条日志后自动出现）'}</span>
+          {logs && logs.files.length > 0 && (
+            <span className="logs-count">最近 {logs.files.length} 个文件</span>
+          )}
+        </div>
+        <div className="actions">
+          <button
+            className="btn-secondary"
+            disabled={!logs?.dir}
+            onClick={() => void window.api.openLogsDir()}
+          >
+            打开日志文件夹
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

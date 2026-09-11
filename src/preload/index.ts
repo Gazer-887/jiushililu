@@ -61,7 +61,9 @@ const api: ApiBridge = {
   browserReload: () => ipcRenderer.invoke(IPC.browserReload),
   setBrowserVisible: (visible: boolean) => ipcRenderer.invoke(IPC.browserSetVisible, visible),
   setBrowserBounds: (bounds: BrowserBounds) => ipcRenderer.invoke(IPC.browserSetBounds, bounds),
-  onBrowserChanged: (cb) => subscribe(IPC.browserChanged, (s) => cb(s as BrowserState))
+  onBrowserChanged: (cb) => subscribe(IPC.browserChanged, (s) => cb(s as BrowserState)),
+  openLogsDir: () => ipcRenderer.invoke(IPC.logsOpen),
+  getLogsInfo: () => ipcRenderer.invoke(IPC.logsInfo)
 }
 
 contextBridge.exposeInMainWorld('api', api)

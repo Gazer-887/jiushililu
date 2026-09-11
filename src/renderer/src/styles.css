@@ -285,6 +285,47 @@ label.checkbox {
   height: 38px;
 }
 
+/* plan8 R2：设置页「故障排查」区（日志目录入口） */
+.settings-section {
+  margin-top: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-section h3 {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.logs-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.logs-path {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-family: var(--mono, monospace);
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.logs-count {
+  flex-shrink: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .notice-ok {
   background: var(--ok-soft);
   color: var(--ok);
