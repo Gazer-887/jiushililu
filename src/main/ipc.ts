@@ -10,6 +10,8 @@ import { runAgent, type AgentRuntimeContext } from './agent/runner'
 // schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
 
 const activeChats = new Map<number, AbortController>()
+/** Agent 循环并发闸（按窗口）：同时只允许一个 Agent 任务 */
+const activeAgents = new Set<number>()
 
 // 把 zod 的英文校验错误翻译成人话（设置页直接展示，不再甩原始 JSON）
 const fieldLabels: Record<string, string> = {
@@ -140,17 +142,22 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext }): void 
     ok: false, output: '', rounds: 0, stopReason: 'completed', agent, error
   })
 
-  ipcMain.handle(IPC.agentRun, async (_e, raw: unknown): Promise<AgentRunResult> => {
+  ipcMain.handle(IPC.agentRun, async (e, raw: unknown): Promise<AgentRunResult> => {
     const req = agentRunInput.parse(raw)
-    const settings = getSettingsView()
-    if (!settings.baseURL || !settings.model) {
-      return failResult(req.agentName ?? '内核默认', '还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
+    // 并发闸（交叉验证提出）：Agent 循环成本高（可跑满轮数 + 命令执行），同时只允许一个
+    if (activeAgents.has(e.sender.id)) {
+      return failResult(req.agentName ?? '内核默认', '已有 Agent 任务在执行：请等待当前任务结束')
     }
-    const apiKey = getDecryptedApiKey()
-    if (!apiKey) {
-      return failResult(req.agentName ?? '内核默认', '还没有保存 API Key：请先到「设置」页填写并保存')
-    }
+    activeAgents.add(e.sender.id)
     try {
+      const settings = getSettingsView()
+      if (!settings.baseURL || !settings.model) {
+        return failResult(req.agentName ?? '内核默认', '还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
+      }
+      const apiKey = getDecryptedApiKey()
+      if (!apiKey) {
+        return failResult(req.agentName ?? '内核默认', '还没有保存 API Key：请先到「设置」页填写并保存')
+      }
       const result = await runAgent(deps.agent, {
         settings,
         apiKey,
@@ -169,6 +176,8 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext }): void 
       }
     } catch (err) {
       return failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err))
+    } finally {
+      activeAgents.delete(e.sender.id)
     }
   })
 }

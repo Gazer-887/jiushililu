@@ -11,7 +11,27 @@ export function assertHttpUrl(raw: string): URL {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`仅支持 http/https，拒绝协议「${url.protocol}」`)
   }
+  if (isBlockedHost(url.hostname)) {
+    throw new Error(`拒绝访问内网/回环地址「${url.hostname}」`)
+  }
   return url
+}
+
+/** SSRF 防护：回环 / 私网 / 链路本地 / 保留地址一律拒绝 */
+export function isBlockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0') return true
+  if (host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) {
+    return true
+  }
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (!m) return false
+  const [a, b] = [Number(m[1]), Number(m[2])]
+  if (a === 127 || a === 10 || a === 0) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  if (a === 169 && b === 254) return true
+  return false
 }
 
 /** 粗提纯文本：去 script/style 与标签，压缩空白 */
@@ -51,9 +71,15 @@ export function createWebTools(): AgentTool[] {
       }
       try {
         const res = await fetch(url, {
+          // 不跟随重定向：避免"合法起点 → 302 到内网/元数据服务"的 SSRF 绕过
+          redirect: 'manual',
           signal: AbortSignal.timeout(30000),
           headers: { 'User-Agent': 'jiushililu-agent/0.1' }
         })
+        if (res.status >= 300 && res.status < 400) {
+          const loc = res.headers.get('location') ?? '（未给出位置）'
+          return `错误：目标返回重定向 ${res.status} → ${loc}。出于安全策略不自动跟随，请直接请求最终地址。`
+        }
         if (!res.ok) return `错误：HTTP ${res.status} ${res.statusText}`
         const buf = await res.arrayBuffer()
         const body = new TextDecoder('utf-8').decode(buf.slice(0, MAX_BODY_BYTES))

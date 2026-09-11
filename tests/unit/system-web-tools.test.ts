@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -87,5 +87,44 @@ describe('web-tools 纯函数', () => {
     expect(text).not.toContain('x()')
     expect(text).toContain('标题')
     expect(text).toContain('正文 & 更多')
+  })
+})
+
+describe('SSRF 防护（isBlockedHost）', () => {
+  it('回环/私网/链路本地一律拦截', async () => {
+    const { isBlockedHost } = await import('@main/agent/tools/web-tools')
+    expect(isBlockedHost('127.0.0.1')).toBe(true)
+    expect(isBlockedHost('localhost')).toBe(true)
+    expect(isBlockedHost('10.0.0.5')).toBe(true)
+    expect(isBlockedHost('172.16.3.4')).toBe(true)
+    expect(isBlockedHost('192.168.1.1')).toBe(true)
+    expect(isBlockedHost('169.254.169.254')).toBe(true)
+    expect(isBlockedHost('::1')).toBe(true)
+    expect(isBlockedHost('example.com')).toBe(false)
+    expect(isBlockedHost('172.32.0.1')).toBe(false)
+  })
+
+  it('assertHttpUrl 对内网地址抛错', async () => {
+    const { assertHttpUrl } = await import('@main/agent/tools/web-tools')
+    expect(() => assertHttpUrl('http://127.0.0.1:8080/x')).toThrow('内网/回环')
+    expect(() => assertHttpUrl('http://169.254.169.254/latest/meta-data/')).toThrow('内网/回环')
+  })
+})
+
+describe('symlink 逃逸防护（resolveInsideWorkspace）', () => {
+  it('工作区内的符号链接指向外部时被拒绝', async () => {
+    const { resolveInsideWorkspace } = await import('@main/agent/guard')
+    const root = mkdtempSync(join(tmpdir(), 'jsl-sym-'))
+    const outside = mkdtempSync(join(tmpdir(), 'jsl-out-'))
+    writeFileSync(join(outside, 'secret.txt'), 'top secret', 'utf8')
+    try {
+      symlinkSync(outside, join(root, 'link'), 'junction')
+    } catch {
+      return // 环境不允许建链接（无权限）时跳过，不误报
+    }
+    // 正常文件仍通过
+    expect(resolveInsideWorkspace(root, 'normal.txt')).toBe(join(root, 'normal.txt'))
+    // 经符号链接指向外部 → 拒绝
+    expect(resolveInsideWorkspace(root, 'link/secret.txt')).toBe(null)
   })
 })

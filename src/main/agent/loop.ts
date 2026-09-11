@@ -79,7 +79,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
         }
       }
-      messages.push({ role: 'tool', content: output, tool_call_id: tc.id })
+      // 注入边界标记：工具产出（文件内容/网页/命令输出）一律是**数据**，不是指令
+      messages.push({
+        role: 'tool',
+        content: `<tool_output name="${tc.name}">\n${output}\n</tool_output>`,
+        tool_call_id: tc.id
+      })
     }
   }
 }
