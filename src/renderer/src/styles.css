@@ -982,62 +982,31 @@ label.radio {
 
 /* ══ P2 布局重构：新建任务页 ═════════════════════════════ */
 
+/*
+ * 页面内容**完全居中**（用户 2026-09-12 美学偏好）。
+ *
+ * 居中用子元素的 `margin: auto`，**不用 `justify-content: center`**：
+ * flex 容器的 center 在内容高于容器时会把顶部裁掉且滚不上去（已知行为），
+ * 而 margin:auto 居中的同时仍可正常滚动到顶部。
+ */
 .new-task {
   flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 56px 32px 32px;
+  padding: 32px 24px;
   overflow-y: auto;
 }
 
-.new-task-hero {
-  text-align: center;
-  margin-bottom: 24px;
-}
-
-.new-task-hero h1 {
-  font-size: 22px;
-  font-weight: 500;
-  margin-bottom: 6px;
-}
-
-.new-task-hero p {
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.new-task-box {
+.new-task-center {
+  margin: auto; /* 上下左右自动 → 完全居中，且溢出安全 */
   width: 100%;
-  max-width: 640px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 14px;
-}
-
-.new-task-box textarea {
-  width: 100%;
-  min-height: 96px;
-  resize: none;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 14px;
-  font-family: inherit;
-  line-height: 1.6;
-}
-
-.new-task-controls {
+  max-width: 660px;
+  min-width: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-  flex-wrap: wrap;
+  gap: 12px;
 }
-
 .chip {
   display: inline-flex;
   align-items: center;
@@ -1840,11 +1809,6 @@ label.radio {
 }
 
 /* 新建任务页的 console 容器 */
-.new-task-console {
-  width: 100%;
-  max-width: 660px;
-}
-
 /* 通用下拉菜单（权限档等） */
 .perm-wrap {
   position: relative;
@@ -2078,16 +2042,6 @@ label.radio {
 }
 
 /* 新建任务页：初始页保持居中窄栏（有意设计），但窄窗口下要退让 */
-.new-task-console {
-  width: 100%;
-  max-width: min(660px, 100%);
-  min-width: 0;
-}
-
-.new-task {
-  padding-left: 24px;
-  padding-right: 24px;
-}
 
 /* ══ 控制台工具栏：两组分簇 + 优雅换行（2026-09-12 二修）════════
    首版把左右零件平铺在一个 flex 容器里，窄宽度换行时"发送键"会独自掉到

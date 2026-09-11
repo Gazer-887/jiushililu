@@ -57,12 +57,9 @@ export default function NewSessionView(): JSX.Element {
 
   return (
     <div className="new-task">
-      <div className="new-task-hero">
-        <h1>新建任务</h1>
-        <p>行百里者半九十。说清你想做的事。</p>
-      </div>
-
-      <div className="new-task-console">
+      {/* 居中容器：内容整体垂直水平居中（用户 2026-09-12 美学偏好）。
+          用 margin:auto 而非 justify-content:center —— 后者在内容高于容器时会裁掉顶部且滚不上去。 */}
+      <div className="new-task-center">
         <InputConsole
           autoFocus
           value={input}
@@ -75,9 +72,11 @@ export default function NewSessionView(): JSX.Element {
           onToggleSkill={toggleSkill}
           showWorkspace
         />
-      </div>
 
-      {picked.length > 0 && <div className="picked-hint">已启用能力：{picked.join('、')}</div>}
+        {picked.length > 0 && (
+          <div className="picked-hint">已启用能力：{picked.join('、')}</div>
+        )}
+      </div>
     </div>
   )
 }

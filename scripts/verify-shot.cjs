@@ -543,6 +543,51 @@ app.whenReady().then(async () => {
   const shot8 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-explorer.png'), shot8.toPNG())
 
+  // —— 新建任务页：内容完全居中 + 旧文案已移除（用户 2026-09-12 美学偏好）——
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const back = document.querySelector('.back-btn');
+      if (back) back.click();
+      return !!back;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  // 若没有返回按钮（初始就在新建页），直接切到新建视图
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const nav = Array.from(document.querySelectorAll('.sidebar button, .nav-item'))
+        .find((b) => b.textContent.includes('新建任务'));
+      if (nav) nav.click();
+      return document.querySelector('.new-task') ? 'ok' : 'retry';
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+
+  const centerCheck = await win.webContents.executeJavaScript(`
+    (() => {
+      const page = document.querySelector('.new-task');
+      const box = document.querySelector('.new-task-center');
+      if (!page || !box) return { ok: false, found: { page: !!page, box: !!box } };
+      const p = page.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      const pageMid = p.top + p.height / 2;
+      const boxMid = b.top + b.height / 2;
+      return {
+        ok: true,
+        pageRect: { top: Math.round(p.top), h: Math.round(p.height) },
+        boxRect: { top: Math.round(b.top), h: Math.round(b.height) },
+        // 偏移越小越居中：0 = 完美居中
+        offsetPx: Math.round(Math.abs(pageMid - boxMid)),
+        // 旧文案必须消失
+        hasOldTitle: !!Array.from(document.querySelectorAll('h1')).find((h) => h.textContent.includes('新建任务')),
+        hasOldSlogan: document.body.textContent.includes('行百里者半九十'),
+        hasInput: !!document.querySelector('.console-input')
+      };
+    })()
+  `)
+  const shot9 = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-newtask.png'), shot9.toPNG())
+
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await win.webContents.executeJavaScript(`
     (() => {
@@ -585,6 +630,7 @@ app.whenReady().then(async () => {
   console.log('EXPLORER_ROOT=' + JSON.stringify(explorerRoot))
   console.log('EXPLORER_EXPANDED=' + JSON.stringify(afterExpand))
   console.log('EXPLORER_PREVIEW=' + JSON.stringify(previewState))
+  console.log('NEWTASK_CENTER=' + JSON.stringify(centerCheck))
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
   console.log('CSP_PROBE=' + JSON.stringify(cspProbe))
