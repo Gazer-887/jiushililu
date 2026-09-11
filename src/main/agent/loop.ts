@@ -1,7 +1,9 @@
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool } from '@shared/agent'
+import { trimMessages, type TrimOptions } from './context'
 
 // Agent 主循环（plan6 → P1）：模型 → 工具调用 → 结果回灌 → 循环，直到模型给出最终答案或预算耗尽。
 // 预即失控的缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停。
+// 上下文管理（P1 收官件）：每轮调用模型前按需裁剪历史，防止突破 contextWindow。
 
 export interface AgentLoopOptions {
   systemPrompt: string
@@ -9,6 +11,8 @@ export interface AgentLoopOptions {
   tools: AgentTool[]
   /** 轮数硬上限（默认 12）：一轮 = 一次模型调用 + 其工具执行 */
   maxRounds?: number
+  /** 上下文窗口（token）；给了才启用历史裁剪 */
+  contextWindow?: number
   /** 模型通道（注入式依赖：生产环境是 Provider 的 chatWithTools，测试用 mock） */
   chat(messages: AgentMessage[]): Promise<AgentChatResult>
 }
@@ -40,7 +44,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     }
     rounds++
 
-    const res = await opts.chat(messages)
+    // 每轮调用模型前按需裁剪（只有给了 contextWindow 才启用）
+    const trimOpts: TrimOptions | null = opts.contextWindow ? { contextWindow: opts.contextWindow } : null
+    const sent = trimOpts ? trimMessages(messages, trimOpts).messages : messages
+
+    const res = await opts.chat(sent)
     if (res.text) lastText = res.text
 
     // 没有工具调用 = 模型认为任务完成，文本即最终交付

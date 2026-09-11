@@ -85,6 +85,7 @@ export async function runAgent(
     userTask: args.task,
     tools,
     maxRounds: args.settings.maxToolRounds || 12,
+    contextWindow: args.settings.contextWindow,
     chat
   })
   return { ...result, agent: def?.name ?? '内核默认' }
