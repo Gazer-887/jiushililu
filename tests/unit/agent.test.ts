@@ -36,8 +36,8 @@ describe('resolveInsideWorkspace（路径越界防护）', () => {
     expect(resolveInsideWorkspace(root, join(root, 'a.txt'))).toBe(join(root, 'a.txt'))
   })
 
-  it('绝对路径指向工作区外 → 拒绝', () => {
-    expect(resolveInsideWorkspace(root, 'C:/Windows/system32/config')).toBe(null)
+  it('绝对路径指向工作区外 → 拒绝（跨平台：root 的父目录 tmpdir 即界外）', () => {
+    expect(resolveInsideWorkspace(root, tmpdir())).toBe(null)
   })
 
   it('空路径 → 拒绝', () => {
