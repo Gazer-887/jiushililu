@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
+import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import {
   IPC,
@@ -98,7 +99,11 @@ const api: ApiBridge = {
   // ── 子代理运行（plan7 批 D）──
   getSubagents: () => ipcRenderer.invoke(IPC.subagentGet),
   onSubagentChanged: (cb) =>
-    subscribe(IPC.subagentChanged, (list) => cb(list as SubagentJobEvent[]))
+    subscribe(IPC.subagentChanged, (list) => cb(list as SubagentJobEvent[])),
+  // ── 后台任务（plan7 批 D）──
+  listBackgroundTasks: () => ipcRenderer.invoke(IPC.bgList),
+  killBackgroundTask: (id) => ipcRenderer.invoke(IPC.bgKill, id),
+  onBackgroundChanged: (cb) => subscribe(IPC.bgChanged, (list) => cb(list as BackgroundTask[]))
 }
 
 contextBridge.exposeInMainWorld('api', api)

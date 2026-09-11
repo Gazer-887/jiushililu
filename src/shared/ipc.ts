@@ -3,6 +3,7 @@
 import type { UIPrefs } from './splitter'
 import type { TodoItem } from './todo'
 import type { SubagentJobEvent } from './agent'
+import type { BackgroundTask } from './background'
 import type { FsListResult, FsReadResult } from './fs-tree'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
@@ -266,7 +267,14 @@ export const IPC = {
   /** 把工作区外的文件导入进来（拖拽上传） */
   fsImport: 'fs:import',
   /** 在系统文件管理器中定位条目 */
-  fsReveal: 'fs:reveal'
+  fsReveal: 'fs:reveal',
+  // ── 后台任务（plan7 批 D）──
+  /** 列出后台任务（含累积输出） */
+  bgList: 'bg:list',
+  /** 终止一条后台任务 */
+  bgKill: 'bg:kill',
+  /** 主进程 → 界面：任务状态或输出变化 */
+  bgChanged: 'bg:changed'
 } as const
 
 /** 界面布局偏好（左右抽屉宽度，plan7 批 A0）—— 定义见 @shared/splitter */
@@ -289,6 +297,9 @@ export type { TodoItem, TodoStatus, TodoStats } from './todo'
 
 /** 子代理运行事件（plan7 批 D）—— 定义见 @shared/agent */
 export type { SubagentJobEvent } from './agent'
+
+/** 后台任务（plan7 批 D）—— 定义见 @shared/background */
+export type { BackgroundTask } from './background'
 
 /**
  * 危险操作确认请求（plan8 R5）。
@@ -396,6 +407,12 @@ export interface ApiBridge {
   importIntoWorkspace(sourceAbs: string, rel: string): Promise<FsOpResult>
   /** 在系统文件管理器中定位该条目 */
   revealWorkspaceEntry(rel: string): Promise<void>
+  // ── 后台任务（plan7 批 D）──
+  /** 列出后台任务（挂载时拉一次，之后靠推送） */
+  listBackgroundTasks(): Promise<BackgroundTask[]>
+  /** 终止一条后台任务（连带它的子进程） */
+  killBackgroundTask(id: string): Promise<boolean>
+  onBackgroundChanged(cb: (list: BackgroundTask[]) => void): () => void
   /**
    * 拖入的文件对象 → 磁盘绝对路径（拖拽上传用）。
    * Electron 32+ 起 `File.path` 已移除，必须走 preload 的 `webUtils.getPathForFile`。

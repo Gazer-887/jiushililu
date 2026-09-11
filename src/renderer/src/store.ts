@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { ChatMessage, ConversationCreateInput, ConversationMeta, SettingsView } from '@shared/ipc'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
+import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import { estimateMessageTokens } from '@shared/tokens'
 import {
@@ -83,6 +84,9 @@ interface AppState {
   /** 最近一批子代理运行事件（plan7 批 D：右栏「任务」页签） */
   subagents: SubagentJobEvent[]
   setSubagents: (list: SubagentJobEvent[]) => void
+  /** 后台任务（plan7 批 D）：右栏「任务」页签的"后台任务"区 */
+  backgroundTasks: BackgroundTask[]
+  setBackgroundTasks: (list: BackgroundTask[]) => void
   appendChunk: (text: string) => void
   markDone: () => void
   markError: (message: string) => void
@@ -236,12 +240,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   toolEvents: [],
   todos: [],
   subagents: [],
+  backgroundTasks: [],
 
   clearToolEvents: () => set({ toolEvents: [] }),
 
   setTodos: (todos) => set({ todos }),
 
   setSubagents: (list) => set({ subagents: list }),
+
+  setBackgroundTasks: (list) => set({ backgroundTasks: list }),
 
   pushToolEvent: (evt) =>
     set((s) => {

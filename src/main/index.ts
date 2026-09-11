@@ -17,6 +17,7 @@ import {
   setBrowserStateListener
 } from './browser'
 import { setBrowserAdapter } from './agent/browser-bridge'
+import { createBackgroundTaskStore } from './agent/background-tasks'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
 
 // 主进程入口：窗口生命周期 + IPC 注册。Agent 内核将来跑在 worker_threads，不在这里（P1）。
@@ -116,6 +117,10 @@ app.whenReady().then(() => {
     log: (message, extra) => log.info(message, extra)
   })
 
+  // 后台任务注册表（plan7 批 D）：**进程级单例** —— 窗口关闭时统一终止，
+  // 与危险操作确认桥同一口径（留一堆没人管的进程是隐患）
+  const background = createBackgroundTaskStore()
+
   // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
   const agentCtx = createAgentContext({
     getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
@@ -126,7 +131,18 @@ app.whenReady().then(() => {
     // 检查点（plan8 R4）：Agent 每轮改动前的文件快照存这里，供回滚
     checkpointDir: join(userDataDir, 'checkpoints'),
     // 危险操作确认（plan8 R5）：run_command 执行前问用户
-    confirmCommand: (req) => confirm.ask(req)
+    confirmCommand: (req) => confirm.ask(req),
+    background,
+    // 回收站（plan7 批 A2）：界面与 Agent 的删除都走它（非硬删）
+    trash: (abs) => shell.trashItem(abs)
+  })
+
+  // 后台任务状态变化 → 推给所有窗口（右栏「任务」页签据此刷新）
+  background.onChange(() => {
+    const list = background.list()
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send(IPC.bgChanged, list)
+    }
   })
   registerIpcHandlers({ agent: agentCtx, userDataDir, confirm })
   createWindow()
@@ -160,7 +176,11 @@ app.whenReady().then(() => {
 
   // 窗口全关时，把待决的危险操作确认按**拒绝**处理 ——
   // 否则那个 Agent 会一直卡在等待上直到 60s 超时。
-  app.on('window-all-closed', () => confirm.abortAll('窗口已全部关闭'))
+  app.on('window-all-closed', () => {
+    confirm.abortAll('窗口已全部关闭')
+    // 后台命令跟着终止（plan7 批 D 边界①）—— 与确认桥同一口径
+    background.killAll()
+  })
 })
 
 app.on('window-all-closed', () => {

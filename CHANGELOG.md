@@ -78,6 +78,23 @@
 `src/preload/**` 此前**不在任何 tsconfig 的 include 里** —— 安全桥接层根本没被类型检查
 覆盖（`ApiBridge` 改了而 preload 没跟上，typecheck 也抓不到）。现已纳入 renderer 那套。
 
+### 后台任务（`run_command` 后台化）
+
+此前 `run_command` 是 `exec` + **30 秒超时**的同步执行 —— 跑构建、起服务、下大文件都会撞超时，
+模型只能干等。现在：
+
+- `run_command` 加 `background=true`：立刻返回任务 id，输出持续累积（stdout + stderr 合流）
+- 新增 `check_command`（看输出与状态，不传 id 则列全部）与 `kill_command`（终止）
+- **杀进程树**：命令是经 shell 起的，只 kill shell 会留下孤儿进程（端口还占着）——
+  Windows 用 `taskkill /T`，POSIX 杀进程组
+- 右栏「任务」页签显示：命令原文、状态与耗时、退出码、输出回显；运行中的可一键终止
+
+**三条边界**：
+
+1. 窗口关闭时**统一终止**（`window-all-closed` → `killAll`，与危险确认桥同一口径）
+2. 后台命令**仍需逐次确认** —— 安全不因为"后台"打折
+3. 输出**内存累积 + 64KB 上限截断**（只留末尾），不落盘
+
 ---
 
 ## 0.11.0 · 2026-09-12

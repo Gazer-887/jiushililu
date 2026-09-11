@@ -82,12 +82,41 @@ const FAKE_SUBAGENTS = [
 /** 写操作调用流水（验证界面是否真的把动作发下去了，而不只是画了个菜单） */
 const fsOpLog = []
 
+/** 后台任务样例：覆盖 running（带终止按钮）与 done（带退出码）两种渲染 */
+const FAKE_BG_TASKS = [
+  {
+    id: 'bg-1',
+    command: 'npm run build',
+    cwd: 'D:\\jsllworkplace_for_test',
+    agent: '内核默认',
+    startedAt: Date.now() - 10000,
+    endedAt: Date.now() - 5800,
+    status: 'done',
+    exitCode: 0,
+    output: '> electron-vite build\n✓ built in 1.2s\n',
+    truncated: false
+  },
+  {
+    id: 'bg-2',
+    command: 'npm run dev',
+    cwd: 'D:\\jsllworkplace_for_test',
+    agent: '内核默认',
+    startedAt: Date.now() - 4200,
+    status: 'running',
+    output: 'VITE v5.4.21  ready in 320 ms\n',
+    truncated: false
+  }
+]
+
 const STUBS = {
   // 待办清单（plan7 批 D）：界面挂载时会拉一次，故这里给一份样例 ——
   // 验证的是**面板渲染与位置**，不是 Agent 会不会调 update_todos（那要真机跑）
   'todo:get': () => FAKE_TODOS,
   // 子代理运行记录（plan7 批 D）：同上，覆盖 start / end / error 三种渲染分支
   'subagent:get': () => FAKE_SUBAGENTS,
+  // 后台任务（plan7 批 D）：覆盖 running（带终止）与 done（带退出码）
+  'bg:list': () => FAKE_BG_TASKS,
+  'bg:kill': () => true,
   'settings:get': () => settingsView,
   'settings:save': () => settingsView,
   'settings:test': () => ({ ok: true, message: 'ok' }),
@@ -1064,15 +1093,23 @@ app.whenReady().then(async () => {
   const tasksState = await win.webContents.executeJavaScript(`
     (() => {
       const items = Array.from(document.querySelectorAll('.task-item'));
+      // 两块共用 .task-item，靠类名区分：后台任务带 task-bg-*
+      const bgItems = items.filter((e) => /task-bg-/.test(e.className));
+      const jobItems = items.filter((e) => !/task-bg-/.test(e.className));
       return {
         hasPanel: !!document.querySelector('.tasks-panel'),
-        head: document.querySelector('.tasks-title')?.textContent?.trim() ?? null,
-        sub: document.querySelector('.tasks-sub')?.textContent?.trim() ?? null,
-        count: items.length,
-        names: items.map((e) => e.querySelector('.task-name')?.textContent?.trim() ?? null),
-        statuses: items.map((e) => e.querySelector('.task-status')?.textContent?.trim() ?? null),
-        classes: items.map((e) => e.className),
-        hasResult: items.map((e) => !!e.querySelector('.task-result'))
+        heads: Array.from(document.querySelectorAll('.tasks-title')).map((e) => e.textContent.trim()),
+        subs: Array.from(document.querySelectorAll('.tasks-sub')).map((e) => e.textContent.trim()),
+        jobCount: jobItems.length,
+        jobStatuses: jobItems.map((e) => e.querySelector('.task-status')?.textContent?.trim() ?? null),
+        jobClasses: jobItems.map((e) => e.className),
+        bgCount: bgItems.length,
+        bgIds: bgItems.map((e) => e.querySelector('.task-name')?.textContent?.trim() ?? null),
+        bgStatuses: bgItems.map((e) => e.querySelector('.task-status')?.textContent?.trim() ?? null),
+        bgClasses: bgItems.map((e) => e.className),
+        bgHasOutput: bgItems.map((e) => !!e.querySelector('.task-output')),
+        // 只有 running 的那条该有终止按钮
+        bgHasKill: bgItems.map((e) => !!e.querySelector('.task-actions button'))
       };
     })()
   `)

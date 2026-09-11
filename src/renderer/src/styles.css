@@ -3021,6 +3021,49 @@ body[data-resizing] {
   word-break: break-word;
 }
 
+/* 后台任务（plan7 批 D）：命令原文 + 输出回显 */
+.task-head-gap {
+  margin-top: var(--sp-12);
+}
+
+.task-cmd {
+  font-family: var(--mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-output {
+  max-height: 120px;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--sp-6);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-family: var(--mono, monospace);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-actions {
+  display: flex;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+}
+
+.task-bg-running .task-dot {
+  background: var(--accent);
+}
+
+.task-bg-failed .task-dot {
+  background: var(--danger);
+}
+
 /* ── 资源管理器：右键菜单与内联编辑（plan7 批 A2）────────────────── */
 
 .ex-menu {

@@ -23,7 +23,8 @@ import {
   type UIPrefs,
   type FsListResult,
   type FsReadResult,
-  type FsOpResult
+  type FsOpResult,
+  type BackgroundTask
 } from '@shared/ipc'
 import {
   getDecryptedApiKey,
@@ -644,5 +645,13 @@ export function registerIpcHandlers(deps: {
     const abs = resolveInsideWorkspace(deps.agent.getWorkspaceRoot(), p.data.rel)
     if (abs) shell.showItemInFolder(abs)
     return Promise.resolve()
+  })
+
+  // ── 后台任务（plan7 批 D）──
+  // 只读查询 + 终止。**启动**不在这里：那是 run_command 工具的事（要过危险确认）。
+  ipcMain.handle(IPC.bgList, (): BackgroundTask[] => deps.agent.background?.list() ?? [])
+  ipcMain.handle(IPC.bgKill, (_e, raw: unknown): boolean => {
+    const p = z.string().min(1).max(64).safeParse(raw)
+    return p.success ? (deps.agent.background?.kill(p.data) ?? false) : false
   })
 }
