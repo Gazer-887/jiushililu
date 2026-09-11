@@ -186,7 +186,37 @@ describe('列表与保留策略', () => {
     const list = store.list()
     expect(list).toHaveLength(2)
     expect(list[0]!.runId).toBe(second) // 后开的在前
-    expect(list[0]!.at).toBeGreaterThanOrEqual(list[1]!.at)
+  })
+
+  it('**同一毫秒内开多轮也要有确定顺序**（CI 在 Linux 上抓出的不稳定）', () => {
+    // at 只有毫秒精度，连续 begin 极易落在同一毫秒 → 单靠 at 排序会退化成任意顺序。
+    // 这条测试不等时间流逝，直接连开 5 轮 —— 用 seq 保证顺序确定。
+    const { ws, store } = setup()
+    const ids: string[] = []
+    for (let i = 0; i < 5; i++) {
+      const id = store.begin(ws, `agent-${i}`)
+      store.finish(id)
+      ids.push(id)
+    }
+
+    const list = store.list()
+    expect(list).toHaveLength(5)
+    // 最新的在最前，且顺序完全等于创建顺序的倒序（确定，不依赖运气）
+    expect(list.map((m) => m.runId)).toEqual([...ids].reverse())
+  })
+
+  it('列表顺序与目录读取顺序无关（全序，非"碰巧"）', () => {
+    const { ws, store } = setup()
+    const ids: string[] = []
+    for (let i = 0; i < 4; i++) {
+      const id = store.begin(ws, `a${i}`)
+      store.finish(id)
+      ids.push(id)
+    }
+    // 反复读多次，结果必须完全一致（若排序不满足全序，会出现随机抖动）
+    const runs = [0, 1, 2].map(() => store.list().map((m) => m.runId).join(','))
+    expect(new Set(runs).size).toBe(1)
+    expect(runs[0]).toBe([...ids].reverse().join(','))
   })
 
   it('列表带计数（界面直接显示"3 个文件（1 新建 / 2 修改）"）', () => {

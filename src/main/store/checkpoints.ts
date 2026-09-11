@@ -12,6 +12,7 @@ import {
 import { dirname, join, resolve, sep } from 'node:path'
 import {
   backupName,
+  compareRunsNewestFirst,
   isSafeRel,
   normalizeRel,
   planRollback,
@@ -71,6 +72,9 @@ export function createCheckpointStore(dir: string): CheckpointStore {
 
   const runDir = (runId: string): string => join(dir, runId)
 
+  /** 同进程内自增序号：同毫秒开两轮时靠它定先后（详见 compareRunsNewestFirst） */
+  let seq = 0
+
   const ensureDir = (p: string): void => {
     mkdirSync(p, { recursive: true })
   }
@@ -93,6 +97,7 @@ export function createCheckpointStore(dir: string): CheckpointStore {
       const run: CheckpointRun = {
         runId,
         at: Date.now(),
+        seq: ++seq,
         workspace,
         agent,
         changes: [],
@@ -166,7 +171,7 @@ export function createCheckpointStore(dir: string): CheckpointStore {
           // 坏 manifest 跳过（不因一个坏文件让整个列表不可用）
         }
       }
-      return out.sort((a, b) => b.at - a.at)
+      return out.sort(compareRunsNewestFirst)
     },
 
     get(runId) {
@@ -249,23 +254,22 @@ export function createCheckpointStore(dir: string): CheckpointStore {
       let removed = 0
 
       // ① 清残留空目录（无 manifest = begin 后立刻失败，无内容可回滚）
-      const entries: { name: string; at: number; hasManifest: boolean }[] = []
+      const entries: { name: string; meta: CheckpointRunMeta | null }[] = []
       for (const name of readdirSync(dir)) {
         const manifest = join(dir, name, 'manifest.json')
-        const hasManifest = existsSync(manifest)
-        let at = 0
-        if (hasManifest) {
+        let meta: CheckpointRunMeta | null = null
+        if (existsSync(manifest)) {
           try {
-            at = (JSON.parse(readFileSync(manifest, 'utf8')) as CheckpointRun).at ?? 0
+            meta = toMeta(JSON.parse(readFileSync(manifest, 'utf8')) as CheckpointRun)
           } catch {
-            at = 0
+            meta = null
           }
         }
-        entries.push({ name, at, hasManifest })
+        entries.push({ name, meta })
       }
 
       for (const e of entries) {
-        if (e.hasManifest) continue
+        if (e.meta) continue
         try {
           rmSync(join(dir, e.name), { recursive: true, force: true })
           removed++
@@ -274,8 +278,10 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         }
       }
 
-      // ② 超出上限则从最旧删起
-      const keep = entries.filter((e) => e.hasManifest).sort((a, b) => b.at - a.at)
+      // ② 超出上限则从最旧删起（用统一的比较器，避免同毫秒时删错边）
+      const keep = entries
+        .filter((e): e is { name: string; meta: CheckpointRunMeta } => e.meta !== null)
+        .sort((a, b) => compareRunsNewestFirst(a.meta, b.meta))
       for (const e of keep.slice(MAX_RUNS)) {
         try {
           rmSync(join(dir, e.name), { recursive: true, force: true })

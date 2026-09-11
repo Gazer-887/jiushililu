@@ -21,6 +21,13 @@ export interface CheckpointRun {
   runId: string
   /** 开始时间（毫秒时间戳） */
   at: number
+  /**
+   * 同一进程内的自增序号，用于**同毫秒创建的轮次之间确定先后**。
+   * 为什么需要：`at` 只有毫秒精度，同一毫秒内开两轮时 `at` 相同，
+   * 「新的在前」就退化成任意顺序（CI 在 Linux 上抓出过这个不稳定）。
+   * 历史数据可能没有该字段，故可选。
+   */
+  seq?: number
   /** 工作区绝对路径 */
   workspace: string
   /** 哪个 Agent 干的（内核默认 / 子代理名） */
@@ -42,6 +49,8 @@ export interface CheckpointRun {
 export interface CheckpointRunMeta {
   runId: string
   at: number
+  /** 同进程内自增序号，用于同毫秒时的先后判定（见 compareRunsNewestFirst） */
+  seq?: number
   workspace: string
   agent: string
   status: 'running' | 'done'
@@ -100,9 +109,26 @@ export function toMeta(run: CheckpointRun): CheckpointRunMeta {
     workspace: run.workspace,
     agent: run.agent,
     status: run.status,
+    ...(run.seq !== undefined ? { seq: run.seq } : {}),
     ...summarize(run.changes),
     ...(run.rolledBackAt !== undefined ? { rolledBackAt: run.rolledBackAt } : {})
   }
+}
+
+/**
+ * 轮次排序：新的在前。
+ *
+ * 三级比较缺一不可：
+ *   ① `at` 毫秒时间戳（跨会话也正确）
+ *   ② `seq` 进程内自增（**同毫秒**创建时靠它定先后；CI 抓出过不稳定的坑）
+ *   ③ `runId` 字符串比较（最终兜底，保证**全序**——排序结果与输入顺序无关）
+ */
+export function compareRunsNewestFirst(a: CheckpointRunMeta, b: CheckpointRunMeta): number {
+  if (b.at !== a.at) return b.at - a.at
+  const seqA = a.seq ?? 0
+  const seqB = b.seq ?? 0
+  if (seqB !== seqA) return seqB - seqA
+  return a.runId.localeCompare(b.runId)
 }
 
 export function describeKind(kind: ChangeKind): string {

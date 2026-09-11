@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   backupName,
+  compareRunsNewestFirst,
   describeKind,
   isSafeRel,
   normalizeRel,
@@ -10,6 +11,7 @@ import {
   toMeta,
   upsertChange,
   type CheckpointRun,
+  type CheckpointRunMeta,
   type FileChange
 } from '@shared/checkpoint'
 
@@ -189,5 +191,62 @@ describe('汇总与元信息', () => {
   it('备份文件名用序号（不拿路径当文件名，绕开 Windows 非法字符/保留名/长路径）', () => {
     expect(backupName(0)).toBe('0.bin')
     expect(backupName(12)).toBe('12.bin')
+  })
+})
+
+describe('compareRunsNewestFirst（新的在前，且必须是全序）', () => {
+  const mk = (over: Partial<CheckpointRunMeta>): CheckpointRunMeta => ({
+    runId: 'r',
+    at: 100,
+    workspace: 'w',
+    agent: 'a',
+    status: 'done',
+    fileCount: 0,
+    createdCount: 0,
+    modifiedCount: 0,
+    ...over
+  })
+
+  it('时间不同 → 按时间倒序', () => {
+    const older = mk({ runId: 'old', at: 100 })
+    const newer = mk({ runId: 'new', at: 200 })
+    expect([older, newer].sort(compareRunsNewestFirst)[0]!.runId).toBe('new')
+
+    // 输入顺序反过来，结果必须一致（全序）——若依赖 at 之差不为 0 就无所谓，这里确保稳定
+    expect([newer, older].sort(compareRunsNewestFirst)[0]!.runId).toBe('new')
+  })
+
+  it('**时间相同 → 按 seq 定先后**（CI 抓出的同毫秒不稳定）', () => {
+    const a = mk({ runId: 'a', at: 500, seq: 1 })
+    const b = mk({ runId: 'b', at: 500, seq: 2 })
+    expect([a, b].sort(compareRunsNewestFirst)[0]!.runId).toBe('b') // seq 大的更新
+    expect([b, a].sort(compareRunsNewestFirst)[0]!.runId).toBe('b')
+  })
+
+  it('时间与 seq 都相同 → 退回 runId 比较（保证全序，结果与输入顺序无关）', () => {
+    const a = mk({ runId: 'aaa', at: 500, seq: 1 })
+    const b = mk({ runId: 'bbb', at: 500, seq: 1 })
+    const r1 = [a, b].sort(compareRunsNewestFirst).map((m) => m.runId)
+    const r2 = [b, a].sort(compareRunsNewestFirst).map((m) => m.runId)
+    expect(r1).toEqual(r2) // 两种输入顺序得到同一结果
+  })
+
+  it('缺 seq 的历史数据不炸（按 0 处理）', () => {
+    const legacy = mk({ runId: 'legacy', at: 500 })
+    const fresh = mk({ runId: 'fresh', at: 500, seq: 3 })
+    expect([legacy, fresh].sort(compareRunsNewestFirst)[0]!.runId).toBe('fresh')
+  })
+
+  it('toMeta 会带上 seq（供排序用）', () => {
+    const run: CheckpointRun = {
+      runId: 'r',
+      at: 1,
+      seq: 7,
+      workspace: 'w',
+      agent: 'a',
+      changes: [],
+      status: 'done'
+    }
+    expect(toMeta(run).seq).toBe(7)
   })
 })
