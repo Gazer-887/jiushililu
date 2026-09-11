@@ -75,12 +75,10 @@ export default function ChatView() {
       )}
 
       <div className="chat-messages">
-        {messages.length === 0 && (
-          <div className="chat-empty">
-            <h2>行百里者半九十</h2>
-            <p>从何来？向何去？</p>
-          </div>
-        )}
+        {/*
+          空对话**不显示任何文案**（用户 2026-09-12：「进入对话的背景干净最好，字一个都不要」）。
+          与首屏的分工：首屏是"门面"（有文案/水印），进入对话后是"工作面"（留白，专注内容）。
+        */}
         {messages.map((m, i) => (
           <div key={i} className={`msg msg-${m.role}`}>
             <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>

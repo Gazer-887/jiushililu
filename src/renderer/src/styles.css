@@ -116,29 +116,6 @@ nav {
   gap: 14px;
 }
 
-.chat-empty {
-  margin: auto;
-  text-align: center;
-  color: var(--muted);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-/* 与新建任务页首屏同一套排版（用户 2026-09-12 定稿，两处保持一致） */
-.chat-empty h2 {
-  font-size: 21px;
-  font-weight: 500;
-  color: var(--text);
-  margin-bottom: 6px;
-  letter-spacing: 0.06em;
-}
-
-.chat-empty p {
-  font-size: 13px;
-  letter-spacing: 0.04em;
-}
-
 .msg {
   display: flex;
   flex-direction: column;

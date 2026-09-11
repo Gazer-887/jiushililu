@@ -254,13 +254,16 @@ app.whenReady().then(async () => {
   const textCheck = await win.webContents.executeJavaScript(`
     (() => {
       const bar = document.querySelector('.topbar');
+      const msgs = document.querySelector('.chat-messages');
       const empty = document.querySelector('.chat-empty');
       return {
         topbarText: bar ? bar.textContent.trim() : null,
         topbarHasSep: !!(bar && bar.querySelector('.topbar-sep')),
         topbarHasTitle: !!(bar && bar.querySelector('.topbar-title')),
-        emptyH2: empty ? empty.querySelector('h2')?.textContent?.trim() ?? null : null,
-        emptyP: empty ? empty.querySelector('p')?.textContent?.trim() ?? null : null
+        // 空对话必须**一个字都没有**（用户 2026-09-12：进入对话的背景干净最好）
+        hasEmptyBlock: !!empty,
+        messagesText: msgs ? msgs.textContent.trim() : null,
+        msgCount: document.querySelectorAll('.msg').length
       };
     })()
   `)
@@ -613,6 +616,82 @@ app.whenReady().then(async () => {
   `)
   const shot9 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-newtask.png'), shot9.toPNG())
+
+  // —— 水墨风配色预览（INK=1 时启用）——
+  // 用 insertCSS 注入 token 覆盖 + 水印样式，**不改动正式源码** ——
+  // 审美决策先看效果，定了才落进 styles.css。
+  // 注：不用内联 <style> 是因为 CSP 的 style-src 'self' 会拦；
+  // insertCSS 是 Electron API，属 devtools 特权，不受页面 CSP 限制。
+  if (process.env.INK === '1') {
+    const inkCss = `
+      :root {
+        --bg: #f6f5f2;
+        --panel: #ffffff;
+        --border: #ebe9e3;
+        --text: #1c1c1a;
+        --muted: #8b8a83;
+        --accent: #1c1c1a;
+        --accent-soft: #efeee9;
+        --accent-border: #ddd9d0;
+        --danger: #a8342c;
+        --danger-soft: #f7ece9;
+        --danger-border: #e8cfc8;
+        --ok: #1c1c1a;
+        --ok-soft: #efeee9;
+        --ok-border: #ddd9d0;
+      }
+      .new-task { position: relative; overflow-x: hidden; }
+      .new-task-center { position: relative; z-index: 1; }
+      /* 水墨下边框更淡，靠留白分隔 */
+      .topbar, .sidebar, .dock { border-color: #efece6; }
+    `
+    await win.webContents.insertCSS(inkCss)
+
+    // 两个水印变体：A 完整句（适配宽度不裁切）/ B 只取「九十」（超大，符号化）
+    const variants = [
+      { file: 'verify-ink-A-full.png', text: '行百里者半九十', size: 68, top: '19%', ls: '0.14em' },
+      { file: 'verify-ink-B-short.png', text: '九十', size: 190, top: '23%', ls: '0.06em' }
+    ]
+
+    for (const v of variants) {
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const page = document.querySelector('.new-task');
+          if (!page) return;
+          let wm = page.querySelector('.ink-wm');
+          if (!wm) {
+            wm = document.createElement('div');
+            wm.className = 'ink-wm';
+            page.appendChild(wm);
+          }
+          wm.textContent = ${JSON.stringify(v.text)};
+          Object.assign(wm.style, {
+            position: 'absolute', left: '50%', top: '${v.top}',
+            transform: 'translate(-50%, -50%)',
+            fontSize: '${v.size}px', fontWeight: '700',
+            letterSpacing: '${v.ls}', color: '#eae9e3',
+            whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none', zIndex: '0'
+          });
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 400))
+      const s = await win.webContents.capturePage()
+      writeFileSync(join(ROOT, v.file), s.toPNG())
+    }
+
+    // 再切到对话页截一张（看墨色按钮/选中态/朱砂红在实际界面里的效果）
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const item = document.querySelector('.conv-item');
+        if (item) item.click();
+        return !!item;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 900))
+    const shotInk2 = await win.webContents.capturePage()
+    writeFileSync(join(ROOT, 'verify-ink-chat.png'), shotInk2.toPNG())
+    console.log('INK_PREVIEW=done')
+  }
 
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await win.webContents.executeJavaScript(`
