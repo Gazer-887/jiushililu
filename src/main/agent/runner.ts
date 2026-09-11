@@ -10,6 +10,7 @@ import type {
 } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { ToolGate } from './guard'
+import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
 import { createFileTools } from './tools/file-tools'
 import {
   createSystemTools,
@@ -69,8 +70,17 @@ export function allowedToolsFor(preset: PermissionPreset, declared: string[] | u
 }
 
 export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): AgentTool[] {
+  // 没注入写入服务时给一个"能写不能删"的默认实现 ——
+  // 安全默认：宁可删不掉，也不能在没有检查点的场景下悄悄硬删
+  const writer =
+    hooks.writer ??
+    createWorkspaceWriter(workspaceRoot, {
+      trash: async () => {
+        throw new Error('未配置回收站，删除操作已被拒绝')
+      }
+    })
   return [
-    ...createFileTools(workspaceRoot, hooks.recorder ? { beforeWrite: hooks.recorder } : undefined),
+    ...createFileTools(writer),
     ...(hooks.confirmCommand
       ? createSystemToolsWithConfirm(workspaceRoot, hooks.confirmCommand)
       : createSystemTools(workspaceRoot)),
@@ -83,10 +93,13 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
   ]
 }
 
-/** 工具层的可注入钩子（检查点快照 / 危险操作确认 / 待办清单上报） */
+/** 工具层的可注入钩子（写入服务 / 危险操作确认 / 待办清单 / 子代理） */
 export interface ToolHooks {
-  /** 写文件前的快照（plan8 R4） */
-  recorder?: (rel: string, abs: string) => void
+  /**
+   * 统一写入服务（plan7 批 A2）：界面与 Agent 共用同一条写入路径。
+   * 不传则用默认实现（能写、不能删 —— 安全默认）。
+   */
+  writer?: WorkspaceWriter
   /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
   confirmCommand?: CommandConfirm
   /** 待办清单变化（界面据此显示"干到哪一步了"） */
@@ -104,6 +117,12 @@ export interface AgentRuntimeContext {
   userAgentsDir: string
   /** 检查点仓库（plan8 R4）：每轮 Agent 运行 = 一个可回滚的检查点 */
   checkpoints: CheckpointStore
+  /**
+   * 删除到回收站（plan7 批 A2）。由主进程注入 `shell.trashItem` ——
+   * runner 本身**不 import electron**（否则单测在 CI 上根本跑不起来）。
+   * 不注入 = 删除被拒绝（安全默认）。
+   */
+  trash?: (abs: string) => Promise<void>
   /**
    * 危险操作确认（plan8 R5）：由主进程注入（弹窗问用户）。
    * 不注入 = 不确认（CLI / 单测场景），生产环境必须注入。
@@ -227,8 +246,18 @@ export async function runAgent(
     }
   }
 
+  // 写入服务（plan7 批 A2）：**快照挂在服务层** —— 界面与 Agent 走的都是这一条路径。
+  // 子代理复用同一批工具实例，故它们的写操作同样记进本轮的检查点。
+  const writer = createWorkspaceWriter(workspaceRoot, {
+    beforeChange: (rel, abs) => ctx.checkpoints.record(runId, workspaceRoot, rel, abs),
+    trash: async (abs) => {
+      if (!ctx.trash) throw new Error('未配置回收站，删除操作已被拒绝')
+      await ctx.trash(abs)
+    }
+  })
+
   const allTools = createAllTools(workspaceRoot, {
-    recorder: (rel, abs) => ctx.checkpoints.record(runId, workspaceRoot, rel, abs),
+    writer,
     // 逐次确认（plan8 R5）：仅「可写」档需要 ——
     //   · 只读档本就不下发 run_command，不会走到这里
     //   · 完全访问档是用户明确选的"别拦我"，再弹窗等于把选择当儿戏

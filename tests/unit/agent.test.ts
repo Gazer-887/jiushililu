@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ToolGate, resolveInsideWorkspace } from '@main/agent/guard'
 import { createFileTools } from '@main/agent/tools/file-tools'
+import { createWorkspaceWriter, type WorkspaceWriteHooks } from '@main/workspace-write'
 import { runAgentLoop } from '@main/agent/loop'
 import type { AgentChatResult, AgentMessage } from '@shared/agent'
 
@@ -45,9 +46,17 @@ describe('resolveInsideWorkspace（路径越界防护）', () => {
   })
 })
 
+/**
+ * 测试助手：file-tools 现在接受**统一写入服务**（plan7 批 A2 —— 界面与 Agent 共用一条写入路径）。
+ * 这里包一层，免得每处都重复建 writer；trash 默认是个 no-op。
+ */
+function fileTools(root: string, hooks: Partial<WorkspaceWriteHooks> = {}) {
+  return createFileTools(createWorkspaceWriter(root, { trash: async () => {}, ...hooks }))
+}
+
 describe('file-tools（文件读写工具）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jsl-agent-'))
-  const tools = createFileTools(dir)
+  const tools = fileTools(dir)
   const write = tools[1]!
   const read = tools[0]!
 
@@ -76,7 +85,7 @@ describe('file-tools（文件读写工具）', () => {
 })
 
 describe('runAgentLoop（主循环）', () => {
-  const tools = createFileTools(join(tmpdir(), 'jsl-loop'))
+  const tools = fileTools(join(tmpdir(), 'jsl-loop'))
   const systemPrompt = '你是九十里路内核'
 
   it('模型直接给答案（无工具调用）→ completed', async () => {
@@ -101,7 +110,7 @@ describe('runAgentLoop（主循环）', () => {
   it('工具调用 → 结果回灌 → 最终答案', async () => {
     const ws = mkdtempSync(join(tmpdir(), 'jsl-loop-'))
     writeFileSync(join(ws, 'file.txt'), '密码是 42', 'utf8')
-    const loopTools = createFileTools(ws)
+    const loopTools = fileTools(ws)
     let round = 0
     const seen: AgentMessage[] = []
     const result = await runAgentLoop({
@@ -193,14 +202,14 @@ describe('runAgentLoop（主循环）', () => {
 describe('write_file 与检查点的接缝（plan8 R4）', () => {
   // 这条规则是回滚正确性的基石：**快照必须发生在写入之前**。
   // 顺序若反了，快照存下的就是"已被改过的内容"，回滚等于没退。
-  it('beforeWrite 在文件真正落盘**之前**被调用，且拿到的是原内容', async () => {
+  it('beforeChange 在文件真正落盘**之前**被调用，且拿到的是原内容', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jsl-rec-'))
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'a.txt'), '原始', 'utf8')
 
     const seen: { rel: string; existing: string | null }[] = []
-    const tools = createFileTools(dir, {
-      beforeWrite: (rel, abs) => {
+    const tools = fileTools(dir, {
+      beforeChange: (rel, abs) => {
         // 钩子被调用时，磁盘上还应该是**旧内容**
         seen.push({ rel, existing: existsSync(abs) ? readFileSync(abs, 'utf8') : null })
       }
@@ -217,8 +226,8 @@ describe('write_file 与检查点的接缝（plan8 R4）', () => {
   it('新建文件时钩子也能拿到（此时磁盘上还不存在）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jsl-rec2-'))
     const seen: (string | null)[] = []
-    const tools = createFileTools(dir, {
-      beforeWrite: (_rel, abs) => seen.push(existsSync(abs) ? 'exists' : null)
+    const tools = fileTools(dir, {
+      beforeChange: (_rel, abs) => seen.push(existsSync(abs) ? 'exists' : null)
     })
     await tools[1]!.execute({ path: 'brand-new.md', content: 'x' })
 
@@ -228,16 +237,16 @@ describe('write_file 与检查点的接缝（plan8 R4）', () => {
   it('越界写入时钩子不被调用（拒绝的写入不该留快照）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jsl-rec3-'))
     let called = 0
-    const tools = createFileTools(dir, { beforeWrite: () => called++ })
+    const tools = fileTools(dir, { beforeChange: () => called++ })
     const msg = await tools[1]!.execute({ path: '../evil.txt', content: 'x' })
 
     expect(msg).toContain('越出工作区边界')
     expect(called).toBe(0)
   })
 
-  it('不传 recorder 时照常工作（检查点不是写文件的必要条件）', async () => {
+  it('不传快照钩子时照常工作（检查点不是写文件的必要条件）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jsl-rec4-'))
-    const tools = createFileTools(dir)
+    const tools = fileTools(dir)
     const msg = await tools[1]!.execute({ path: 'ok.txt', content: 'y' })
     expect(msg).toContain('已写入')
   })
