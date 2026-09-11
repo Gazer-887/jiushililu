@@ -77,7 +77,10 @@ const api: ApiBridge = {
   // ── 界面布局偏好（plan7 批 A0）──
   getUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsGet),
   setUIPrefs: (patch) => ipcRenderer.invoke(IPC.uiPrefsSet, patch),
-  resetUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsReset)
+  resetUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsReset),
+  // ── 工作区文件树（plan7 批 A，只读）──
+  listWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsList, rel),
+  readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel)
 }
 
 contextBridge.exposeInMainWorld('api', api)

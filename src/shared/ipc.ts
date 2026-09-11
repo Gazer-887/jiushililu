@@ -1,6 +1,7 @@
 // 主 / 渲染进程共享的 IPC 通道定义与类型 —— 两边类型都从这里引用，唯一来源。
 
 import type { UIPrefs } from './splitter'
+import type { FsListResult, FsReadResult } from './fs-tree'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
 
@@ -241,11 +242,17 @@ export const IPC = {
   // ── 界面布局偏好（plan7 批 A0）──
   uiPrefsGet: 'ui-prefs:get',
   uiPrefsSet: 'ui-prefs:set',
-  uiPrefsReset: 'ui-prefs:reset'
+  uiPrefsReset: 'ui-prefs:reset',
+  // ── 工作区文件树（plan7 批 A，只读）──
+  fsList: 'fs:list',
+  fsRead: 'fs:read'
 } as const
 
 /** 界面布局偏好（左右抽屉宽度，plan7 批 A0）—— 定义见 @shared/splitter */
 export type { UIPrefs } from './splitter'
+
+/** 工作区文件树（plan7 批 A）—— 定义见 @shared/fs-tree */
+export type { FsEntry, FsListResult, FsReadResult } from './fs-tree'
 
 /**
  * 危险操作确认请求（plan8 R5）。
@@ -337,4 +344,9 @@ export interface ApiBridge {
   setUIPrefs(patch: Partial<UIPrefs>): Promise<UIPrefs>
   /** 双击分隔条复位为默认宽度 */
   resetUIPrefs(): Promise<UIPrefs>
+  // ── 工作区文件树（plan7 批 A，只读）──
+  /** 列一层目录（懒加载：展开哪个查哪个） */
+  listWorkspaceDir(rel: string): Promise<FsListResult>
+  /** 读文件内容用于预览（限 256KB，超限截断并告知） */
+  readWorkspaceFile(rel: string): Promise<FsReadResult>
 }

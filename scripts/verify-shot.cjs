@@ -108,6 +108,31 @@ const STUBS = {
   'ui-prefs:get': () => ({ sidebarWidth: 248, dockWidth: 360 }),
   'ui-prefs:set': () => ({ sidebarWidth: 248, dockWidth: 360 }),
   'ui-prefs:reset': () => ({ sidebarWidth: 248, dockWidth: 360 }),
+  // plan7 批 A：工作区文件树（stub 数据；真实文件系统由 tests/unit/fs-tree.test.ts 覆盖）
+  'fs:list': (arg) => {
+    const rel = typeof arg === 'string' ? arg : ''
+    if (rel === '') {
+      return {
+        ok: true,
+        entries: [
+          { name: '归档', rel: '归档', kind: 'dir' },
+          { name: '2026年度预算草案.md', rel: '2026年度预算草案.md', kind: 'file', size: 365 },
+          { name: '紫水晶采购清单.txt', rel: '紫水晶采购清单.txt', kind: 'file', size: 341 }
+        ]
+      }
+    }
+    if (rel === '归档') {
+      return { ok: true, entries: [{ name: '旧版说明.txt', rel: '归档/旧版说明.txt', kind: 'file', size: 264 }] }
+    }
+    return { ok: true, entries: [] }
+  },
+  'fs:read': () => ({
+    ok: true,
+    rel: '紫水晶采购清单.txt',
+    content:
+      '紫水晶采购清单（2026-09-12 起草）\n\n1. 乌拉尔产紫水晶原石 —— 12 公斤\n2. 巴西产紫水晶碎石 —— 40 公斤\n3. 抛光用氧化铈粉 —— 3 罐\n4. 恒温展示柜（带锁）—— 2 台\n',
+    size: 341
+  }),
   // plan8 R4：检查点与回滚
   'checkpoint:list': () => [
     {
@@ -156,7 +181,8 @@ const STUBS = {
 
 app.whenReady().then(async () => {
   for (const [channel, fn] of Object.entries(STUBS)) {
-    ipcMain.handle(channel, () => fn())
+    // 透传参数：像 fs:list 这种需要知道"列哪个目录"的通道必须拿得到实参
+    ipcMain.handle(channel, (_e, ...args) => fn(...args))
   }
 
   // 危险操作确认（plan8 R5）：记录界面回传的答复，用于判断点击是否真的生效
@@ -447,6 +473,76 @@ app.whenReady().then(async () => {
   const shot7 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-splitter.png'), shot7.toPNG())
 
+  // —— 批 A：资源管理器（真点一次展开 + 一次文件预览）——
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const tab = Array.from(document.querySelectorAll('.dock-tab'))
+        .find((b) => b.textContent.trim() === '文件');
+      if (tab) tab.click();
+      return !!tab;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1200))
+
+  const explorerRoot = await win.webContents.executeJavaScript(`
+    (() => ({
+      rows: Array.from(document.querySelectorAll('.ex-row .ex-name')).map((e) => e.textContent.trim()),
+      dirs: Array.from(document.querySelectorAll('.ex-dir')).map((e) => e.textContent.trim()),
+      sizes: Array.from(document.querySelectorAll('.ex-size')).map((e) => e.textContent.trim()),
+      path: document.querySelector('.ex-path')?.textContent?.trim() ?? null
+    }))()
+  `)
+
+  // 点「归档」目录 → 应懒加载出子项
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const dir = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '归档');
+      if (dir) dir.click();
+      return !!dir;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  const afterExpand = await win.webContents.executeJavaScript(`
+    (() => ({
+      rows: Array.from(document.querySelectorAll('.ex-row .ex-name')).map((e) => e.textContent.trim())
+    }))()
+  `)
+
+  // 点文件 → 应出现预览
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const f = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt');
+      if (f) f.click();
+      return !!f;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  const previewState = await win.webContents.executeJavaScript(`
+    (() => {
+      const pre = document.querySelector('.ex-pre');
+      const box = document.querySelector('.ex-preview');
+      const tree = document.querySelector('.ex-tree');
+      const panel = document.querySelector('.ex-panel');
+      const body = document.querySelector('.dock-body');
+      const dim = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height), top: Math.round(b.top) }; };
+      return {
+        hasPreview: !!pre,
+        firstLine: pre ? pre.textContent.split('\\n')[0] : null,
+        hasOxide: pre ? pre.textContent.includes('氧化铈粉') : false,
+        // 关键：**看得见**才算数（DOM 存在但高度塌成 0 等于没显示）
+        preBox: dim(pre),
+        previewBox: dim(box),
+        treeBox: dim(tree),
+        panelBox: dim(panel),
+        bodyBox: dim(body)
+      };
+    })()
+  `)
+  const shot8 = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-explorer.png'), shot8.toPNG())
+
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await win.webContents.executeJavaScript(`
     (() => {
@@ -486,6 +582,9 @@ app.whenReady().then(async () => {
   console.log('SPLITTER_BEFORE=' + JSON.stringify(beforeDrag))
   console.log('SPLITTER_DURING=' + JSON.stringify(duringDrag))
   console.log('SPLITTER_AFTER=' + JSON.stringify(afterDrag))
+  console.log('EXPLORER_ROOT=' + JSON.stringify(explorerRoot))
+  console.log('EXPLORER_EXPANDED=' + JSON.stringify(afterExpand))
+  console.log('EXPLORER_PREVIEW=' + JSON.stringify(previewState))
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
   console.log('CSP_PROBE=' + JSON.stringify(cspProbe))

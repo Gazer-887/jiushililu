@@ -20,7 +20,9 @@ import {
   type CheckpointRun,
   type CheckpointRunMeta,
   type RollbackReport,
-  type UIPrefs
+  type UIPrefs,
+  type FsListResult,
+  type FsReadResult
 } from '@shared/ipc'
 import {
   getDecryptedApiKey,
@@ -34,6 +36,7 @@ import {
 // createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
+import { listWorkspaceDir, readWorkspaceFile } from './workspace-fs'
 import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
@@ -508,4 +511,16 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.uiPrefsReset, (): UIPrefs => resetUIPrefs())
+
+  // ── 工作区文件树（plan7 批 A，只读）──────────────────────────
+  // 工作区路径每次实时解析（用户可切换工作区，免重启）
+  ipcMain.handle(IPC.fsList, (_e, raw: unknown): Promise<FsListResult> => {
+    const rel = z.string().max(1024).safeParse(raw)
+    return listWorkspaceDir(deps.agent.getWorkspaceRoot(), rel.success ? rel.data : '')
+  })
+
+  ipcMain.handle(IPC.fsRead, (_e, raw: unknown): Promise<FsReadResult> => {
+    const rel = z.string().min(1).max(1024).parse(raw)
+    return readWorkspaceFile(deps.agent.getWorkspaceRoot(), rel)
+  })
 }
