@@ -139,11 +139,17 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext }): void 
     agentName: z.string().max(64).optional()
   })
   const failResult = (agent: string, error: string): AgentRunResult => ({
-    ok: false, output: '', rounds: 0, stopReason: 'completed', agent, error
+    ok: false, output: '', rounds: 0, stopReason: 'error', agent, error
   })
 
   ipcMain.handle(IPC.agentRun, async (e, raw: unknown): Promise<AgentRunResult> => {
-    const req = agentRunInput.parse(raw)
+    // 入参校验走 friendlyParse（人话错误），且失败也返回 AgentRunResult 而非抛裸 ZodError
+    let req: { task: string; agentName?: string }
+    try {
+      req = friendlyParse(agentRunInput, raw) as { task: string; agentName?: string }
+    } catch (err) {
+      return failResult('内核默认', err instanceof Error ? err.message : String(err))
+    }
     // 并发闸（交叉验证提出）：Agent 循环成本高（可跑满轮数 + 命令执行），同时只允许一个
     if (activeAgents.has(e.sender.id)) {
       return failResult(req.agentName ?? '内核默认', '已有 Agent 任务在执行：请等待当前任务结束')

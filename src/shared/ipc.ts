@@ -68,7 +68,8 @@ export interface AgentRunResult {
   ok: boolean
   output: string
   rounds: number
-  stopReason: 'completed' | 'max-rounds'
+  /** error = 调度/配置层失败（未真正执行） */
+  stopReason: 'completed' | 'max-rounds' | 'error'
   /** 派发目标（内核默认 或 自定义 Agent 名） */
   agent: string
   error?: string

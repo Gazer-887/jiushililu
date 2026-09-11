@@ -4,8 +4,9 @@ import { runAgentLoop } from '@main/agent/loop'
 import type { AgentMessage } from '@shared/agent'
 
 describe('estimateTokens（token 估算）', () => {
-  it('中英混合按保守折算（字符数 / 2.5）', () => {
-    expect(estimateTokens('你好世界')).toBe(2) // 4 / 2.5 = 1.6 → 2
+  it('CJK 按 1 token/字（保守上限），英文按 4 字符/token', () => {
+    expect(estimateTokens('你好世界')).toBe(4)
+    expect(estimateTokens('abcdefgh')).toBe(2)
     expect(estimateTokens('')).toBe(0)
   })
 

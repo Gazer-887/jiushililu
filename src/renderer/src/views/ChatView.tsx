@@ -41,9 +41,13 @@ export default function ChatView() {
       }))
       try {
         const res = await window.api.runAgent({ task: text })
-        const tail = `（Agent：${res.agent} · ${res.rounds} 轮 · ${
-          res.stopReason === 'completed' ? '已完成' : '达预算上限被停止'
-        }）`
+        const status =
+          res.stopReason === 'completed'
+            ? '已完成'
+            : res.stopReason === 'error'
+              ? '执行失败'
+              : '达预算上限被停止'
+        const tail = `（Agent：${res.agent} · ${res.rounds} 轮 · ${status}）`
         const content = res.ok ? `${res.output}\n\n${tail}` : `${res.error ?? '执行失败'}\n\n${tail}`
         useAppStore.setState((s) => ({
           messages: [...s.messages, { role: 'assistant', content }]

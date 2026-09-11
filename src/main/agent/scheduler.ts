@@ -8,9 +8,11 @@ export interface SubagentJobResult {
   name: string
   ok: boolean
   output: string
+  /** 仅 ok=true 时有意义 */
   rounds: number
-  stopReason: AgentStopReason
-  /** 失败原因（调度层错误，如被门控拦截） */
+  /** error = 调度层失败（未真正执行），与"跑满预算"区分开 */
+  stopReason: AgentStopReason | 'error'
+  /** 失败原因（调度层错误，如模型通道异常） */
   error?: string
 }
 
@@ -53,7 +55,7 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           ok: false,
           output: '',
           rounds: 0,
-          stopReason: 'max-rounds',
+          stopReason: 'error',
           error: err instanceof Error ? err.message : String(err)
         }
       }

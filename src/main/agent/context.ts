@@ -2,13 +2,24 @@ import type { AgentMessage } from '@shared/agent'
 
 // 上下文管理（P1 收官件之一）：长对话逼近上下文窗口时的历史裁剪。
 // 三层策略（对应检索分级 L0 的思路）：
-//   1. 裁剪只发生在"历史中段"，system 与最近若干条永远保留
-//   2. 裁剪掉的旧消息汇总成一条[历史摘要]占位，保住要点、释放大头
-//   3. 估算用字符数折算（中文约 1 字 1 token，英文约 4 字符 1 token——取保守值）
+//   1. 只裁中段——system 与末尾 keepRecent 条永远保留（必要时向前扩到配对 assistant）
+//   2. 裁掉的旧消息汇总成一条[历史摘要]占位，保住要点、释放大头
+//   3. 估算用字符数分区折算（见 estimateTokens）
 
-/** 粗略 token 估算：字符数 / 2.5 是中日英混合文本的保守折算 */
+/**
+ * token 估算（保守上限）：CJK 字符按 1 token/字计，其余按 4 字符/token。
+ * 说明：早前用统一的 字符/2.5 折算，对中文严重低估（100 中文字实际≈100 token，
+ * 公式只算 40），会导致裁剪触发过晚、防溢出失效——交叉验证抓出后改为分区计数。
+ */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 2.5)
+  if (text.length === 0) return 0
+  let cjk = 0
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0
+    if (code >= 0x2e80) cjk++ // CJK 统一表意文字 / 假名 / 全角标点区
+  }
+  const rest = text.length - cjk
+  return Math.ceil(cjk + rest / 4)
 }
 
 export function estimateMessagesTokens(messages: AgentMessage[]): number {

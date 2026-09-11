@@ -112,7 +112,11 @@ export async function chatWithToolsAnthropic(
   signal?: AbortSignal
 ): Promise<AgentChatResult> {
   const { system, messages: anthropicMessages } = toAnthropicAgentMessages(messages)
-  const budget = thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens)
+  // thinking 与 tools 互斥（交叉验证结论）：部分 Anthropic 模型/版本拒收二者同时下发，
+  // 且带 thinking 的 assistant 在续轮必须回带 thinking 块（我们只回放 text/tool_use）。
+  // 工具模式下内核优先保工具能力 → 自动降级思考，并记入设置页提示（P2 UI）。
+  const allowThinking = tools.length === 0
+  const budget = allowThinking ? thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens) : null
 
   const body: Record<string, unknown> = {
     model: settings.model,
