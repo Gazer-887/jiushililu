@@ -46,3 +46,4 @@ runs/
 out-stale-*/
 verify-*.png
 .verify-userdata/
+.git-commit-msg.tmp
