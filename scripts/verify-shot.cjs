@@ -578,9 +578,17 @@ app.whenReady().then(async () => {
         boxRect: { top: Math.round(b.top), h: Math.round(b.height) },
         // 偏移越小越居中：0 = 完美居中
         offsetPx: Math.round(Math.abs(pageMid - boxMid)),
-        // 旧文案必须消失
-        hasOldTitle: !!Array.from(document.querySelectorAll('h1')).find((h) => h.textContent.includes('新建任务')),
-        hasOldSlogan: document.body.textContent.includes('行百里者半九十'),
+        // 旧文案必须消失，新文案必须就位（2026-09-12 用户指定）
+        hasOldTitle: !!Array.from(document.querySelectorAll('h1')).find((h) => h.textContent.trim() === '新建任务'),
+        hasOldSlogan: document.body.textContent.includes('说清你想做的事'),
+        newTitle: document.querySelector('.new-task-hero h1')?.textContent?.trim() ?? null,
+        newSlogan: document.querySelector('.new-task-hero p')?.textContent?.trim() ?? null,
+        heroBox: (() => {
+          const el = document.querySelector('.new-task-hero');
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) };
+        })(),
         hasInput: !!document.querySelector('.console-input')
       };
     })()

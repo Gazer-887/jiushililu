@@ -60,6 +60,11 @@ export default function NewSessionView(): JSX.Element {
       {/* 居中容器：内容整体垂直水平居中（用户 2026-09-12 美学偏好）。
           用 margin:auto 而非 justify-content:center —— 后者在内容高于容器时会裁掉顶部且滚不上去。 */}
       <div className="new-task-center">
+        <div className="new-task-hero">
+          <h1>行百里者半九十</h1>
+          <p>从何来？向何去？</p>
+        </div>
+
         <InputConsole
           autoFocus
           value={input}
