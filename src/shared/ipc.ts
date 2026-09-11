@@ -63,6 +63,13 @@ export interface AgentRunRequest {
   agentName?: string
 }
 
+/** 工作区信息（P2）：Agent 可读写的边界目录，由用户显式选择 */
+export interface WorkspaceInfo {
+  path: string
+  /** 是否为用户自定义（false = 内置默认 userData/agent-workspace） */
+  custom: boolean
+}
+
 /** Agent 模式执行结果（plan6：独立上下文 + 单次报告返回） */
 export interface AgentRunResult {
   ok: boolean
@@ -79,12 +86,15 @@ export const IPC = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
   settingsTest: 'settings:test',
+  settingsSetModel: 'settings:set-model',
   chatSend: 'chat:send',
   chatAbort: 'chat:abort',
   chatChunk: 'chat:chunk',
   chatDone: 'chat:done',
   chatError: 'chat:error',
-  agentRun: 'agent:run'
+  agentRun: 'agent:run',
+  workspaceGet: 'workspace:get',
+  workspacePick: 'workspace:pick'
 } as const
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
@@ -92,10 +102,13 @@ export interface ApiBridge {
   getSettings(): Promise<SettingsView>
   saveSettings(input: SettingsSaveInput): Promise<SettingsView>
   testConnection(input: SettingsSaveInput): Promise<TestResult>
+  setModel(model: string): Promise<SettingsView>
   chatSend(messages: ChatMessage[]): Promise<void>
   chatAbort(): Promise<void>
   onChatChunk(cb: (text: string) => void): () => void
   onChatDone(cb: () => void): () => void
   onChatError(cb: (message: string) => void): () => void
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
+  getWorkspace(): Promise<WorkspaceInfo>
+  pickWorkspace(): Promise<WorkspaceInfo | null>
 }

@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import { useAppStore } from '../store'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useAppStore, usedTokens } from '../store'
+import MessageMarkdown from '../components/MessageMarkdown'
+import WorkspaceBar from '../components/WorkspaceBar'
+import { ContextMeter, ModelSwitcher } from '../components/InputTools'
 
 export default function ChatView() {
   const messages = useAppStore((s) => s.messages)
@@ -27,6 +30,8 @@ export default function ChatView() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamError])
+
+  const tokens = useMemo(() => usedTokens(messages), [messages])
 
   const submit = async (): Promise<void> => {
     const text = input
@@ -64,10 +69,9 @@ export default function ChatView() {
     await sendMessage(text)
   }
 
-  const busy = streaming || agentBusy
-
   return (
     <div className="chat-view">
+      <WorkspaceBar />
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-empty">
@@ -78,48 +82,60 @@ export default function ChatView() {
         {messages.map((m, i) => (
           <div key={i} className={`msg msg-${m.role}`}>
             <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>
-            <div className="msg-content">{m.content || (streaming ? '…' : '')}</div>
+            <div className="msg-content">
+              {m.role === 'assistant' && m.content ? (
+                <MessageMarkdown content={m.content} />
+              ) : (
+                m.content || (streaming ? '…' : '')
+              )}
+            </div>
           </div>
         ))}
         {streamError && <div className="chat-error">{streamError}</div>}
         <div ref={bottomRef} />
       </div>
       <div className="chat-input">
-        <button
-          className={`btn-mode ${agentMode ? 'active' : ''}`}
-          title="Agent 模式：任务在独立上下文执行，可读写 agent-workspace（结果单次回流）"
-          onClick={() => setAgentMode((v) => !v)}
-        >
-          {agentMode ? 'Agent 模式' : '对话模式'}
-        </button>
-        <textarea
-          value={input}
-          placeholder={
-            agentMode
-              ? '描述一个任务，Agent 将独立执行（Enter 派发）'
-              : '输入消息，Enter 发送，Shift+Enter 换行'
-          }
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              if (!busy) void submit()
+        <div className="input-toolbar">
+          <button
+            className={`btn-mode ${agentMode ? 'active' : ''}`}
+            title="Agent 模式：任务在独立上下文执行，可读写工作区（结果单次回流）"
+            onClick={() => setAgentMode((v) => !v)}
+          >
+            {agentMode ? 'Agent 模式' : '对话模式'}
+          </button>
+          <ModelSwitcher />
+          <ContextMeter used={tokens} />
+        </div>
+        <div className="input-row">
+          <textarea
+            value={input}
+            placeholder={
+              agentMode
+                ? '描述一个任务，Agent 将独立执行（Enter 派发）'
+                : '输入消息，Enter 发送，Shift+Enter 换行'
             }
-          }}
-        />
-        {streaming ? (
-          <button className="btn-stop" onClick={() => void stopStreaming()}>
-            停止
-          </button>
-        ) : agentBusy ? (
-          <button className="btn-stop" disabled>
-            Agent 执行中…
-          </button>
-        ) : (
-          <button className="btn-send" disabled={!input.trim()} onClick={() => void submit()}>
-            发送
-          </button>
-        )}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                if (!(streaming || agentBusy)) void submit()
+              }
+            }}
+          />
+          {streaming ? (
+            <button className="btn-stop" onClick={() => void stopStreaming()}>
+              停止
+            </button>
+          ) : agentBusy ? (
+            <button className="btn-stop" disabled>
+              Agent 执行中…
+            </button>
+          ) : (
+            <button className="btn-send" disabled={!input.trim()} onClick={() => void submit()}>
+              发送
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

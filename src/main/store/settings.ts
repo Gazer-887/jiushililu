@@ -72,3 +72,9 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
   store.set(rest as StoredSettings)
   return getSettingsView()
 }
+
+/** 快速切换模型（P2 输入框下拉）：只改 model 字段，其余配置与 Key 原地不动 */
+export function setModel(model: string): SettingsView {
+  store.set('model', model)
+  return getSettingsView()
+}

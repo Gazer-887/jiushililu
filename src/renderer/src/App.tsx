@@ -11,7 +11,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-name">九十里路</div>
-          <div className="brand-sub">Jiushililu · P0 骨架</div>
+          <div className="brand-sub">Jiushililu · P2 工作台</div>
         </div>
         <nav>
           <button

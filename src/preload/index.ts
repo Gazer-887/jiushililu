@@ -23,7 +23,10 @@ const api: ApiBridge = {
   onChatChunk: (cb) => subscribe(IPC.chatChunk, (text) => cb(text as string)),
   onChatDone: (cb) => subscribe(IPC.chatDone, () => cb()),
   onChatError: (cb) => subscribe(IPC.chatError, (message) => cb(message as string)),
-  runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request)
+  runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
+  setModel: (model: string) => ipcRenderer.invoke(IPC.settingsSetModel, model),
+  getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
+  pickWorkspace: () => ipcRenderer.invoke(IPC.workspacePick)
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -36,10 +36,11 @@ const settings: ModelSettings = {
   supportsImages: false
 }
 
-function makeCtx(): { workspaceRoot: string; builtinAgentsDir: string; userAgentsDir: string } {
+function makeCtx(): { getWorkspaceRoot: () => string; builtinAgentsDir: string; userAgentsDir: string } {
   const base = mkdtempSync(join(tmpdir(), 'jsl-runner-'))
+  const ws = join(base, 'ws')
   return {
-    workspaceRoot: join(base, 'ws'),
+    getWorkspaceRoot: () => ws,
     builtinAgentsDir: join(base, 'builtin'),
     userAgentsDir: join(base, 'user')
   }

@@ -10,6 +10,7 @@ import { mergeAgentLayers } from './loader'
 import { runAgentLoop } from './loop'
 import { chatWithToolsOpenAI } from '../providers/openai-agent'
 import { chatWithToolsAnthropic } from '../providers/anthropic-agent'
+import { resolveWorkspaceRoot } from '../store/workspace'
 
 // Agent 运行入口（IPC agent:run 的后端）：把加载器、门控、工具、Provider 通道拼成一杆枪。
 // 职责单一：不碰 UI、不碰流式对话——那是 ChatView 与 chat:* 通道的事。
@@ -22,8 +23,8 @@ export function createAllTools(workspaceRoot: string): AgentTool[] {
 }
 
 export interface AgentRuntimeContext {
-  /** Agent 专属工作区：文件工具只能在这里读写（app userData/agent-workspace） */
-  workspaceRoot: string
+  /** 解析当前工作区（P2：用户可切换，每次运行前重新解析） */
+  getWorkspaceRoot(): string
   /** 内置 Agent 定义目录（打包资源随 extraResources 分发） */
   builtinAgentsDir: string
   /** 用户自定义 Agent 目录（userData/agents） */
@@ -31,7 +32,7 @@ export interface AgentRuntimeContext {
 }
 
 export function ensureAgentRuntime(ctx: AgentRuntimeContext): void {
-  mkdirSync(ctx.workspaceRoot, { recursive: true })
+  mkdirSync(ctx.getWorkspaceRoot(), { recursive: true })
   mkdirSync(ctx.userAgentsDir, { recursive: true })
 }
 
@@ -51,8 +52,9 @@ export async function runAgent(
   ctx: AgentRuntimeContext,
   args: RunAgentArgs
 ): Promise<AgentLoopResult & { agent: string }> {
+  const workspaceRoot = ctx.getWorkspaceRoot()
   const registry = loadAgentRegistry(ctx)
-  const allTools = createAllTools(ctx.workspaceRoot)
+  const allTools = createAllTools(workspaceRoot)
   const allNames = allTools.map((t) => t.schema.name)
 
   const def = args.agentName ? (registry.definitions.get(args.agentName) ?? null) : null
@@ -94,9 +96,13 @@ export async function runAgent(
   return { ...result, agent: def?.name ?? '内核默认' }
 }
 
+/**
+ * 组装运行上下文。工作区用**惰性解析函数**（P2：用户可在设置里切换到真实目录，
+ * 每次运行前重新解析，无需重启应用）。
+ */
 export function defaultAgentContext(userDataDir: string, builtinAgentsDir: string): AgentRuntimeContext {
   const ctx: AgentRuntimeContext = {
-    workspaceRoot: join(userDataDir, 'agent-workspace'),
+    getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
     builtinAgentsDir,
     userAgentsDir: join(userDataDir, 'agents')
   }

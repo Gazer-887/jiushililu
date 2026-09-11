@@ -1,10 +1,11 @@
-import { ipcMain } from 'electron'
+import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { z } from 'zod'
-import { IPC, type ChatMessage, type SettingsSaveInput, type TestResult, type AgentRunResult } from '@shared/ipc'
-import { getDecryptedApiKey, getSettingsView, hasApiKey, saveSettings } from './store/settings'
+import { IPC, type ChatMessage, type SettingsSaveInput, type TestResult, type AgentRunResult, type WorkspaceInfo } from '@shared/ipc'
+import { getDecryptedApiKey, getSettingsView, hasApiKey, saveSettings, setModel } from './store/settings'
 import { createProvider } from './providers'
 import { chatMessagesSchema, settingsSchema } from './schemas'
-import { runAgent, type AgentRuntimeContext } from './agent/runner'
+import { runAgent, ensureAgentRuntime, type AgentRuntimeContext } from './agent/runner'
+import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
 
 // 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。
 // schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
@@ -51,7 +52,7 @@ function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): 
   return err instanceof Error ? err.message : String(err)
 }
 
-export function registerIpcHandlers(deps: { agent: AgentRuntimeContext }): void {
+export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userDataDir: string }): void {
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
 
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
@@ -185,5 +186,28 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext }): void 
     } finally {
       activeAgents.delete(e.sender.id)
     }
+  })
+
+  // ── P2 工作台 ────────────────────────────────────────────────
+
+  // 只改模型名（快速切换），其余配置不动
+  ipcMain.handle(IPC.settingsSetModel, (_e, raw: unknown) => {
+    const model = z.string().min(1).max(200).parse(raw)
+    return setModel(model)
+  })
+
+  ipcMain.handle(IPC.workspaceGet, (): WorkspaceInfo => getWorkspaceInfo(deps.userDataDir))
+
+  // 用户显式授权一个真实目录作为工作区（唯一扩大 Agent 活动范围的入口）
+  ipcMain.handle(IPC.workspacePick, async (e): Promise<WorkspaceInfo | null> => {
+    const win = BrowserWindow.fromWebContents(e.sender) ?? undefined
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const picked = result.filePaths[0]!
+    setWorkspaceRoot(picked)
+    ensureAgentRuntime(deps.agent) // 新工作区目录先备好
+    return getWorkspaceInfo(deps.userDataDir)
   })
 }

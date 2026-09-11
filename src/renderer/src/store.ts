@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { ChatMessage, SettingsView } from '@shared/ipc'
+import { estimateMessageTokens } from '@shared/tokens'
 
 // 渲染进程状态：界面数据只放这里，真正的模型请求全部走 IPC 由主进程执行。
 
@@ -19,6 +20,11 @@ interface AppState {
   markError: (message: string) => void
   sendMessage: (text: string) => Promise<void>
   stopStreaming: () => Promise<void>
+}
+
+/** 当前上下文用量估算（口径与主进程一致，见 @shared/tokens） */
+export function usedTokens(messages: ChatMessage[]): number {
+  return messages.reduce((sum, m) => sum + estimateMessageTokens(m.content), 0)
 }
 
 export const useAppStore = create<AppState>((set, get) => ({

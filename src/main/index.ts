@@ -40,11 +40,12 @@ app.whenReady().then(() => {
   // 去掉默认的 File/Edit/View 菜单栏（P0 用不到，界面更干净）
   Menu.setApplicationMenu(null)
   // Agent 运行时上下文：内置定义随打包资源分发，用户定义/工作区在 userData
+  const userDataDir = app.getPath('userData')
   const agentCtx = defaultAgentContext(
-    app.getPath('userData'),
+    userDataDir,
     app.isPackaged ? join(process.resourcesPath, 'agents') : join(app.getAppPath(), 'resources/agents')
   )
-  registerIpcHandlers({ agent: agentCtx })
+  registerIpcHandlers({ agent: agentCtx, userDataDir })
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
