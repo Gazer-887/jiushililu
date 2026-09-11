@@ -43,7 +43,7 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
       try {
         const loop = await runAgentLoop({
           systemPrompt: `你是子代理「${def.name}」。${def.description}\n\n${def.systemPrompt}`,
-          userTask: opts.task,
+          history: [{ role: 'user', content: opts.task }],
           tools: opts.tools,
           maxRounds: opts.maxRoundsPerAgent,
           chat: opts.chatFactory(def)

@@ -1,13 +1,14 @@
 import { create } from 'zustand'
 import type { ChatMessage, ConversationCreateInput, ConversationMeta, SettingsView } from '@shared/ipc'
+import type { ToolEvent } from '@shared/agent'
 import { estimateMessageTokens } from '@shared/tokens'
 
 // 渲染进程状态：界面数据只放这里，真正的模型请求全部走 IPC 由主进程执行。
 
 export type AppView = 'new' | 'chat' | 'settings'
 
-/** 右侧工作台（抽屉）的页签——P2 先立骨架，后续逐个填实现 */
-export type DockTab = 'explorer' | 'terminal' | 'browser'
+/** 右侧工作台（抽屉）的页签——D-034 六项，面板实现按批次逐个填 */
+export type DockTab = 'explorer' | 'changes' | 'scm' | 'terminal' | 'browser' | 'tasks'
 
 interface AppState {
   view: AppView
@@ -42,6 +43,10 @@ interface AppState {
   messages: ChatMessage[]
   streaming: boolean
   streamError: string | null
+  /** 工具执行活动（D-032：界面显示"正在读 xx / 完成 / 失败"）——仅当前轮 */
+  toolEvents: ToolEvent[]
+  clearToolEvents: () => void
+  pushToolEvent: (evt: ToolEvent) => void
   appendChunk: (text: string) => void
   markDone: () => void
   markError: (message: string) => void
@@ -93,10 +98,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.api.setModel(conv.model)
       await get().loadSettings()
     }
-    set({ activeId: id, messages: conv.messages, view: 'chat', streamError: null, streaming: false })
+    set({ activeId: id, messages: conv.messages, view: 'chat', streamError: null, streaming: false, toolEvents: [] })
   },
 
-  newSession: () => set({ view: 'new', activeId: null, messages: [], streamError: null }),
+  newSession: () =>
+    set({ view: 'new', activeId: null, messages: [], streamError: null, toolEvents: [] }),
 
   createConversation: async (input) => {
     const conv = await window.api.createConversation(input)
@@ -133,6 +139,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   streaming: false,
   streamError: null,
+  toolEvents: [],
+
+  clearToolEvents: () => set({ toolEvents: [] }),
+
+  pushToolEvent: (evt) =>
+    set((s) => {
+      // 同一调用（id）的 start→end 就地更新，避免堆两条
+      const idx = s.toolEvents.findIndex((e) => e.id === evt.id)
+      if (idx >= 0) {
+        const next = s.toolEvents.slice()
+        next[idx] = evt
+        return { toolEvents: next }
+      }
+      return { toolEvents: [...s.toolEvents, evt] }
+    }),
 
   appendChunk: (text) =>
     set((s) => {
@@ -162,7 +183,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       messages: [...payload, { role: 'assistant', content: '' }],
       streaming: true,
-      streamError: null
+      streamError: null,
+      toolEvents: [] // 新一轮，清掉上一轮的工具活动
     })
     try {
       await window.api.chatSend(payload)

@@ -3,6 +3,8 @@ import type { AgentChatResult, AgentMessage, ToolSchema } from '@shared/agent'
 import { resolveApiUrl } from './url'
 import { ProviderError, mapHttpError } from './errors'
 import { thinkingBudgetFor } from './anthropic'
+import { createSSEParser } from './sse'
+import { ToolCallAccumulator } from './tool-accumulator'
 
 // Anthropic tool_use 适配（plan6 → P1）：把 OpenAI 风格的 Agent 消息翻译成 Anthropic 块结构。
 // 三个纯函数（toAnthropicAgentMessages / fromAnthropicResponse / buildTools）可独立单测。
@@ -143,4 +145,102 @@ export async function chatWithToolsAnthropic(
     throw new ProviderError(mapHttpError(res.status, detail), res.status)
   }
   return fromAnthropicResponse((await res.json()) as { content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }> })
+}
+
+/** 构造带工具请求体（流式/非流式共用，纯函数便于单测） */
+export function buildAnthropicToolsBody(
+  settings: ModelSettings,
+  messages: AgentMessage[],
+  tools: ToolSchema[],
+  stream: boolean
+): Record<string, unknown> {
+  const { system, messages: anthropicMessages } = toAnthropicAgentMessages(messages)
+  // thinking 与 tools 互斥（见上）；流式同样只保工具
+  const budget = tools.length === 0 ? thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens) : null
+  return {
+    model: settings.model,
+    max_tokens: settings.maxTokens,
+    stream,
+    ...(system ? { system } : {}),
+    ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
+    ...(tools.length > 0 ? { tools: toAnthropicToolDefs(tools) } : {}),
+    messages: anthropicMessages
+  }
+}
+
+/**
+ * 流式 + 工具（D-032）：按 SSE 事件类型分发——
+ *   content_block_start(tool_use) → 开一个工具调用块
+ *   content_block_delta(text_delta) → 文本增量上屏
+ *   content_block_delta(input_json_delta) → 工具参数分片累积
+ */
+export async function streamWithToolsAnthropic(
+  settings: ModelSettings,
+  apiKey: string,
+  messages: AgentMessage[],
+  tools: ToolSchema[],
+  onText: (delta: string) => void,
+  signal?: AbortSignal
+): Promise<AgentChatResult> {
+  const res = await fetch(resolveApiUrl(settings.baseURL, 'messages'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify(buildAnthropicToolsBody(settings, messages, tools, true)),
+    signal
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new ProviderError(mapHttpError(res.status, detail), res.status)
+  }
+  if (!res.body) return chatWithToolsAnthropic(settings, apiKey, messages, tools, signal)
+
+  const acc = new ToolCallAccumulator()
+  let text = ''
+
+  const parser = createSSEParser((data) => {
+    try {
+      const evt = JSON.parse(data) as {
+        type?: string
+        index?: number
+        content_block?: { type?: string; id?: string; name?: string; input?: unknown }
+        delta?: { type?: string; text?: string; partial_json?: string }
+      }
+      if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+        acc.startAnthropic(
+          evt.index ?? 0,
+          evt.content_block.id ?? '',
+          evt.content_block.name ?? '',
+          evt.content_block.input
+        )
+        return
+      }
+      if (evt.type === 'content_block_delta' && evt.delta) {
+        if (evt.delta.type === 'text_delta' && evt.delta.text) {
+          text += evt.delta.text
+          onText(evt.delta.text)
+        } else if (evt.delta.type === 'input_json_delta' && evt.delta.partial_json) {
+          acc.appendAnthropicJson(evt.index ?? 0, evt.delta.partial_json)
+        }
+      }
+    } catch {
+      // 非 JSON 行（心跳等）忽略
+    }
+  })
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    parser.push(decoder.decode(value, { stream: true }))
+  }
+  parser.push(decoder.decode())
+  parser.end()
+
+  const toolCalls = acc.finish()
+  return { text: text.length > 0 ? text : null, toolCalls }
 }

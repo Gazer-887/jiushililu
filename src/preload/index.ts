@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ToolEvent } from '@shared/agent'
 import {
   IPC,
   type AgentRunRequest,
@@ -30,6 +31,7 @@ const api: ApiBridge = {
   onChatChunk: (cb) => subscribe(IPC.chatChunk, (text) => cb(text as string)),
   onChatDone: (cb) => subscribe(IPC.chatDone, () => cb()),
   onChatError: (cb) => subscribe(IPC.chatError, (message) => cb(message as string)),
+  onChatTool: (cb) => subscribe(IPC.chatTool, (evt) => cb(evt as ToolEvent)),
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
   setModel: (model: string) => ipcRenderer.invoke(IPC.settingsSetModel, model),
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),

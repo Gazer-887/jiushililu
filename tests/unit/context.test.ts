@@ -96,7 +96,7 @@ describe('runAgentLoop 与上下文管理联动', () => {
     let sawCount = 0
     const result = await runAgentLoop({
       systemPrompt: 'sys',
-      userTask: '任务',
+      history: [{ role: 'user', content: '任务' }],
       tools: [],
       maxRounds: 3,
       contextWindow: 1000,

@@ -24,10 +24,27 @@ export interface AgentMessage {
   tool_call_id?: string
 }
 
+/** 模型请求调用一个工具（流式累积后的成品） */
+export interface ToolCall {
+  id: string
+  name: string
+  /** JSON 字符串（与 OpenAI 协议一致，保持原样以免二次序列化误差） */
+  arguments: string
+}
+
 /** 模型一轮对话的产出：文本回复与/或工具调用请求 */
 export interface AgentChatResult {
   text: string | null
-  toolCalls: Array<{ id: string; name: string; arguments: string }>
+  toolCalls: ToolCall[]
+}
+
+/** 工具执行的生命周期事件（供界面显示"正在读 xx / 完成 / 失败"） */
+export interface ToolEvent {
+  id: string
+  name: string
+  phase: 'start' | 'end' | 'error'
+  /** phase=end/error 时的结果摘要（已截断，供界面显示） */
+  summary?: string
 }
 
 export type AgentStopReason = 'completed' | 'max-rounds'

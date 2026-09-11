@@ -83,7 +83,7 @@ describe('runAgentLoop（主循环）', () => {
     const calls: AgentMessage[][] = []
     const result = await runAgentLoop({
       systemPrompt,
-      userTask: '你好',
+      history: [{ role: 'user', content: '你好' }],
       tools,
       chat: async (messages) => {
         calls.push(messages)
@@ -106,7 +106,7 @@ describe('runAgentLoop（主循环）', () => {
     const seen: AgentMessage[] = []
     const result = await runAgentLoop({
       systemPrompt,
-      userTask: '读取 file.txt 并告诉我密码',
+      history: [{ role: 'user', content: '读取 file.txt 并告诉我密码' }],
       tools: loopTools,
       chat: async (messages) => {
         seen.push(messages[messages.length - 1]!)
@@ -133,7 +133,7 @@ describe('runAgentLoop（主循环）', () => {
     const lastToolResult: { content: string } = { content: '' }
     const result = await runAgentLoop({
       systemPrompt,
-      userTask: '删除全世界的文件',
+      history: [{ role: 'user', content: '删除全世界的文件' }],
       tools,
       chat: async (messages) => {
         round++
@@ -156,7 +156,7 @@ describe('runAgentLoop（主循环）', () => {
     let round = 0
     const result = await runAgentLoop({
       systemPrompt,
-      userTask: '跑圈',
+      history: [{ role: 'user', content: '跑圈' }],
       tools,
       maxRounds: 3,
       chat: async () => {
@@ -175,7 +175,7 @@ describe('runAgentLoop（主循环）', () => {
     const spyTool = { schema: probe.schema, execute: async (args) => { toolSaw = args; return 'ok' } }
     const result = await runAgentLoop({
       systemPrompt,
-      userTask: 'x',
+      history: [{ role: 'user', content: 'x' }],
       tools: [spyTool],
       chat: async () => {
         round++

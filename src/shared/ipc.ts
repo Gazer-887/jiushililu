@@ -129,6 +129,8 @@ export const IPC = {
   chatChunk: 'chat:chunk',
   chatDone: 'chat:done',
   chatError: 'chat:error',
+  /** 工具执行生命周期（D-032：界面显示"正在读 xx / 完成 / 失败"） */
+  chatTool: 'chat:tool',
   agentRun: 'agent:run',
   workspaceGet: 'workspace:get',
   workspacePick: 'workspace:pick',
@@ -154,6 +156,7 @@ export interface ApiBridge {
   onChatChunk(cb: (text: string) => void): () => void
   onChatDone(cb: () => void): () => void
   onChatError(cb: (message: string) => void): () => void
+  onChatTool(cb: (evt: import('./agent').ToolEvent) => void): () => void
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
   getWorkspace(): Promise<WorkspaceInfo>
   pickWorkspace(): Promise<WorkspaceInfo | null>

@@ -12,9 +12,11 @@ import {
   type SkillInfo
 } from '@shared/ipc'
 import { getDecryptedApiKey, getSettingsView, hasApiKey, saveSettings, setModel } from './store/settings'
+// createProvider 仍用于「测试连接」（轻量 ping，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
+import type { AgentMessage } from '@shared/agent'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
 import {
   createConversation,
@@ -120,7 +122,6 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
     }
 
     const apiKey = getDecryptedApiKey()
-    const provider = createProvider(settings.providerType)
     const controller = new AbortController()
     let timedOut = false
     const timer = setTimeout(() => {
@@ -129,15 +130,21 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
     }, settings.timeoutMs)
     activeChats.set(e.sender.id, controller)
 
+    // D-032：单一通道——带工具清单 + 流式，由模型自决"直接回答还是先调工具"。
+    // 文本增量 → chat:chunk（上屏）；工具生命周期 → chat:tool（进度卡片）。
     try {
-      await provider.streamChat(
-        { settings, apiKey, messages, signal: controller.signal },
-        {
-          onChunk: (text) => {
-            if (!e.sender.isDestroyed()) e.sender.send(IPC.chatChunk, text)
-          }
-        }
-      )
+      await runAgent(deps.agent, {
+        settings: getSettingsView(),
+        apiKey,
+        history: messages as AgentMessage[],
+        onText: (delta) => {
+          if (!e.sender.isDestroyed()) e.sender.send(IPC.chatChunk, delta)
+        },
+        onToolEvent: (evt) => {
+          if (!e.sender.isDestroyed()) e.sender.send(IPC.chatTool, evt)
+        },
+        signal: controller.signal
+      })
       if (!e.sender.isDestroyed()) e.sender.send(IPC.chatDone)
     } catch (err) {
       if (!e.sender.isDestroyed()) {
@@ -187,7 +194,7 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
       const result = await runAgent(deps.agent, {
         settings,
         apiKey,
-        task: req.task,
+        history: [{ role: 'user', content: req.task }],
         agentName: req.agentName
       })
       return {

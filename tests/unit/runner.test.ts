@@ -11,11 +11,14 @@ import type { ModelSettings } from '@shared/ipc'
 const openaiSpy = vi.fn(async () => ({ text: '完成', toolCalls: [] }))
 const anthropicSpy = vi.fn(async () => ({ text: '完成', toolCalls: [] }))
 
+// D-032 后 runner 走**流式**通道：mock 指向 stream*（chat* 保留给降级路径）
 vi.mock('@main/providers/openai-agent', () => ({
-  chatWithToolsOpenAI: (...args: unknown[]) => openaiSpy(...(args as []))
+  streamWithToolsOpenAI: (...args: unknown[]) => openaiSpy(...(args as [])),
+  chatWithToolsOpenAI: vi.fn(async () => ({ text: '完成', toolCalls: [] }))
 }))
 vi.mock('@main/providers/anthropic-agent', () => ({
-  chatWithToolsAnthropic: (...args: unknown[]) => anthropicSpy(...(args as []))
+  streamWithToolsAnthropic: (...args: unknown[]) => anthropicSpy(...(args as [])),
+  chatWithToolsAnthropic: vi.fn(async () => ({ text: '完成', toolCalls: [] }))
 }))
 
 const { runAgent } = await import('@main/agent/runner')
@@ -61,7 +64,7 @@ describe('runAgent（工具链路集成）', () => {
 
   it('【回归】工具 schema 确实下发给模型，且缺省排除高危 run_command', async () => {
     const ctx = makeCtx()
-    const res = await runAgent(ctx, { settings, apiKey: 'k', task: '干个活' })
+    const res = await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '干个活' }] })
 
     expect(openaiSpy).toHaveBeenCalledTimes(1)
     const names = toolNamesOf(openaiSpy)
@@ -83,7 +86,7 @@ describe('runAgent（工具链路集成）', () => {
       'utf8'
     )
 
-    const res = await runAgent(ctx, { settings, apiKey: 'k', task: '跑个命令', agentName: 'runner-bot' })
+    const res = await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '跑个命令' }], agentName: 'runner-bot' })
     const names = toolNamesOf(openaiSpy)
     expect(names).toContain('run_command')
     expect(names).not.toContain('write_file') // 白名单外的工具不下发
@@ -92,7 +95,7 @@ describe('runAgent（工具链路集成）', () => {
 
   it('未知 agentName 抛人话错误', async () => {
     const ctx = makeCtx()
-    await expect(runAgent(ctx, { settings, apiKey: 'k', task: 'x', agentName: '不存在' })).rejects.toThrow(
+    await expect(runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: 'x' }], agentName: '不存在' })).rejects.toThrow(
       '找不到名为「不存在」的 Agent 定义'
     )
   })
@@ -102,7 +105,7 @@ describe('runAgent（工具链路集成）', () => {
     await runAgent(ctx, {
       settings: { ...settings, providerType: 'anthropic' },
       apiKey: 'k',
-      task: 'x'
+      history: [{ role: 'user', content: 'x' }]
     })
     expect(anthropicSpy).toHaveBeenCalledTimes(1)
     expect(openaiSpy).not.toHaveBeenCalled()

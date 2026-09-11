@@ -1,77 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import MessageMarkdown from '../components/MessageMarkdown'
-import WorkspaceChip from '../components/WorkspaceChip'
 import { ContextMeter, ModelSwitcher } from '../components/InputTools'
+
+// 对话页（D-032：单一通道）——不再有"对话/Agent 模式"开关：
+// 用不用工具由模型自己决定；界面负责**让过程可见**（工具执行卡片）。
 
 export default function ChatView() {
   const messages = useAppStore((s) => s.messages)
   const streaming = useAppStore((s) => s.streaming)
   const streamError = useAppStore((s) => s.streamError)
+  const toolEvents = useAppStore((s) => s.toolEvents)
   const sendMessage = useAppStore((s) => s.sendMessage)
   const stopStreaming = useAppStore((s) => s.stopStreaming)
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
   const [input, setInput] = useState('')
-  const [agentMode, setAgentMode] = useState(false)
-  const [agentBusy, setAgentBusy] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
 
-  // 流式事件订阅：只在挂载时挂一次，卸载时清理
+  // 流式与工具事件订阅：只在挂载时挂一次，卸载时清理
   useEffect(() => {
     const offChunk = window.api.onChatChunk((t) => useAppStore.getState().appendChunk(t))
     const offDone = window.api.onChatDone(() => useAppStore.getState().markDone())
     const offError = window.api.onChatError((m) => useAppStore.getState().markError(m))
+    const offTool = window.api.onChatTool((evt) => useAppStore.getState().pushToolEvent(evt))
     return () => {
       offChunk()
       offDone()
       offError()
+      offTool()
     }
   }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamError])
+  }, [messages, streamError, toolEvents])
 
   const tokens = useMemo(() => usedTokens(messages), [messages])
 
   const submit = async (): Promise<void> => {
     const text = input
-    if (!text.trim()) return
+    if (!text.trim() || streaming) return
     setInput('')
-
-    // Agent 模式（plan6 D3/D7）：独立上下文执行，单次报告回流
-    // 注：本模式开关的取消属 D-032（通道合并），待那批落地后此处一并移除
-    if (agentMode) {
-      setAgentBusy(true)
-      useAppStore.setState((s) => ({
-        messages: [...s.messages, { role: 'user', content: `[Agent 任务] ${text}` }]
-      }))
-      try {
-        const res = await window.api.runAgent({ task: text })
-        const status =
-          res.stopReason === 'completed'
-            ? '已完成'
-            : res.stopReason === 'error'
-              ? '执行失败'
-              : '达预算上限被停止'
-        const tail = `（Agent：${res.agent} · ${res.rounds} 轮 · ${status}）`
-        const content = res.ok ? `${res.output}\n\n${tail}` : `${res.error ?? '执行失败'}\n\n${tail}`
-        useAppStore.setState((s) => ({
-          messages: [...s.messages, { role: 'assistant', content }]
-        }))
-      } catch (err) {
-        const msg = `Agent 调用失败：${err instanceof Error ? err.message : String(err)}`
-        useAppStore.setState((s) => ({ messages: [...s.messages, { role: 'assistant', content: msg }] }))
-      } finally {
-        setAgentBusy(false)
-        await useAppStore.getState().persistActive()
-      }
-      return
-    }
-
     await sendMessage(text)
   }
 
@@ -104,51 +76,53 @@ export default function ChatView() {
               {m.role === 'assistant' && m.content ? (
                 <MessageMarkdown content={m.content} />
               ) : (
-                m.content || (streaming ? '…' : '')
+                m.content || (streaming && i === messages.length - 1 ? '…' : '')
               )}
             </div>
           </div>
         ))}
+
+        {/* 工具执行活动：执行中转圈，完成折叠一行，失败展开原因 */}
+        {toolEvents.length > 0 && (
+          <div className="tool-log">
+            {toolEvents.map((e) => (
+              <div key={e.id} className={`tool-item tool-${e.phase}`}>
+                <span className="tool-icon">
+                  {e.phase === 'start' ? '◌' : e.phase === 'end' ? '✓' : '✗'}
+                </span>
+                <span className="tool-name">{e.name}</span>
+                <span className="tool-desc">
+                  {e.phase === 'start' ? '执行中…' : (e.summary ?? '')}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {streamError && <div className="chat-error">{streamError}</div>}
         <div ref={bottomRef} />
       </div>
 
       <div className="chat-input">
         <div className="input-toolbar">
-          <WorkspaceChip />
-          <button
-            className={`btn-mode ${agentMode ? 'active' : ''}`}
-            title="Agent 模式：任务在独立上下文执行，可读写工作区（结果单次回流）"
-            onClick={() => setAgentMode((v) => !v)}
-          >
-            {agentMode ? 'Agent 模式' : '对话模式'}
-          </button>
           <ModelSwitcher />
           <ContextMeter used={tokens} />
         </div>
         <div className="input-row">
           <textarea
             value={input}
-            placeholder={
-              agentMode
-                ? '描述一个任务，Agent 将独立执行（Enter 派发）'
-                : '输入消息，Enter 发送，Shift+Enter 换行'
-            }
+            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
-                if (!(streaming || agentBusy)) void submit()
+                void submit()
               }
             }}
           />
           {streaming ? (
             <button className="btn-stop" onClick={() => void stopStreaming()}>
               停止
-            </button>
-          ) : agentBusy ? (
-            <button className="btn-stop" disabled>
-              Agent 执行中…
             </button>
           ) : (
             <button className="btn-send" disabled={!input.trim()} onClick={() => void submit()}>

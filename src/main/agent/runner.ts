@@ -1,14 +1,14 @@
 import { mkdirSync } from 'node:fs'
 import type { ModelSettings, SkillInfo } from '@shared/ipc'
-import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool } from '@shared/agent'
+import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
 import { ToolGate } from './guard'
 import { createFileTools } from './tools/file-tools'
 import { createSystemTools } from './tools/system-tools'
 import { createWebTools } from './tools/web-tools'
 import { mergeAgentLayers } from './loader'
 import { runAgentLoop } from './loop'
-import { chatWithToolsOpenAI } from '../providers/openai-agent'
-import { chatWithToolsAnthropic } from '../providers/anthropic-agent'
+import { streamWithToolsOpenAI } from '../providers/openai-agent'
+import { streamWithToolsAnthropic } from '../providers/anthropic-agent'
 
 // Agent 运行入口（IPC agent:run 的后端）：把加载器、门控、工具、Provider 通道拼成一杆枪。
 // 职责单一：不碰 UI、不碰流式对话——那是 ChatView 与 chat:* 通道的事。
@@ -59,9 +59,16 @@ export function listSkills(ctx: AgentRuntimeContext): SkillInfo[] {
 export interface RunAgentArgs {
   settings: ModelSettings
   apiKey: string
-  task: string
+  /** 对话历史（含本轮用户消息；D-032：合并后走完整历史，多轮有记忆） */
+  history: AgentMessage[]
   /** 指定已注册的自定义 Agent；缺省 = 内核默认（全工具） */
   agentName?: string
+  /** 文本增量回调（流式上屏） */
+  onText?: (delta: string) => void
+  /** 工具执行生命周期回调（界面显示进度） */
+  onToolEvent?: (evt: ToolEvent) => void
+  /** 外部取消信号（用户点"停止"）；不给则用超时信号 */
+  signal?: AbortSignal
 }
 
 export async function runAgent(
@@ -94,20 +101,22 @@ export async function runAgent(
   const effective: ModelSettings = def?.model ? { ...args.settings, model: def.model } : args.settings
   // 工具 schema 必须下发给模型（否则模型无从知晓可调工具——交叉验证抓出的必修 bug）
   const toolSchemas = tools.map((t) => t.schema)
-  const chat = (messages: AgentMessage[]): Promise<AgentChatResult> => {
-    const signal = AbortSignal.timeout(effective.timeoutMs)
+  const chat = (messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult> => {
+    const signal = args.signal ?? AbortSignal.timeout(effective.timeoutMs)
     return effective.providerType === 'anthropic'
-      ? chatWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, signal)
-      : chatWithToolsOpenAI(effective, args.apiKey, messages, toolSchemas, signal)
+      ? streamWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, onText, signal)
+      : streamWithToolsOpenAI(effective, args.apiKey, messages, toolSchemas, onText, signal)
   }
 
   const result = await runAgentLoop({
     systemPrompt: guardedSystem,
-    userTask: args.task,
+    history: args.history,
     tools,
     maxRounds: args.settings.maxToolRounds || 12,
     contextWindow: args.settings.contextWindow || 65536,
-    chat
+    chat,
+    ...(args.onText ? { onText: args.onText } : {}),
+    ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {})
   })
   return { ...result, agent: def?.name ?? '内核默认' }
 }
