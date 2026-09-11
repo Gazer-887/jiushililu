@@ -36,12 +36,19 @@
   --fs-lg: 18px; /* 区块标题 */
   --fs-xl: 24px; /* 页面主标题 / 首屏题辞 */
 
-  --sp-1: 4px; /* 间距按 4·8 阶梯 */
-  --sp-2: 8px;
-  --sp-3: 12px;
-  --sp-4: 16px;
-  --sp-5: 24px;
-  --sp-6: 32px;
+  /*
+   * 间距阶梯（R7 收敛）：**名字即像素值** —— 增删档位不影响既有引用，也不会记错档。
+   * 主节奏 4·8，两端各补一档（2px 给标签/徽章，6px 给紧凑控件）——
+   * 实测有 56 种 padding 取值，纯 4·8 阶梯表达不了这些真实需要的小值。
+   */
+  --sp-2: 2px;
+  --sp-4: 4px;
+  --sp-6: 6px;
+  --sp-8: 8px;
+  --sp-12: 12px;
+  --sp-16: 16px;
+  --sp-24: 24px;
+  --sp-32: 32px;
 
   --radius-sm: 4px; /* 标签 / 角标 */
   --radius-md: 8px; /* 按钮 / 输入 / 列表项（主力档） */
@@ -100,7 +107,7 @@ body {
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
   color: var(--text);
   background: var(--bg);
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .app {
@@ -114,35 +121,35 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 16px 12px;
-  gap: 16px;
+  padding: var(--sp-16) var(--sp-12);
+  gap: var(--sp-16);
 }
 
 .brand-name {
-  font-size: 18px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
 .brand-sub {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
-  margin-top: 2px;
+  margin-top: var(--sp-2);
 }
 
 nav {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-4);
 }
 
 .nav-item {
   text-align: left;
-  padding: 9px 12px;
+  padding: var(--sp-8) var(--sp-12);
   border: none;
   background: transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: var(--text);
 }
 
@@ -158,7 +165,7 @@ nav {
 
 .sidebar-foot {
   margin-top: auto;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -178,16 +185,16 @@ nav {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 32px;
+  padding: var(--sp-24) var(--sp-32);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-12);
 }
 
 .msg {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-4);
   max-width: 760px;
 }
 
@@ -197,12 +204,12 @@ nav {
 }
 
 .msg-role {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
 .msg-content {
-  padding: 10px 14px;
+  padding: var(--sp-8) var(--sp-12);
   border-radius: var(--radius);
   line-height: 1.7;
   white-space: pre-wrap;
@@ -223,9 +230,9 @@ nav {
   background: var(--danger-soft);
   color: var(--danger);
   border: 1px solid var(--danger-border);
-  padding: 10px 14px;
+  padding: var(--sp-8) var(--sp-12);
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 /* 输入区：单列纵向——里面只有一个控制台组件，让它撑满可用宽度
@@ -233,7 +240,7 @@ nav {
 .chat-input {
   display: flex;
   flex-direction: column;
-  padding: 12px 20px 14px;
+  padding: var(--sp-12) var(--sp-16) var(--sp-12);
   border-top: 1px solid var(--border);
   background: var(--panel);
 }
@@ -242,10 +249,10 @@ nav {
   background: var(--accent);
   color: var(--on-accent);
   border: none;
-  border-radius: 10px;
-  padding: 0 22px;
+  border-radius: var(--radius-md);
+  padding: 0 var(--sp-24);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .btn-send:disabled {
@@ -257,20 +264,20 @@ nav {
   background: var(--danger);
   color: var(--on-accent);
   border: none;
-  border-radius: 10px;
-  padding: 0 22px;
+  border-radius: var(--radius-md);
+  padding: 0 var(--sp-24);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .btn-secondary {
   background: var(--panel);
   color: var(--accent);
   border: 1px solid var(--accent);
-  border-radius: 10px;
-  padding: 0 18px;
+  border-radius: var(--radius-md);
+  padding: 0 var(--sp-16);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 /*
@@ -291,14 +298,14 @@ nav {
   max-width: 45%; /* 窄窗保护：主区域保底 320px 时导航不能被撑爆 */
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-5) var(--sp-3) var(--sp-3);
+  gap: var(--sp-4);
+  padding: var(--sp-24) var(--sp-12) var(--sp-12);
   border-right: 1px solid var(--border);
   overflow-y: auto;
 }
 
 .settings-nav-title {
-  padding: 0 var(--sp-2) var(--sp-4);
+  padding: 0 var(--sp-8) var(--sp-16);
   font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--text);
@@ -307,10 +314,10 @@ nav {
 .settings-nav-item {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-8);
   width: 100%;
   height: 38px;
-  padding: 0 var(--sp-2);
+  padding: 0 var(--sp-8);
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
@@ -345,10 +352,10 @@ nav {
   min-width: 0;
   max-width: 720px;
   overflow-y: auto;
-  padding: var(--sp-5) var(--sp-6);
+  padding: var(--sp-24) var(--sp-32);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-16);
 }
 
 .settings-view h2 {
@@ -357,22 +364,22 @@ nav {
 
 .hint {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .settings-view label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
+  gap: var(--sp-6);
+  font-size: var(--fs-md);
   color: var(--muted);
 }
 
 .settings-view input,
 .settings-view select {
-  padding: 9px 11px;
+  padding: var(--sp-8) var(--sp-12);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   font: inherit;
   color: var(--text);
   background: var(--panel);
@@ -386,7 +393,7 @@ nav {
 
 .row {
   display: flex;
-  gap: 12px;
+  gap: var(--sp-12);
 }
 
 .row label {
@@ -396,14 +403,14 @@ nav {
 label.checkbox {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-8);
   color: var(--text);
 }
 
 .actions {
   display: flex;
-  gap: 10px;
-  margin-top: 6px;
+  gap: var(--sp-8);
+  margin-top: var(--sp-6);
 }
 
 .actions button {
@@ -417,17 +424,17 @@ label.checkbox {
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-16);
 }
 
 .logs-info {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  padding: 10px 12px;
+  gap: var(--sp-8);
+  font-size: var(--fs-sm);
+  padding: var(--sp-8) var(--sp-12);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--panel);
 }
 
@@ -450,18 +457,18 @@ label.checkbox {
   background: var(--ok-soft);
   color: var(--ok);
   border: 1px solid var(--ok-border);
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 13px;
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-md);
 }
 
 .notice-err {
   background: var(--danger-soft);
   color: var(--danger);
   border: 1px solid var(--danger-border);
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 13px;
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-md);
 }
 
 .advanced-toggle {
@@ -469,32 +476,32 @@ label.checkbox {
   background: var(--accent-soft);
   color: var(--accent);
   border: none;
-  border-radius: 8px;
-  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-8) var(--sp-12);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .advanced {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px;
+  gap: var(--sp-12);
+  padding: var(--sp-12);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
 }
 
 .field-label {
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted);
 }
 
 .with-presets {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-8);
 }
 
 .with-presets input {
@@ -503,12 +510,12 @@ label.checkbox {
 
 .presets {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-8);
 }
 
 .preset-link {
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   text-decoration: underline;
   user-select: none;
@@ -517,20 +524,20 @@ label.checkbox {
 .radio-row {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--sp-16);
   flex-wrap: wrap;
 }
 
 label.radio {
   flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .inline-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .btn-mode {
@@ -538,9 +545,9 @@ label.radio {
   background: var(--panel);
   color: var(--muted);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-8);
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -555,11 +562,11 @@ label.radio {
 .ws-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 20px;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-16);
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 
@@ -580,8 +587,8 @@ label.radio {
 
 .ws-tag {
   flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 1px var(--sp-6);
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--muted);
   border: 1px solid var(--border);
@@ -592,9 +599,9 @@ label.radio {
   background: var(--accent-soft);
   color: var(--accent);
   border: 1px solid var(--accent-border);
-  border-radius: 6px;
-  padding: 3px 10px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-2) var(--sp-8);
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -613,9 +620,9 @@ label.radio {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 5px 10px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-sm);
   cursor: pointer;
   max-width: 260px;
   overflow: hidden;
@@ -625,7 +632,7 @@ label.radio {
 
 .model-caret {
   color: var(--muted);
-  margin-left: 4px;
+  margin-left: var(--sp-4);
 }
 
 .model-menu {
@@ -635,8 +642,8 @@ label.radio {
   min-width: 240px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 6px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-6);
   z-index: 20;
 }
 
@@ -646,9 +653,9 @@ label.radio {
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 6px;
-  padding: 6px 8px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-8);
+  font-size: var(--fs-sm);
   color: var(--text);
   cursor: pointer;
 }
@@ -663,17 +670,17 @@ label.radio {
 }
 
 .model-new {
-  padding: 6px 4px 2px;
+  padding: var(--sp-6) var(--sp-4) var(--sp-2);
   border-top: 1px solid var(--border);
-  margin-top: 4px;
+  margin-top: var(--sp-4);
 }
 
 .model-new input {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-sm);
   font-family: inherit;
   color: var(--text);
   background: var(--bg);
@@ -684,16 +691,16 @@ label.radio {
 .ctx-meter {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
 .ctx-track {
   width: 90px;
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--border);
   overflow: hidden;
 }
@@ -722,13 +729,13 @@ label.radio {
 }
 
 .ctx-hint {
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 /* ── P2 工作台：Markdown 渲染 ──────────────────────────── */
 
 .md > * + * {
-  margin-top: 8px;
+  margin-top: var(--sp-8);
 }
 
 .md h1,
@@ -739,64 +746,64 @@ label.radio {
 }
 
 .md h1 {
-  font-size: 17px;
+  font-size: var(--fs-lg);
 }
 
 .md h2 {
-  font-size: 15px;
+  font-size: var(--fs-base);
 }
 
 .md h3 {
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .md ul,
 .md ol {
-  padding-left: 20px;
+  padding-left: var(--sp-16);
 }
 
 .md li + li {
-  margin-top: 2px;
+  margin-top: var(--sp-2);
 }
 
 .md blockquote {
   border-left: 3px solid var(--border);
-  padding-left: 10px;
+  padding-left: var(--sp-8);
   color: var(--muted);
 }
 
 .md-pre {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-8) var(--sp-12);
   overflow-x: auto;
 }
 
 .md-pre code {
   font-family: 'Consolas', 'Cascadia Mono', monospace;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   white-space: pre;
 }
 
 .md-code-inline {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-4);
   font-family: 'Consolas', monospace;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 .md table {
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .md th,
 .md td {
   border: 1px solid var(--border);
-  padding: 4px 10px;
+  padding: var(--sp-4) var(--sp-8);
   text-align: left;
 }
 
@@ -818,30 +825,30 @@ label.radio {
 
 .sidebar {
   width: 248px;
-  padding: 14px 10px 10px;
-  gap: 10px;
+  padding: var(--sp-12) var(--sp-8);
+  gap: var(--sp-8);
 }
 
 .brand {
-  padding: 4px 8px 6px;
+  padding: var(--sp-4) var(--sp-8) var(--sp-6);
 }
 
 .brand-name {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 500;
 }
 
 .new-task-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   width: 100%;
   background: var(--accent-soft);
   color: var(--accent);
   border: 1px solid var(--accent-border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-8) var(--sp-12);
+  font-size: var(--fs-md);
   font-family: inherit;
   cursor: pointer;
   text-align: left;
@@ -852,7 +859,7 @@ label.radio {
 }
 
 .new-task-btn .plus {
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .conv-scroll {
@@ -862,43 +869,43 @@ label.radio {
 }
 
 .section-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
-  padding: 6px 8px 4px;
+  padding: var(--sp-6) var(--sp-8) var(--sp-4);
 }
 
 .conv-empty {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
-  padding: 6px 8px;
+  padding: var(--sp-6) var(--sp-8);
   line-height: 1.6;
 }
 
 .conv-group {
-  margin-bottom: 4px;
+  margin-bottom: var(--sp-4);
 }
 
 .group-head {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-2);
 }
 
 .group-toggle {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-4);
   background: transparent;
   border: 0;
-  padding: 5px 6px;
-  font-size: 12px;
+  padding: var(--sp-4) var(--sp-6);
+  font-size: var(--fs-sm);
   font-family: inherit;
   color: var(--text);
   cursor: pointer;
   text-align: left;
   min-width: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .group-toggle:hover {
@@ -907,7 +914,7 @@ label.radio {
 
 .group-toggle .caret {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 
 .group-name {
@@ -920,10 +927,10 @@ label.radio {
   background: transparent;
   border: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 6px;
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius-md);
   line-height: 1;
 }
 
@@ -936,11 +943,11 @@ label.radio {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 4px 6px 18px;
-  border-radius: 6px;
+  gap: var(--sp-4);
+  padding: var(--sp-6) var(--sp-4) var(--sp-6) var(--sp-16);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .conv-item:hover {
@@ -964,9 +971,9 @@ label.radio {
   border: 0;
   color: var(--muted);
   cursor: pointer;
-  padding: 0 4px;
-  border-radius: 4px;
-  font-size: 13px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
   line-height: 1;
   opacity: 0;
 }
@@ -989,8 +996,8 @@ label.radio {
   min-width: 140px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4);
 }
 
 .conv-menu button {
@@ -999,11 +1006,11 @@ label.radio {
   text-align: left;
   background: transparent;
   border: 0;
-  padding: 6px 8px;
-  font-size: 12px;
+  padding: var(--sp-6) var(--sp-8);
+  font-size: var(--fs-sm);
   font-family: inherit;
   color: var(--text);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -1017,11 +1024,11 @@ label.radio {
 
 .conv-rename {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
-  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-6);
   background: var(--panel);
   color: var(--text);
   min-width: 0;
@@ -1031,8 +1038,8 @@ label.radio {
   margin-top: auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 8px;
+  gap: var(--sp-8);
+  padding-top: var(--sp-8);
   border-top: 1px solid var(--border);
 }
 
@@ -1042,7 +1049,7 @@ label.radio {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
@@ -1062,7 +1069,7 @@ label.radio {
 }
 
 .foot-text {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1074,8 +1081,8 @@ label.radio {
 .chat-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 20px;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-16);
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   flex-shrink: 0;
@@ -1083,7 +1090,7 @@ label.radio {
 }
 
 .chat-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1092,12 +1099,12 @@ label.radio {
 
 .chat-skills {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
-  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-6);
 }
 
 /* ══ P2 布局重构：新建任务页 ═════════════════════════════ */
@@ -1113,7 +1120,7 @@ label.radio {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 32px 24px;
+  padding: var(--sp-32) var(--sp-24);
   overflow-y: auto;
 }
 
@@ -1125,7 +1132,7 @@ label.radio {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-12);
 }
 
 /*
@@ -1139,32 +1146,32 @@ label.radio {
  */
 .new-task-hero {
   text-align: center;
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-8);
 }
 
 .new-task-hero h1 {
-  font-size: 21px;
+  font-size: var(--fs-xl);
   font-weight: 500;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-6);
   /* 这两行是"门面"，字距略放宽更像碑刻/题辞，不像普通标题 */
   letter-spacing: 0.06em;
 }
 
 .new-task-hero p {
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted);
   letter-spacing: 0.04em;
 }
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 5px 10px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-sm);
   font-family: inherit;
   color: var(--text);
   cursor: pointer;
@@ -1193,7 +1200,7 @@ label.radio {
   border: 0;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   outline: none;
   cursor: pointer;
@@ -1205,9 +1212,9 @@ label.radio {
   background: var(--accent);
   color: var(--on-accent);
   border: 0;
-  border-radius: 8px;
-  padding: 7px 20px;
-  font-size: 13px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-16);
+  font-size: var(--fs-md);
   font-family: inherit;
   cursor: pointer;
 }
@@ -1221,36 +1228,36 @@ label.radio {
 .skill-picker {
   width: 100%;
   max-width: 640px;
-  margin-top: 20px;
+  margin-top: var(--sp-16);
 }
 
 .skill-title {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-8);
 }
 
 .skill-empty {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
 .skill-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-6);
 }
 
 .skill-item {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-8);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   flex-wrap: wrap;
 }
 
@@ -1271,11 +1278,11 @@ label.radio {
 }
 
 .skill-tag {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
-  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-4);
 }
 
 .back-btn {
@@ -1283,10 +1290,10 @@ label.radio {
   background: transparent;
   border: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   cursor: pointer;
-  padding: 0 0 8px;
+  padding: 0 0 var(--sp-8);
 }
 
 .back-btn:hover {
@@ -1320,8 +1327,8 @@ label.radio {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-8);
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -1333,7 +1340,7 @@ label.radio {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
@@ -1353,7 +1360,7 @@ label.radio {
 }
 
 .topbar-brand {
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text);
   flex-shrink: 0;
 }
@@ -1364,7 +1371,7 @@ label.radio {
 }
 
 .topbar-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1409,8 +1416,8 @@ label.radio {
 .dock-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: var(--sp-6);
+  padding: var(--sp-6) var(--sp-8);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   white-space: nowrap;
@@ -1418,7 +1425,7 @@ label.radio {
 
 .dock-tabs {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-4);
   flex: 1;
   min-width: 0;
 }
@@ -1426,9 +1433,9 @@ label.radio {
 .dock-tab {
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 4px 9px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-sm);
   font-family: inherit;
   color: var(--muted);
   cursor: pointer;
@@ -1451,9 +1458,9 @@ label.radio {
   border: 0;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
-  padding: 2px 6px;
-  border-radius: 6px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius-md);
   flex-shrink: 0;
 }
 
@@ -1465,35 +1472,35 @@ label.radio {
 .dock-body {
   flex: 1;
   overflow-y: auto;
-  padding: 20px 16px;
+  padding: var(--sp-16);
 }
 
 .dock-placeholder {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-8);
   align-items: flex-start;
 }
 
 .dock-ph-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   color: var(--text);
 }
 
 .dock-ph-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   line-height: 1.7;
 }
 
 .dock-ph-badge {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
-  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-6);
 }
 
 /* ══ ＋号拓展面板 ═══════════════════════════════════════ */
@@ -1510,11 +1517,11 @@ label.radio {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-family: inherit;
   cursor: pointer;
 }
@@ -1536,12 +1543,12 @@ label.radio {
   right: -5px;
   min-width: 15px;
   height: 15px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   line-height: 15px;
-  padding: 0 3px;
+  padding: 0 var(--sp-2);
 }
 
 .plus-menu {
@@ -1554,39 +1561,39 @@ label.radio {
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 8px;
+  border-radius: var(--radius-lg);
+  padding: var(--sp-8);
 }
 
 .plus-section + .plus-section {
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-8);
   border-top: 1px solid var(--border);
 }
 
 .plus-title {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
-  padding: 4px 6px 6px;
+  padding: var(--sp-4) var(--sp-6);
 }
 
 .plus-empty {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
-  padding: 4px 6px;
+  padding: var(--sp-4) var(--sp-6);
 }
 
 .plus-item {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: var(--sp-6);
   width: 100%;
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 6px 7px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-6);
+  font-size: var(--fs-sm);
   font-family: inherit;
   color: var(--text);
   cursor: pointer;
@@ -1614,7 +1621,7 @@ label.radio {
   width: 12px;
   flex-shrink: 0;
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .plus-name {
@@ -1625,22 +1632,22 @@ label.radio {
 .plus-desc {
   flex: 1;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   min-width: 0;
 }
 
 .plus-tag {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
-  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-4);
   flex-shrink: 0;
 }
 
 .picked-hint {
-  margin-top: 12px;
-  font-size: 12px;
+  margin-top: var(--sp-12);
+  font-size: var(--fs-sm);
   color: var(--accent);
   max-width: 640px;
   width: 100%;
@@ -1652,24 +1659,24 @@ label.radio {
 .tool-log {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin: 4px 0 2px 8px;
-  padding-left: 10px;
+  gap: var(--sp-4);
+  margin: var(--sp-4) 0 var(--sp-2) var(--sp-8);
+  padding-left: var(--sp-8);
   border-left: 2px solid var(--border);
 }
 
 .tool-item {
   display: flex;
   align-items: baseline;
-  gap: 7px;
-  font-size: 12px;
+  gap: var(--sp-6);
+  font-size: var(--fs-sm);
   color: var(--muted);
   line-height: 1.6;
 }
 
 .tool-icon {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   width: 12px;
 }
 
@@ -1725,11 +1732,11 @@ label.radio {
   min-width: 0;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 10px 12px 8px;
+  border-radius: var(--radius-lg);
+  padding: var(--sp-8) var(--sp-12) var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-6);
 }
 
 .console-input {
@@ -1741,7 +1748,7 @@ label.radio {
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-family: inherit;
   line-height: 1.6;
 }
@@ -1750,19 +1757,19 @@ label.radio {
 .attach-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding-bottom: 4px;
+  gap: var(--sp-6);
+  padding-bottom: var(--sp-4);
 }
 
 .attach-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-4);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 3px 6px 3px 8px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-2) var(--sp-6) var(--sp-2) var(--sp-8);
+  font-size: var(--fs-sm);
   color: var(--text);
   max-width: 240px;
 }
@@ -1773,12 +1780,12 @@ label.radio {
 }
 
 .attach-trunc {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--warn-fg, var(--warn-deep));
   background: var(--warn-soft);
   border: 1px solid var(--warn-border);
-  border-radius: 3px;
-  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-2);
   flex-shrink: 0;
 }
 
@@ -1787,10 +1794,10 @@ label.radio {
   border: 0;
   color: var(--muted);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1;
-  padding: 0 2px;
-  border-radius: 3px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 
@@ -1800,7 +1807,7 @@ label.radio {
 }
 
 .console-error {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--danger);
 }
 
@@ -1808,8 +1815,8 @@ label.radio {
 .console-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding-top: 6px;
+  gap: var(--sp-6);
+  padding-top: var(--sp-6);
   border-top: 1px solid var(--border);
 }
 
@@ -1820,12 +1827,12 @@ label.radio {
 .tb-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-4);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px 9px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-sm);
   font-family: inherit;
   color: var(--text);
   cursor: pointer;
@@ -1844,11 +1851,11 @@ label.radio {
 
 .tb-caret {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 
 .tb-icon {
-  padding: 4px 7px;
+  padding: var(--sp-4) var(--sp-6);
   color: var(--muted);
 }
 
@@ -1890,7 +1897,7 @@ label.radio {
 .tb-branch {
   color: var(--muted);
   font-family: Consolas, monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
 }
 
 .branch-dot {
@@ -1905,10 +1912,10 @@ label.radio {
 .ctx-ring {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-4);
   color: var(--accent);
-  font-size: 11.5px;
-  padding: 0 2px;
+  font-size: var(--fs-xs);
+  padding: 0 var(--sp-2);
 }
 
 .ctx-ring.ctx-warn {
@@ -1921,7 +1928,7 @@ label.radio {
 
 .ctx-ring-text {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 /* 圆形发送键 */
@@ -1954,7 +1961,7 @@ label.radio {
   width: 9px;
   height: 9px;
   background: var(--on-accent);
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
 }
 
 /* 新建任务页的 console 容器 */
@@ -1971,20 +1978,20 @@ label.radio {
   min-width: 240px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 5px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4);
 }
 
 .tb-menu-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-2);
   width: 100%;
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 7px;
-  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-8);
   font-family: inherit;
   color: var(--text);
   cursor: pointer;
@@ -1999,11 +2006,11 @@ label.radio {
 }
 
 .tb-menu-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .tb-menu-desc {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   line-height: 1.5;
 }
@@ -2023,13 +2030,13 @@ label.radio {
 .console-workspace {
   display: flex;
   align-items: center;
-  padding-bottom: 4px;
+  padding-bottom: var(--sp-4);
 }
 
 /* 工具栏：允许换行，避免窄宽度下元素互相压叠 */
 .console-toolbar {
   flex-wrap: wrap;
-  row-gap: 5px;
+  row-gap: var(--sp-4);
 }
 
 .tb-btn {
@@ -2055,8 +2062,8 @@ label.radio {
 .bp-bar {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 8px;
+  gap: var(--sp-4);
+  padding: var(--sp-6) var(--sp-8);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -2067,11 +2074,11 @@ label.radio {
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
@@ -2092,9 +2099,9 @@ label.radio {
   min-width: 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 4px 9px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-sm);
   font-family: Consolas, monospace;
   color: var(--text);
   outline: none;
@@ -2120,20 +2127,20 @@ label.radio {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 24px;
+  gap: var(--sp-8);
+  padding: var(--sp-24);
   text-align: center;
   pointer-events: none;
 }
 
 .bp-empty-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   color: var(--text);
 }
 
 .bp-empty-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   line-height: 1.7;
 }
@@ -2142,12 +2149,12 @@ label.radio {
   position: absolute;
   bottom: 6px;
   right: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   background: var(--panel);
   border: 1px solid var(--accent-border);
-  border-radius: 4px;
-  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-6);
   pointer-events: none;
 }
 
@@ -2167,7 +2174,7 @@ label.radio {
 /* 工具栏：窄宽度下优雅换行，不做重叠 */
 .console-toolbar {
   flex-wrap: wrap;
-  row-gap: 6px;
+  row-gap: var(--sp-6);
   min-width: 0;
 }
 
@@ -2200,18 +2207,18 @@ label.radio {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px 10px;
+  gap: var(--sp-6) var(--sp-8);
   flex-wrap: wrap;
-  row-gap: 6px;
+  row-gap: var(--sp-6);
   min-width: 0;
-  padding-top: 6px;
+  padding-top: var(--sp-6);
   border-top: 1px solid var(--border);
 }
 
 .tb-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   min-width: 0;
 }
 
@@ -2225,41 +2232,41 @@ label.radio {
 .ck-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-12);
 }
 
 .ck-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--sp-8);
 }
 
 .ck-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text);
 }
 
 .ck-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   line-height: 1.6;
 }
 
 .ck-empty {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
-  padding: 16px 12px;
+  padding: var(--sp-16) var(--sp-12);
   border: 1px dashed var(--border);
   border-radius: var(--radius);
   line-height: 1.6;
 }
 
 .ck-btn {
-  font-size: 12px;
-  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) var(--sp-8);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
   color: var(--text);
   cursor: pointer;
@@ -2285,7 +2292,7 @@ label.radio {
 .ck-runs {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-8);
 }
 
 .ck-run {
@@ -2299,14 +2306,14 @@ label.radio {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 9px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-8);
 }
 
 .ck-run-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   flex: 1;
   min-width: 0;
   background: none;
@@ -2320,24 +2327,24 @@ label.radio {
 
 .ck-caret {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
 }
 
 .ck-run-main {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-2);
   min-width: 0;
 }
 
 .ck-run-time {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 
 .ck-run-meta {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -2347,14 +2354,14 @@ label.radio {
 .ck-run-tail {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   flex-shrink: 0;
 }
 
 .ck-badge {
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 6px;
+  font-size: var(--fs-xs);
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius-md);
   white-space: nowrap;
 }
 
@@ -2372,30 +2379,30 @@ label.radio {
 
 .ck-confirm {
   display: flex;
-  gap: 6px;
+  gap: var(--sp-6);
   flex-shrink: 0;
 }
 
 .ck-files {
   border-top: 1px solid var(--border);
-  padding: 6px 10px 9px;
+  padding: var(--sp-6) var(--sp-8);
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: var(--sp-4);
 }
 
 .ck-file {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: var(--sp-8);
+  font-size: var(--fs-sm);
 }
 
 .ck-kind {
   flex-shrink: 0;
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 5px;
+  font-size: var(--fs-xs);
+  padding: 1px var(--sp-6);
+  border-radius: var(--radius-sm);
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
@@ -2420,11 +2427,11 @@ label.radio {
 .ck-file-size {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .ck-file-empty {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -2437,7 +2444,7 @@ label.radio {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: var(--sp-24);
   z-index: 100;
 }
 
@@ -2447,27 +2454,27 @@ label.radio {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px 20px;
+  padding: var(--sp-16);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-8);
 }
 
 .cf-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-8);
 }
 
 .cf-title {
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: var(--text);
 }
 
 .cf-tool {
-  font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 6px;
+  font-size: var(--fs-xs);
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius-md);
   color: var(--danger);
   background: var(--danger-soft);
   border: 1px solid var(--danger-border);
@@ -2475,20 +2482,20 @@ label.radio {
 }
 
 .cf-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   line-height: 1.6;
 }
 
 .cf-cmd {
   font-family: var(--mono, monospace);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-8) var(--sp-12);
   max-height: 180px;
   overflow: auto;
   white-space: pre-wrap;
@@ -2498,8 +2505,8 @@ label.radio {
 .cf-meta {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 
@@ -2512,15 +2519,15 @@ label.radio {
 .cf-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
-  margin-top: 4px;
+  gap: var(--sp-8);
+  margin-top: var(--sp-4);
 }
 
 .cf-btn {
-  font-size: 13px;
-  padding: 7px 16px;
+  font-size: var(--fs-md);
+  padding: var(--sp-6) var(--sp-16);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
   color: var(--text);
   cursor: pointer;
@@ -2548,7 +2555,7 @@ label.radio {
 }
 
 .cf-note {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   text-align: right;
 }
@@ -2613,7 +2620,7 @@ body[data-resizing] {
 .ex-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-8);
   height: 100%;
   min-height: 0;
 }
@@ -2622,19 +2629,19 @@ body[data-resizing] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--sp-8);
 }
 
 .ex-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text);
 }
 
 .ex-btn {
-  font-size: 12px;
-  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) var(--sp-8);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
   color: var(--text);
   cursor: pointer;
@@ -2647,7 +2654,7 @@ body[data-resizing] {
 }
 
 .ex-path {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   font-family: var(--mono, monospace);
   white-space: nowrap;
@@ -2661,21 +2668,21 @@ body[data-resizing] {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 4px 0;
+  padding: var(--sp-4) 0;
 }
 
 .ex-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   width: 100%;
-  padding: 4px 8px;
+  padding: var(--sp-4) var(--sp-8);
   border: none;
   background: none;
   cursor: pointer;
   text-align: left;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 
@@ -2691,7 +2698,7 @@ body[data-resizing] {
   flex-shrink: 0;
   width: 10px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 
 .ex-name {
@@ -2708,14 +2715,14 @@ body[data-resizing] {
 
 .ex-size {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 
 .ex-msg {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
-  padding: 6px 8px;
+  padding: var(--sp-6) var(--sp-8);
 }
 
 .ex-err {
@@ -2725,9 +2732,9 @@ body[data-resizing] {
 .ex-preview {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-6);
   border-top: 1px solid var(--border);
-  padding-top: 8px;
+  padding-top: var(--sp-8);
   max-height: 45%;
   min-height: 0;
 }
@@ -2736,11 +2743,11 @@ body[data-resizing] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--sp-8);
 }
 
 .ex-preview-name {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   font-family: var(--mono, monospace);
   white-space: nowrap;
@@ -2753,12 +2760,12 @@ body[data-resizing] {
   min-height: 0;
   overflow: auto;
   margin: 0;
-  padding: 8px 10px;
+  padding: var(--sp-8);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg);
   font-family: var(--mono, monospace);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.55;
   color: var(--text);
   white-space: pre-wrap;
@@ -2769,7 +2776,7 @@ body[data-resizing] {
 
 .choice-list {
   display: flex;
-  gap: var(--sp-3);
+  gap: var(--sp-12);
   flex-wrap: wrap;
 }
 
@@ -2782,8 +2789,8 @@ body[data-resizing] {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--sp-1);
-  padding: var(--sp-3) var(--sp-4);
+  gap: var(--sp-4);
+  padding: var(--sp-12) var(--sp-16);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel);
