@@ -28,6 +28,49 @@ const OUT = join(SHOTS, 'verify-shot.png')
 // 让 userData 独立，避免与已安装版本抢目录
 app.setPath('userData', join(ROOT, '.verify-userdata'))
 
+// ── 断言器（plan9 W2 新增）──────────────────────────────────────────────
+//
+// 为什么必须加（两份独立审查都点到的**实锤**）：
+// 在此之前本脚本只 `console.log` 一堆汇总 + `app.exit(0)` ——
+// **没有期望值比对、没有失败退出码**。于是"验证通过"全靠人眼看输出，
+// 等于**拿一把没有刻度的尺子当验收标准**。
+//
+// 用法：`check(名字, 实际, 期望)` 或 `checkTrue(名字, 条件[, 实际值])`；
+// 结尾一律调 `reportAndExit()`：有 FAIL → exit(1)，全过 → exit(0)。
+//
+// 原则：**只断言"确定的"**。每批新功能由那一批自己补断言（plan9 §二），
+// 不再把验证的活堆到最后一批。
+const checks = []
+
+function check(name, actual, expected) {
+  const pass = JSON.stringify(actual) === JSON.stringify(expected)
+  checks.push({ name, pass, actual, expected })
+  return pass
+}
+
+function checkTrue(name, cond, actual) {
+  const pass = cond === true
+  checks.push({ name, pass, actual: actual === undefined ? cond : actual, expected: true })
+  return pass
+}
+
+function reportAndExit() {
+  const failed = checks.filter((c) => !c.pass)
+  console.log('CHECKS=' + JSON.stringify({ total: checks.length, failed: failed.length }))
+  for (const c of failed) {
+    console.log(
+      'FAIL: ' + c.name + '  实际=' + JSON.stringify(c.actual) + '  期望=' + JSON.stringify(c.expected)
+    )
+  }
+  if (failed.length > 0) {
+    console.log('==== verify-shot 失败：' + failed.length + ' / ' + checks.length + ' 项不匹配 ====')
+    app.exit(1)
+    return
+  }
+  console.log('==== verify-shot 通过：' + checks.length + ' 项断言全绿 ====')
+  app.exit(0)
+}
+
 const settingsView = {
   providerType: 'openai-compatible',
   baseURL: 'https://api.deepseek.com',
@@ -191,14 +234,30 @@ const STUBS = {
     files: ['app.log', 'app.1.log']
   }),
   'logs:open': () => true,
-  // plan7 批 A0：界面布局偏好
-  'ui-prefs:get': () => ({ sidebarWidth: 248, dockWidth: 360 }),
+  // plan7 批 A0 + plan9 W2：界面布局偏好（含工作台分栏布局）
+  // ⚠️ 这里是**契约的复制品** —— UIPrefs 加字段必须同步加，
+  //    否则渲染端拿到 undefined，而本脚本又是唯一做真渲染验证的地方（会静默漏掉）。
+  'ui-prefs:get': () => ({
+    sidebarWidth: 248,
+    dockWidth: 360,
+    theme: 'classic',
+    workbench: { schemaVersion: 1, panes: [] },
+    workbenchSizes: { paneWidths: [] }
+  }),
   'ui-prefs:set': (patch) => ({
     sidebarWidth: patch?.sidebarWidth ?? 248,
     dockWidth: patch?.dockWidth ?? 360,
-    theme: patch?.theme ?? 'classic'
+    theme: patch?.theme ?? 'classic',
+    workbench: patch?.workbench ?? { schemaVersion: 1, panes: [] },
+    workbenchSizes: patch?.workbenchSizes ?? { paneWidths: [] }
   }),
-  'ui-prefs:reset': () => ({ sidebarWidth: 248, dockWidth: 360 }),
+  'ui-prefs:reset': () => ({
+    sidebarWidth: 248,
+    dockWidth: 360,
+    theme: 'classic',
+    workbench: { schemaVersion: 1, panes: [] },
+    workbenchSizes: { paneWidths: [] }
+  }),
   // plan7 批 A：工作区文件树（stub 数据；真实文件系统由 tests/unit/fs-tree.test.ts 覆盖）
   'fs:list': (arg) => {
     const rel = typeof arg === 'string' ? arg : ''
@@ -1413,5 +1472,28 @@ app.whenReady().then(async () => {
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
   console.log('CSP_PROBE=' + JSON.stringify(cspProbe))
-  app.exit(0)
+
+  // ── 断言（plan9 W2 起，本脚本终于有刻度了）────────────────────────────
+  // 只挑"确定的"来断言；每一批新功能由那一批自己补断言，不再堆到最后一批。
+  checkTrue(
+    '思考块可见（此前被 flex 压成 4px 的回归）',
+    processVisible.reasoningHeight > 20,
+    processVisible.reasoningHeight
+  )
+  checkTrue('思考块排在报告之前（阅读顺序 = 过程 → 结论）', processVisible.processBeforeLastMsg === true)
+  checkTrue(
+    '思考块有实际内容（不是空壳）',
+    typeof processVisible.reasoningText === 'string' && processVisible.reasoningText.length > 0
+  )
+  checkTrue(
+    '工具卡片带上了入参摘要（不是干巴巴的"执行中…"）',
+    typeof processVisible.toolDesc === 'string' && processVisible.toolDesc.length > 0,
+    processVisible.toolDesc
+  )
+  check('设置页两栏布局生效', cssCheck.display, 'flex')
+  check('设置页左导航宽度', cssCheck.navWidth, '196px')
+  check('设置页右栏不滚动（滚动交给内容区）', cssCheck.scrollable, 'hidden')
+  check('CSP 仍拦住内联脚本（安全策略没被新代码打穿）', cspProbe.inlineScriptExecuted, false)
+
+  reportAndExit()
 })

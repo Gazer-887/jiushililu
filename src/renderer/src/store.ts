@@ -16,6 +16,13 @@ import {
   type ThemeName,
   type UIPrefs
 } from '@shared/splitter'
+import {
+  emptyLayout,
+  emptySizes,
+  normalizeSizes,
+  type WorkbenchLayout,
+  type WorkbenchSizes
+} from '@shared/workbench'
 
 // 渲染进程状态：界面数据只放这里，真正的模型请求全部走 IPC 由主进程执行。
 
@@ -41,6 +48,21 @@ interface AppState {
   persistUIPrefs: (patch: Partial<UIPrefs>) => Promise<void>
   resetUIPrefs: () => Promise<void>
   loadUIPrefs: () => Promise<void>
+
+  // ── 工作台分栏布局（plan9 W2）───────────
+  /**
+   * 分栏布局。**渲染端是唯一写入源。**
+   *
+   * ⚠️ 落盘回显**不允许覆盖它** —— 主进程返回的是盘上那份（可能比内存旧），
+   * 拿它 set 回去会把界面上"刚开的栏"打回原状。这条是两份独立审查都点到的真问题，
+   * 所以下面的 persistUIPrefs 只回显宽度与主题，**故意不回显 workbench**。
+   */
+  workbench: WorkbenchLayout
+  workbenchSizes: WorkbenchSizes
+  /** 只改内存（拖拽中 / 连续操作时调），不落盘 */
+  setWorkbench: (layout: WorkbenchLayout, sizes?: WorkbenchSizes) => void
+  /** 显式落盘当前布局（结构变更立即调；拖宽由 W5 debounce 后调） */
+  persistWorkbench: () => Promise<void>
 
   // ── 抽屉侧栏（面板显隐）───────────
   /** 左侧栏（会话记录 / 设置）是否展开 */
@@ -129,6 +151,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const next = await window.api.setUIPrefs(patch)
       // theme 走 sanitizeTheme 保底：主进程万一返回缺 theme 的数据，
       // 不能让 UI 进入「两个主题都没选中」的死角（真实渲染验证抓到过）
+      //
+      // ⚠️ 这里**故意不回显 workbench / workbenchSizes**：主进程返回的是盘上那份，
+      //    可能比内存旧；回显会把「刚开的栏」打回原状（plan9 §W2 明写的规则）。
       set({
         sidebarWidth: next.sidebarWidth,
         dockWidth: next.dockWidth,
@@ -139,15 +164,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   resetUIPrefs: async () => {
+    // 「恢复默认布局」—— 布局**要**跟着复位，否则这个按钮对工作台是空操作
     try {
       const next = await window.api.resetUIPrefs()
       set({
         sidebarWidth: next.sidebarWidth,
         dockWidth: next.dockWidth,
-        theme: sanitizeTheme(next.theme)
+        theme: sanitizeTheme(next.theme),
+        workbench: next.workbench,
+        workbenchSizes: next.workbenchSizes
       })
     } catch {
-      set({ sidebarWidth: SIDEBAR_DEFAULT, dockWidth: DOCK_DEFAULT, theme: 'classic' })
+      set({
+        sidebarWidth: SIDEBAR_DEFAULT,
+        dockWidth: DOCK_DEFAULT,
+        theme: 'classic',
+        workbench: emptyLayout(),
+        workbenchSizes: emptySizes()
+      })
     }
   },
   loadUIPrefs: async () => {
@@ -156,13 +190,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         sidebarWidth: prefs.sidebarWidth,
         dockWidth: prefs.dockWidth,
-        theme: sanitizeTheme(prefs.theme)
+        theme: sanitizeTheme(prefs.theme),
+        workbench: prefs.workbench,
+        workbenchSizes: prefs.workbenchSizes
       })
       // 启动即应用主题（否则刷新/重开会闪回默认主题）
       document.documentElement.dataset.theme = sanitizeTheme(prefs.theme)
     } catch {
       // 保持默认值
     }
+  },
+
+  workbench: emptyLayout(),
+  workbenchSizes: emptySizes(),
+  setWorkbench: (layout, sizes) =>
+    set((s) => ({
+      workbench: layout,
+      // 栏数变了就顺手把栏宽数组对齐 —— 长度恒等于 panes−1 是这条数据的不变量，
+      // 交给调用方每次记得对齐太容易漏（漏了下一次读盘就会整组回默认）
+      workbenchSizes: sizes ?? normalizeSizes(s.workbenchSizes, layout.panes.length)
+    })),
+  persistWorkbench: async () => {
+    const { workbench, workbenchSizes } = get()
+    await useAppStore.getState().persistUIPrefs({ workbench, workbenchSizes })
   },
 
   sidebarOpen: true,

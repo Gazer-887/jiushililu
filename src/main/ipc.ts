@@ -42,6 +42,62 @@ import { listWorkspaceDir, readWorkspaceFile } from './workspace-fs'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
+import {
+  BUILTIN_TYPES,
+  DIRTY_MAX_LEN,
+  PANE_ABS_MIN,
+  PANE_DEFAULT,
+  PANE_MAX_COUNT,
+  PATH_MAX_LEN,
+  TAB_MAX_COUNT
+} from '@shared/workbench'
+
+// 工作台分栏布局的 **IPC 边界**校验（plan9 W2，三层里的第二层）。
+//
+// 这一层只做「形状 + 尺寸上限」。为什么上限也要卡：
+// 布局是**频繁写入**的对象（拖拽、开栏、切页签都写），一旦某处逻辑出 bug 反复往数组里塞，
+// 没有上限就会把盘写成一个巨大的 JSON，且启动时被完整读进内存。
+// 上限值全部从 workbench.ts 取，**不另抄一份**（防止两处漂移）。
+// 语义清洗（丢弃不认识的内置类型、截断超长内容、栏数与栏宽对齐）交给 setUIPref → sanitizeLayout。
+const zPaneContent = z.union([
+  z.object({
+    kind: z.literal('builtin'),
+    type: z
+      .string()
+      .refine((v) => (BUILTIN_TYPES as readonly string[]).includes(v), '未知的内置面板类型')
+  }),
+  z.object({
+    kind: z.literal('file'),
+    path: z.string().min(1).max(PATH_MAX_LEN),
+    mode: z.enum(['preview', 'edit']),
+    dirty: z.string().max(DIRTY_MAX_LEN).optional()
+  })
+])
+
+const zPaneTab = z.object({
+  id: z.string().min(1).max(64),
+  title: z.string().max(256),
+  content: zPaneContent,
+  keepAlive: z.boolean().optional()
+})
+
+const zPane = z.object({
+  id: z.string().min(1).max(64),
+  title: z.string().max(256),
+  min: z.number().finite().min(PANE_ABS_MIN).max(PANE_DEFAULT),
+  tabs: z.array(zPaneTab).max(TAB_MAX_COUNT),
+  active: z.number().int().min(0).max(TAB_MAX_COUNT),
+  collapsed: z.boolean()
+})
+
+const workbenchSchema = z.object({
+  schemaVersion: z.number().int().min(1),
+  panes: z.array(zPane).max(PANE_MAX_COUNT)
+})
+
+const workbenchSizesSchema = z.object({
+  paneWidths: z.array(z.number().finite().min(PANE_ABS_MIN).max(4096)).max(PANE_MAX_COUNT)
+})
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
@@ -550,10 +606,13 @@ export function registerIpcHandlers(deps: {
       .object({
         sidebarWidth: z.number().min(1).max(4096).optional(),
         dockWidth: z.number().min(1).max(4096).optional(),
-        theme: z.enum(['classic', 'ink']).optional()
+        theme: z.enum(['classic', 'ink']).optional(),
+        workbench: workbenchSchema.optional(),
+        workbenchSizes: workbenchSizesSchema.optional()
       })
       .parse(raw)
-    return setUIPref(patch)
+    // 形状过了之后交给 setUIPref 做语义清洗并落盘（它返回**清洗后**的完整偏好）
+    return setUIPref(patch as Partial<UIPrefs>)
   })
 
   ipcMain.handle(IPC.uiPrefsReset, (): UIPrefs => resetUIPrefs())

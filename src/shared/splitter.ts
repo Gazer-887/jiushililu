@@ -4,6 +4,8 @@
 // 都是纯计算，抽出来就能单测（CI 无 Electron 二进制，碰 electron 的代码测不了）。
 // 与 checkpoint.ts 同样的分层思路。
 
+import type { WorkbenchLayout, WorkbenchSizes } from './workbench'
+
 /** 左抽屉（会话列表）宽度范围与默认值 */
 export const SIDEBAR_DEFAULT = 248
 export const SIDEBAR_MIN = 180
@@ -25,11 +27,21 @@ export const THEMES: Array<{ id: ThemeName; label: string; desc: string }> = [
   { id: 'ink', label: '水墨', desc: '黑白灰 + 朱砂红' }
 ]
 
-/** 界面布局偏好（主进程与渲染进程共用同一口径） */
+/**
+ * 界面布局偏好（主进程与渲染进程共用同一口径）。
+ *
+ * 注：工作台的**分栏布局**也挂在这里（同属"界面偏好"、同一个存档文件），
+ * 但它的模型与全部运算都在 `workbench.ts` —— 本文件仍然只管「**单个**抽屉的宽度」。
+ * 别把多栏逻辑往这儿塞（plan9 §二 已把归属定死）。
+ */
 export interface UIPrefs {
   sidebarWidth: number
   dockWidth: number
   theme: ThemeName
+  /** 工作台分栏布局（plan9）。`panes` 为空 = 工作台收起 */
+  workbench: WorkbenchLayout
+  /** 栏宽**期望值**；长度恒等于 `panes.length − 1`（末栏吃余量，不存） */
+  workbenchSizes: WorkbenchSizes
 }
 
 /** 主题合法性校验（存档/入参都可能被改坏） */
