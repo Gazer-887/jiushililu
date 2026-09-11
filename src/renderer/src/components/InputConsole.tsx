@@ -106,6 +106,12 @@ export default function InputConsole({
         </div>
       )}
 
+      {showWorkspace && (
+        <div className="console-workspace">
+          <WorkspaceChip />
+        </div>
+      )}
+
       <textarea
         className="console-input"
         autoFocus={autoFocus}
@@ -128,7 +134,6 @@ export default function InputConsole({
           {...(onToggleSkill ? { onToggle: onToggleSkill } : {})}
           onAttach={() => void addAttachment()}
         />
-        {showWorkspace && <WorkspaceChip />}
         <BranchChip />
         <PermissionChip />
 

@@ -3,6 +3,16 @@ import { join } from 'node:path'
 import { registerIpcHandlers } from './ipc'
 import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
+import {
+  browserClick,
+  browserCurrentUrl,
+  browserNavigate,
+  browserReadPage,
+  browserType,
+  initBrowser,
+  setBrowserStateListener
+} from './browser'
+import { setBrowserAdapter } from './agent/browser-bridge'
 
 // 主进程入口：窗口生命周期 + IPC 注册。Agent 内核将来跑在 worker_threads，不在这里（P1）。
 
@@ -51,6 +61,30 @@ app.whenReady().then(() => {
   })
   registerIpcHandlers({ agent: agentCtx, userDataDir })
   createWindow()
+
+  // 内置浏览器：真 Chromium 视图，用户与 Agent 共用同一实例
+  const win = BrowserWindow.getAllWindows()[0]
+  if (win) {
+    initBrowser(win)
+    // 状态变化推给所有窗口（地址栏/标题/前进后退可用性）
+    setBrowserStateListener((state) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send('browser:changed', state)
+      }
+    })
+    // 把真实实现注入 agent 层的浏览器接缝（那边不 import electron）
+    setBrowserAdapter({
+      currentUrl: browserCurrentUrl,
+      navigate: async (url) => {
+        const s = await browserNavigate(url)
+        return { url: s.url, title: s.title }
+      },
+      readPage: browserReadPage,
+      click: browserClick,
+      type: browserType
+    })
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

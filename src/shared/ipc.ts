@@ -95,6 +95,23 @@ export interface GitInfo {
   dirty: boolean
 }
 
+/** 内置浏览器状态（右抽屉「浏览器」页签） */
+export interface BrowserState {
+  url: string
+  title: string
+  loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+/** 浏览器视图在窗口内的显示区域（CSS 像素，相对内容区左上角） */
+export interface BrowserBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 /** Agent 模式执行结果（plan6：独立上下文 + 单次报告返回） */
 export interface AgentRunResult {
   ok: boolean
@@ -176,7 +193,17 @@ export const IPC = {
   /** 选择文件作为上下文附件（读入内容） */
   attachFile: 'attach:file',
   /** 提示词优化（一次额外模型调用改写输入） */
-  promptPolish: 'prompt:polish'
+  promptPolish: 'prompt:polish',
+  // ── 内置浏览器（真浏览器，Agent 可操控）──
+  browserState: 'browser:state',
+  browserNavigate: 'browser:navigate',
+  browserBack: 'browser:back',
+  browserForward: 'browser:forward',
+  browserReload: 'browser:reload',
+  browserSetVisible: 'browser:set-visible',
+  browserSetBounds: 'browser:set-bounds',
+  /** 状态变化推送（地址/标题/加载中/前进后退可用性） */
+  browserChanged: 'browser:changed'
 } as const
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
@@ -212,4 +239,15 @@ export interface ApiBridge {
   attachFile(): Promise<Attachment | null>
   /** 提示词优化：把草稿改写成更清晰的指令 */
   polishPrompt(text: string): Promise<string>
+  // ── 内置浏览器 ──
+  getBrowserState(): Promise<BrowserState>
+  browserNavigate(url: string): Promise<BrowserState>
+  browserBack(): Promise<BrowserState>
+  browserForward(): Promise<BrowserState>
+  browserReload(): Promise<BrowserState>
+  /** 显隐（只在可见时把原生视图挂上窗口，避免挡住界面） */
+  setBrowserVisible(visible: boolean): Promise<void>
+  /** 同步显示区域（渲染进程用 ResizeObserver 算好再传） */
+  setBrowserBounds(bounds: BrowserBounds): Promise<void>
+  onBrowserChanged(cb: (s: BrowserState) => void): () => void
 }

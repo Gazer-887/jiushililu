@@ -5,6 +5,7 @@ import { z } from 'zod'
 import {
   IPC,
   type Attachment,
+  type BrowserState,
   type ChatMessage,
   type GitInfo,
   type PermissionPreset,
@@ -33,6 +34,15 @@ import type { AgentMessage } from '@shared/agent'
 import { resolveInsideWorkspace } from './agent/guard'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
 import { readGitInfo } from './store/git-info'
+import {
+  browserGoBack,
+  browserGoForward,
+  browserNavigate,
+  browserReload,
+  getBrowserState,
+  setBrowserBounds,
+  setBrowserVisible
+} from './browser'
 import {
   createConversation,
   deleteConversation,
@@ -376,5 +386,34 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
       { onChunk: (t) => { out += t } }
     )
     return out.trim() || text
+  })
+
+  // ── 内置浏览器（真浏览器，Agent 可操控同一实例）──────────────
+
+  ipcMain.handle(IPC.browserState, (): BrowserState => getBrowserState())
+
+  ipcMain.handle(IPC.browserNavigate, async (_e, raw: unknown): Promise<BrowserState> => {
+    const url = z.string().min(1).max(2000).parse(raw)
+    return browserNavigate(url)
+  })
+
+  ipcMain.handle(IPC.browserBack, (): BrowserState => browserGoBack())
+  ipcMain.handle(IPC.browserForward, (): BrowserState => browserGoForward())
+  ipcMain.handle(IPC.browserReload, (): BrowserState => browserReload())
+
+  ipcMain.handle(IPC.browserSetVisible, (_e, raw: unknown): void => {
+    setBrowserVisible(Boolean(z.boolean().parse(raw)))
+  })
+
+  ipcMain.handle(IPC.browserSetBounds, (_e, raw: unknown): void => {
+    const b = z
+      .object({
+        x: z.number().min(-10000).max(10000),
+        y: z.number().min(-10000).max(10000),
+        width: z.number().min(0).max(10000),
+        height: z.number().min(0).max(10000)
+      })
+      .parse(raw)
+    setBrowserBounds(b)
   })
 }

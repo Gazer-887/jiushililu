@@ -1,7 +1,9 @@
 import { useAppStore, type DockTab } from '../store'
+import BrowserPanel from './BrowserPanel'
 
 // 右侧工作台（抽屉，P2）：六个面板都装在这里（D-034）。
-// 本轮立结构 + 页签切换；面板实现按批次逐个填（见每项的"依赖"标注）。
+// 已实现：浏览器（真浏览器，Agent 可操控）
+// 待实现：资源管理器 / 文件变更记录 / 源代码管理 / 终端 / 任务管理
 // 结构原则：主区域永远只负责"对话"，新增能力一律往两侧抽屉挂，不挤占对话空间。
 
 const TABS: Array<{ id: DockTab; label: string; short: string }> = [
@@ -36,8 +38,8 @@ const PLACEHOLDER: Record<DockTab, { title: string; desc: string; dep: string }>
   },
   browser: {
     title: '浏览器',
-    desc: '内置网页视图，供抓取结果查看与页面预览。',
-    dep: '依赖：内嵌视图'
+    desc: '真浏览器（支持 JS 渲染），Agent 可直接操控同一实例。',
+    dep: '已实现'
   },
   tasks: {
     title: '任务管理',
@@ -74,12 +76,16 @@ export default function RightDock(): JSX.Element {
         </button>
       </div>
 
-      <div className="dock-body">
-        <div className="dock-placeholder">
-          <div className="dock-ph-title">{info.title}</div>
-          <div className="dock-ph-desc">{info.desc}</div>
-          <div className="dock-ph-badge">{info.dep}</div>
-        </div>
+      <div className={`dock-body ${dockTab === 'browser' ? 'dock-body-flush' : ''}`}>
+        {dockTab === 'browser' && dockOpen ? (
+          <BrowserPanel />
+        ) : (
+          <div className="dock-placeholder">
+            <div className="dock-ph-title">{info.title}</div>
+            <div className="dock-ph-desc">{info.desc}</div>
+            <div className="dock-ph-badge">{info.dep}</div>
+          </div>
+        )}
       </div>
     </aside>
   )

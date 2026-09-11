@@ -4,6 +4,8 @@ import {
   IPC,
   type AgentRunRequest,
   type ApiBridge,
+  type BrowserBounds,
+  type BrowserState,
   type ChatMessage,
   type ConversationCreateInput,
   type PermissionPreset,
@@ -51,7 +53,15 @@ const api: ApiBridge = {
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
   attachFile: () => ipcRenderer.invoke(IPC.attachFile),
-  polishPrompt: (text: string) => ipcRenderer.invoke(IPC.promptPolish, text)
+  polishPrompt: (text: string) => ipcRenderer.invoke(IPC.promptPolish, text),
+  getBrowserState: () => ipcRenderer.invoke(IPC.browserState),
+  browserNavigate: (url: string) => ipcRenderer.invoke(IPC.browserNavigate, url),
+  browserBack: () => ipcRenderer.invoke(IPC.browserBack),
+  browserForward: () => ipcRenderer.invoke(IPC.browserForward),
+  browserReload: () => ipcRenderer.invoke(IPC.browserReload),
+  setBrowserVisible: (visible: boolean) => ipcRenderer.invoke(IPC.browserSetVisible, visible),
+  setBrowserBounds: (bounds: BrowserBounds) => ipcRenderer.invoke(IPC.browserSetBounds, bounds),
+  onBrowserChanged: (cb) => subscribe(IPC.browserChanged, (s) => cb(s as BrowserState))
 }
 
 contextBridge.exposeInMainWorld('api', api)

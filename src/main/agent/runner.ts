@@ -5,6 +5,7 @@ import { ToolGate } from './guard'
 import { createFileTools } from './tools/file-tools'
 import { createSystemTools } from './tools/system-tools'
 import { createWebTools } from './tools/web-tools'
+import { createBrowserTools } from './tools/browser-tools'
 import { mergeAgentLayers } from './loader'
 import { runAgentLoop } from './loop'
 import { streamWithToolsOpenAI } from '../providers/openai-agent'
@@ -16,8 +17,21 @@ import { streamWithToolsAnthropic } from '../providers/anthropic-agent'
 /** 高危工具：内核默认工具集不下发；自定义 Agent 在 tools 里显式声明才会启用 */
 const DANGEROUS_TOOLS = new Set(['run_command'])
 
-/** 只读工具集：「只读」权限档下模型只能拿到这些（D-032：权限是上限，不是建议） */
-const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'search_files', 'fetch_url'])
+/**
+ * 只读工具集：「只读」权限档下模型只能拿到这些（D-032：权限是上限，不是建议）。
+ * 说明：权限档约束的是**本机文件系统**的写能力；浏览器类工具不写本机文件，故归入只读，
+ * 但在说明里标注它们会产生外部网络操作（点击/提交可能改变远端状态）。
+ */
+const READ_ONLY_TOOLS = new Set([
+  'read_file',
+  'list_dir',
+  'search_files',
+  'fetch_url',
+  'browser_navigate',
+  'browser_read_page',
+  'browser_click',
+  'browser_type'
+])
 
 /**
  * 按权限档求工具上限（纯函数，可单测）。
@@ -36,7 +50,12 @@ export function allowedToolsFor(preset: PermissionPreset, declared: string[] | u
 }
 
 export function createAllTools(workspaceRoot: string): AgentTool[] {
-  return [...createFileTools(workspaceRoot), ...createSystemTools(workspaceRoot), ...createWebTools()]
+  return [
+    ...createFileTools(workspaceRoot),
+    ...createSystemTools(workspaceRoot),
+    ...createWebTools(),
+    ...createBrowserTools()
+  ]
 }
 
 export interface AgentRuntimeContext {
