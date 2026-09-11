@@ -3,6 +3,7 @@ import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
 import MessageMarkdown from '../components/MessageMarkdown'
 import InputConsole from '../components/InputConsole'
+import TodoPanel from '../components/TodoPanel'
 
 // 对话页（D-032：单一通道）——不再有"对话/Agent 模式"开关：
 // 用不用工具由模型自己决定；界面负责**让过程可见**（工具执行卡片）。
@@ -38,11 +39,15 @@ export default function ChatView() {
     const offDone = window.api.onChatDone(() => useAppStore.getState().markDone())
     const offError = window.api.onChatError((m) => useAppStore.getState().markError(m))
     const offTool = window.api.onChatTool((evt) => useAppStore.getState().pushToolEvent(evt))
+    const offTodos = window.api.onTodoChanged((todos) => useAppStore.getState().setTodos(todos))
+    // 挂载时补拉一次：清单存在主进程，切走再回来不该是空的
+    void window.api.getTodos().then((todos) => useAppStore.getState().setTodos(todos))
     return () => {
       offChunk()
       offDone()
       offError()
       offTool()
+      offTodos()
     }
   }, [])
 
@@ -114,6 +119,8 @@ export default function ChatView() {
       </div>
 
       <div className="chat-input">
+        {/* 待办清单在输入框**上方**（用户 2026-09-12 意见，形制对齐 DSH）；清单为空时自己隐藏 */}
+        <TodoPanel />
         <InputConsole
           value={input}
           onChange={setInput}

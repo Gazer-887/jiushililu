@@ -2819,3 +2819,97 @@ body[data-resizing] {
   font-size: var(--fs-xs);
   color: var(--muted);
 }
+
+/* ── 待办清单面板（plan7 批 D 提前落地，2026-09-12 用户意见）────────────
+   形态对齐 DSH：输入框上方的独立卡片，可折叠，标题右侧一句统计。
+   状态用符号表示而非色块 —— ✓ 已完成（退到背景）· ● 进行中（当前焦点）· ○ 待处理 */
+
+.todo-panel {
+  margin-bottom: var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.todo-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  width: 100%;
+  padding: var(--sp-8) var(--sp-12);
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.todo-head:hover {
+  background: var(--bg);
+}
+
+.todo-title {
+  font-size: var(--fs-base);
+  color: var(--text);
+}
+
+.todo-stats {
+  flex: 1;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.todo-caret {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.todo-list {
+  max-height: 160px;
+  overflow-y: auto;
+  padding: var(--sp-4) var(--sp-12) var(--sp-8);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-8);
+}
+
+.todo-mark {
+  flex-shrink: 0;
+  width: 12px;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  text-align: center;
+}
+
+.todo-text {
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text);
+}
+
+/* 已完成：退到背景（灰 + 删除线）—— 当前进行的那一件才是焦点 */
+.todo-completed .todo-mark,
+.todo-completed .todo-text {
+  color: var(--muted);
+}
+
+.todo-completed .todo-text {
+  text-decoration: line-through;
+}
+
+.todo-in_progress .todo-mark {
+  color: var(--accent);
+}
+
+.todo-pending .todo-mark,
+.todo-pending .todo-text {
+  color: var(--muted);
+}

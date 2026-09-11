@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ToolEvent } from '@shared/agent'
+import type { TodoItem } from '@shared/todo'
 import {
   IPC,
   type AgentRunRequest,
@@ -80,7 +81,10 @@ const api: ApiBridge = {
   resetUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsReset),
   // ── 工作区文件树（plan7 批 A，只读）──
   listWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsList, rel),
-  readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel)
+  readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel),
+  // ── 待办清单（plan7 批 D 提前落地）──
+  getTodos: () => ipcRenderer.invoke(IPC.todoGet),
+  onTodoChanged: (cb) => subscribe(IPC.todoChanged, (todos) => cb(todos as TodoItem[]))
 }
 
 contextBridge.exposeInMainWorld('api', api)

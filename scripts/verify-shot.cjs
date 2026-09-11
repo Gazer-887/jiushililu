@@ -40,7 +40,17 @@ const settingsView = {
   apiKeyMasked: 'sk-***'
 }
 
+const FAKE_TODOS = [
+  { id: 't1', text: '读取工作区里的紫水晶采购清单', status: 'completed' },
+  { id: 't2', text: '汇总各品类数量并核对单位', status: 'completed' },
+  { id: 't3', text: '生成采购建议文档', status: 'in_progress' },
+  { id: 't4', text: '把结果写入工作区并回报', status: 'pending' }
+]
+
 const STUBS = {
+  // 待办清单（plan7 批 D）：界面挂载时会拉一次，故这里给一份样例 ——
+  // 验证的是**面板渲染与位置**，不是 Agent 会不会调 update_todos（那要真机跑）
+  'todo:get': () => FAKE_TODOS,
   'settings:get': () => settingsView,
   'settings:save': () => settingsView,
   'settings:test': () => ({ ok: true, message: 'ok' }),
@@ -253,6 +263,68 @@ app.whenReady().then(async () => {
 
   await enterChat()
   const m1 = await measure()
+
+  // —— 待办清单面板（plan7 批 D：输入框上方的任务栏）——
+  const todoInfo = await win.webContents.executeJavaScript(`
+    (() => {
+      const panel = document.querySelector('.todo-panel');
+      const cons = document.querySelector('.console');
+      const items = Array.from(document.querySelectorAll('.todo-item'));
+      const rect = (el) => {
+        const r = el.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) };
+      };
+      return {
+        hasPanel: !!panel,
+        panel: panel ? rect(panel) : null,
+        // 关键：面板必须在输入框**上方**（用户明确要求的形态）
+        aboveConsole:
+          panel && cons
+            ? panel.getBoundingClientRect().bottom <= cons.getBoundingClientRect().top + 1
+            : false,
+        title: document.querySelector('.todo-title')?.textContent?.trim() ?? null,
+        stats: document.querySelector('.todo-stats')?.textContent?.trim() ?? null,
+        count: items.length,
+        marks: items.map((el) => el.querySelector('.todo-mark')?.textContent?.trim() ?? null),
+        classes: items.map((el) => el.className),
+        texts: items.map((el) => el.querySelector('.todo-text')?.textContent?.trim() ?? null)
+      };
+    })()
+  `)
+  console.log('TODO_PANEL=' + JSON.stringify(todoInfo))
+  // 等一帧再拍：面板是"挂载 → 异步拉清单 → 渲染"三步出来的，
+  // 量完立刻 capturePage 可能拿到合成之前的那一帧（实测踩到：拍出来是空画面）
+  await new Promise((r) => setTimeout(r, 500))
+  const shotTodo = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-todo.png'), shotTodo.toPNG())
+
+  // 折叠：点标题 → 列表消失、面板变矮（DSH 的那个 chevron 行为）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const head = document.querySelector('.todo-head');
+      if (head) head.click();
+      return !!head;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const todoCollapsed = await win.webContents.executeJavaScript(`
+    (() => ({
+      listGone: !document.querySelector('.todo-list'),
+      expanded: document.querySelector('.todo-head')?.getAttribute('aria-expanded') ?? null,
+      panelH: Math.round(document.querySelector('.todo-panel')?.getBoundingClientRect().height ?? 0)
+    }))()
+  `)
+  console.log('TODO_COLLAPSE=' + JSON.stringify(todoCollapsed))
+
+  // 展开回来（后续截图别停在折叠态）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const head = document.querySelector('.todo-head');
+      if (head) head.click();
+      return !!head;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
 
   // 顶栏是否还挂着「新建任务」/ 对话页空状态文案（用户 2026-09-12 两条意见）
   const textCheck = await win.webContents.executeJavaScript(`

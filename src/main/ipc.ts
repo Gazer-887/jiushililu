@@ -41,6 +41,7 @@ import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import type { AgentMessage } from '@shared/agent'
+import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
 import { readGitInfo } from './store/git-info'
@@ -70,6 +71,13 @@ import {
 const activeChats = new Map<number, AbortController>()
 /** Agent 循环并发闸（按窗口）：同时只允许一个 Agent 任务 */
 const activeAgents = new Set<number>()
+
+/**
+ * 当前待办清单（plan7 批 D 提前落地）：**主进程内存态，不落盘** ——
+ * 它表达的是"这一轮干到哪了"的即时视图，不是历史数据，重开应用从空开始符合直觉。
+ * 存主进程而非渲染端：界面会随视图切换重挂载，清单不该跟着丢。
+ */
+let currentTodos: TodoItem[] = []
 
 const log = createLogger('ipc')
 
@@ -187,6 +195,11 @@ export function registerIpcHandlers(deps: {
         onToolEvent: (evt) => {
           if (!e.sender.isDestroyed()) e.sender.send(IPC.chatTool, evt)
         },
+        // 待办清单（plan7 批 D）：先存主进程，再推给界面 —— 界面重挂载后仍能拉到
+        onTodos: (todos) => {
+          currentTodos = todos
+          if (!e.sender.isDestroyed()) e.sender.send(IPC.todoChanged, todos)
+        },
         signal: controller.signal
       })
       // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
@@ -213,6 +226,9 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.chatAbort, (e) => {
     activeChats.get(e.sender.id)?.abort()
   })
+
+  // 待办清单：界面挂载时拉一次当前值（之后靠 chatSend 里的推送更新）
+  ipcMain.handle(IPC.todoGet, (): TodoItem[] => currentTodos)
 
   // Agent 模式（plan6 D3/D4）：独立上下文 + 单次报告，不走流式
   const agentRunInput = z.object({

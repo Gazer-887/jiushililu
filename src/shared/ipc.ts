@@ -1,6 +1,7 @@
 // 主 / 渲染进程共享的 IPC 通道定义与类型 —— 两边类型都从这里引用，唯一来源。
 
 import type { UIPrefs } from './splitter'
+import type { TodoItem } from './todo'
 import type { FsListResult, FsReadResult } from './fs-tree'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
@@ -243,6 +244,11 @@ export const IPC = {
   uiPrefsGet: 'ui-prefs:get',
   uiPrefsSet: 'ui-prefs:set',
   uiPrefsReset: 'ui-prefs:reset',
+  // ── 待办清单（plan7 批 D 提前落地）──
+  /** 主进程 → 界面：Agent 更新了清单 */
+  todoChanged: 'todo:changed',
+  /** 界面 → 主进程：组件挂载时拉一次当前清单 */
+  todoGet: 'todo:get',
   // ── 工作区文件树（plan7 批 A，只读）──
   fsList: 'fs:list',
   fsRead: 'fs:read'
@@ -253,6 +259,9 @@ export type { UIPrefs } from './splitter'
 
 /** 工作区文件树（plan7 批 A）—— 定义见 @shared/fs-tree */
 export type { FsEntry, FsListResult, FsReadResult } from './fs-tree'
+
+/** 待办清单（plan7 批 D 提前落地）—— 定义见 @shared/todo */
+export type { TodoItem, TodoStatus, TodoStats } from './todo'
 
 /**
  * 危险操作确认请求（plan8 R5）。
@@ -349,4 +358,8 @@ export interface ApiBridge {
   listWorkspaceDir(rel: string): Promise<FsListResult>
   /** 读文件内容用于预览（限 256KB，超限截断并告知） */
   readWorkspaceFile(rel: string): Promise<FsReadResult>
+  // ── 待办清单（plan7 批 D 提前落地）──
+  /** 当前清单：组件挂载时拉一次，之后靠 onTodoChanged 推送 */
+  getTodos(): Promise<TodoItem[]>
+  onTodoChanged(cb: (todos: TodoItem[]) => void): () => void
 }
