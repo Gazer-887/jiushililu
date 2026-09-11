@@ -2,11 +2,13 @@ import { useAppStore, type DockTab } from '../store'
 import BrowserPanel from './BrowserPanel'
 import ChangesPanel from './ChangesPanel'
 import ExplorerPanel from './ExplorerPanel'
+import TasksPanel from './TasksPanel'
 
 // 右侧工作台（抽屉，P2）：六个面板都装在这里（D-034）。
 // 已实现：资源管理器（只读文件树，批 A）/ 文件变更记录（检查点与回滚，plan8 R4）/
-//         浏览器（真浏览器，Agent 可操控）
-// 待实现：源代码管理 / 终端 / 任务管理
+//         浏览器（真浏览器，Agent 可操控）/ 任务（子代理运行记录，plan7 批 D）
+// 待实现：源代码管理 / 终端；
+//         任务页签的「后台任务」区待内核支持（run_command 目前是 30s 超时的同步执行）
 // 结构原则：主区域永远只负责"对话"，新增能力一律往两侧抽屉挂，不挤占对话空间。
 
 const TABS: Array<{ id: DockTab; label: string; short: string }> = [
@@ -86,9 +88,13 @@ export default function RightDock({ width }: { width: number }): JSX.Element {
         {dockOpen && dockTab === 'browser' && <BrowserPanel />}
         {dockOpen && dockTab === 'changes' && <ChangesPanel />}
         {dockOpen && dockTab === 'explorer' && <ExplorerPanel />}
+        {dockOpen && dockTab === 'tasks' && <TasksPanel />}
         {!(
           dockOpen &&
-          (dockTab === 'browser' || dockTab === 'changes' || dockTab === 'explorer')
+          (dockTab === 'browser' ||
+            dockTab === 'changes' ||
+            dockTab === 'explorer' ||
+            dockTab === 'tasks')
         ) && (
           <div className="dock-placeholder">
             <div className="dock-ph-title">{info.title}</div>

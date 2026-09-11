@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ToolEvent } from '@shared/agent'
+import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import {
   IPC,
@@ -84,7 +84,11 @@ const api: ApiBridge = {
   readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel),
   // ── 待办清单（plan7 批 D 提前落地）──
   getTodos: () => ipcRenderer.invoke(IPC.todoGet),
-  onTodoChanged: (cb) => subscribe(IPC.todoChanged, (todos) => cb(todos as TodoItem[]))
+  onTodoChanged: (cb) => subscribe(IPC.todoChanged, (todos) => cb(todos as TodoItem[])),
+  // ── 子代理运行（plan7 批 D）──
+  getSubagents: () => ipcRenderer.invoke(IPC.subagentGet),
+  onSubagentChanged: (cb) =>
+    subscribe(IPC.subagentChanged, (list) => cb(list as SubagentJobEvent[]))
 }
 
 contextBridge.exposeInMainWorld('api', api)

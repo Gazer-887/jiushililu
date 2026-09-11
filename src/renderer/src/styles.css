@@ -2913,3 +2913,110 @@ body[data-resizing] {
 .todo-pending .todo-text {
   color: var(--muted);
 }
+
+/* ── 右栏「任务」页签：子代理运行记录（plan7 批 D）────────────────── */
+
+.tasks-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  padding: var(--sp-12);
+}
+
+.tasks-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+}
+
+.tasks-title {
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+
+.tasks-sub {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.tasks-empty {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-loose);
+  color: var(--muted);
+}
+
+.tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.task-item {
+  display: flex;
+  gap: var(--sp-8);
+  padding: var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+/* 状态点：进行中用墨色实心（当前焦点），失败用朱砂，完成退成灰 */
+.task-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.task-start .task-dot {
+  background: var(--accent);
+}
+
+.task-error .task-dot {
+  background: var(--danger);
+}
+
+.task-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.task-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+}
+
+.task-name {
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+
+.task-status {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.task-task {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 结果可能多行：限高可滚，别把整个面板撑变形 */
+.task-result {
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

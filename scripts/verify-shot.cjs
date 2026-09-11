@@ -47,10 +47,44 @@ const FAKE_TODOS = [
   { id: 't4', text: '把结果写入工作区并回报', status: 'pending' }
 ]
 
+const FAKE_SUBAGENTS = [
+  {
+    runId: 'sub-fake',
+    name: 'reviewer',
+    index: 0,
+    phase: 'end',
+    task: '审阅 src/main 下的文件，指出错误处理上的问题',
+    startedAt: 1000,
+    endedAt: 4200,
+    rounds: 3,
+    summary: '发现 2 处未捕获异常，已在报告中列出。'
+  },
+  {
+    runId: 'sub-fake',
+    name: 'planner',
+    index: 1,
+    phase: 'start',
+    task: '把这批需求拆成可执行的步骤',
+    startedAt: 5000
+  },
+  {
+    runId: 'sub-fake',
+    name: 'reviewer',
+    index: 2,
+    phase: 'error',
+    task: '审阅构建脚本',
+    startedAt: 1000,
+    endedAt: 2100,
+    error: '模型通道超时'
+  }
+]
+
 const STUBS = {
   // 待办清单（plan7 批 D）：界面挂载时会拉一次，故这里给一份样例 ——
   // 验证的是**面板渲染与位置**，不是 Agent 会不会调 update_todos（那要真机跑）
   'todo:get': () => FAKE_TODOS,
+  // 子代理运行记录（plan7 批 D）：同上，覆盖 start / end / error 三种渲染分支
+  'subagent:get': () => FAKE_SUBAGENTS,
   'settings:get': () => settingsView,
   'settings:save': () => settingsView,
   'settings:test': () => ({ ok: true, message: 'ok' }),
@@ -848,6 +882,34 @@ app.whenReady().then(async () => {
       return !!gear;
     })()
   `)
+  // —— 右栏「任务」页签：子代理运行记录（plan7 批 D）——
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const tab = Array.from(document.querySelectorAll('.dock-tab'))
+        .find((b) => b.textContent.trim() === '任务');
+      if (tab) tab.click();
+      return !!tab;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  const tasksState = await win.webContents.executeJavaScript(`
+    (() => {
+      const items = Array.from(document.querySelectorAll('.task-item'));
+      return {
+        hasPanel: !!document.querySelector('.tasks-panel'),
+        head: document.querySelector('.tasks-title')?.textContent?.trim() ?? null,
+        sub: document.querySelector('.tasks-sub')?.textContent?.trim() ?? null,
+        count: items.length,
+        names: items.map((e) => e.querySelector('.task-name')?.textContent?.trim() ?? null),
+        statuses: items.map((e) => e.querySelector('.task-status')?.textContent?.trim() ?? null),
+        classes: items.map((e) => e.className),
+        hasResult: items.map((e) => !!e.querySelector('.task-result'))
+      };
+    })()
+  `)
+  const shotTasks = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-tasks.png'), shotTasks.toPNG())
+
   await new Promise((r) => setTimeout(r, 900))
 
   // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
@@ -949,6 +1011,7 @@ app.whenReady().then(async () => {
   console.log('EXPLORER_ROOT=' + JSON.stringify(explorerRoot))
   console.log('EXPLORER_EXPANDED=' + JSON.stringify(afterExpand))
   console.log('EXPLORER_PREVIEW=' + JSON.stringify(previewState))
+  console.log('TASKS_PANEL=' + JSON.stringify(tasksState))
   console.log('THEME_BEFORE=' + JSON.stringify(themeBefore))
   console.log('THEME_AFTER=' + JSON.stringify(themeAfter))
   console.log('NEWTASK_CENTER=' + JSON.stringify(centerCheck))

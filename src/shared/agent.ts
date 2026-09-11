@@ -49,6 +49,29 @@ export interface ToolEvent {
 
 export type AgentStopReason = 'completed' | 'max-rounds'
 
+/**
+ * 子代理运行事件（plan7 批 D：右栏「任务」页签要显示"谁在跑、跑了几轮、结果如何"）。
+ * 光有最终结果数组不够 —— 得在开始/结束时各报一次，界面才有"进行中"可言。
+ */
+export interface SubagentJobEvent {
+  /** 一次 spawn 调用 = 一个 runId，同批的子代理归到一组 */
+  runId: string
+  /** 子代理定义名 */
+  name: string
+  /** 在本次批次里的序号 */
+  index: number
+  phase: 'start' | 'end' | 'error'
+  /** 派给它的任务（已截断，界面显示一行） */
+  task: string
+  startedAt: number
+  endedAt?: number
+  /** 跑了几个工具轮（仅 end 时有意义） */
+  rounds?: number
+  /** 结果摘要（已截断） */
+  summary?: string
+  error?: string
+}
+
 export interface AgentLoopResult {
   /** 最终文本输出（模型最后一次的文本回复；超预算时为最后一次已知文本） */
   output: string

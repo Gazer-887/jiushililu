@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { ChatMessage, ConversationCreateInput, ConversationMeta, SettingsView } from '@shared/ipc'
-import type { ToolEvent } from '@shared/agent'
+import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { estimateMessageTokens } from '@shared/tokens'
 import {
@@ -80,6 +80,9 @@ interface AppState {
   /** 待办清单（plan7 批 D）：Agent 用 update_todos 维护，界面显示在输入框上方 */
   todos: TodoItem[]
   setTodos: (todos: TodoItem[]) => void
+  /** 最近一批子代理运行事件（plan7 批 D：右栏「任务」页签） */
+  subagents: SubagentJobEvent[]
+  setSubagents: (list: SubagentJobEvent[]) => void
   appendChunk: (text: string) => void
   markDone: () => void
   markError: (message: string) => void
@@ -232,10 +235,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   streamError: null,
   toolEvents: [],
   todos: [],
+  subagents: [],
 
   clearToolEvents: () => set({ toolEvents: [] }),
 
   setTodos: (todos) => set({ todos }),
+
+  setSubagents: (list) => set({ subagents: list }),
 
   pushToolEvent: (evt) =>
     set((s) => {

@@ -40,7 +40,7 @@ import { listWorkspaceDir, readWorkspaceFile } from './workspace-fs'
 import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
-import type { AgentMessage } from '@shared/agent'
+import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
@@ -78,6 +78,14 @@ const activeAgents = new Set<number>()
  * 存主进程而非渲染端：界面会随视图切换重挂载，清单不该跟着丢。
  */
 let currentTodos: TodoItem[] = []
+
+/**
+ * 最近一批子代理的运行事件（plan7 批 D）：同一 runId 内按 name+index **就地更新** ——
+ * start 先落一条，end/error 到了覆盖它（与界面里"进行中 → 已完成"是同一件事）。
+ * 换批次（新 runId）则清空重来：界面显示的是"当前这批"，不是历史台账。
+ */
+let subagentEvents: SubagentJobEvent[] = []
+let subagentRunId: string | null = null
 
 const log = createLogger('ipc')
 
@@ -200,6 +208,19 @@ export function registerIpcHandlers(deps: {
           currentTodos = todos
           if (!e.sender.isDestroyed()) e.sender.send(IPC.todoChanged, todos)
         },
+        // 子代理事件（plan7 批 D）：同批内就地更新，换批则重开
+        onSubagentEvent: (evt) => {
+          if (subagentRunId !== evt.runId) {
+            subagentRunId = evt.runId
+            subagentEvents = []
+          }
+          const idx = subagentEvents.findIndex((x) => x.name === evt.name && x.index === evt.index)
+          const next = subagentEvents.slice()
+          if (idx >= 0) next[idx] = evt
+          else next.push(evt)
+          subagentEvents = next
+          if (!e.sender.isDestroyed()) e.sender.send(IPC.subagentChanged, subagentEvents)
+        },
         signal: controller.signal
       })
       // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
@@ -229,6 +250,7 @@ export function registerIpcHandlers(deps: {
 
   // 待办清单：界面挂载时拉一次当前值（之后靠 chatSend 里的推送更新）
   ipcMain.handle(IPC.todoGet, (): TodoItem[] => currentTodos)
+  ipcMain.handle(IPC.subagentGet, (): SubagentJobEvent[] => subagentEvents)
 
   // Agent 模式（plan6 D3/D4）：独立上下文 + 单次报告，不走流式
   const agentRunInput = z.object({

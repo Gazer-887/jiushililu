@@ -2,6 +2,7 @@
 
 import type { UIPrefs } from './splitter'
 import type { TodoItem } from './todo'
+import type { SubagentJobEvent } from './agent'
 import type { FsListResult, FsReadResult } from './fs-tree'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
@@ -249,6 +250,11 @@ export const IPC = {
   todoChanged: 'todo:changed',
   /** 界面 → 主进程：组件挂载时拉一次当前清单 */
   todoGet: 'todo:get',
+  // ── 子代理运行（plan7 批 D：右栏「任务」页签）──
+  /** 主进程 → 界面：子代理批次状态变化（谁在跑、跑了几轮、结果如何） */
+  subagentChanged: 'subagent:changed',
+  /** 界面 → 主进程：挂载时拉一次 */
+  subagentGet: 'subagent:get',
   // ── 工作区文件树（plan7 批 A，只读）──
   fsList: 'fs:list',
   fsRead: 'fs:read'
@@ -262,6 +268,9 @@ export type { FsEntry, FsListResult, FsReadResult } from './fs-tree'
 
 /** 待办清单（plan7 批 D 提前落地）—— 定义见 @shared/todo */
 export type { TodoItem, TodoStatus, TodoStats } from './todo'
+
+/** 子代理运行事件（plan7 批 D）—— 定义见 @shared/agent */
+export type { SubagentJobEvent } from './agent'
 
 /**
  * 危险操作确认请求（plan8 R5）。
@@ -362,4 +371,8 @@ export interface ApiBridge {
   /** 当前清单：组件挂载时拉一次，之后靠 onTodoChanged 推送 */
   getTodos(): Promise<TodoItem[]>
   onTodoChanged(cb: (todos: TodoItem[]) => void): () => void
+  // ── 子代理运行（plan7 批 D：右栏「任务」页签）──
+  /** 最近一批子代理的运行事件（挂载时拉一次，之后靠推送） */
+  getSubagents(): Promise<SubagentJobEvent[]>
+  onSubagentChanged(cb: (list: SubagentJobEvent[]) => void): () => void
 }
