@@ -3,6 +3,7 @@ import { useAppStore } from './store'
 import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
 import RightDock from './components/RightDock'
+import ConfirmDialog from './components/ConfirmDialog'
 import ChatView from './views/ChatView'
 import NewSessionView from './views/NewSessionView'
 import SettingsView from './views/SettingsView'
@@ -43,6 +44,8 @@ export default function App() {
         </main>
         <RightDock />
       </div>
+      {/* 危险操作确认（plan8 R5）：全局只挂一个，主进程推请求即弹出 */}
+      <ConfirmDialog />
     </div>
   )
 }

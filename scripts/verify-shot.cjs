@@ -147,12 +147,19 @@ const STUBS = {
     failed: [],
     rejected: []
   })
+  // 注意：'confirm:respond' 不在这里 —— 需要记录收到的答复，单独注册（见下）
 }
 
 app.whenReady().then(async () => {
   for (const [channel, fn] of Object.entries(STUBS)) {
     ipcMain.handle(channel, () => fn())
   }
+
+  // 危险操作确认（plan8 R5）：记录界面回传的答复，用于判断点击是否真的生效
+  const confirmResponses = []
+  ipcMain.handle('confirm:respond', (_e, payload) => {
+    confirmResponses.push(payload)
+  })
 
   const win = new BrowserWindow({
     width: 1200,
@@ -342,6 +349,50 @@ app.whenReady().then(async () => {
   const shot5 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-rollback.png'), shot5.toPNG())
 
+  // —— 危险操作确认对话框（plan8 R5）：真推一次请求，真点一次 ──
+  // 用 webContents.send 模拟主进程推送（这就是真实链路：主进程 → preload → React）
+  win.webContents.send('confirm:request', {
+    id: 'probe-1',
+    tool: 'run_command',
+    detail: 'rm -rf build && npm run build',
+    agent: '内核默认',
+    where: 'D:\\jsllworkplace_for_test'
+  })
+  await new Promise((r) => setTimeout(r, 900))
+
+  const confirmShown = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.cf-box');
+      if (!box) return { shown: false };
+      const r = box.getBoundingClientRect();
+      return {
+        shown: true,
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        title: document.querySelector('.cf-title')?.textContent?.trim() ?? null,
+        tool: document.querySelector('.cf-tool')?.textContent?.trim() ?? null,
+        cmd: document.querySelector('.cf-cmd')?.textContent?.trim() ?? null,
+        note: document.querySelector('.cf-note')?.textContent?.trim() ?? null,
+        buttons: Array.from(document.querySelectorAll('.cf-btn')).map((b) => b.textContent.trim())
+      };
+    })()
+  `)
+  const shot6 = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-confirm.png'), shot6.toPNG())
+
+  // 点「允许这一次」→ 应把 {id:'probe-1', allowed:true} 回传主进程，并关闭对话框
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const go = document.querySelector('.cf-btn-go');
+      if (go) go.click();
+      return !!go;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const confirmClosed = await win.webContents.executeJavaScript(
+    `(() => ({ dialogGone: !document.querySelector('.cf-box') }))()`
+  )
+
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await win.webContents.executeJavaScript(`
     (() => {
@@ -376,6 +427,8 @@ app.whenReady().then(async () => {
   console.log('CHANGES_BEFORE=' + JSON.stringify(beforeRollback))
   console.log('CONFIRM_STEP=' + JSON.stringify(confirmStep))
   console.log('ROLLBACK_NOTICE=' + JSON.stringify(rollbackNotice))
+  console.log('CONFIRM_DIALOG=' + JSON.stringify(confirmShown))
+  console.log('CONFIRM_RESPONSES=' + JSON.stringify({ sent: confirmResponses, ...confirmClosed }))
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
   console.log('CSP_PROBE=' + JSON.stringify(cspProbe))

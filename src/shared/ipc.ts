@@ -230,8 +230,37 @@ export const IPC = {
   checkpointGet: 'checkpoint:get',
   checkpointRollback: 'checkpoint:rollback',
   /** 一轮运行结束后推送（界面据此刷新"文件变更"页签） */
-  checkpointChanged: 'checkpoint:changed'
+  checkpointChanged: 'checkpoint:changed',
+  // ── 危险操作逐次确认（plan8 R5）──
+  /** 主进程 → 界面：请求确认某次危险操作 */
+  confirmRequest: 'confirm:request',
+  /** 界面 → 主进程：回传答复 */
+  confirmRespond: 'confirm:respond'
 } as const
+
+/**
+ * 危险操作确认请求（plan8 R5）。
+ *
+ * 说明：权限档管"能碰什么"（粗粒度、事先设定），本机制管"这一次要不要"（细粒度、当场决定）。
+ * 两者是互补关系，不是替代关系。
+ */
+export interface ToolConfirmRequest {
+  /** 唯一 id，用于配对答复 */
+  id: string
+  /** 工具名（如 run_command） */
+  tool: string
+  /** 给人看的关键内容（如要执行的命令原文） */
+  detail: string
+  /** 发起方（内核默认 / 子代理名） */
+  agent: string
+  /** 会影响的位置（如工作区路径） */
+  where: string
+}
+
+export interface ToolConfirmResult {
+  id: string
+  allowed: boolean
+}
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
 export interface ApiBridge {
@@ -289,4 +318,9 @@ export interface ApiBridge {
   rollbackCheckpoint(runId: string, rel?: string): Promise<RollbackReport>
   /** 一轮运行结束后触发（界面刷新用） */
   onCheckpointChanged(cb: (runId: string) => void): () => void
+  // ── 危险操作逐次确认（plan8 R5）──
+  /** 收到确认请求（界面弹对话框） */
+  onToolConfirmRequest(cb: (req: ToolConfirmRequest) => void): () => void
+  /** 回传用户答复；无人应答时主进程超时按拒绝处理 */
+  respondToolConfirm(result: ToolConfirmResult): Promise<void>
 }

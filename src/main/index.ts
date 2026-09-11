@@ -5,6 +5,8 @@ import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
 import { installCrashGuards } from './crash-guard'
+import { createConfirmBridge } from './confirm'
+import { IPC } from '@shared/ipc'
 import {
   browserClick,
   browserCurrentUrl,
@@ -101,6 +103,19 @@ app.whenReady().then(() => {
 
   // 去掉默认的 File/Edit/View 菜单栏（P0 用不到，界面更干净）
   Menu.setApplicationMenu(null)
+
+  // 危险操作确认桥（plan8 R5）：推到当前窗口问用户。
+  // 注意用**惰性取窗口**（调用时才查），因为桥是在 createWindow 之前建的。
+  const confirm = createConfirmBridge({
+    send: (req) => {
+      const win = BrowserWindow.getAllWindows()[0]
+      if (!win || win.isDestroyed()) return false
+      win.webContents.send(IPC.confirmRequest, req)
+      return true
+    },
+    log: (message, extra) => log.info(message, extra)
+  })
+
   // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
   const agentCtx = createAgentContext({
     getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
@@ -109,9 +124,11 @@ app.whenReady().then(() => {
       : join(app.getAppPath(), 'resources/agents'),
     userAgentsDir: join(userDataDir, 'agents'),
     // 检查点（plan8 R4）：Agent 每轮改动前的文件快照存这里，供回滚
-    checkpointDir: join(userDataDir, 'checkpoints')
+    checkpointDir: join(userDataDir, 'checkpoints'),
+    // 危险操作确认（plan8 R5）：run_command 执行前问用户
+    confirmCommand: (req) => confirm.ask(req)
   })
-  registerIpcHandlers({ agent: agentCtx, userDataDir })
+  registerIpcHandlers({ agent: agentCtx, userDataDir, confirm })
   createWindow()
 
   // 内置浏览器：真 Chromium 视图，用户与 Agent 共用同一实例
@@ -140,6 +157,10 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  // 窗口全关时，把待决的危险操作确认按**拒绝**处理 ——
+  // 否则那个 Agent 会一直卡在等待上直到 60s 超时。
+  app.on('window-all-closed', () => confirm.abortAll('窗口已全部关闭'))
 })
 
 app.on('window-all-closed', () => {

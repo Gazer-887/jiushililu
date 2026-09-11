@@ -32,6 +32,7 @@ import {
 } from './store/settings'
 // createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
+import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import type { AgentMessage } from '@shared/agent'
@@ -105,7 +106,12 @@ function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): 
   return err instanceof Error ? err.message : String(err)
 }
 
-export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userDataDir: string }): void {
+export function registerIpcHandlers(deps: {
+  agent: AgentRuntimeContext
+  userDataDir: string
+  /** 危险操作确认桥（plan8 R5） */
+  confirm: ConfirmBridge
+}): void {
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
 
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
@@ -477,4 +483,14 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
       return report
     }
   )
+
+  // ── 危险操作逐次确认（plan8 R5）──────────────────────────────
+  // 界面回传用户答复；不认识该 id（过期/伪造）时静默忽略，避免误配到新请求。
+  ipcMain.handle(IPC.confirmRespond, (_e, raw: unknown): void => {
+    const parsed = z
+      .object({ id: z.string().min(1).max(64), allowed: z.boolean() })
+      .safeParse(raw)
+    if (!parsed.success) return
+    deps.confirm.respond(parsed.data)
+  })
 }

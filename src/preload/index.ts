@@ -9,7 +9,8 @@ import {
   type ChatMessage,
   type ConversationCreateInput,
   type PermissionPreset,
-  type SettingsSaveInput
+  type SettingsSaveInput,
+  type ToolConfirmRequest
 } from '@shared/ipc'
 
 // preload 是渲染进程唯一能碰系统能力的通道（银行柜台模型，见 DIARY 术语词典）。
@@ -69,7 +70,10 @@ const api: ApiBridge = {
   getCheckpoint: (runId: string) => ipcRenderer.invoke(IPC.checkpointGet, runId),
   rollbackCheckpoint: (runId: string, rel?: string) =>
     ipcRenderer.invoke(IPC.checkpointRollback, rel === undefined ? { runId } : { runId, rel }),
-  onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (id) => cb(id as string))
+  onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (id) => cb(id as string)),
+  // ── 危险操作逐次确认（plan8 R5）──
+  onToolConfirmRequest: (cb) => subscribe(IPC.confirmRequest, (req) => cb(req as ToolConfirmRequest)),
+  respondToolConfirm: (result) => ipcRenderer.invoke(IPC.confirmRespond, result)
 }
 
 contextBridge.exposeInMainWorld('api', api)

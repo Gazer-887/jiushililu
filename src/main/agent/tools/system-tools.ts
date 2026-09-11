@@ -20,7 +20,32 @@ function shouldSkipDir(name: string): boolean {
   return SKIP_DIRS.has(name) || name.startsWith('.')
 }
 
+/**
+ * 危险操作确认钩子（plan8 R5）：由调用方注入「是否允许执行这条命令」。
+ * 与检查点的 beforeWrite 同样用回调注入 —— 工具层不需要知道确认从哪来
+ * （主进程弹窗 / 测试里直接给答案），也让 CI 无 Electron 时照样能测。
+ *
+ * 不传 = 不确认（保持旧行为，测试与 CLI 场景需要）。
+ */
+export type CommandConfirm = (command: string) => Promise<boolean>
+
 export function createSystemTools(workspaceRoot: string): AgentTool[] {
+  const { list_dir, search_files, run_command } = buildSystemTools(workspaceRoot, undefined)
+  return [list_dir, search_files, run_command]
+}
+
+export function createSystemToolsWithConfirm(
+  workspaceRoot: string,
+  confirm: CommandConfirm
+): AgentTool[] {
+  const { list_dir, search_files, run_command } = buildSystemTools(workspaceRoot, confirm)
+  return [list_dir, search_files, run_command]
+}
+
+function buildSystemTools(
+  workspaceRoot: string,
+  confirm: CommandConfirm | undefined
+): { list_dir: AgentTool; search_files: AgentTool; run_command: AgentTool } {
   const list_dir: AgentTool = {
     schema: {
       name: 'list_dir',
@@ -131,6 +156,16 @@ export function createSystemTools(workspaceRoot: string): AgentTool[] {
     async execute(args) {
       const command = typeof args['command'] === 'string' ? args['command'] : ''
       if (command.trim().length === 0) return '错误：command 不能为空'
+
+      // 逐次确认（plan8 R5）：命令是任意文本，危险与否无法靠静态规则判全 ——
+      // 与其猜，不如把原文摊给用户看一眼。拒绝时返回明确的错误文本（模型能读懂并改道）。
+      if (confirm) {
+        const allowed = await confirm(command)
+        if (!allowed) {
+          return '错误：用户拒绝执行该命令。请改用其它方式完成任务，或向用户说明为何需要执行它。'
+        }
+      }
+
       return new Promise((resolvePromise) => {
         exec(
           command,
@@ -149,5 +184,5 @@ export function createSystemTools(workspaceRoot: string): AgentTool[] {
     }
   }
 
-  return [list_dir, search_files, run_command]
+  return { list_dir, search_files, run_command }
 }

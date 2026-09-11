@@ -2,8 +2,12 @@ import { mkdirSync } from 'node:fs'
 import type { ModelSettings, PermissionPreset, SkillInfo } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
 import { ToolGate } from './guard'
-import { createFileTools, type WriteRecorder } from './tools/file-tools'
-import { createSystemTools } from './tools/system-tools'
+import { createFileTools } from './tools/file-tools'
+import {
+  createSystemTools,
+  createSystemToolsWithConfirm,
+  type CommandConfirm
+} from './tools/system-tools'
 import { createWebTools } from './tools/web-tools'
 import { createBrowserTools } from './tools/browser-tools'
 import { mergeAgentLayers } from './loader'
@@ -51,13 +55,23 @@ export function allowedToolsFor(preset: PermissionPreset, declared: string[] | u
   return declared.filter((n) => ceilingSet.has(n))
 }
 
-export function createAllTools(workspaceRoot: string, recorder?: WriteRecorder): AgentTool[] {
+export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): AgentTool[] {
   return [
-    ...createFileTools(workspaceRoot, recorder),
-    ...createSystemTools(workspaceRoot),
+    ...createFileTools(workspaceRoot, hooks.recorder ? { beforeWrite: hooks.recorder } : undefined),
+    ...(hooks.confirmCommand
+      ? createSystemToolsWithConfirm(workspaceRoot, hooks.confirmCommand)
+      : createSystemTools(workspaceRoot)),
     ...createWebTools(),
     ...createBrowserTools()
   ]
+}
+
+/** 工具层的可注入钩子（检查点快照 / 危险操作确认） */
+export interface ToolHooks {
+  /** 写文件前的快照（plan8 R4） */
+  recorder?: (rel: string, abs: string) => void
+  /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
+  confirmCommand?: CommandConfirm
 }
 
 export interface AgentRuntimeContext {
@@ -69,6 +83,16 @@ export interface AgentRuntimeContext {
   userAgentsDir: string
   /** 检查点仓库（plan8 R4）：每轮 Agent 运行 = 一个可回滚的检查点 */
   checkpoints: CheckpointStore
+  /**
+   * 危险操作确认（plan8 R5）：由主进程注入（弹窗问用户）。
+   * 不注入 = 不确认（CLI / 单测场景），生产环境必须注入。
+   */
+  confirmCommand?: (req: {
+    tool: string
+    detail: string
+    agent: string
+    where: string
+  }) => Promise<boolean>
 }
 
 export function ensureAgentRuntime(ctx: AgentRuntimeContext): void {
@@ -136,7 +160,21 @@ export async function runAgent(
   const runId = ctx.checkpoints.begin(workspaceRoot, agentLabel)
 
   const allTools = createAllTools(workspaceRoot, {
-    beforeWrite: (rel, abs) => ctx.checkpoints.record(runId, workspaceRoot, rel, abs)
+    recorder: (rel, abs) => ctx.checkpoints.record(runId, workspaceRoot, rel, abs),
+    // 逐次确认（plan8 R5）：仅「可写」档需要 ——
+    //   · 只读档本就不下发 run_command，不会走到这里
+    //   · 完全访问档是用户明确选的"别拦我"，再弹窗等于把选择当儿戏
+    ...(ctx.confirmCommand && (args.permission ?? 'write') === 'write'
+      ? {
+          confirmCommand: (command: string) =>
+            ctx.confirmCommand!({
+              tool: 'run_command',
+              detail: command,
+              agent: agentLabel,
+              where: workspaceRoot
+            })
+        }
+      : {})
   })
   const allNames = allTools.map((t) => t.schema.name)
 
@@ -198,12 +236,20 @@ export function createAgentContext(opts: {
   userAgentsDir: string
   /** 检查点仓库目录（通常是 `userData/checkpoints`） */
   checkpointDir: string
+  /** 危险操作确认桥（plan8 R5）；不传 = 不确认 */
+  confirmCommand?: (req: {
+    tool: string
+    detail: string
+    agent: string
+    where: string
+  }) => Promise<boolean>
 }): AgentRuntimeContext {
   const ctx: AgentRuntimeContext = {
     getWorkspaceRoot: opts.getWorkspaceRoot,
     builtinAgentsDir: opts.builtinAgentsDir,
     userAgentsDir: opts.userAgentsDir,
-    checkpoints: createCheckpointStore(opts.checkpointDir)
+    checkpoints: createCheckpointStore(opts.checkpointDir),
+    ...(opts.confirmCommand ? { confirmCommand: opts.confirmCommand } : {})
   }
   ensureAgentRuntime(ctx)
   return ctx
