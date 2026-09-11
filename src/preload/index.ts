@@ -35,6 +35,7 @@ const api: ApiBridge = {
   chatSend: (messages: ChatMessage[]) => ipcRenderer.invoke(IPC.chatSend, messages),
   chatAbort: () => ipcRenderer.invoke(IPC.chatAbort),
   onChatChunk: (cb) => subscribe(IPC.chatChunk, (text) => cb(text as string)),
+  onChatReasoning: (cb) => subscribe(IPC.chatReasoning, (delta) => cb(delta as string)),
   onChatDone: (cb) => subscribe(IPC.chatDone, () => cb()),
   onChatError: (cb) => subscribe(IPC.chatError, (message) => cb(message as string)),
   onChatTool: (cb) => subscribe(IPC.chatTool, (evt) => cb(evt as ToolEvent)),

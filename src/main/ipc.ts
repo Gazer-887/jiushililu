@@ -203,6 +203,10 @@ export function registerIpcHandlers(deps: {
         onText: (delta) => {
           if (!e.sender.isDestroyed()) e.sender.send(IPC.chatChunk, delta)
         },
+        // 思考流单独走一条通道：界面把它显示成"思考过程"，不与正文混在一起
+        onReasoning: (delta) => {
+          if (!e.sender.isDestroyed()) e.sender.send(IPC.chatReasoning, delta)
+        },
         onToolEvent: (evt) => {
           if (!e.sender.isDestroyed()) e.sender.send(IPC.chatTool, evt)
         },

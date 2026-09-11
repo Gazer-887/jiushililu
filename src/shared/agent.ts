@@ -42,7 +42,13 @@ export interface AgentChatResult {
 export interface ToolEvent {
   id: string
   name: string
-  phase: 'start' | 'end' | 'error'
+  phase: 'start' | 'error' | 'end'
+  /**
+   * 这一步**在干什么**（从入参提取的一句人话，如 `src/main/index.ts`、`npm run build`）。
+   * 为什么要有：只有工具名时，界面只能显示干巴巴的「执行中…」——
+   * 用户看不到它到底在读哪个文件、跑哪条命令。
+   */
+  detail?: string
   /** phase=end/error 时的结果摘要（已截断，供界面显示） */
   summary?: string
 }

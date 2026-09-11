@@ -24,11 +24,14 @@ export default function ChatView() {
   const streaming = useAppStore((s) => s.streaming)
   const streamError = useAppStore((s) => s.streamError)
   const toolEvents = useAppStore((s) => s.toolEvents)
+  const reasoning = useAppStore((s) => s.reasoning)
   const sendMessage = useAppStore((s) => s.sendMessage)
   const stopStreaming = useAppStore((s) => s.stopStreaming)
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
   const [input, setInput] = useState('')
+  /** 思考块是否展开（默认展开：流式期能看见它在想什么，这才是"过程可见"） */
+  const [showReasoning, setShowReasoning] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
@@ -36,6 +39,9 @@ export default function ChatView() {
   // 流式与工具事件订阅：只在挂载时挂一次，卸载时清理
   useEffect(() => {
     const offChunk = window.api.onChatChunk((t) => useAppStore.getState().appendChunk(t))
+    const offReasoning = window.api.onChatReasoning((d) =>
+      useAppStore.getState().appendReasoning(d)
+    )
     const offDone = window.api.onChatDone(() => useAppStore.getState().markDone())
     const offError = window.api.onChatError((m) => useAppStore.getState().markError(m))
     const offTool = window.api.onChatTool((evt) => useAppStore.getState().pushToolEvent(evt))
@@ -48,6 +54,7 @@ export default function ChatView() {
       offError()
       offTool()
       offTodos()
+      offReasoning()
     }
   }, [])
 
@@ -97,6 +104,26 @@ export default function ChatView() {
           </div>
         ))}
 
+        {/* 思考过程（DeepSeek 系 reasoning_content）—— 与正文分开：它是过程，不是回答 */}
+        {reasoning && (
+          <div className="reasoning-block">
+            <button
+              className="reasoning-head"
+              onClick={() => setShowReasoning((v) => !v)}
+              aria-expanded={showReasoning}
+            >
+              <span className="reasoning-mark" aria-hidden="true">
+                ✻
+              </span>
+              思考过程
+              <span className="reasoning-caret" aria-hidden="true">
+                {showReasoning ? '▾' : '▸'}
+              </span>
+            </button>
+            {showReasoning && <pre className="reasoning-body">{reasoning}</pre>}
+          </div>
+        )}
+
         {/* 工具执行活动：执行中转圈，完成折叠一行，失败展开原因 */}
         {toolEvents.length > 0 && (
           <div className="tool-log">
@@ -107,7 +134,10 @@ export default function ChatView() {
                 </span>
                 <span className="tool-name">{e.name}</span>
                 <span className="tool-desc">
-                  {e.phase === 'start' ? '执行中…' : (e.summary ?? '')}
+                  {/* 执行中显示"在干什么"（入参摘要），结束后显示结果摘要 */}
+                  {e.phase === 'start'
+                    ? (e.detail || '执行中…')
+                    : (e.summary ?? e.detail ?? '')}
                 </span>
               </div>
             ))}

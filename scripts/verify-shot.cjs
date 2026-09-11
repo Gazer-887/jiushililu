@@ -367,6 +367,35 @@ app.whenReady().then(async () => {
   await enterChat()
   const m1 = await measure()
 
+  // —— 过程可见：工具调用详情 + 思考流（用户反馈「看不到执行和思考痕迹」）——
+  // 推送通道与真实运行时是同一条（webContents.send → preload → store → 组件），
+  // 只是数据由这里伪造：stub 环境跑不了真模型，但"推送→渲染→显示"这段是真跑的。
+  win.webContents.send('chat:tool', {
+    id: 'probe-tool',
+    name: 'read_file',
+    phase: 'start',
+    detail: 'src/main/index.ts'
+  })
+  win.webContents.send('chat:reasoning', '先看看入口文件怎么写的…')
+  await new Promise((r) => setTimeout(r, 600))
+  const processVisible = await win.webContents.executeJavaScript(`
+    (() => {
+      const tool = document.querySelector('.tool-item');
+      const rb = document.querySelector('.reasoning-block');
+      const pr = rb ? rb.getBoundingClientRect() : null;
+      return {
+        toolName: tool ? (tool.querySelector('.tool-name')?.textContent?.trim() ?? null) : null,
+        // 关键：显示的是"在干什么"（入参摘要），**不是**干巴巴的「执行中…」
+        toolDesc: tool ? (tool.querySelector('.tool-desc')?.textContent?.trim() ?? null) : null,
+        hasReasoning: !!rb,
+        reasoningLabel: rb ? (rb.querySelector('.reasoning-head')?.textContent?.trim() ?? null) : null,
+        reasoningText: rb ? (rb.querySelector('.reasoning-body')?.textContent?.trim() ?? null) : null,
+        reasoningVisible: pr ? pr.height > 0 && pr.top < window.innerHeight : false
+      };
+    })()
+  `)
+  console.log('PROCESS_VISIBLE=' + JSON.stringify(processVisible))
+
   // —— 待办清单面板（plan7 批 D：输入框上方的任务栏）——
   const todoInfo = await win.webContents.executeJavaScript(`
     (() => {

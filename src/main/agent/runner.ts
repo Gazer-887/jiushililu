@@ -188,6 +188,12 @@ export interface RunAgentArgs {
   permission?: PermissionPreset
   /** 文本增量回调（流式上屏） */
   onText?: (delta: string) => void
+  /**
+   * 思考增量回调（DeepSeek 系 `reasoning_content`）—— 界面上显示"思考过程"。
+   * 注：Anthropic 的 thinking 与 tools 互斥（见 anthropic-agent 注释），
+   * 故工具循环里拿不到思考流，这里只对 OpenAI 兼容协议生效。
+   */
+  onReasoning?: (delta: string) => void
   /** 工具执行生命周期回调（界面显示进度） */
   onToolEvent?: (evt: ToolEvent) => void
   /** 待办清单变化（界面在输入框上方显示） */
@@ -338,7 +344,15 @@ export async function runAgent(
     const signal = args.signal ?? AbortSignal.timeout(effective.timeoutMs)
     return effective.providerType === 'anthropic'
       ? streamWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, onText, signal)
-      : streamWithToolsOpenAI(effective, args.apiKey, messages, toolSchemas, onText, signal)
+      : streamWithToolsOpenAI(
+          effective,
+          args.apiKey,
+          messages,
+          toolSchemas,
+          onText,
+          signal,
+          args.onReasoning
+        )
   }
 
   let result: AgentLoopResult

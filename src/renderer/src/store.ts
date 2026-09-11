@@ -76,6 +76,13 @@ interface AppState {
   streamError: string | null
   /** 工具执行活动（D-032：界面显示"正在读 xx / 完成 / 失败"）——仅当前轮 */
   toolEvents: ToolEvent[]
+  /**
+   * 思考流（DeepSeek 系 `reasoning_content`）—— 与正文**分开**存：
+   * 它是过程不是回答，用户要看得到"它在想什么"，但不该混进消息内容里。
+   * 新一轮开始时清空（见 sendMessage）。
+   */
+  reasoning: string
+  appendReasoning: (delta: string) => void
   clearToolEvents: () => void
   pushToolEvent: (evt: ToolEvent) => void
   /** 待办清单（plan7 批 D）：Agent 用 update_todos 维护，界面显示在输入框上方 */
@@ -241,8 +248,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   todos: [],
   subagents: [],
   backgroundTasks: [],
+  reasoning: '',
 
   clearToolEvents: () => set({ toolEvents: [] }),
+
+  appendReasoning: (delta) => set((s) => ({ reasoning: s.reasoning + delta })),
 
   setTodos: (todos) => set({ todos }),
 
@@ -291,7 +301,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [...payload, { role: 'assistant', content: '' }],
       streaming: true,
       streamError: null,
-      toolEvents: [] // 新一轮，清掉上一轮的工具活动
+      toolEvents: [], // 新一轮，清掉上一轮的工具活动
+      reasoning: '' // 思考流同样新一轮重来
     })
     try {
       await window.api.chatSend(payload)

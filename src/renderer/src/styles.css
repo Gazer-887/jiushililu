@@ -3064,6 +3064,52 @@ body[data-resizing] {
   background: var(--danger);
 }
 
+/* ── 思考过程（DeepSeek 系 reasoning_content）────────────────────────
+   与正文**分开**显示：它是过程，不是回答。默认展开（流式期能看见它在想什么），
+   可折叠；灰字 + 等宽，视觉上退到背景 —— 主体仍是回答。 */
+.reasoning-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.reasoning-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 100%;
+  padding: var(--sp-4) var(--sp-8);
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.reasoning-head:hover {
+  color: var(--text);
+}
+
+.reasoning-caret {
+  margin-left: auto;
+}
+
+.reasoning-body {
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--sp-4) var(--sp-8) var(--sp-8);
+  font-family: var(--mono, monospace);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── 资源管理器：右键菜单与内联编辑（plan7 批 A2）────────────────── */
 
 .ex-menu {

@@ -1,4 +1,5 @@
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
+import { toolCallDetail } from '@shared/tool-detail'
 import { trimMessages, type TrimOptions } from './context'
 
 // Agent 主循环（plan6 → P1；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，
@@ -85,7 +86,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     for (const tc of res.toolCalls) {
       const tool = toolMap.get(tc.name)
-      opts.onToolEvent?.({ id: tc.id, name: tc.name, phase: 'start' })
+      // 带上「这一步在干什么」（从入参提取）——
+      // 否则界面只能显示干巴巴的「执行中…」，用户看不出它在读哪个文件、跑哪条命令
+      opts.onToolEvent?.({
+        id: tc.id,
+        name: tc.name,
+        phase: 'start',
+        detail: toolCallDetail(tc.name, tc.arguments)
+      })
 
       let output: string
       if (!tool) {

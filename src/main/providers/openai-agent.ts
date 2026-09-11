@@ -81,7 +81,9 @@ export async function streamWithToolsOpenAI(
   messages: AgentMessage[],
   tools: ToolSchema[],
   onText: (delta: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 思考增量（DeepSeek 系返回 `reasoning_content`）；不传 = 忽略 */
+  onReasoning?: (delta: string) => void
 ): Promise<AgentChatResult> {
   const res = await fetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
     method: 'POST',
@@ -102,11 +104,18 @@ export async function streamWithToolsOpenAI(
     try {
       const json = JSON.parse(data) as {
         choices?: Array<{
-          delta?: { content?: string; tool_calls?: Array<Record<string, unknown>> }
+          delta?: {
+            content?: string
+            /** DeepSeek 系（reasoner / v4）把思考放这里；OpenAI 系通常不返回内容 */
+            reasoning_content?: string
+            tool_calls?: Array<Record<string, unknown>>
+          }
         }>
       }
       const delta = json.choices?.[0]?.delta
       if (!delta) return
+      // 思考增量：**不进 text**，只外送 —— 它是过程，不是回答
+      if (delta.reasoning_content) onReasoning?.(delta.reasoning_content)
       if (delta.content) {
         text += delta.content
         onText(delta.content)

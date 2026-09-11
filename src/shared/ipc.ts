@@ -193,6 +193,8 @@ export const IPC = {
   chatSend: 'chat:send',
   chatAbort: 'chat:abort',
   chatChunk: 'chat:chunk',
+  /** 思考增量（与正文分开走：它是**过程**，不是回答） */
+  chatReasoning: 'chat:reasoning',
   chatDone: 'chat:done',
   chatError: 'chat:error',
   /** 工具执行生命周期（D-032：界面显示"正在读 xx / 完成 / 失败"） */
@@ -334,6 +336,8 @@ export interface ApiBridge {
   chatSend(messages: ChatMessage[]): Promise<void>
   chatAbort(): Promise<void>
   onChatChunk(cb: (text: string) => void): () => void
+  /** 思考增量（DeepSeek 系 reasoning_content）—— 界面显示"思考过程" */
+  onChatReasoning(cb: (delta: string) => void): () => void
   onChatDone(cb: () => void): () => void
   onChatError(cb: (message: string) => void): () => void
   onChatTool(cb: (evt: import('./agent').ToolEvent) => void): () => void
