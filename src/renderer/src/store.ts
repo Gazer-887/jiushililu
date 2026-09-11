@@ -203,16 +203,41 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.api.setModel(conv.model)
       await get().loadSettings()
     }
-    set({ activeId: id, messages: conv.messages, view: 'chat', streamError: null, streaming: false, toolEvents: [] })
+    set({
+      activeId: id,
+      messages: conv.messages,
+      view: 'chat',
+      streamError: null,
+      streaming: false,
+      toolEvents: [],
+      // 思考流也要清：它是**当前轮**的过程，切会话还留着就成了"上一个任务的幽灵"
+      reasoning: ''
+    })
   },
 
   newSession: () =>
-    set({ view: 'new', activeId: null, messages: [], streamError: null, toolEvents: [] }),
+    set({
+      view: 'new',
+      activeId: null,
+      messages: [],
+      streamError: null,
+      toolEvents: [],
+      reasoning: ''
+    }),
 
   createConversation: async (input) => {
     const conv = await window.api.createConversation(input)
     await get().loadConversations()
-    set({ activeId: conv.id, messages: conv.messages, view: 'chat', streamError: null })
+    // **这一处原本漏了**：新建任务不清过程状态 → 上一轮的工具卡片与思考残留在新会话里，
+    // 把界面占满、报告反倒看不见（用户实测反馈的真凶）
+    set({
+      activeId: conv.id,
+      messages: conv.messages,
+      view: 'chat',
+      streamError: null,
+      toolEvents: [],
+      reasoning: ''
+    })
     return conv.id
   },
 

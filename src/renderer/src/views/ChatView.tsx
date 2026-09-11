@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
 import MessageMarkdown from '../components/MessageMarkdown'
@@ -64,6 +64,63 @@ export default function ChatView() {
 
   const tokens = useMemo(() => usedTokens(messages), [messages])
 
+  /**
+   * 过程块插在哪条消息之前：**最后一条助手消息**（过程 → 结论，阅读顺序才对）。
+   * 没有助手消息时（刚进会话）退到"最后一条之前"，保证它不会凭空消失。
+   */
+  const insertAt = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.role === 'assistant') return i
+    }
+    return Math.max(0, messages.length - 1)
+  })()
+
+  /**
+   * 过程块（思考 + 工具活动）—— 渲染在**最后一条助手消息之前**。
+   *
+   * 为什么不堆在最下面：这些是发生在报告**之前**的过程，堆到末尾会把报告挤出视野 ——
+   * 一轮跑十几个工具时，界面几乎全被卡片占满、真正的结论反而看不见（用户实测反馈）。
+   */
+  const processBlock = (
+    <>
+      {reasoning && (
+        <div className="reasoning-block">
+          <button
+            className="reasoning-head"
+            onClick={() => setShowReasoning((v) => !v)}
+            aria-expanded={showReasoning}
+          >
+            <span className="reasoning-mark" aria-hidden="true">
+              ✻
+            </span>
+            思考过程
+            <span className="reasoning-caret" aria-hidden="true">
+              {showReasoning ? '▾' : '▸'}
+            </span>
+          </button>
+          {showReasoning && <pre className="reasoning-body">{reasoning}</pre>}
+        </div>
+      )}
+
+      {toolEvents.length > 0 && (
+        <div className="tool-log">
+          {toolEvents.map((e) => (
+            <div key={e.id} className={`tool-item tool-${e.phase}`}>
+              <span className="tool-icon">
+                {e.phase === 'start' ? '◌' : e.phase === 'end' ? '✓' : '✗'}
+              </span>
+              <span className="tool-name">{e.name}</span>
+              <span className="tool-desc">
+                {/* 执行中显示"在干什么"（入参摘要），结束后显示结果摘要 */}
+                {e.phase === 'start' ? (e.detail || '执行中…') : (e.summary ?? e.detail ?? '')}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+
   const submit = async (attachments: Attachment[]): Promise<void> => {
     const raw = input
     if (!raw.trim() && attachments.length === 0) return
@@ -92,57 +149,24 @@ export default function ChatView() {
           与首屏的分工：首屏是"门面"（有文案/水印），进入对话后是"工作面"（留白，专注内容）。
         */}
         {messages.map((m, i) => (
-          <div key={i} className={`msg msg-${m.role}`}>
-            <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>
-            <div className="msg-content">
-              {m.role === 'assistant' && m.content ? (
-                <MessageMarkdown content={m.content} />
-              ) : (
-                m.content || (streaming && i === messages.length - 1 ? '…' : '')
-              )}
+          <Fragment key={i}>
+            {/* 过程块插在最后一条助手消息**之前**：过程 → 结论，阅读顺序才对 */}
+            {i === insertAt && processBlock}
+            <div className={`msg msg-${m.role}`}>
+              <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>
+              <div className="msg-content">
+                {m.role === 'assistant' && m.content ? (
+                  <MessageMarkdown content={m.content} />
+                ) : (
+                  m.content || (streaming && i === messages.length - 1 ? '…' : '')
+                )}
+              </div>
             </div>
-          </div>
+          </Fragment>
         ))}
 
-        {/* 思考过程（DeepSeek 系 reasoning_content）—— 与正文分开：它是过程，不是回答 */}
-        {reasoning && (
-          <div className="reasoning-block">
-            <button
-              className="reasoning-head"
-              onClick={() => setShowReasoning((v) => !v)}
-              aria-expanded={showReasoning}
-            >
-              <span className="reasoning-mark" aria-hidden="true">
-                ✻
-              </span>
-              思考过程
-              <span className="reasoning-caret" aria-hidden="true">
-                {showReasoning ? '▾' : '▸'}
-              </span>
-            </button>
-            {showReasoning && <pre className="reasoning-body">{reasoning}</pre>}
-          </div>
-        )}
-
-        {/* 工具执行活动：执行中转圈，完成折叠一行，失败展开原因 */}
-        {toolEvents.length > 0 && (
-          <div className="tool-log">
-            {toolEvents.map((e) => (
-              <div key={e.id} className={`tool-item tool-${e.phase}`}>
-                <span className="tool-icon">
-                  {e.phase === 'start' ? '◌' : e.phase === 'end' ? '✓' : '✗'}
-                </span>
-                <span className="tool-name">{e.name}</span>
-                <span className="tool-desc">
-                  {/* 执行中显示"在干什么"（入参摘要），结束后显示结果摘要 */}
-                  {e.phase === 'start'
-                    ? (e.detail || '执行中…')
-                    : (e.summary ?? e.detail ?? '')}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* 没有消息时（刚进会话）过程块自己挂在末尾 —— 否则它会凭空消失 */}
+        {messages.length === 0 && processBlock}
 
         {streamError && <div className="chat-error">{streamError}</div>}
         <div ref={bottomRef} />

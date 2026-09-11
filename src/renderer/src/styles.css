@@ -3067,10 +3067,20 @@ body[data-resizing] {
 /* ── 思考过程（DeepSeek 系 reasoning_content）────────────────────────
    与正文**分开**显示：它是过程，不是回答。默认展开（流式期能看见它在想什么），
    可折叠；灰字 + 等宽，视觉上退到背景 —— 主体仍是回答。 */
+/* 消息流的直接子元素**不许被压缩** ——
+   .chat-messages 是 flex 容器，空间不足时子项会被挤扁（flex-shrink 默认为 1）。
+   实测踩到：思考块被压成 4px 高，几何上"存在"、视觉上完全消失。
+   正确行为是**容器滚动**，而不是把内容压没。 */
+.chat-messages > * {
+  flex-shrink: 0;
+}
+
 .reasoning-block {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg);
+  /* 必须用 --panel 而不是 --bg：对话区底色就是 --bg，
+     同色会让整块**视觉上消失**（实测：截图里只剩一条边框线） */
+  background: var(--panel);
   overflow: hidden;
 }
 

@@ -156,7 +156,14 @@ const STUBS = {
     updatedAt: Date.now(),
     messageCount: 0,
     // 空消息 → 对话页显示空状态（验证 0.9.9 的空状态文案）
-    messages: []
+    // 给一条真实的消息流：这样"过程块在最后一条助手消息之前"这个位置断言才有得验
+    messages: [
+      { role: 'user', content: '把工作区里的三个文件汇总成一份报告' },
+      {
+        role: 'assistant',
+        content: '# 汇总报告\n\n- 紫水晶采购清单已归档\n- 预算草案待复核\n'
+      }
+    ]
   }),
   'conv:create': () => ({ id: 'x' }),
   'conv:save': () => null,
@@ -383,6 +390,10 @@ app.whenReady().then(async () => {
       const tool = document.querySelector('.tool-item');
       const rb = document.querySelector('.reasoning-block');
       const pr = rb ? rb.getBoundingClientRect() : null;
+      const host = document.querySelector('.chat-messages');
+      const order = host ? Array.from(host.children).map((el) => el.className.split(' ')[0]) : [];
+      const lastMsgIdx = order.lastIndexOf('msg');
+      const procIdx = Math.max(order.lastIndexOf('tool-log'), order.lastIndexOf('reasoning-block'));
       return {
         toolName: tool ? (tool.querySelector('.tool-name')?.textContent?.trim() ?? null) : null,
         // 关键：显示的是"在干什么"（入参摘要），**不是**干巴巴的「执行中…」
@@ -390,7 +401,13 @@ app.whenReady().then(async () => {
         hasReasoning: !!rb,
         reasoningLabel: rb ? (rb.querySelector('.reasoning-head')?.textContent?.trim() ?? null) : null,
         reasoningText: rb ? (rb.querySelector('.reasoning-body')?.textContent?.trim() ?? null) : null,
-        reasoningVisible: pr ? pr.height > 0 && pr.top < window.innerHeight : false
+        // **高度合理**才算看得见：被 flex 压成一条线（实测只有 4px）等于没显示
+        reasoningVisible: pr ? pr.height > 20 && pr.top < window.innerHeight : false,
+        reasoningHeight: pr ? Math.round(pr.height) : 0,
+        // 位置：过程块必须在最后一条消息**之前** ——
+        // 堆到末尾会把报告挤出视野（用户实测反馈的真问题）
+        domOrder: order,
+        processBeforeLastMsg: lastMsgIdx >= 0 && procIdx >= 0 ? procIdx < lastMsgIdx : null
       };
     })()
   `)
