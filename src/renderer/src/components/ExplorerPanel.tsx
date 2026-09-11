@@ -1,16 +1,23 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode
+} from 'react'
 import type { FsEntry } from '@shared/fs-tree'
 import { formatSize, isTextPreviewable } from '@shared/fs-tree'
+import { PREVIEW_DEFAULT, resizePreview } from '@shared/splitter'
+import MessageMarkdown from './MessageMarkdown'
 
 // 资源管理器（plan7 批 A 只读 → 批 A2 全功能）：工作区文件树 + 预览 + 写操作。
 //
 // 写操作**全部经统一写入服务**（每个操作各开一个检查点轮次）——
 // 所以界面里删掉/改掉的东西，同样出现在「文件变更记录」里、同样退得回。
 //
-// 菜单项按本项目**真实具备的能力**筛，不照抄 VSCode：
-//   运行测试 / 调试 / 覆盖率 / 时间线 / Git 文件历史 —— 这些本项目没有，不做；
-//   编辑器与终端相关项等批 B / 批 C 落地后再补。
-//
+// 菜单项与工具栏按本项目**真实具备的能力**筛，不照抄 VSCode。
 // 懒加载：展开哪个目录才查哪个（工作区可能有几千个文件）。
 
 interface TreeState {
@@ -26,14 +33,55 @@ interface TreeState {
 /** 正在就地编辑的那一行（Electron 里 window.prompt 被禁，只能内联输入） */
 interface Editing {
   kind: 'new-file' | 'new-dir' | 'rename'
-  /** 在哪一层里输入 */
   parentRel: string
   value: string
-  /** rename 时的原条目 */
   target?: FsEntry
 }
 
 const parentOf = (rel: string): string => rel.split('/').slice(0, -1).join('/')
+
+/** Markdown 文件走富文本渲染（其余仍按纯文本预览） */
+const isMarkdown = (name: string): boolean => /\.(md|markdown)$/i.test(name)
+
+const ICON_PROPS = {
+  viewBox: '0 0 16 16',
+  width: 14,
+  height: 14,
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.4,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round'
+} as const
+
+/** 工具栏图标（手写内联 SVG，与项目其余图标同一风格） */
+const ICONS: { file: ReactNode; dir: ReactNode; refresh: ReactNode; collapse: ReactNode } = {
+  file: (
+    <svg {...ICON_PROPS} aria-hidden="true">
+      <path d="M9 1.8H4.2A1.2 1.2 0 0 0 3 3v10a1.2 1.2 0 0 0 1.2 1.2h7.6A1.2 1.2 0 0 0 13 13V5.8z" />
+      <path d="M9 1.8v4h4" />
+      <path d="M8 8.8v3.6M6.2 10.6h3.6" />
+    </svg>
+  ),
+  dir: (
+    <svg {...ICON_PROPS} aria-hidden="true">
+      <path d="M1.8 4.2A1.2 1.2 0 0 1 3 3h3l1.4 1.8H13a1.2 1.2 0 0 1 1.2 1.2v6.8A1.2 1.2 0 0 1 13 14H3a1.2 1.2 0 0 1-1.2-1.2z" />
+      <path d="M8 7.8v3.6M6.2 9.6h3.6" />
+    </svg>
+  ),
+  refresh: (
+    <svg {...ICON_PROPS} aria-hidden="true">
+      <path d="M13.4 8a5.4 5.4 0 1 1-1.7-3.9" />
+      <path d="M13.4 2.6v3.2h-3.2" />
+    </svg>
+  ),
+  collapse: (
+    <svg {...ICON_PROPS} aria-hidden="true">
+      <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.6" />
+      <path d="M5.2 8h5.6" />
+    </svg>
+  )
+}
 
 export default function ExplorerPanel(): JSX.Element {
   const [tree, setTree] = useState<TreeState>({
@@ -46,15 +94,16 @@ export default function ExplorerPanel(): JSX.Element {
   const [selected, setSelected] = useState<FsEntry | null>(null)
   const [preview, setPreview] = useState<{ content: string; truncated: boolean } | null>(null)
   const [previewErr, setPreviewErr] = useState<string>('')
+  /** 预览区高度（可拖拽调整 —— 用户反馈「预览太小」） */
+  const [previewHeight, setPreviewHeight] = useState(PREVIEW_DEFAULT)
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null)
   const [editing, setEditing] = useState<Editing | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
-  /** 拖拽悬停的落点目录（'' = 根）—— 用来给拖放目标加高亮 */
+  /** 拖拽悬停的落点目录（'' = 根） */
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLInputElement>(null)
 
-  /** 载入某一层 */
   const loadDir = useCallback(async (rel: string): Promise<void> => {
     setTree((t) => ({
       ...t,
@@ -72,7 +121,6 @@ export default function ExplorerPanel(): JSX.Element {
     })
   }, [])
 
-  // 打开面板时载入根目录 + 工作区路径
   useEffect(() => {
     void (async () => {
       const ws = await window.api.getWorkspace()
@@ -81,7 +129,7 @@ export default function ExplorerPanel(): JSX.Element {
     })()
   }, [loadDir])
 
-  // 点空白处关菜单（同 PermissionChip 的做法：监听挂在 document 上）
+  // 点空白处 / Esc 关菜单
   useEffect(() => {
     if (!menu) return
     const onDown = (e: MouseEvent): void => {
@@ -102,12 +150,36 @@ export default function ExplorerPanel(): JSX.Element {
     if (editing) editRef.current?.focus()
   }, [editing])
 
-  // 提示条几秒后自己消失
   useEffect(() => {
     if (!notice) return
     const t = setTimeout(() => setNotice(null), 4000)
     return () => clearTimeout(t)
   }, [notice])
+
+  /**
+   * 新建的落点 = **当前选中的文件夹**（用户要求，对齐 VSCode）。
+   * 选中文件时落进它所在的目录；什么都没选则落根目录。
+   */
+  const newTarget = (): string => {
+    if (!selected) return ''
+    return selected.kind === 'dir' ? selected.rel : parentOf(selected.rel)
+  }
+
+  /** 预览区高度拖拽 —— 监听挂 document（挂手柄上鼠标一快就断）；换算走纯函数（可单测） */
+  const startResize = (e: ReactMouseEvent): void => {
+    e.preventDefault()
+    const startY = e.clientY
+    const startH = previewHeight
+    const onMove = (ev: MouseEvent): void => {
+      setPreviewHeight(resizePreview(startH, startY, ev.clientY))
+    }
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
 
   const toggleDir = async (entry: FsEntry): Promise<void> => {
     const expanded = new Set(tree.expanded)
@@ -137,7 +209,6 @@ export default function ExplorerPanel(): JSX.Element {
     setPreview({ content: res.content, truncated: res.truncated === true })
   }
 
-  /** 跑一个写操作：报结果 + 关菜单 + 成功则刷新所在层 */
   const runOp = async (
     fn: () => Promise<{ ok: boolean; message: string }>,
     refreshRel: string
@@ -151,7 +222,17 @@ export default function ExplorerPanel(): JSX.Element {
   const startEdit = (kind: Editing['kind'], parentRel: string, target?: FsEntry): void => {
     setMenu(null)
     setNotice(null)
-    setEditing({ kind, parentRel, value: kind === 'rename' ? (target?.name ?? '') : '', ...(target ? { target } : {}) })
+    // 目录没展开的话先展开，否则输入框藏在下层看不见
+    if (kind !== 'rename' && parentRel && !tree.expanded.has(parentRel)) {
+      void loadDir(parentRel)
+      setTree((t) => ({ ...t, expanded: new Set(t.expanded).add(parentRel) }))
+    }
+    setEditing({
+      kind,
+      parentRel,
+      value: kind === 'rename' ? (target?.name ?? '') : '',
+      ...(target ? { target } : {})
+    })
   }
 
   const commitEdit = async (): Promise<void> => {
@@ -160,7 +241,6 @@ export default function ExplorerPanel(): JSX.Element {
     const name = e.value.trim()
     setEditing(null)
     if (!name) return
-    // 名字里不许带分隔符 —— 否则等于绕开"在哪个目录新建"这层语义
     if (name.includes('/') || name.includes('\\')) {
       setNotice({ ok: false, text: '名字里不能带路径分隔符' })
       return
@@ -169,18 +249,10 @@ export default function ExplorerPanel(): JSX.Element {
     if (e.kind === 'new-file') await runOp(() => window.api.writeWorkspaceFile(rel, ''), e.parentRel)
     else if (e.kind === 'new-dir') await runOp(() => window.api.createWorkspaceDir(rel), e.parentRel)
     else if (e.target) {
-      await runOp(
-        () => window.api.renameWorkspacePath(e.target!.rel, rel),
-        parentOf(e.target.rel)
-      )
+      await runOp(() => window.api.renameWorkspacePath(e.target!.rel, rel), parentOf(e.target.rel))
     }
   }
 
-  /**
-   * 拖入文件 → 导入工作区（plan7 批 A2 第 3 步）。
-   * 路径要经 preload 的 `webUtils` 拿 —— Electron 32+ 起渲染进程拿不到 File.path。
-   * 同名冲突交给服务层处理（自动加序号，不覆盖）。
-   */
   const handleDrop = async (e: ReactDragEvent, parentRel: string): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
@@ -191,7 +263,6 @@ export default function ExplorerPanel(): JSX.Element {
     for (const f of files) {
       const abs = window.api.getPathForFile(f)
       if (!abs) {
-        // 合成/浏览器拖拽拿不到磁盘路径 —— 如实说，别静默什么都不做
         outs.push({ ok: false, message: `${f.name}：拿不到磁盘路径，无法导入` })
         continue
       }
@@ -232,7 +303,6 @@ export default function ExplorerPanel(): JSX.Element {
     </div>
   )
 
-  /** 递归渲染一层（懒加载：子层没数据就不渲染子项） */
   const renderLevel = (rel: string, depth: number): JSX.Element[] => {
     const entries = tree.children[rel]
     if (!entries) return []
@@ -264,9 +334,7 @@ export default function ExplorerPanel(): JSX.Element {
             ref={editRef}
             className="ex-edit"
             value={editing?.value ?? ''}
-            onChange={(ev) =>
-              setEditing((cur) => (cur ? { ...cur, value: ev.target.value } : cur))
-            }
+            onChange={(ev) => setEditing((cur) => (cur ? { ...cur, value: ev.target.value } : cur))}
             onKeyDown={(ev) => {
               if (ev.key === 'Enter') void commitEdit()
               else if (ev.key === 'Escape') setEditing(null)
@@ -282,19 +350,21 @@ export default function ExplorerPanel(): JSX.Element {
           }`}
           style={{ paddingLeft: 8 + depth * 14 }}
           title={e.rel}
-          onClick={() => (e.kind === 'dir' ? void toggleDir(e) : void openFile(e))}
+          onClick={() => {
+            // 点目录也要**选中**：工具栏的"新建"落到选中的文件夹下
+            setSelected(e)
+            if (e.kind === 'dir') void toggleDir(e)
+            else void openFile(e)
+          }}
           onDragOver={(ev) => {
             ev.preventDefault()
             ev.stopPropagation()
             setDropTarget(e.rel)
           }}
           onDragLeave={() => setDropTarget((t) => (t === e.rel ? null : t))}
-          // 拖到目录上 → 放进该目录；拖到文件上 → 放进它所在的目录（不是根）
           onDrop={(ev) => void handleDrop(ev, e.kind === 'dir' ? e.rel : parentOf(e.rel))}
           onContextMenu={(ev) => {
             ev.preventDefault()
-            // 贴边时往回收 —— 否则在窗口右下角右键，菜单会跑到窗口外面去
-            // （菜单约 200×220，够用且留余量）
             setMenu({
               x: Math.min(ev.clientX, window.innerWidth - 200),
               y: Math.min(ev.clientY, window.innerHeight - 220),
@@ -320,11 +390,12 @@ export default function ExplorerPanel(): JSX.Element {
   const rootLoading = tree.loading.has('')
   const rootErr = tree.errors['']
   const rootTail = editing && editing.parentRel === '' ? editRow(0) : null
+  const target = newTarget()
+  const targetLabel = target === '' ? '工作区根目录' : target
 
   return (
     <div
       className={`ex-panel ${dropTarget === '' ? 'ex-panel-drop' : ''}`}
-      // 拖到面板空白处 → 放进**工作区根目录**
       onDragOver={(e) => {
         e.preventDefault()
         setDropTarget('')
@@ -332,7 +403,6 @@ export default function ExplorerPanel(): JSX.Element {
       onDragLeave={() => setDropTarget((t) => (t === '' ? null : t))}
       onDrop={(e) => void handleDrop(e, '')}
       onContextMenu={(e) => {
-        // 空白处右键 → 针对根目录的菜单（新建 / 刷新）
         if (e.target === e.currentTarget) {
           e.preventDefault()
           setMenu({
@@ -345,24 +415,38 @@ export default function ExplorerPanel(): JSX.Element {
     >
       <div className="ex-head">
         <span className="ex-title">资源管理器</span>
-        <button
-          className="ex-btn"
-          title="新建文件 / 文件夹"
-          onClick={() => startEdit('new-file', '')}
-        >
-          新建
-        </button>
-        <button className="ex-btn" onClick={() => void loadDir('')}>
-          刷新
-        </button>
+        <span className="ex-tools">
+          <button
+            className="ex-icon-btn"
+            title={`在「${targetLabel}」下新建文件`}
+            onClick={() => startEdit('new-file', target)}
+          >
+            {ICONS.file}
+          </button>
+          <button
+            className="ex-icon-btn"
+            title={`在「${targetLabel}」下新建文件夹`}
+            onClick={() => startEdit('new-dir', target)}
+          >
+            {ICONS.dir}
+          </button>
+          <button className="ex-icon-btn" title="刷新" onClick={() => void loadDir('')}>
+            {ICONS.refresh}
+          </button>
+          <button
+            className="ex-icon-btn"
+            title="折叠全部"
+            onClick={() => setTree((t) => ({ ...t, expanded: new Set() }))}
+          >
+            {ICONS.collapse}
+          </button>
+        </span>
       </div>
       <div className="ex-path" title={workspace}>
         {workspace || '（未设置工作区）'}
       </div>
 
-      {notice && (
-        <div className={`ex-notice ${notice.ok ? '' : 'ex-notice-bad'}`}>{notice.text}</div>
-      )}
+      {notice && <div className={`ex-notice ${notice.ok ? '' : 'ex-notice-bad'}`}>{notice.text}</div>}
 
       <div className="ex-tree">
         {rootLoading && !tree.children[''] ? (
@@ -377,7 +461,9 @@ export default function ExplorerPanel(): JSX.Element {
       </div>
 
       {selected && selected.kind === 'file' && (
-        <div className="ex-preview">
+        <div className="ex-preview" style={{ height: previewHeight }}>
+          {/* 拖拽手柄：往上拖 = 预览变大（用户反馈"预览太小"） */}
+          <div className="ex-preview-resize" onMouseDown={startResize} title="拖动调整预览高度" />
           <div className="ex-preview-head">
             <span className="ex-preview-name" title={selected.rel}>
               {selected.name}
@@ -390,7 +476,13 @@ export default function ExplorerPanel(): JSX.Element {
           {preview && (
             <>
               {preview.truncated && <div className="ex-msg">文件较大，仅显示前 256 KB</div>}
-              <pre className="ex-pre">{preview.content}</pre>
+              {isMarkdown(selected.name) ? (
+                <div className="ex-preview-md">
+                  <MessageMarkdown content={preview.content} />
+                </div>
+              ) : (
+                <pre className="ex-pre">{preview.content}</pre>
+              )}
             </>
           )}
           {!preview && !previewErr && <div className="ex-msg">读取中…</div>}
@@ -457,7 +549,12 @@ export default function ExplorerPanel(): JSX.Element {
                 复制路径
               </button>
               <div className="ex-menu-sep" />
-              <button className="ex-menu-item" onClick={() => startEdit('rename', parentOf(menu.entry!.rel), menu.entry!)}>
+              <button
+                className="ex-menu-item"
+                onClick={() =>
+                  startEdit('rename', parentOf(menu.entry!.rel), menu.entry!)
+                }
+              >
                 重命名
               </button>
               <button

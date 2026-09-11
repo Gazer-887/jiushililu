@@ -3142,3 +3142,76 @@ body[data-resizing] {
   outline: 1px dashed var(--accent);
   outline-offset: -4px;
 }
+
+/* 资源管理器工具栏：图标按钮（用户要求「新建/文件夹/刷新都做成符号」） */
+.ex-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+
+.ex-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ex-icon-btn:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* 面板必须"固定高度 + 内部滚动"，否则文件树会把预览区**挤出可视范围** ——
+   实测踩到：预览 rect 高度 280 完全正常，但 top 已超出面板底边 → 用户根本看不见。
+   （flex 子项默认 min-height:auto，不加 0 就不肯收缩） */
+.ex-panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.ex-tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 预览区：高度由 JS 控制（可拖拽），手柄贴在顶部边缘 */
+.ex-preview {
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+
+.ex-preview-resize {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  z-index: 2;
+  cursor: row-resize;
+}
+
+.ex-preview-resize:hover {
+  background: var(--accent-soft);
+}
+
+/* Markdown 预览：复用消息区的 .md 排版，这里只管滚动容器 */
+.ex-preview-md {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-8) var(--sp-12);
+}

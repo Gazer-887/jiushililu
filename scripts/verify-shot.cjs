@@ -195,7 +195,9 @@ const STUBS = {
         entries: [
           { name: '归档', rel: '归档', kind: 'dir' },
           { name: '2026年度预算草案.md', rel: '2026年度预算草案.md', kind: 'file', size: 365 },
-          { name: '紫水晶采购清单.txt', rel: '紫水晶采购清单.txt', kind: 'file', size: 341 }
+          { name: '紫水晶采购清单.txt', rel: '紫水晶采购清单.txt', kind: 'file', size: 341 },
+          // 用来验证 Markdown 预览走富文本渲染（用户反馈「没有渲染」）
+          { name: 'README.md', rel: 'README.md', kind: 'file', size: 128 }
         ]
       }
     }
@@ -204,13 +206,23 @@ const STUBS = {
     }
     return { ok: true, entries: [] }
   },
-  'fs:read': () => ({
-    ok: true,
-    rel: '紫水晶采购清单.txt',
-    content:
-      '紫水晶采购清单（2026-09-12 起草）\n\n1. 乌拉尔产紫水晶原石 —— 12 公斤\n2. 巴西产紫水晶碎石 —— 40 公斤\n3. 抛光用氧化铈粉 —— 3 罐\n4. 恒温展示柜（带锁）—— 2 台\n',
-    size: 341
-  }),
+  'fs:read': (rel) => {
+    if (String(rel).endsWith('.md')) {
+      return {
+        ok: true,
+        rel,
+        content: '# 九十里路\n\n- 第一点\n- 第二点\n\n**加粗** 与 `行内代码`\n',
+        size: 60
+      }
+    }
+    return {
+      ok: true,
+      rel: '紫水晶采购清单.txt',
+      content:
+        '紫水晶采购清单（2026-09-12 起草）\n\n1. 乌拉尔产紫水晶原石 —— 12 公斤\n2. 巴西产紫水晶碎石 —— 40 公斤\n3. 抛光用氧化铈粉 —— 3 罐\n4. 恒温展示柜（带锁）—— 2 台\n',
+      size: 341
+    }
+  },
   // plan7 批 A2：写操作。stub 只回人话、不真写 ——
   // 真实落盘与边界由 tests/unit/workspace-write.test.ts 覆盖，这里验的是界面接线。
   'fs:write': (payload) => {
@@ -931,6 +943,117 @@ app.whenReady().then(async () => {
     }))()
   `)
 
+  // —— 资源管理器：工具栏图标 + 在选中文件夹下新建 + 预览（0.12.0 验收反馈）——
+  const exTools = await win.webContents.executeJavaScript(`
+    (() => {
+      const btns = Array.from(document.querySelectorAll('.ex-icon-btn'));
+      return {
+        count: btns.length,
+        titles: btns.map((b) => b.title),
+        allSvg: btns.every((b) => !!b.querySelector('svg'))
+      };
+    })()
+  `)
+
+  // 选中「归档」目录 → 工具栏第一个按钮的 title 应变成"在「归档」下新建文件"，
+  // 新建出来的东西也真的落在 归档/ 下（fsOpLog 是证据）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.textContent.includes('归档'));
+      if (row) row.click();
+      return !!row;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const exTargetTitle = await win.webContents.executeJavaScript(`
+    (() => document.querySelector('.ex-icon-btn')?.title ?? null)()
+  `)
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.ex-icon-btn');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 350))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.querySelector('.ex-edit');
+      if (!input) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, '归档下新建.txt');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const exNewInDir = await win.webContents.executeJavaScript(`
+    (() => document.querySelector('.ex-notice')?.textContent?.trim() ?? null)()
+  `)
+
+  // Markdown 预览：点 README.md → 应走**富文本渲染**（有 .md 容器、无 .ex-pre）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.textContent.includes('README.md'));
+      if (row) row.click();
+      return !!row;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const exMdPreview = await win.webContents.executeJavaScript(`
+    (() => {
+      const pv = document.querySelector('.ex-preview');
+      const panel = document.querySelector('.ex-panel');
+      const md = document.querySelector('.ex-preview-md');
+      const pre = document.querySelector('.ex-pre');
+      const pr = pv ? pv.getBoundingClientRect() : null;
+      const panr = panel ? panel.getBoundingClientRect() : null;
+      return {
+        hasPreview: !!pv,
+        renderedMarkdown: !!md,
+        rawPre: !!pre,
+        h1: md ? (md.querySelector('h1')?.textContent?.trim() ?? null) : null,
+        liCount: md ? md.querySelectorAll('li').length : 0,
+        hasHandle: !!document.querySelector('.ex-preview-resize'),
+        heightBefore: pr ? Math.round(pr.height) : 0,
+        // **看得见**才算数：高度对但落在面板可视区之外 = 用户看不到（实测踩过）
+        previewTop: pr ? Math.round(pr.top) : 0,
+        panelBottom: panr ? Math.round(panr.bottom) : 0,
+        visible: pr && panr ? pr.top < panr.bottom && pr.bottom > panr.top : false
+      };
+    })()
+  `)
+
+  // 先拍预览渲染的样子 —— 拖拽验证会碰鼠标事件、可能把选中状态搅乱，证据别丢。
+  // **等一拍再拍**：capturePage 拿的是合成后的帧，DOM 更新不代表帧已更新
+  // （这个坑踩过两次：待办面板一次、这次预览一次 —— 都是"查询说在、截图里没有"）
+  await new Promise((r) => setTimeout(r, 800))
+  const shotMd = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-ex-preview.png'), shotMd.toPNG())
+
+  // 拖拽手柄：**只验结构**，不验"拖了会不会变高"。
+  // 为什么：实测 Chrome 会把**真实鼠标位置**的 mousemove 也派发过来，覆盖合成事件的
+  // 坐标（诊断见 handleTop/sentY/seenY：传进去 399、监听器也收到 399，但 React 处理器
+  // 最终算出的值对应另一个坐标）。所以换算逻辑抽成纯函数 resizePreview() 由单测覆盖，
+  // 这里只确认"手柄在、样式对"。
+  const exPreviewResize = await win.webContents.executeJavaScript(`
+    (() => {
+      const h = document.querySelector('.ex-preview-resize');
+      if (!h) return { ok: false, reason: '手柄不存在' };
+      const cs = getComputedStyle(h);
+      return {
+        ok: true,
+        cursor: cs.cursor,
+        handleHeight: Math.round(h.getBoundingClientRect().height),
+        title: h.title,
+        previewH: Math.round(document.querySelector('.ex-preview')?.getBoundingClientRect().height ?? 0)
+      };
+    })()
+  `)
+
   // —— 新建任务页：内容完全居中 + 旧文案已移除（用户 2026-09-12 美学偏好）——
   await win.webContents.executeJavaScript(`
     (() => {
@@ -1224,6 +1347,10 @@ app.whenReady().then(async () => {
   console.log('EX_CREATE=' + JSON.stringify(exCreate))
   console.log('EX_DRAGOVER=' + JSON.stringify(exDragOver))
   console.log('EX_DROP=' + JSON.stringify(exDropState))
+  console.log('EX_TOOLS=' + JSON.stringify(exTools))
+  console.log('EX_NEW_TARGET=' + JSON.stringify({ title: exTargetTitle, notice: exNewInDir }))
+  console.log('EX_MD_PREVIEW=' + JSON.stringify(exMdPreview))
+  console.log('EX_PREVIEW_RESIZE=' + JSON.stringify(exPreviewResize))
   console.log('EX_OP_LOG=' + JSON.stringify(fsOpLog))
   console.log('TASKS_PANEL=' + JSON.stringify(tasksState))
   console.log('THEME_BEFORE=' + JSON.stringify(themeBefore))
