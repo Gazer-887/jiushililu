@@ -504,7 +504,8 @@ export function registerIpcHandlers(deps: {
     const patch = z
       .object({
         sidebarWidth: z.number().min(1).max(4096).optional(),
-        dockWidth: z.number().min(1).max(4096).optional()
+        dockWidth: z.number().min(1).max(4096).optional(),
+        theme: z.enum(['classic', 'ink']).optional()
       })
       .parse(raw)
     return setUIPref(patch)

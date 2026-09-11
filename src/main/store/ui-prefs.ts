@@ -7,6 +7,8 @@ import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   sanitizeStoredWidth,
+  sanitizeTheme,
+  type ThemeName,
   type UIPrefs
 } from '@shared/splitter'
 
@@ -20,6 +22,7 @@ import {
 interface StoredPrefs {
   sidebarWidth?: number
   dockWidth?: number
+  theme?: ThemeName
 }
 
 const store = new Store<StoredPrefs>({ name: 'ui-prefs' })
@@ -33,11 +36,12 @@ export function getUIPrefs(): UIPrefs {
       SIDEBAR_MIN,
       SIDEBAR_MAX
     ),
-    dockWidth: sanitizeStoredWidth(store.store.dockWidth, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX)
+    dockWidth: sanitizeStoredWidth(store.store.dockWidth, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX),
+    theme: sanitizeTheme(store.store.theme)
   }
 }
 
-/** 只接受数值；非法值忽略（不让坏数据进盘） */
+/** 只接受数值/合法主题；非法值忽略（不让坏数据进盘） */
 export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
   const next = { ...getUIPrefs() }
   if (typeof patch.sidebarWidth === 'number' && Number.isFinite(patch.sidebarWidth)) {
@@ -48,6 +52,11 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
     store.set('dockWidth', Math.round(patch.dockWidth))
     next.dockWidth = store.store.dockWidth!
   }
+  if (patch.theme !== undefined) {
+    const theme = sanitizeTheme(patch.theme)
+    store.set('theme', theme)
+    next.theme = theme
+  }
   return next
 }
 
@@ -55,5 +64,6 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
 export function resetUIPrefs(): UIPrefs {
   store.set('sidebarWidth', SIDEBAR_DEFAULT)
   store.set('dockWidth', DOCK_DEFAULT)
-  return { sidebarWidth: SIDEBAR_DEFAULT, dockWidth: DOCK_DEFAULT }
+  store.set('theme', 'classic')
+  return { sidebarWidth: SIDEBAR_DEFAULT, dockWidth: DOCK_DEFAULT, theme: 'classic' }
 }

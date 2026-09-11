@@ -104,7 +104,11 @@ const STUBS = {
   'logs:open': () => true,
   // plan7 批 A0：界面布局偏好
   'ui-prefs:get': () => ({ sidebarWidth: 248, dockWidth: 360 }),
-  'ui-prefs:set': () => ({ sidebarWidth: 248, dockWidth: 360 }),
+  'ui-prefs:set': (patch) => ({
+    sidebarWidth: patch?.sidebarWidth ?? 248,
+    dockWidth: patch?.dockWidth ?? 360,
+    theme: patch?.theme ?? 'classic'
+  }),
   'ui-prefs:reset': () => ({ sidebarWidth: 248, dockWidth: 360 }),
   // plan7 批 A：工作区文件树（stub 数据；真实文件系统由 tests/unit/fs-tree.test.ts 覆盖）
   'fs:list': (arg) => {
@@ -693,6 +697,63 @@ app.whenReady().then(async () => {
     console.log('INK_PREVIEW=done')
   }
 
+  // —— 设置 · 外观：主题切换（plan7）——真点一次，验证 data-theme 生效 ——
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const back = document.querySelector('.back-btn');
+      if (back) back.click();
+      return !!back;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const gear = document.querySelector('.gear-btn');
+      if (gear) gear.click();
+      return !!gear;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+
+  const themeBefore = await win.webContents.executeJavaScript(`
+    (() => ({
+      items: Array.from(document.querySelectorAll('.theme-item .theme-name')).map((e) => e.textContent.trim()),
+      checked: document.querySelector('.theme-item[aria-checked="true"] .theme-name')?.textContent?.trim() ?? null,
+      dataTheme: document.documentElement.dataset.theme ?? '(none)'
+    }))()
+  `)
+
+  // 点「水墨」
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.theme-item'))
+        .find((b) => b.querySelector('.theme-name')?.textContent?.trim() === '水墨');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const themeAfter = await win.webContents.executeJavaScript(`
+    (() => ({
+      checked: document.querySelector('.theme-item[aria-checked="true"] .theme-name')?.textContent?.trim() ?? null,
+      dataTheme: document.documentElement.dataset.theme ?? '(none)',
+      accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
+    }))()
+  `)
+  const shotTheme = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-theme-ink.png'), shotTheme.toPNG())
+
+  // 恢复经典（别把状态留在水墨 —— 验证脚本应可重复运行）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.theme-item'))
+        .find((b) => b.querySelector('.theme-name')?.textContent?.trim() === '经典');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await win.webContents.executeJavaScript(`
     (() => {
@@ -736,6 +797,8 @@ app.whenReady().then(async () => {
   console.log('EXPLORER_ROOT=' + JSON.stringify(explorerRoot))
   console.log('EXPLORER_EXPANDED=' + JSON.stringify(afterExpand))
   console.log('EXPLORER_PREVIEW=' + JSON.stringify(previewState))
+  console.log('THEME_BEFORE=' + JSON.stringify(themeBefore))
+  console.log('THEME_AFTER=' + JSON.stringify(themeAfter))
   console.log('NEWTASK_CENTER=' + JSON.stringify(centerCheck))
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))

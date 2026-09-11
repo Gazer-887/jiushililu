@@ -17,10 +17,24 @@ export const DOCK_MAX = 640
 /** 主区域无论如何都要留下的最小宽度（保底，别让对话区被拖没） */
 export const MAIN_RESERVE = 320
 
+/** 主题（当前两套：经典蓝 / 水墨黑白灰+红） */
+export type ThemeName = 'classic' | 'ink'
+
+export const THEMES: Array<{ id: ThemeName; label: string; desc: string }> = [
+  { id: 'classic', label: '经典', desc: '蓝白配色（默认）' },
+  { id: 'ink', label: '水墨', desc: '黑白灰 + 朱砂红' }
+]
+
 /** 界面布局偏好（主进程与渲染进程共用同一口径） */
 export interface UIPrefs {
   sidebarWidth: number
   dockWidth: number
+  theme: ThemeName
+}
+
+/** 主题合法性校验（存档/入参都可能被改坏） */
+export function sanitizeTheme(t: unknown): ThemeName {
+  return t === 'ink' ? 'ink' : 'classic'
 }
 
 /**

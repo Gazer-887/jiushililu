@@ -13,7 +13,44 @@
   --ok: #0f6e56;
   --ok-soft: #e1f5ee;
   --ok-border: #bfe6d7;
+  /* 交互 hover 深值 / accent 上的前景（按钮白字等） */
+  --accent-hover: #14508c;
+  --on-accent: #ffffff;
+  /* 警告（琥珀系）—— 之前散落 8 处裸值，未进 token */
+  --warn: #ba7517;
+  --warn-soft: #faeeda;
+  --warn-border: #fac775;
+  --warn-deep: #854f0b;
   --radius: 12px;
+}
+
+/*
+ * 水墨主题（2026-09-12 用户定稿：黑白灰 + 红，参考 opencode 的克制感）。
+ * 用色逻辑：灰阶承担全部层次（墨分五色），红只做点睛（朱砂逻辑，面积必须极小）；
+ * 语义色服从色彩体系 —— 正向/激活用墨色（不用绿/蓝），负向用朱砂。
+ * 详见 DIARY/专题-水墨风配色.md。切换方式：html[data-theme="ink"]。
+ */
+html[data-theme="ink"] {
+  --bg: #f6f5f2;
+  --panel: #ffffff;
+  --border: #ebe9e3;
+  --text: #1c1c1a;
+  --muted: #8b8a83;
+  --accent: #1c1c1a;
+  --accent-hover: #000000;
+  --on-accent: #ffffff;
+  --accent-soft: #efeee9;
+  --accent-border: #ddd9d0;
+  --ok: #1c1c1a;
+  --ok-soft: #efeee9;
+  --ok-border: #ddd9d0;
+  --danger: #a8342c;
+  --danger-soft: #f7ece9;
+  --danger-border: #e8cfc8;
+  --warn: #a8342c;
+  --warn-soft: #f7ece9;
+  --warn-border: #e8cfc8;
+  --warn-deep: #a8342c;
 }
 
 * {
@@ -172,7 +209,7 @@ nav {
 
 .btn-send {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border: none;
   border-radius: 10px;
   padding: 0 22px;
@@ -187,7 +224,7 @@ nav {
 
 .btn-stop {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-accent);
   border: none;
   border-radius: 10px;
   padding: 0 22px;
@@ -573,7 +610,7 @@ label.radio {
 }
 
 .ctx-warn .ctx-fill {
-  background: #ba7517;
+  background: var(--warn);
 }
 
 .ctx-danger .ctx-fill {
@@ -582,7 +619,7 @@ label.radio {
 
 .ctx-warn .ctx-text,
 .ctx-hint {
-  color: #ba7517;
+  color: var(--warn);
 }
 
 .ctx-danger .ctx-text {
@@ -716,7 +753,7 @@ label.radio {
 }
 
 .new-task-btn:hover {
-  background: #d9e9fa;
+  background: var(--accent-soft);
 }
 
 .new-task-btn .plus {
@@ -1071,7 +1108,7 @@ label.radio {
 .start-btn {
   margin-left: auto;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border: 0;
   border-radius: 8px;
   padding: 7px 20px;
@@ -1406,7 +1443,7 @@ label.radio {
   height: 15px;
   border-radius: 8px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 10px;
   line-height: 15px;
   padding: 0 3px;
@@ -1642,9 +1679,9 @@ label.radio {
 
 .attach-trunc {
   font-size: 10px;
-  color: var(--warn-fg, #854f0b);
-  background: #faeeda;
-  border: 1px solid #fac775;
+  color: var(--warn-fg, var(--warn-deep));
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
   border-radius: 3px;
   padding: 0 3px;
   flex-shrink: 0;
@@ -1743,9 +1780,9 @@ label.radio {
 
 /* 权限档：按档位着色（只读＝黄、完全访问＝红，可写＝中性） */
 .tb-perm.perm-read-only {
-  background: #faeeda;
-  border-color: #fac775;
-  color: #854f0b;
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+  color: var(--warn-deep);
 }
 
 .tb-perm.perm-full-access {
@@ -1765,7 +1802,7 @@ label.radio {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--warn-fg, #ba7517);
+  background: var(--warn);
   flex-shrink: 0;
 }
 
@@ -1780,7 +1817,7 @@ label.radio {
 }
 
 .ctx-ring.ctx-warn {
-  color: #ba7517;
+  color: var(--warn);
 }
 
 .ctx-ring.ctx-danger {
@@ -1802,7 +1839,7 @@ label.radio {
   border-radius: 50%;
   border: 0;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
   flex-shrink: 0;
   padding: 0;
@@ -1821,7 +1858,7 @@ label.radio {
 .stop-square {
   width: 9px;
   height: 9px;
-  background: #fff;
+  background: var(--on-accent);
   border-radius: 2px;
 }
 
@@ -2405,14 +2442,14 @@ label.radio {
 }
 
 .cf-btn-go {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
 }
 
 .cf-btn-go:hover:not(:disabled) {
-  background: #14508c;
-  border-color: #14508c;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .cf-note {
@@ -2631,4 +2668,47 @@ body[data-resizing] {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ── 设置 · 外观（主题切换，plan7）────────────────────────── */
+
+.theme-list {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.theme-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  min-width: 132px;
+}
+
+.theme-item:hover {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.theme-item-on {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.theme-name {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.theme-desc {
+  font-size: 11px;
+  color: var(--muted);
 }

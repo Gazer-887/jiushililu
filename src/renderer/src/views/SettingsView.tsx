@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { LogsInfo, ProviderType, ReasoningEffort, SettingsSaveInput } from '@shared/ipc'
 import { useAppStore } from '../store'
+import { THEMES } from '@shared/splitter'
 
 // 快捷档位（对标 Trae 模型面板）：点一下直接填值
 const CONTEXT_PRESETS: Array<[string, number]> = [
@@ -19,6 +20,8 @@ const OUTPUT_PRESETS: Array<[string, number]> = [
 export default function SettingsView() {
   const settings = useAppStore((s) => s.settings)
   const loadSettings = useAppStore((s) => s.loadSettings)
+  const theme = useAppStore((s) => s.theme)
+  const setTheme = useAppStore((s) => s.setTheme)
   const [draft, setDraft] = useState<SettingsSaveInput | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
@@ -322,6 +325,26 @@ export default function SettingsView() {
       </div>
 
       {notice && <div className={notice.ok ? 'notice-ok' : 'notice-err'}>{notice.text}</div>}
+
+      {/* plan7 外观自定义：主题切换（水墨 / 经典），切换即时生效并持久化 */}
+      <div className="settings-section">
+        <h3>外观</h3>
+        <p className="hint">切换立即生效，重启后保持。</p>
+        <div className="theme-list" role="radiogroup" aria-label="主题">
+          {THEMES.map((t) => (
+            <button
+              key={t.id}
+              role="radio"
+              aria-checked={theme === t.id}
+              className={`theme-item ${theme === t.id ? 'theme-item-on' : ''}`}
+              onClick={() => setTheme(t.id)}
+            >
+              <span className="theme-name">{t.label}</span>
+              <span className="theme-desc">{t.desc}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* plan8 R2：故障排查入口。出问题时用户能一键找到日志，而不是只看到"出错了" */}
       <div className="settings-section">

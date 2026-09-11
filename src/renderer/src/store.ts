@@ -10,6 +10,8 @@ import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   clampWidth,
+  sanitizeTheme,
+  type ThemeName,
   type UIPrefs
 } from '@shared/splitter'
 
@@ -27,6 +29,9 @@ interface AppState {
   // ── 抽屉宽度（plan7 批 A0，可拖拽 + 持久化）───────────
   sidebarWidth: number
   dockWidth: number
+  /** 主题（plan7：设置里可切换；切换即写 html[data-theme]，持久化到 ui-prefs） */
+  theme: ThemeName
+  setTheme: (t: ThemeName) => void
   /** 拖动过程中实时改（不落盘） */
   setSidebarWidth: (w: number) => void
   setDockWidth: (w: number) => void
@@ -87,16 +92,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   view: 'new',
   setView: (view) => set({ view }),
 
-  // ── 抽屉宽度（plan7 批 A0）──
+  // ── 抽屉宽度 + 主题（plan7 批 A0 / 外观自定义）──
   sidebarWidth: SIDEBAR_DEFAULT,
   dockWidth: DOCK_DEFAULT,
+  theme: 'classic',
+  setTheme: (t) => {
+    const theme = sanitizeTheme(t)
+    set({ theme })
+    // 切换即时生效：写根元素的 data-theme（CSS 侧由 html[data-theme='ink'] 覆盖变量）
+    document.documentElement.dataset.theme = theme
+    void useAppStore.getState().persistUIPrefs({ theme })
+  },
   setSidebarWidth: (w) => set({ sidebarWidth: clampWidth(w, SIDEBAR_MIN, SIDEBAR_MAX) }),
   setDockWidth: (w) => set({ dockWidth: clampWidth(w, DOCK_MIN, DOCK_MAX) }),
   persistUIPrefs: async (patch) => {
     // 落盘失败不影响界面（宽度已经改了，只是下次重开回到默认）
     try {
       const next = await window.api.setUIPrefs(patch)
-      set({ sidebarWidth: next.sidebarWidth, dockWidth: next.dockWidth })
+      // theme 走 sanitizeTheme 保底：主进程万一返回缺 theme 的数据，
+      // 不能让 UI 进入「两个主题都没选中」的死角（真实渲染验证抓到过）
+      set({
+        sidebarWidth: next.sidebarWidth,
+        dockWidth: next.dockWidth,
+        theme: sanitizeTheme(next.theme)
+      })
     } catch {
       // 忽略：布局偏好不是关键数据
     }
@@ -104,15 +123,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   resetUIPrefs: async () => {
     try {
       const next = await window.api.resetUIPrefs()
-      set({ sidebarWidth: next.sidebarWidth, dockWidth: next.dockWidth })
+      set({
+        sidebarWidth: next.sidebarWidth,
+        dockWidth: next.dockWidth,
+        theme: sanitizeTheme(next.theme)
+      })
     } catch {
-      set({ sidebarWidth: SIDEBAR_DEFAULT, dockWidth: DOCK_DEFAULT })
+      set({ sidebarWidth: SIDEBAR_DEFAULT, dockWidth: DOCK_DEFAULT, theme: 'classic' })
     }
   },
   loadUIPrefs: async () => {
     try {
       const prefs = await window.api.getUIPrefs()
-      set({ sidebarWidth: prefs.sidebarWidth, dockWidth: prefs.dockWidth })
+      set({
+        sidebarWidth: prefs.sidebarWidth,
+        dockWidth: prefs.dockWidth,
+        theme: sanitizeTheme(prefs.theme)
+      })
+      // 启动即应用主题（否则刷新/重开会闪回默认主题）
+      document.documentElement.dataset.theme = sanitizeTheme(prefs.theme)
     } catch {
       // 保持默认值
     }
