@@ -4,6 +4,8 @@ import type { ModelSettings } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool } from '@shared/agent'
 import { ToolGate } from './guard'
 import { createFileTools } from './tools/file-tools'
+import { createSystemTools } from './tools/system-tools'
+import { createWebTools } from './tools/web-tools'
 import { mergeAgentLayers } from './loader'
 import { runAgentLoop } from './loop'
 import { chatWithToolsOpenAI } from '../providers/openai-agent'
@@ -11,6 +13,13 @@ import { chatWithToolsAnthropic } from '../providers/anthropic-agent'
 
 // Agent 运行入口（IPC agent:run 的后端）：把加载器、门控、工具、Provider 通道拼成一杆枪。
 // 职责单一：不碰 UI、不碰流式对话——那是 ChatView 与 chat:* 通道的事。
+
+/** 高危工具：内核默认工具集不下发；自定义 Agent 在 tools 里显式声明才会启用 */
+const DANGEROUS_TOOLS = new Set(['run_command'])
+
+export function createAllTools(workspaceRoot: string): AgentTool[] {
+  return [...createFileTools(workspaceRoot), ...createSystemTools(workspaceRoot), ...createWebTools()]
+}
 
 export interface AgentRuntimeContext {
   /** Agent 专属工作区：文件工具只能在这里读写（app userData/agent-workspace） */
@@ -43,7 +52,7 @@ export async function runAgent(
   args: RunAgentArgs
 ): Promise<AgentLoopResult & { agent: string }> {
   const registry = loadAgentRegistry(ctx)
-  const allTools: AgentTool[] = createFileTools(ctx.workspaceRoot)
+  const allTools = createAllTools(ctx.workspaceRoot)
   const allNames = allTools.map((t) => t.schema.name)
 
   const def = args.agentName ? (registry.definitions.get(args.agentName) ?? null) : null
@@ -53,8 +62,8 @@ export async function runAgent(
     )
   }
 
-  // 白名单（D4）：定义声明了 tools → 只给这些；缺省 → 全量
-  const allowed = def?.tools ?? allNames
+  // 白名单（D4）：定义声明了 tools → 按声明（高危工具须显式列出）；缺省 → 全量减高危
+  const allowed = def?.tools ?? allNames.filter((n) => !DANGEROUS_TOOLS.has(n))
   const gate = new ToolGate(allowed)
   const tools = allTools.filter((t) => gate.check(t.schema.name).ok)
 
