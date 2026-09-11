@@ -70,6 +70,31 @@ export interface WorkspaceInfo {
   custom: boolean
 }
 
+/**
+ * 访问权限档（D-032：能力归模型，**权限归人**）——唯一由用户决定的档位。
+ * 决定模型"能碰什么"，接的是 P1 的白名单门控。
+ */
+export type PermissionPreset = 'read-only' | 'write' | 'full-access'
+
+/** 附件（输入框 chip）：引用工作区文件进上下文 */
+export interface Attachment {
+  /** 展示名（文件名） */
+  name: string
+  /** 相对/绝对路径 */
+  path: string
+  /** 已读取的文本内容（过长会被截断） */
+  content: string
+  /** 内容是否被截断 */
+  truncated: boolean
+}
+
+/** 当前 Git 分支信息（输入框分支显示） */
+export interface GitInfo {
+  branch: string
+  /** 是否有未提交改动 */
+  dirty: boolean
+}
+
 /** Agent 模式执行结果（plan6：独立上下文 + 单次报告返回） */
 export interface AgentRunResult {
   ok: boolean
@@ -142,7 +167,16 @@ export const IPC = {
   convSave: 'conv:save',
   convRename: 'conv:rename',
   convDelete: 'conv:delete',
-  skillsList: 'skills:list'
+  skillsList: 'skills:list',
+  /** 访问权限档（只读 / 可写 / 完全访问） */
+  permissionGet: 'permission:get',
+  permissionSet: 'permission:set',
+  /** 当前工作区的 Git 分支 */
+  gitInfo: 'git:info',
+  /** 选择文件作为上下文附件（读入内容） */
+  attachFile: 'attach:file',
+  /** 提示词优化（一次额外模型调用改写输入） */
+  promptPolish: 'prompt:polish'
 } as const
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
@@ -171,4 +205,11 @@ export interface ApiBridge {
   renameConversation(id: string, title: string): Promise<ConversationMeta | null>
   deleteConversation(id: string): Promise<void>
   listSkills(): Promise<SkillInfo[]>
+  getPermission(): Promise<PermissionPreset>
+  setPermission(preset: PermissionPreset): Promise<PermissionPreset>
+  getGitInfo(): Promise<GitInfo | null>
+  /** 弹文件选择器并读入内容作为附件（只接受工作区内文件） */
+  attachFile(): Promise<Attachment | null>
+  /** 提示词优化：把草稿改写成更清晰的指令 */
+  polishPrompt(text: string): Promise<string>
 }

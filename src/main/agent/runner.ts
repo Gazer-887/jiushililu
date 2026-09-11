@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import type { ModelSettings, SkillInfo } from '@shared/ipc'
+import type { ModelSettings, PermissionPreset, SkillInfo } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
 import { ToolGate } from './guard'
 import { createFileTools } from './tools/file-tools'
@@ -15,6 +15,25 @@ import { streamWithToolsAnthropic } from '../providers/anthropic-agent'
 
 /** 高危工具：内核默认工具集不下发；自定义 Agent 在 tools 里显式声明才会启用 */
 const DANGEROUS_TOOLS = new Set(['run_command'])
+
+/** 只读工具集：「只读」权限档下模型只能拿到这些（D-032：权限是上限，不是建议） */
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'search_files', 'fetch_url'])
+
+/**
+ * 按权限档求工具上限（纯函数，可单测）。
+ * 权限档是**硬上限**：自定义 Agent 声明的 tools 只能在其中再收窄，不能越权扩大。
+ */
+export function allowedToolsFor(preset: PermissionPreset, declared: string[] | undefined, allNames: string[]): string[] {
+  const ceiling =
+    preset === 'read-only'
+      ? allNames.filter((n) => READ_ONLY_TOOLS.has(n))
+      : preset === 'write'
+        ? allNames.filter((n) => !DANGEROUS_TOOLS.has(n))
+        : allNames // full-access
+  if (!declared) return ceiling
+  const ceilingSet = new Set(ceiling)
+  return declared.filter((n) => ceilingSet.has(n))
+}
 
 export function createAllTools(workspaceRoot: string): AgentTool[] {
   return [...createFileTools(workspaceRoot), ...createSystemTools(workspaceRoot), ...createWebTools()]
@@ -63,6 +82,8 @@ export interface RunAgentArgs {
   history: AgentMessage[]
   /** 指定已注册的自定义 Agent；缺省 = 内核默认（全工具） */
   agentName?: string
+  /** 访问权限档（用户定的硬上限）；缺省「可写」 */
+  permission?: PermissionPreset
   /** 文本增量回调（流式上屏） */
   onText?: (delta: string) => void
   /** 工具执行生命周期回调（界面显示进度） */
@@ -87,8 +108,8 @@ export async function runAgent(
     )
   }
 
-  // 白名单（D4）：定义声明了 tools → 按声明（高危工具须显式列出）；缺省 → 全量减高危
-  const allowed = def?.tools ?? allNames.filter((n) => !DANGEROUS_TOOLS.has(n))
+  // 工具白名单：**权限档是硬上限**（D-032），自定义 Agent 的 tools 只能在其中再收窄
+  const allowed = allowedToolsFor(args.permission ?? 'write', def?.tools, allNames)
   const gate = new ToolGate(allowed)
   const tools = allTools.filter((t) => gate.check(t.schema.name).ok)
 

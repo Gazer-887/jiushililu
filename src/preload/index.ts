@@ -6,6 +6,7 @@ import {
   type ApiBridge,
   type ChatMessage,
   type ConversationCreateInput,
+  type PermissionPreset,
   type SettingsSaveInput
 } from '@shared/ipc'
 
@@ -45,7 +46,12 @@ const api: ApiBridge = {
     ipcRenderer.invoke(IPC.convSave, { id, messages }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
   deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
-  listSkills: () => ipcRenderer.invoke(IPC.skillsList)
+  listSkills: () => ipcRenderer.invoke(IPC.skillsList),
+  getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
+  setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
+  getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
+  attachFile: () => ipcRenderer.invoke(IPC.attachFile),
+  polishPrompt: (text: string) => ipcRenderer.invoke(IPC.promptPolish, text)
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -1,6 +1,6 @@
 import Store from 'electron-store'
 import { safeStorage } from 'electron'
-import type { ModelSettings, SettingsSaveInput, SettingsView } from '@shared/ipc'
+import type { ModelSettings, PermissionPreset, SettingsSaveInput, SettingsView } from '@shared/ipc'
 import { maskKey } from './mask'
 
 // 持久化设置。铁律（D-013 / AGENTS.md）：API Key 只走 safeStorage 加密落盘，绝不存明文。
@@ -8,9 +8,21 @@ import { maskKey } from './mask'
 
 interface StoredSettings extends ModelSettings {
   apiKeyEncrypted?: string
+  /** 访问权限档（D-032：能力归模型，权限归人） */
+  permissionPreset?: PermissionPreset
 }
 
 const store = new Store<StoredSettings>({ name: 'settings' })
+
+/** 当前权限档（默认「可写」：工作区内可读写，命令执行仍需显式授权） */
+export function getPermissionPreset(): PermissionPreset {
+  return store.store.permissionPreset ?? 'write'
+}
+
+export function setPermissionPreset(preset: PermissionPreset): PermissionPreset {
+  store.set('permissionPreset', preset)
+  return getPermissionPreset()
+}
 
 function encryptionAvailable(): boolean {
   try {

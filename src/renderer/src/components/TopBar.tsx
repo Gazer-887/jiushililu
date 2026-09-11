@@ -35,7 +35,7 @@ export default function TopBar(): JSX.Element {
     view === 'settings'
       ? '设置'
       : view === 'new'
-        ? '新建会话'
+        ? '新建任务'
         : (conversations.find((c) => c.id === activeId)?.title ?? '会话')
 
   return (

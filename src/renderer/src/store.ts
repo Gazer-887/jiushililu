@@ -31,6 +31,9 @@ interface AppState {
   // ── 会话（侧边栏）───────────────
   conversations: ConversationMeta[]
   activeId: string | null
+  /** 当前生效的工作区路径（供分支显示等零件感知切换） */
+  workspacePath: string
+  setWorkspacePath: (path: string) => void
   loadConversations: () => Promise<void>
   openConversation: (id: string) => Promise<void>
   newSession: () => void
@@ -79,6 +82,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   conversations: [],
   activeId: null,
+  workspacePath: '',
+  setWorkspacePath: (workspacePath) => set({ workspacePath }),
 
   loadConversations: async () => {
     const conversations = await window.api.listConversations()
@@ -94,6 +99,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     // 会话绑定的工作区若与当前不同，一并切过去（历史按工作区分组的自然结果）
     await window.api.setKnownWorkspace(conv.workspace)
+    set({ workspacePath: conv.workspace })
     if (conv.model !== get().settings?.model) {
       await window.api.setModel(conv.model)
       await get().loadSettings()

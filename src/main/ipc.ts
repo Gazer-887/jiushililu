@@ -1,8 +1,13 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
+import { readFile } from 'node:fs/promises'
+import { basename } from 'node:path'
 import { z } from 'zod'
 import {
   IPC,
+  type Attachment,
   type ChatMessage,
+  type GitInfo,
+  type PermissionPreset,
   type SettingsSaveInput,
   type TestResult,
   type AgentRunResult,
@@ -11,13 +16,23 @@ import {
   type ConversationMeta,
   type SkillInfo
 } from '@shared/ipc'
-import { getDecryptedApiKey, getSettingsView, hasApiKey, saveSettings, setModel } from './store/settings'
-// createProvider 仍用于「测试连接」（轻量 ping，与 Agent 循环无关）
+import {
+  getDecryptedApiKey,
+  getPermissionPreset,
+  getSettingsView,
+  hasApiKey,
+  saveSettings,
+  setModel,
+  setPermissionPreset
+} from './store/settings'
+// createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import type { AgentMessage } from '@shared/agent'
+import { resolveInsideWorkspace } from './agent/guard'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
+import { readGitInfo } from './store/git-info'
 import {
   createConversation,
   deleteConversation,
@@ -137,6 +152,7 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
         settings: getSettingsView(),
         apiKey,
         history: messages as AgentMessage[],
+        permission: getPermissionPreset(),
         onText: (delta) => {
           if (!e.sender.isDestroyed()) e.sender.send(IPC.chatChunk, delta)
         },
@@ -297,4 +313,68 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
   })
 
   ipcMain.handle(IPC.skillsList, (): SkillInfo[] => listSkills(deps.agent))
+
+  // ── 输入框工具栏（P2 控制台）────────────────────────────────
+
+  ipcMain.handle(IPC.permissionGet, (): PermissionPreset => getPermissionPreset())
+
+  ipcMain.handle(IPC.permissionSet, (_e, raw: unknown): PermissionPreset => {
+    const preset = z.enum(['read-only', 'write', 'full-access']).parse(raw)
+    return setPermissionPreset(preset)
+  })
+
+  ipcMain.handle(IPC.gitInfo, (): Promise<GitInfo | null> =>
+    readGitInfo(getWorkspaceInfo(deps.userDataDir).path)
+  )
+
+  // 附件：选文件 → 读入内容（**限工作区内**，上限 64KB，超出截断并标注）
+  ipcMain.handle(IPC.attachFile, async (e): Promise<Attachment | null> => {
+    const ws = getWorkspaceInfo(deps.userDataDir).path
+    const win = BrowserWindow.fromWebContents(e.sender) ?? undefined
+    const opts = { properties: ['openFile' as const], defaultPath: ws }
+    const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    if (res.canceled || res.filePaths.length === 0) return null
+    const picked = res.filePaths[0]!
+    if (!resolveInsideWorkspace(ws, picked)) {
+      throw new Error('只能引用当前工作区内的文件（越界已被拒绝）')
+    }
+    const buf = await readFile(picked)
+    const LIMIT = 64 * 1024
+    const truncated = buf.byteLength > LIMIT
+    return {
+      name: basename(picked),
+      path: picked,
+      content: buf.subarray(0, LIMIT).toString('utf8'),
+      truncated
+    }
+  })
+
+  // 提示词优化：一次轻量模型调用，把草稿改写成更清晰的指令
+  ipcMain.handle(IPC.promptPolish, async (_e, raw: unknown): Promise<string> => {
+    const text = z.string().min(1).max(20000).parse(raw)
+    const settings = getSettingsView()
+    const apiKey = getDecryptedApiKey()
+    if (!settings.baseURL || !settings.model || !apiKey) {
+      throw new Error('请先在「设置」页配置模型与 API Key')
+    }
+    const provider = createProvider(settings.providerType)
+    let out = ''
+    await provider.streamChat(
+      {
+        settings: { ...settings, stream: false },
+        apiKey,
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是提示词优化器。把用户草稿改写成更清晰、可执行的指令：保留原意与关键约束，补齐必要的目标与产出格式，不添加用户没提的需求。只输出改写后的文本本身，不要解释。'
+          },
+          { role: 'user', content: text }
+        ],
+        signal: AbortSignal.timeout(45000)
+      },
+      { onChunk: (t) => { out += t } }
+    )
+    return out.trim() || text
+  })
 }

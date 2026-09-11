@@ -1589,3 +1589,297 @@ label.radio {
     animation: none;
   }
 }
+
+/* ══ 输入控制台（D-032 输入框控制台化）══════════════════
+   对齐用户图纸：上层多行输入区（附件 chip）+ 下层工具栏（拓展·分支·权限 | 进度·优化·模型·发送） */
+
+.console {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.console-input {
+  width: 100%;
+  min-height: 64px;
+  max-height: 220px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.6;
+}
+
+/* 附件 chips */
+.attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 4px;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 3px 6px 3px 8px;
+  font-size: 12px;
+  color: var(--text);
+  max-width: 240px;
+}
+
+.attach-chip > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.attach-trunc {
+  font-size: 10px;
+  color: var(--warn-fg, #854f0b);
+  background: #faeeda;
+  border: 1px solid #fac775;
+  border-radius: 3px;
+  padding: 0 3px;
+  flex-shrink: 0;
+}
+
+.attach-x {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.attach-x:hover {
+  color: var(--danger);
+  background: var(--bg);
+}
+
+.console-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* 工具栏 */
+.console-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.tb-spacer {
+  flex: 1;
+}
+
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+  max-width: 200px;
+  white-space: nowrap;
+}
+
+.tb-btn:hover {
+  border-color: var(--accent-border);
+}
+
+.tb-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tb-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.tb-icon {
+  padding: 4px 7px;
+  color: var(--muted);
+}
+
+.tb-icon:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.tb-icon.busy svg {
+  animation: tb-pulse 1s ease-in-out infinite;
+}
+
+@keyframes tb-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.tb-model {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+/* 权限档：按档位着色（只读＝黄、完全访问＝红，可写＝中性） */
+.tb-perm.perm-read-only {
+  background: #faeeda;
+  border-color: #fac775;
+  color: #854f0b;
+}
+
+.tb-perm.perm-full-access {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+/* 分支 */
+.tb-branch {
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.branch-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--warn-fg, #ba7517);
+  flex-shrink: 0;
+}
+
+/* 上下文圆环 */
+.ctx-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-size: 11.5px;
+  padding: 0 2px;
+}
+
+.ctx-ring.ctx-warn {
+  color: #ba7517;
+}
+
+.ctx-ring.ctx-danger {
+  color: var(--danger);
+}
+
+.ctx-ring-text {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 圆形发送键 */
+.send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.send-btn:disabled {
+  background: var(--border);
+  color: var(--muted);
+  cursor: default;
+}
+
+.send-btn.stopping {
+  background: var(--danger);
+}
+
+.stop-square {
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  border-radius: 2px;
+}
+
+/* 新建任务页的 console 容器 */
+.new-task-console {
+  width: 100%;
+  max-width: 660px;
+}
+
+/* 通用下拉菜单（权限档等） */
+.perm-wrap {
+  position: relative;
+}
+
+.tb-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 240px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 5px;
+}
+
+.tb-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tb-menu-item:hover {
+  background: var(--bg);
+}
+
+.tb-menu-item.active {
+  background: var(--accent-soft);
+}
+
+.tb-menu-title {
+  font-size: 12px;
+}
+
+.tb-menu-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}

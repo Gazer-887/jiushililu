@@ -77,7 +77,7 @@ describe('runAgent（工具链路集成）', () => {
     expect(res.agent).toBe('内核默认')
   })
 
-  it('自定义 Agent 显式声明 run_command 时才下发（白名单生效）', async () => {
+  it('自定义 Agent 显式声明才下发声明内工具（白名单生效）', async () => {
     const ctx = makeCtx()
     mkdirSync(ctx.userAgentsDir, { recursive: true })
     writeFileSync(
@@ -88,9 +88,38 @@ describe('runAgent（工具链路集成）', () => {
 
     const res = await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '跑个命令' }], agentName: 'runner-bot' })
     const names = toolNamesOf(openaiSpy)
-    expect(names).toContain('run_command')
     expect(names).not.toContain('write_file') // 白名单外的工具不下发
     expect(res.agent).toBe('runner-bot')
+    // 默认「可写」档：run_command 属高危，即便定义里声明了也被权限档压住
+    expect(names).not.toContain('run_command')
+  })
+
+  it('权限档是硬上限：完整访问档下，声明了 run_command 才下发', async () => {
+    const ctx = makeCtx()
+    mkdirSync(ctx.userAgentsDir, { recursive: true })
+    writeFileSync(
+      join(ctx.userAgentsDir, 'runner-bot.md'),
+      '---\nname: runner-bot\ndescription: 会跑命令的机器人\ntools: [read_file, run_command]\n---\n按需执行命令。',
+      'utf8'
+    )
+    await runAgent(ctx, {
+      settings,
+      apiKey: 'k',
+      history: [{ role: 'user', content: 'x' }],
+      agentName: 'runner-bot',
+      permission: 'full-access'
+    })
+    expect(toolNamesOf(openaiSpy)).toContain('run_command')
+  })
+
+  it('只读档：只给读类工具，写入类被挡', async () => {
+    const ctx = makeCtx()
+    await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: 'x' }], permission: 'read-only' })
+    const names = toolNamesOf(openaiSpy)
+    expect(names).toContain('read_file')
+    expect(names).toContain('list_dir')
+    expect(names).not.toContain('write_file')
+    expect(names).not.toContain('run_command')
   })
 
   it('未知 agentName 抛人话错误', async () => {
