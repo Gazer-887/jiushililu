@@ -57,6 +57,23 @@ export interface TestResult {
   latencyMs?: number
 }
 
+/** Agent 模式派发入参：task 必填；agentName 缺省 = 内核默认全工具执行 */
+export interface AgentRunRequest {
+  task: string
+  agentName?: string
+}
+
+/** Agent 模式执行结果（plan6：独立上下文 + 单次报告返回） */
+export interface AgentRunResult {
+  ok: boolean
+  output: string
+  rounds: number
+  stopReason: 'completed' | 'max-rounds'
+  /** 派发目标（内核默认 或 自定义 Agent 名） */
+  agent: string
+  error?: string
+}
+
 export const IPC = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
@@ -65,7 +82,8 @@ export const IPC = {
   chatAbort: 'chat:abort',
   chatChunk: 'chat:chunk',
   chatDone: 'chat:done',
-  chatError: 'chat:error'
+  chatError: 'chat:error',
+  agentRun: 'agent:run'
 } as const
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
@@ -78,4 +96,5 @@ export interface ApiBridge {
   onChatChunk(cb: (text: string) => void): () => void
   onChatDone(cb: () => void): () => void
   onChatError(cb: (message: string) => void): () => void
+  runAgent(request: AgentRunRequest): Promise<AgentRunResult>
 }

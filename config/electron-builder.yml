@@ -24,6 +24,8 @@ files:
 extraResources:
   - from: resources/icon.ico
     to: icon.ico
+  - from: resources/agents
+    to: agents
 
 win:
   icon: resources/icon.ico

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, type ApiBridge, type ChatMessage, type SettingsSaveInput } from '@shared/ipc'
+import { IPC, type AgentRunRequest, type ApiBridge, type ChatMessage, type SettingsSaveInput } from '@shared/ipc'
 
 // preload 是渲染进程唯一能碰系统能力的通道（银行柜台模型，见 DIARY 术语词典）。
 // 这里只暴露白名单方法，页面代码摸不到 ipcRenderer 本体。
@@ -22,7 +22,8 @@ const api: ApiBridge = {
   chatAbort: () => ipcRenderer.invoke(IPC.chatAbort),
   onChatChunk: (cb) => subscribe(IPC.chatChunk, (text) => cb(text as string)),
   onChatDone: (cb) => subscribe(IPC.chatDone, () => cb()),
-  onChatError: (cb) => subscribe(IPC.chatError, (message) => cb(message as string))
+  onChatError: (cb) => subscribe(IPC.chatError, (message) => cb(message as string)),
+  runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request)
 }
 
 contextBridge.exposeInMainWorld('api', api)

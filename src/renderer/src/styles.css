@@ -385,3 +385,20 @@ label.radio {
 .inline-hint {
   font-size: 12px;
 }
+
+.btn-mode {
+  align-self: flex-start;
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-mode.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}

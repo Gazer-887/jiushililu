@@ -1,9 +1,10 @@
 import { ipcMain } from 'electron'
 import { z } from 'zod'
-import { IPC, type ChatMessage, type SettingsSaveInput, type TestResult } from '@shared/ipc'
+import { IPC, type ChatMessage, type SettingsSaveInput, type TestResult, type AgentRunResult } from '@shared/ipc'
 import { getDecryptedApiKey, getSettingsView, hasApiKey, saveSettings } from './store/settings'
 import { createProvider } from './providers'
 import { chatMessagesSchema, settingsSchema } from './schemas'
+import { runAgent, type AgentRuntimeContext } from './agent/runner'
 
 // 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。
 // schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
@@ -48,7 +49,7 @@ function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): 
   return err instanceof Error ? err.message : String(err)
 }
 
-export function registerIpcHandlers(): void {
+export function registerIpcHandlers(deps: { agent: AgentRuntimeContext }): void {
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
 
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
@@ -128,5 +129,46 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.chatAbort, (e) => {
     activeChats.get(e.sender.id)?.abort()
+  })
+
+  // Agent 模式（plan6 D3/D4）：独立上下文 + 单次报告，不走流式
+  const agentRunInput = z.object({
+    task: z.string().min(1).max(200000),
+    agentName: z.string().max(64).optional()
+  })
+  const failResult = (agent: string, error: string): AgentRunResult => ({
+    ok: false, output: '', rounds: 0, stopReason: 'completed', agent, error
+  })
+
+  ipcMain.handle(IPC.agentRun, async (_e, raw: unknown): Promise<AgentRunResult> => {
+    const req = agentRunInput.parse(raw)
+    const settings = getSettingsView()
+    if (!settings.baseURL || !settings.model) {
+      return failResult(req.agentName ?? '内核默认', '还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
+    }
+    const apiKey = getDecryptedApiKey()
+    if (!apiKey) {
+      return failResult(req.agentName ?? '内核默认', '还没有保存 API Key：请先到「设置」页填写并保存')
+    }
+    try {
+      const result = await runAgent(deps.agent, {
+        settings,
+        apiKey,
+        task: req.task,
+        agentName: req.agentName
+      })
+      return {
+        ok: result.stopReason === 'completed',
+        output: result.output,
+        rounds: result.rounds,
+        stopReason: result.stopReason,
+        agent: result.agent,
+        ...(result.stopReason === 'max-rounds'
+          ? { error: `已达轮数预算上限（${result.rounds} 轮）被强制停止，以下为部分产出` }
+          : {})
+      }
+    } catch (err) {
+      return failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err))
+    }
   })
 }

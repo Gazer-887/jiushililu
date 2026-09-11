@@ -8,6 +8,8 @@ export default function ChatView() {
   const sendMessage = useAppStore((s) => s.sendMessage)
   const stopStreaming = useAppStore((s) => s.stopStreaming)
   const [input, setInput] = useState('')
+  const [agentMode, setAgentMode] = useState(false)
+  const [agentBusy, setAgentBusy] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // 流式事件订阅：只在挂载时挂一次，卸载时清理
@@ -28,9 +30,37 @@ export default function ChatView() {
 
   const submit = async (): Promise<void> => {
     const text = input
+    if (!text.trim()) return
     setInput('')
+
+    // Agent 模式（plan6 D3/D7）：独立上下文执行，单次报告回流
+    if (agentMode) {
+      setAgentBusy(true)
+      useAppStore.setState((s) => ({
+        messages: [...s.messages, { role: 'user', content: `[Agent 任务] ${text}` }]
+      }))
+      try {
+        const res = await window.api.runAgent({ task: text })
+        const tail = `（Agent：${res.agent} · ${res.rounds} 轮 · ${
+          res.stopReason === 'completed' ? '已完成' : '达预算上限被停止'
+        }）`
+        const content = res.ok ? `${res.output}\n\n${tail}` : `${res.error ?? '执行失败'}\n\n${tail}`
+        useAppStore.setState((s) => ({
+          messages: [...s.messages, { role: 'assistant', content }]
+        }))
+      } catch (err) {
+        const msg = `Agent 调用失败：${err instanceof Error ? err.message : String(err)}`
+        useAppStore.setState((s) => ({ messages: [...s.messages, { role: 'assistant', content: msg }] }))
+      } finally {
+        setAgentBusy(false)
+      }
+      return
+    }
+
     await sendMessage(text)
   }
+
+  const busy = streaming || agentBusy
 
   return (
     <div className="chat-view">
@@ -51,20 +81,35 @@ export default function ChatView() {
         <div ref={bottomRef} />
       </div>
       <div className="chat-input">
+        <button
+          className={`btn-mode ${agentMode ? 'active' : ''}`}
+          title="Agent 模式：任务在独立上下文执行，可读写 agent-workspace（结果单次回流）"
+          onClick={() => setAgentMode((v) => !v)}
+        >
+          {agentMode ? 'Agent 模式' : '对话模式'}
+        </button>
         <textarea
           value={input}
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+          placeholder={
+            agentMode
+              ? '描述一个任务，Agent 将独立执行（Enter 派发）'
+              : '输入消息，Enter 发送，Shift+Enter 换行'
+          }
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
-              void submit()
+              if (!busy) void submit()
             }
           }}
         />
         {streaming ? (
           <button className="btn-stop" onClick={() => void stopStreaming()}>
             停止
+          </button>
+        ) : agentBusy ? (
+          <button className="btn-stop" disabled>
+            Agent 执行中…
           </button>
         ) : (
           <button className="btn-send" disabled={!input.trim()} onClick={() => void submit()}>
