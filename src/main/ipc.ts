@@ -22,7 +22,8 @@ import {
   type RollbackReport,
   type UIPrefs,
   type FsListResult,
-  type FsReadResult
+  type FsReadResult,
+  type FsOpResult
 } from '@shared/ipc'
 import {
   getDecryptedApiKey,
@@ -37,6 +38,7 @@ import {
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readWorkspaceFile } from './workspace-fs'
+import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
@@ -561,5 +563,86 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.fsRead, (_e, raw: unknown): Promise<FsReadResult> => {
     const rel = z.string().min(1).max(1024).parse(raw)
     return readWorkspaceFile(deps.agent.getWorkspaceRoot(), rel)
+  })
+
+  // ── 工作区写操作（plan7 批 A2）──────────────────────────────
+  // 三个关键点：
+  //   ① 全部走**统一写入服务** —— 界面与 Agent 是同一条写入路径
+  //   ② 每个操作**各开一个检查点轮次** —— 于是界面里删掉/改掉的东西，同样出现在
+  //      「文件变更记录」里、同样退得回（这正是批 A2 一直卡着不做的原因）
+  //   ③ 删除走 shell.trashItem（回收站），不是硬删
+  const fsWriteInput = z.object({
+    rel: z.string().min(1).max(1024),
+    content: z.string().max(5_000_000)
+  })
+  const fsRelInput = z.object({ rel: z.string().min(1).max(1024) })
+  const fsRenameInput = z.object({
+    rel: z.string().min(1).max(1024),
+    nextRel: z.string().min(1).max(1024)
+  })
+  const fsImportInput = z.object({
+    sourceAbs: z.string().min(1).max(4096),
+    rel: z.string().min(1).max(1024)
+  })
+
+  /**
+   * 开一个检查点轮次 → 跑写入 → 收尾。
+   * 失败也照样 finish：manifest 是增量落盘的，已发生的改动仍可回滚（R4 的设计）。
+   */
+  const runFsOp = async (
+    label: string,
+    fn: (writer: WorkspaceWriter) => Promise<string>
+  ): Promise<FsOpResult> => {
+    const workspaceRoot = deps.agent.getWorkspaceRoot()
+    const runId = deps.agent.checkpoints.begin(workspaceRoot, label)
+    const writer = createWorkspaceWriter(workspaceRoot, {
+      beforeChange: (rel, abs) => deps.agent.checkpoints.record(runId, workspaceRoot, rel, abs),
+      trash: (abs) => shell.trashItem(abs)
+    })
+    try {
+      return { ok: true, message: await fn(writer) }
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+    } finally {
+      deps.agent.checkpoints.finish(runId)
+    }
+  }
+
+  ipcMain.handle(IPC.fsWrite, (_e, raw: unknown): Promise<FsOpResult> => {
+    const p = fsWriteInput.safeParse(raw)
+    if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
+    return runFsOp('界面 · 写文件', (w) => w.write(p.data.rel, p.data.content))
+  })
+
+  ipcMain.handle(IPC.fsMkdir, (_e, raw: unknown): Promise<FsOpResult> => {
+    const p = fsRelInput.safeParse(raw)
+    if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
+    return runFsOp('界面 · 新建文件夹', (w) => w.mkdir(p.data.rel))
+  })
+
+  ipcMain.handle(IPC.fsRename, (_e, raw: unknown): Promise<FsOpResult> => {
+    const p = fsRenameInput.safeParse(raw)
+    if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
+    return runFsOp('界面 · 重命名', (w) => w.rename(p.data.rel, p.data.nextRel))
+  })
+
+  ipcMain.handle(IPC.fsDelete, (_e, raw: unknown): Promise<FsOpResult> => {
+    const p = fsRelInput.safeParse(raw)
+    if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
+    return runFsOp('界面 · 删除', (w) => w.remove(p.data.rel))
+  })
+
+  ipcMain.handle(IPC.fsImport, (_e, raw: unknown): Promise<FsOpResult> => {
+    const p = fsImportInput.safeParse(raw)
+    if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
+    return runFsOp('界面 · 导入文件', (w) => w.copyIn(p.data.sourceAbs, p.data.rel))
+  })
+
+  ipcMain.handle(IPC.fsReveal, (_e, raw: unknown): Promise<void> => {
+    const p = fsRelInput.safeParse(raw)
+    if (!p.success) return Promise.resolve()
+    const abs = resolveInsideWorkspace(deps.agent.getWorkspaceRoot(), p.data.rel)
+    if (abs) shell.showItemInFolder(abs)
+    return Promise.resolve()
   })
 }

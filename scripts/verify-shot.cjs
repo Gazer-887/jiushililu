@@ -79,6 +79,9 @@ const FAKE_SUBAGENTS = [
   }
 ]
 
+/** 写操作调用流水（验证界面是否真的把动作发下去了，而不只是画了个菜单） */
+const fsOpLog = []
+
 const STUBS = {
   // 待办清单（plan7 批 D）：界面挂载时会拉一次，故这里给一份样例 ——
   // 验证的是**面板渲染与位置**，不是 Agent 会不会调 update_todos（那要真机跑）
@@ -179,6 +182,25 @@ const STUBS = {
       '紫水晶采购清单（2026-09-12 起草）\n\n1. 乌拉尔产紫水晶原石 —— 12 公斤\n2. 巴西产紫水晶碎石 —— 40 公斤\n3. 抛光用氧化铈粉 —— 3 罐\n4. 恒温展示柜（带锁）—— 2 台\n',
     size: 341
   }),
+  // plan7 批 A2：写操作。stub 只回人话、不真写 ——
+  // 真实落盘与边界由 tests/unit/workspace-write.test.ts 覆盖，这里验的是界面接线。
+  'fs:write': (payload) => {
+    fsOpLog.push(`write:${payload.rel}`)
+    return { ok: true, message: `已写入 ${payload.rel}（0 字节）` }
+  },
+  'fs:mkdir': (payload) => {
+    fsOpLog.push(`mkdir:${payload.rel}`)
+    return { ok: true, message: `已创建目录 ${payload.rel}` }
+  },
+  'fs:rename': (payload) => {
+    fsOpLog.push(`rename:${payload.rel}->${payload.nextRel}`)
+    return { ok: true, message: `已重命名 ${payload.rel} → ${payload.nextRel}` }
+  },
+  'fs:delete': (payload) => {
+    fsOpLog.push(`delete:${payload.rel}`)
+    return { ok: true, message: `已删除 ${payload.rel}（已移入回收站）` }
+  },
+  'fs:reveal': () => undefined,
   // plan8 R4：检查点与回滚
   'checkpoint:list': () => [
     {
@@ -733,6 +755,115 @@ app.whenReady().then(async () => {
   const shot8 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-explorer.png'), shot8.toPNG())
 
+  // —— 资源管理器右键菜单 + 写操作接线（plan7 批 A2）——
+  // 验的不是"菜单画出来了"，而是菜单项齐全**且动作真的发下去了**（stub 记流水）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.textContent.includes('紫水晶采购清单.txt'));
+      if (row) {
+        // 用**行自己的坐标**派发 —— 菜单贴边回收逻辑才有意义，截图也更接近真实
+        const r = row.getBoundingClientRect();
+        row.dispatchEvent(
+          new MouseEvent('contextmenu', {
+            bubbles: true,
+            clientX: Math.round(r.left + 40),
+            clientY: Math.round(r.top + 12)
+          })
+        );
+      }
+      return !!row;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const exMenuFile = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasMenu: !!document.querySelector('.ex-menu'),
+      labels: Array.from(document.querySelectorAll('.ex-menu-item')).map((b) => b.textContent.trim()),
+      hasDanger: !!document.querySelector('.ex-menu-danger')
+    }))()
+  `)
+  const shotMenu = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-ex-menu.png'), shotMenu.toPNG())
+
+  // 点「重命名」→ 内联输入框出现，且初值就是原名
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.ex-menu-item'))
+        .find((x) => x.textContent.trim() === '重命名');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const exRename = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasInput: !!document.querySelector('.ex-edit'),
+      value: document.querySelector('.ex-edit')?.value ?? null,
+      menuGone: !document.querySelector('.ex-menu')
+    }))()
+  `)
+
+  // Esc 取消内联编辑
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.querySelector('.ex-edit');
+      if (input) input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return !!input;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 350))
+  const exEsc = await win.webContents.executeJavaScript(`
+    (() => ({ inputGone: !document.querySelector('.ex-edit') }))()
+  `)
+
+  // 空白处右键 → 根菜单（新建 / 刷新）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const panel = document.querySelector('.ex-panel');
+      if (panel) {
+        panel.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 320, clientY: 520 }));
+      }
+      return !!panel;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const exMenuRoot = await win.webContents.executeJavaScript(`
+    (() => ({
+      labels: Array.from(document.querySelectorAll('.ex-menu-item')).map((b) => b.textContent.trim())
+    }))()
+  `)
+
+  // 新建文件：点菜单 → 输入名字 → Enter → **必须真的调到 fs:write**
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.ex-menu-item'))
+        .find((x) => x.textContent.trim() === '新建文件');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 350))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const input = document.querySelector('.ex-edit');
+      if (!input) return false;
+      // React 受控输入：必须走原生 value setter + input 事件，直接赋值它收不到
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, '新建的笔记.md');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const exCreate = await win.webContents.executeJavaScript(`
+    (() => ({
+      notice: document.querySelector('.ex-notice')?.textContent?.trim() ?? null,
+      inputGone: !document.querySelector('.ex-edit')
+    }))()
+  `)
+
   // —— 新建任务页：内容完全居中 + 旧文案已移除（用户 2026-09-12 美学偏好）——
   await win.webContents.executeJavaScript(`
     (() => {
@@ -1011,6 +1142,12 @@ app.whenReady().then(async () => {
   console.log('EXPLORER_ROOT=' + JSON.stringify(explorerRoot))
   console.log('EXPLORER_EXPANDED=' + JSON.stringify(afterExpand))
   console.log('EXPLORER_PREVIEW=' + JSON.stringify(previewState))
+  console.log('EX_MENU_FILE=' + JSON.stringify(exMenuFile))
+  console.log('EX_RENAME=' + JSON.stringify(exRename))
+  console.log('EX_ESC=' + JSON.stringify(exEsc))
+  console.log('EX_MENU_ROOT=' + JSON.stringify(exMenuRoot))
+  console.log('EX_CREATE=' + JSON.stringify(exCreate))
+  console.log('EX_OP_LOG=' + JSON.stringify(fsOpLog))
   console.log('TASKS_PANEL=' + JSON.stringify(tasksState))
   console.log('THEME_BEFORE=' + JSON.stringify(themeBefore))
   console.log('THEME_AFTER=' + JSON.stringify(themeAfter))

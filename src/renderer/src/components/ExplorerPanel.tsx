@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FsEntry } from '@shared/fs-tree'
 import { formatSize, isTextPreviewable } from '@shared/fs-tree'
 
-// 资源管理器（plan7 批 A）：工作区文件树 + 内容预览
+// 资源管理器（plan7 批 A 只读 → 批 A2 全功能）：工作区文件树 + 预览 + 写操作。
 //
-// **只读**。新建/重命名/删除刻意留到批 A2 —— R4 的检查点钩子挂在 Agent 工具链上，
-// 界面若直接写文件就绕过了检查点（删掉的文件在回滚面板里查不到、退不回来）。
-// 要做写操作，得先让界面与 Agent 走同一条写入路径。
+// 写操作**全部经统一写入服务**（每个操作各开一个检查点轮次）——
+// 所以界面里删掉/改掉的东西，同样出现在「文件变更记录」里、同样退得回。
 //
-// 懒加载：展开哪个目录才查哪个，不做整树递归（工作区可能有几千个文件）。
+// 菜单项按本项目**真实具备的能力**筛，不照抄 VSCode：
+//   运行测试 / 调试 / 覆盖率 / 时间线 / Git 文件历史 —— 这些本项目没有，不做；
+//   编辑器与终端相关项等批 B / 批 C 落地后再补。
+//
+// 懒加载：展开哪个目录才查哪个（工作区可能有几千个文件）。
 
 interface TreeState {
   /** rel → 该层条目；'' 表示根 */
@@ -19,6 +22,18 @@ interface TreeState {
   loading: Set<string>
   errors: Record<string, string>
 }
+
+/** 正在就地编辑的那一行（Electron 里 window.prompt 被禁，只能内联输入） */
+interface Editing {
+  kind: 'new-file' | 'new-dir' | 'rename'
+  /** 在哪一层里输入 */
+  parentRel: string
+  value: string
+  /** rename 时的原条目 */
+  target?: FsEntry
+}
+
+const parentOf = (rel: string): string => rel.split('/').slice(0, -1).join('/')
 
 export default function ExplorerPanel(): JSX.Element {
   const [tree, setTree] = useState<TreeState>({
@@ -31,6 +46,11 @@ export default function ExplorerPanel(): JSX.Element {
   const [selected, setSelected] = useState<FsEntry | null>(null)
   const [preview, setPreview] = useState<{ content: string; truncated: boolean } | null>(null)
   const [previewErr, setPreviewErr] = useState<string>('')
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null)
+  const [editing, setEditing] = useState<Editing | null>(null)
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const editRef = useRef<HTMLInputElement>(null)
 
   /** 载入某一层 */
   const loadDir = useCallback(async (rel: string): Promise<void> => {
@@ -58,6 +78,34 @@ export default function ExplorerPanel(): JSX.Element {
       await loadDir('')
     })()
   }, [loadDir])
+
+  // 点空白处关菜单（同 PermissionChip 的做法：监听挂在 document 上）
+  useEffect(() => {
+    if (!menu) return
+    const onDown = (e: MouseEvent): void => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenu(null)
+    }
+    const onEsc = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [menu])
+
+  useEffect(() => {
+    if (editing) editRef.current?.focus()
+  }, [editing])
+
+  // 提示条几秒后自己消失
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(null), 4000)
+    return () => clearTimeout(t)
+  }, [notice])
 
   const toggleDir = async (entry: FsEntry): Promise<void> => {
     const expanded = new Set(tree.expanded)
@@ -87,11 +135,78 @@ export default function ExplorerPanel(): JSX.Element {
     setPreview({ content: res.content, truncated: res.truncated === true })
   }
 
+  /** 跑一个写操作：报结果 + 关菜单 + 成功则刷新所在层 */
+  const runOp = async (
+    fn: () => Promise<{ ok: boolean; message: string }>,
+    refreshRel: string
+  ): Promise<void> => {
+    setMenu(null)
+    const res = await fn()
+    setNotice({ ok: res.ok, text: res.message })
+    if (res.ok) await loadDir(refreshRel)
+  }
+
+  const startEdit = (kind: Editing['kind'], parentRel: string, target?: FsEntry): void => {
+    setMenu(null)
+    setNotice(null)
+    setEditing({ kind, parentRel, value: kind === 'rename' ? (target?.name ?? '') : '', ...(target ? { target } : {}) })
+  }
+
+  const commitEdit = async (): Promise<void> => {
+    const e = editing
+    if (!e) return
+    const name = e.value.trim()
+    setEditing(null)
+    if (!name) return
+    // 名字里不许带分隔符 —— 否则等于绕开"在哪个目录新建"这层语义
+    if (name.includes('/') || name.includes('\\')) {
+      setNotice({ ok: false, text: '名字里不能带路径分隔符' })
+      return
+    }
+    const rel = e.parentRel ? `${e.parentRel}/${name}` : name
+    if (e.kind === 'new-file') await runOp(() => window.api.writeWorkspaceFile(rel, ''), e.parentRel)
+    else if (e.kind === 'new-dir') await runOp(() => window.api.createWorkspaceDir(rel), e.parentRel)
+    else if (e.target) {
+      await runOp(
+        () => window.api.renameWorkspacePath(e.target!.rel, rel),
+        parentOf(e.target.rel)
+      )
+    }
+  }
+
+  const copyPath = async (rel: string): Promise<void> => {
+    setMenu(null)
+    try {
+      await navigator.clipboard.writeText(rel)
+      setNotice({ ok: true, text: `已复制：${rel}` })
+    } catch {
+      setNotice({ ok: false, text: '复制失败（系统剪贴板不可用）' })
+    }
+  }
+
+  const editRow = (depth: number): JSX.Element => (
+    <div key="__edit" className="ex-edit-row" style={{ paddingLeft: 8 + depth * 14 }}>
+      <input
+        ref={editRef}
+        className="ex-edit"
+        value={editing?.value ?? ''}
+        placeholder={editing?.kind === 'rename' ? '新名字' : '名字'}
+        onChange={(e) => setEditing((cur) => (cur ? { ...cur, value: e.target.value } : cur))}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void commitEdit()
+          else if (e.key === 'Escape') setEditing(null)
+        }}
+        onBlur={() => void commitEdit()}
+      />
+    </div>
+  )
+
   /** 递归渲染一层（懒加载：子层没数据就不渲染子项） */
   const renderLevel = (rel: string, depth: number): JSX.Element[] => {
     const entries = tree.children[rel]
     if (!entries) return []
     const err = tree.errors[rel]
+    const tail = editing && editing.parentRel === rel ? [editRow(depth)] : []
 
     if (err) {
       return [
@@ -100,7 +215,7 @@ export default function ExplorerPanel(): JSX.Element {
         </div>
       ]
     }
-    if (entries.length === 0) {
+    if (entries.length === 0 && tail.length === 0) {
       return [
         <div key={`${rel}__empty`} className="ex-msg" style={{ paddingLeft: 8 + depth * 14 }}>
           （空目录）
@@ -108,16 +223,43 @@ export default function ExplorerPanel(): JSX.Element {
       ]
     }
 
-    return entries.flatMap((e) => {
+    const rows = entries.flatMap((e) => {
       const isOpen = tree.expanded.has(e.rel)
       const isLoading = tree.loading.has(e.rel)
-      const row = (
+      const renaming = editing?.kind === 'rename' && editing.target?.rel === e.rel
+      const row = renaming ? (
+        <div key={`${e.rel}__ren`} className="ex-edit-row" style={{ paddingLeft: 8 + depth * 14 }}>
+          <input
+            ref={editRef}
+            className="ex-edit"
+            value={editing?.value ?? ''}
+            onChange={(ev) =>
+              setEditing((cur) => (cur ? { ...cur, value: ev.target.value } : cur))
+            }
+            onKeyDown={(ev) => {
+              if (ev.key === 'Enter') void commitEdit()
+              else if (ev.key === 'Escape') setEditing(null)
+            }}
+            onBlur={() => void commitEdit()}
+          />
+        </div>
+      ) : (
         <button
           key={e.rel}
           className={`ex-row ${selected?.rel === e.rel ? 'ex-row-on' : ''}`}
           style={{ paddingLeft: 8 + depth * 14 }}
           title={e.rel}
           onClick={() => (e.kind === 'dir' ? void toggleDir(e) : void openFile(e))}
+          onContextMenu={(ev) => {
+            ev.preventDefault()
+            // 贴边时往回收 —— 否则在窗口右下角右键，菜单会跑到窗口外面去
+            // （菜单约 200×220，够用且留余量）
+            setMenu({
+              x: Math.min(ev.clientX, window.innerWidth - 200),
+              y: Math.min(ev.clientY, window.innerHeight - 220),
+              entry: e
+            })
+          }}
         >
           <span className="ex-icon">{e.kind === 'dir' ? (isOpen ? '▾' : '▸') : '·'}</span>
           <span className={`ex-name ${e.kind === 'dir' ? 'ex-dir' : ''}`}>{e.name}</span>
@@ -130,15 +272,38 @@ export default function ExplorerPanel(): JSX.Element {
       if (e.kind !== 'dir' || !isOpen) return [row]
       return [row, ...renderLevel(e.rel, depth + 1)]
     })
+
+    return [...rows, ...tail]
   }
 
   const rootLoading = tree.loading.has('')
   const rootErr = tree.errors['']
+  const rootTail = editing && editing.parentRel === '' ? editRow(0) : null
 
   return (
-    <div className="ex-panel">
+    <div
+      className="ex-panel"
+      onContextMenu={(e) => {
+        // 空白处右键 → 针对根目录的菜单（新建 / 刷新）
+        if (e.target === e.currentTarget) {
+          e.preventDefault()
+          setMenu({
+            x: Math.min(e.clientX, window.innerWidth - 200),
+            y: Math.min(e.clientY, window.innerHeight - 220),
+            entry: null
+          })
+        }
+      }}
+    >
       <div className="ex-head">
         <span className="ex-title">资源管理器</span>
+        <button
+          className="ex-btn"
+          title="新建文件 / 文件夹"
+          onClick={() => startEdit('new-file', '')}
+        >
+          新建
+        </button>
         <button className="ex-btn" onClick={() => void loadDir('')}>
           刷新
         </button>
@@ -147,13 +312,17 @@ export default function ExplorerPanel(): JSX.Element {
         {workspace || '（未设置工作区）'}
       </div>
 
+      {notice && (
+        <div className={`ex-notice ${notice.ok ? '' : 'ex-notice-bad'}`}>{notice.text}</div>
+      )}
+
       <div className="ex-tree">
         {rootLoading && !tree.children[''] ? (
           <div className="ex-msg">读取中…</div>
         ) : rootErr ? (
           <div className="ex-msg ex-err">{rootErr}</div>
-        ) : tree.children['']?.length === 0 ? (
-          <div className="ex-msg">这个工作区还是空的。</div>
+        ) : tree.children['']?.length === 0 && !rootTail ? (
+          <div className="ex-msg">这个工作区还是空的。右键或点「新建」开始。</div>
         ) : (
           renderLevel('', 0)
         )}
@@ -172,13 +341,88 @@ export default function ExplorerPanel(): JSX.Element {
           {previewErr && <div className="ex-msg ex-err">{previewErr}</div>}
           {preview && (
             <>
-              {preview.truncated && (
-                <div className="ex-msg">文件较大，仅显示前 256 KB</div>
-              )}
+              {preview.truncated && <div className="ex-msg">文件较大，仅显示前 256 KB</div>}
               <pre className="ex-pre">{preview.content}</pre>
             </>
           )}
           {!preview && !previewErr && <div className="ex-msg">读取中…</div>}
+        </div>
+      )}
+
+      {menu && (
+        <div className="ex-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
+          {menu.entry === null ? (
+            <>
+              <button className="ex-menu-item" onClick={() => startEdit('new-file', '')}>
+                新建文件
+              </button>
+              <button className="ex-menu-item" onClick={() => startEdit('new-dir', '')}>
+                新建文件夹
+              </button>
+              <div className="ex-menu-sep" />
+              <button className="ex-menu-item" onClick={() => void loadDir('')}>
+                刷新
+              </button>
+            </>
+          ) : (
+            <>
+              {menu.entry.kind === 'file' && (
+                <button
+                  className="ex-menu-item"
+                  onClick={() => {
+                    const e = menu.entry!
+                    setMenu(null)
+                    void openFile(e)
+                  }}
+                >
+                  打开预览
+                </button>
+              )}
+              {menu.entry.kind === 'dir' && (
+                <>
+                  <button
+                    className="ex-menu-item"
+                    onClick={() => startEdit('new-file', menu.entry!.rel)}
+                  >
+                    在此新建文件
+                  </button>
+                  <button
+                    className="ex-menu-item"
+                    onClick={() => startEdit('new-dir', menu.entry!.rel)}
+                  >
+                    在此新建文件夹
+                  </button>
+                  <div className="ex-menu-sep" />
+                </>
+              )}
+              <button
+                className="ex-menu-item"
+                onClick={() => {
+                  const rel = menu.entry!.rel
+                  setMenu(null)
+                  void window.api.revealWorkspaceEntry(rel)
+                }}
+              >
+                在系统文件管理器中显示
+              </button>
+              <button className="ex-menu-item" onClick={() => void copyPath(menu.entry!.rel)}>
+                复制路径
+              </button>
+              <div className="ex-menu-sep" />
+              <button className="ex-menu-item" onClick={() => startEdit('rename', parentOf(menu.entry!.rel), menu.entry!)}>
+                重命名
+              </button>
+              <button
+                className="ex-menu-item ex-menu-danger"
+                onClick={() => {
+                  const e = menu.entry!
+                  void runOp(() => window.api.deleteWorkspacePath(e.rel), parentOf(e.rel))
+                }}
+              >
+                删除（进回收站）
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

@@ -257,7 +257,16 @@ export const IPC = {
   subagentGet: 'subagent:get',
   // ── 工作区文件树（plan7 批 A，只读）──
   fsList: 'fs:list',
-  fsRead: 'fs:read'
+  fsRead: 'fs:read',
+  // ── 工作区写操作（plan7 批 A2）：全部走统一写入服务 + 各开一个检查点轮次 ──
+  fsWrite: 'fs:write',
+  fsMkdir: 'fs:mkdir',
+  fsRename: 'fs:rename',
+  fsDelete: 'fs:delete',
+  /** 把工作区外的文件导入进来（拖拽上传） */
+  fsImport: 'fs:import',
+  /** 在系统文件管理器中定位条目 */
+  fsReveal: 'fs:reveal'
 } as const
 
 /** 界面布局偏好（左右抽屉宽度，plan7 批 A0）—— 定义见 @shared/splitter */
@@ -265,6 +274,15 @@ export type { UIPrefs } from './splitter'
 
 /** 工作区文件树（plan7 批 A）—— 定义见 @shared/fs-tree */
 export type { FsEntry, FsListResult, FsReadResult } from './fs-tree'
+
+/**
+ * 工作区写操作结果（plan7 批 A2）——
+ * 失败也**用人话回**、不抛异常：界面直接拿去显示，不必再翻译一遍
+ */
+export interface FsOpResult {
+  ok: boolean
+  message: string
+}
 
 /** 待办清单（plan7 批 D 提前落地）—— 定义见 @shared/todo */
 export type { TodoItem, TodoStatus, TodoStats } from './todo'
@@ -367,6 +385,17 @@ export interface ApiBridge {
   listWorkspaceDir(rel: string): Promise<FsListResult>
   /** 读文件内容用于预览（限 256KB，超限截断并告知） */
   readWorkspaceFile(rel: string): Promise<FsReadResult>
+  // ── 工作区写操作（plan7 批 A2）──
+  // 全部经**统一写入服务**：留检查点快照 → 操作同样出现在「文件变更记录」里、同样退得回
+  writeWorkspaceFile(rel: string, content: string): Promise<FsOpResult>
+  createWorkspaceDir(rel: string): Promise<FsOpResult>
+  renameWorkspacePath(rel: string, nextRel: string): Promise<FsOpResult>
+  /** 删除到**回收站**（不是硬删 —— 误删还能自己捞回来） */
+  deleteWorkspacePath(rel: string): Promise<FsOpResult>
+  /** 把工作区**外**的文件导入进来（拖拽上传） */
+  importIntoWorkspace(sourceAbs: string, rel: string): Promise<FsOpResult>
+  /** 在系统文件管理器中定位该条目 */
+  revealWorkspaceEntry(rel: string): Promise<void>
   // ── 待办清单（plan7 批 D 提前落地）──
   /** 当前清单：组件挂载时拉一次，之后靠 onTodoChanged 推送 */
   getTodos(): Promise<TodoItem[]>

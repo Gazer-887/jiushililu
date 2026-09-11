@@ -3020,3 +3020,71 @@ body[data-resizing] {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── 资源管理器：右键菜单与内联编辑（plan7 批 A2）────────────────── */
+
+.ex-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 184px;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ex-menu-item {
+  padding: var(--sp-6) var(--sp-8);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ex-menu-item:hover {
+  background: var(--accent-soft);
+}
+
+.ex-menu-danger {
+  color: var(--danger);
+}
+
+.ex-menu-sep {
+  height: 1px;
+  margin: var(--sp-4) 0;
+  background: var(--border);
+}
+
+.ex-edit-row {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.ex-edit {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-6);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.ex-notice {
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ex-notice-bad {
+  color: var(--danger);
+}
