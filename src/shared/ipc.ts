@@ -82,6 +82,43 @@ export interface AgentRunResult {
   error?: string
 }
 
+// ── 会话（P2 侧边栏）：一个「任务」= 一条会话，绑定到某个工作区 ──────────
+
+/** 会话元信息（侧边栏列表用，不含消息体，避免列表加载拖大） */
+export interface ConversationMeta {
+  id: string
+  title: string
+  /** 创建时绑定的工作区路径——侧边栏按它分组 */
+  workspace: string
+  /** 该会话使用的模型（创建时快照，可单独切换） */
+  model: string
+  /** 勾选启用的内置技能（agent 定义名） */
+  skills: string[]
+  createdAt: number
+  updatedAt: number
+  messageCount: number
+}
+
+export interface Conversation extends ConversationMeta {
+  messages: ChatMessage[]
+}
+
+export interface ConversationCreateInput {
+  workspace: string
+  model: string
+  skills: string[]
+  /** 首个输入（用于生成标题；可为空） */
+  firstMessage?: string
+}
+
+/** 侧边栏里的一项技能（来自内置 + 用户自定义的 Agent 定义） */
+export interface SkillInfo {
+  name: string
+  description: string
+  /** builtin = 随应用分发；user = 用户自建 */
+  source: 'builtin' | 'user'
+}
+
 export const IPC = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
@@ -94,7 +131,16 @@ export const IPC = {
   chatError: 'chat:error',
   agentRun: 'agent:run',
   workspaceGet: 'workspace:get',
-  workspacePick: 'workspace:pick'
+  workspacePick: 'workspace:pick',
+  workspaceSetKnown: 'workspace:set-known',
+  workspaceReveal: 'workspace:reveal',
+  convList: 'conv:list',
+  convGet: 'conv:get',
+  convCreate: 'conv:create',
+  convSave: 'conv:save',
+  convRename: 'conv:rename',
+  convDelete: 'conv:delete',
+  skillsList: 'skills:list'
 } as const
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
@@ -111,4 +157,15 @@ export interface ApiBridge {
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
   getWorkspace(): Promise<WorkspaceInfo>
   pickWorkspace(): Promise<WorkspaceInfo | null>
+  /** 切换到"已知工作区"（历史会话用过的路径）——不接受任意路径，收紧权限面 */
+  setKnownWorkspace(path: string): Promise<WorkspaceInfo | null>
+  /** 在系统文件管理器中打开某目录 */
+  revealWorkspace(path: string): Promise<void>
+  listConversations(): Promise<ConversationMeta[]>
+  getConversation(id: string): Promise<Conversation | null>
+  createConversation(input: ConversationCreateInput): Promise<Conversation>
+  saveConversation(id: string, messages: ChatMessage[]): Promise<ConversationMeta | null>
+  renameConversation(id: string, title: string): Promise<ConversationMeta | null>
+  deleteConversation(id: string): Promise<void>
+  listSkills(): Promise<SkillInfo[]>
 }

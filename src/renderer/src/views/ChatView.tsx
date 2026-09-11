@@ -10,10 +10,14 @@ export default function ChatView() {
   const streamError = useAppStore((s) => s.streamError)
   const sendMessage = useAppStore((s) => s.sendMessage)
   const stopStreaming = useAppStore((s) => s.stopStreaming)
+  const conversations = useAppStore((s) => s.conversations)
+  const activeId = useAppStore((s) => s.activeId)
   const [input, setInput] = useState('')
   const [agentMode, setAgentMode] = useState(false)
   const [agentBusy, setAgentBusy] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
 
   // 流式事件订阅：只在挂载时挂一次，卸载时清理
   useEffect(() => {
@@ -39,6 +43,7 @@ export default function ChatView() {
     setInput('')
 
     // Agent 模式（plan6 D3/D7）：独立上下文执行，单次报告回流
+    // 注：本模式开关的取消属 D-032（通道合并），待那批落地后此处一并移除
     if (agentMode) {
       setAgentBusy(true)
       useAppStore.setState((s) => ({
@@ -62,6 +67,7 @@ export default function ChatView() {
         useAppStore.setState((s) => ({ messages: [...s.messages, { role: 'assistant', content: msg }] }))
       } finally {
         setAgentBusy(false)
+        await useAppStore.getState().persistActive()
       }
       return
     }
@@ -71,12 +77,27 @@ export default function ChatView() {
 
   return (
     <div className="chat-view">
-      <WorkspaceBar />
+      <div className="chat-head">
+        <WorkspaceBar />
+        {active && (
+          <div className="chat-head-meta">
+            <span className="chat-title" title={active.title}>
+              {active.title}
+            </span>
+            {active.skills.length > 0 && (
+              <span className="chat-skills" title={active.skills.join('、')}>
+                技能 {active.skills.length}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-empty">
             <h2>九十里路</h2>
-            <p>行百里者半九十。先到「设置」页配好模型，再回来聊。</p>
+            <p>行百里者半九十。说说你想做什么。</p>
           </div>
         )}
         {messages.map((m, i) => (
@@ -94,6 +115,7 @@ export default function ChatView() {
         {streamError && <div className="chat-error">{streamError}</div>}
         <div ref={bottomRef} />
       </div>
+
       <div className="chat-input">
         <div className="input-toolbar">
           <button

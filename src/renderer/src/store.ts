@@ -1,16 +1,30 @@
 import { create } from 'zustand'
-import type { ChatMessage, SettingsView } from '@shared/ipc'
+import type { ChatMessage, ConversationCreateInput, ConversationMeta, SettingsView } from '@shared/ipc'
 import { estimateMessageTokens } from '@shared/tokens'
 
 // 渲染进程状态：界面数据只放这里，真正的模型请求全部走 IPC 由主进程执行。
 
+export type AppView = 'new' | 'chat' | 'settings'
+
 interface AppState {
-  view: 'chat' | 'settings'
-  setView: (view: 'chat' | 'settings') => void
+  view: AppView
+  setView: (view: AppView) => void
 
   settings: SettingsView | null
   settingsLoaded: boolean
   loadSettings: () => Promise<void>
+
+  // ── 会话（侧边栏）───────────────
+  conversations: ConversationMeta[]
+  activeId: string | null
+  loadConversations: () => Promise<void>
+  openConversation: (id: string) => Promise<void>
+  newTask: () => void
+  createConversation: (input: ConversationCreateInput) => Promise<string>
+  renameConversation: (id: string, title: string) => Promise<void>
+  removeConversation: (id: string) => Promise<void>
+  /** 把当前消息体落盘（发送完成 / 流结束 / 切走时调用） */
+  persistActive: () => Promise<void>
 
   messages: ChatMessage[]
   streaming: boolean
@@ -28,7 +42,7 @@ export function usedTokens(messages: ChatMessage[]): number {
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
-  view: 'chat',
+  view: 'new',
   setView: (view) => set({ view }),
 
   settings: null,
@@ -36,6 +50,64 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadSettings: async () => {
     const settings = await window.api.getSettings()
     set({ settings, settingsLoaded: true })
+  },
+
+  conversations: [],
+  activeId: null,
+
+  loadConversations: async () => {
+    const conversations = await window.api.listConversations()
+    set({ conversations })
+  },
+
+  openConversation: async (id) => {
+    await get().persistActive() // 切走前先把当前会话存好
+    const conv = await window.api.getConversation(id)
+    if (!conv) {
+      await get().loadConversations()
+      return
+    }
+    // 会话绑定的工作区若与当前不同，一并切过去（历史按工作区分组的自然结果）
+    await window.api.setKnownWorkspace(conv.workspace)
+    if (conv.model !== get().settings?.model) {
+      await window.api.setModel(conv.model)
+      await get().loadSettings()
+    }
+    set({ activeId: id, messages: conv.messages, view: 'chat', streamError: null, streaming: false })
+  },
+
+  newTask: () => set({ view: 'new', activeId: null, messages: [], streamError: null }),
+
+  createConversation: async (input) => {
+    const conv = await window.api.createConversation(input)
+    await get().loadConversations()
+    set({ activeId: conv.id, messages: conv.messages, view: 'chat', streamError: null })
+    return conv.id
+  },
+
+  renameConversation: async (id, title) => {
+    await window.api.renameConversation(id, title)
+    await get().loadConversations()
+  },
+
+  removeConversation: async (id) => {
+    await window.api.deleteConversation(id)
+    if (get().activeId === id) {
+      set({ activeId: null, messages: [], view: 'new' })
+    }
+    await get().loadConversations()
+  },
+
+  persistActive: async () => {
+    const { activeId, messages, conversations } = get()
+    if (!activeId || messages.length === 0) return
+    const updated = await window.api.saveConversation(activeId, messages)
+    if (updated) {
+      // 就地更新列表项（避免整表重拉），标题可能已被自动补上
+      const next = conversations.map((c) => (c.id === activeId ? updated : c))
+      if (!next.some((c) => c.id === activeId)) next.push(updated)
+      set({ conversations: next })
+    }
   },
 
   messages: [],
@@ -52,9 +124,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { messages }
     }),
 
-  markDone: () => set({ streaming: false }),
+  markDone: () => {
+    set({ streaming: false })
+    void get().persistActive()
+  },
 
-  markError: (message) => set({ streaming: false, streamError: message }),
+  markError: (message) => {
+    set({ streaming: false, streamError: message })
+    void get().persistActive()
+  },
 
   sendMessage: async (text) => {
     const content = text.trim()
@@ -76,5 +154,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   stopStreaming: async () => {
     await window.api.chatAbort()
+    await get().persistActive()
   }
 }))

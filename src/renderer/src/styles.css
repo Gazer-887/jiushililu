@@ -684,3 +684,493 @@ label.radio {
   border: 0;
   border-top: 1px solid var(--border);
 }
+
+/* ══ P2 布局重构：侧边栏（分组历史 + 齿轮） ═══════════════ */
+
+.sidebar {
+  width: 248px;
+  padding: 14px 10px 10px;
+  gap: 10px;
+}
+
+.brand {
+  padding: 4px 8px 6px;
+}
+
+.brand-name {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.new-task-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.new-task-btn:hover {
+  background: #d9e9fa;
+}
+
+.new-task-btn .plus {
+  font-size: 14px;
+}
+
+.conv-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.section-label {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 8px 4px;
+}
+
+.conv-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 8px;
+  line-height: 1.6;
+}
+
+.conv-group {
+  margin-bottom: 4px;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.group-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: 0;
+  padding: 5px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  border-radius: 6px;
+}
+
+.group-toggle:hover {
+  background: var(--bg);
+}
+
+.group-toggle .caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-add {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.group-add:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.conv-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px 6px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.conv-item:hover {
+  background: var(--bg);
+}
+
+.conv-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.conv-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-more {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.conv-item:hover .conv-more,
+.conv-item.active .conv-more {
+  opacity: 1;
+}
+
+.conv-more:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+.conv-menu {
+  position: absolute;
+  right: 4px;
+  top: 100%;
+  z-index: 30;
+  min-width: 140px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.conv-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.conv-menu button:hover {
+  background: var(--bg);
+}
+
+.conv-menu button.danger {
+  color: var(--danger);
+}
+
+.conv-rename {
+  flex: 1;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid var(--accent-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  background: var(--panel);
+  color: var(--text);
+  min-width: 0;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.gear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.gear-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.gear-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.foot-text {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ══ P2 布局重构：对话页头部 ═════════════════════════════ */
+
+.chat-head {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+.chat-head .ws-bar {
+  border-bottom: 0;
+  padding-bottom: 4px;
+}
+
+.chat-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px 8px;
+}
+
+.chat-title {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-skills {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+/* ══ P2 布局重构：新建任务页 ═════════════════════════════ */
+
+.new-task {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 56px 32px 32px;
+  overflow-y: auto;
+}
+
+.new-task-hero {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.new-task-hero h1 {
+  font-size: 22px;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.new-task-hero p {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.new-task-box {
+  width: 100%;
+  max-width: 640px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.new-task-box textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.6;
+}
+
+.new-task-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+  max-width: 220px;
+}
+
+.chip:hover {
+  border-color: var(--accent-border);
+}
+
+.chip-label {
+  color: var(--muted);
+}
+
+.chip-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-caret {
+  color: var(--muted);
+}
+
+.chip-model select {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  max-width: 150px;
+}
+
+.start-btn {
+  margin-left: auto;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 20px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.start-btn:disabled {
+  background: var(--border);
+  color: var(--muted);
+  cursor: default;
+}
+
+.skill-picker {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 20px;
+}
+
+.skill-title {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.skill-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.skill-item.on {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.skill-name {
+  font-family: Consolas, monospace;
+  color: var(--text);
+}
+
+.skill-desc {
+  flex: 1;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.skill-tag {
+  font-size: 10px;
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.back-btn {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0 0 8px;
+}
+
+.back-btn:hover {
+  color: var(--text);
+}

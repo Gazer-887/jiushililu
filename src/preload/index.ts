@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, type AgentRunRequest, type ApiBridge, type ChatMessage, type SettingsSaveInput } from '@shared/ipc'
+import {
+  IPC,
+  type AgentRunRequest,
+  type ApiBridge,
+  type ChatMessage,
+  type ConversationCreateInput,
+  type SettingsSaveInput
+} from '@shared/ipc'
 
 // preload 是渲染进程唯一能碰系统能力的通道（银行柜台模型，见 DIARY 术语词典）。
 // 这里只暴露白名单方法，页面代码摸不到 ipcRenderer 本体。
@@ -26,7 +33,17 @@ const api: ApiBridge = {
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
   setModel: (model: string) => ipcRenderer.invoke(IPC.settingsSetModel, model),
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
-  pickWorkspace: () => ipcRenderer.invoke(IPC.workspacePick)
+  pickWorkspace: () => ipcRenderer.invoke(IPC.workspacePick),
+  setKnownWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceSetKnown, path),
+  revealWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceReveal, path),
+  listConversations: () => ipcRenderer.invoke(IPC.convList),
+  getConversation: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
+  createConversation: (input: ConversationCreateInput) => ipcRenderer.invoke(IPC.convCreate, input),
+  saveConversation: (id: string, messages: ChatMessage[]) =>
+    ipcRenderer.invoke(IPC.convSave, { id, messages }),
+  renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
+  deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
+  listSkills: () => ipcRenderer.invoke(IPC.skillsList)
 }
 
 contextBridge.exposeInMainWorld('api', api)

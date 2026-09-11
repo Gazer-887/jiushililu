@@ -1,11 +1,30 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { z } from 'zod'
-import { IPC, type ChatMessage, type SettingsSaveInput, type TestResult, type AgentRunResult, type WorkspaceInfo } from '@shared/ipc'
+import {
+  IPC,
+  type ChatMessage,
+  type SettingsSaveInput,
+  type TestResult,
+  type AgentRunResult,
+  type WorkspaceInfo,
+  type Conversation,
+  type ConversationMeta,
+  type SkillInfo
+} from '@shared/ipc'
 import { getDecryptedApiKey, getSettingsView, hasApiKey, saveSettings, setModel } from './store/settings'
 import { createProvider } from './providers'
 import { chatMessagesSchema, settingsSchema } from './schemas'
-import { runAgent, ensureAgentRuntime, type AgentRuntimeContext } from './agent/runner'
+import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
+import {
+  createConversation,
+  deleteConversation,
+  getConversation,
+  knownWorkspaces,
+  listConversations,
+  renameConversation,
+  saveConversation
+} from './store/conversations'
 
 // 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。
 // schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
@@ -210,4 +229,65 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
     ensureAgentRuntime(deps.agent) // 新工作区目录先备好
     return getWorkspaceInfo(deps.userDataDir)
   })
+
+  // 切换到「已知工作区」（历史会话用过的路径）——不接受任意路径
+  ipcMain.handle(IPC.workspaceSetKnown, (_e, raw: unknown): WorkspaceInfo | null => {
+    const path = z.string().min(1).max(500).parse(raw)
+    const allowed = knownWorkspaces()
+    if (!allowed.includes(path)) return null
+    setWorkspaceRoot(path)
+    ensureAgentRuntime(deps.agent)
+    return getWorkspaceInfo(deps.userDataDir)
+  })
+
+  // 在系统文件管理器中打开目录
+  ipcMain.handle(IPC.workspaceReveal, async (_e, raw: unknown) => {
+    const path = z.string().min(1).max(500).parse(raw)
+    const allowed = knownWorkspaces()
+    if (!allowed.includes(path)) return
+    await shell.openPath(path)
+  })
+
+  // ── 会话（P2 侧边栏）────────────────────────────────────────
+
+  ipcMain.handle(IPC.convList, (): ConversationMeta[] => listConversations())
+
+  ipcMain.handle(IPC.convGet, (_e, raw: unknown): Conversation | null => {
+    const id = z.string().min(1).max(64).parse(raw)
+    return getConversation(id)
+  })
+
+  const convCreateInput = z.object({
+    workspace: z.string().min(1).max(500),
+    model: z.string().min(1).max(200),
+    skills: z.array(z.string().max(64)).max(50),
+    firstMessage: z.string().max(200000).optional()
+  })
+
+  ipcMain.handle(IPC.convCreate, (_e, raw: unknown): Conversation => {
+    const input = convCreateInput.parse(raw)
+    // 会话工作区必须来自"已被授权过的目录"或当前工作区，防止渲染层随意指定
+    const current = getWorkspaceInfo(deps.userDataDir).path
+    if (input.workspace !== current && !knownWorkspaces().includes(input.workspace)) {
+      throw new Error(`工作区未被授权：${input.workspace}`)
+    }
+    return createConversation(input)
+  })
+
+  ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {
+    const input = z.object({ id: z.string().min(1).max(64), messages: chatMessagesSchema }).parse(raw)
+    return saveConversation(input.id, input.messages as ChatMessage[])
+  })
+
+  ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {
+    const input = z.object({ id: z.string().min(1).max(64), title: z.string().max(60) }).parse(raw)
+    return renameConversation(input.id, input.title)
+  })
+
+  ipcMain.handle(IPC.convDelete, (_e, raw: unknown): void => {
+    const id = z.string().min(1).max(64).parse(raw)
+    deleteConversation(id)
+  })
+
+  ipcMain.handle(IPC.skillsList, (): SkillInfo[] => listSkills(deps.agent))
 }

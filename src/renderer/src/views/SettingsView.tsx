@@ -87,6 +87,9 @@ export default function SettingsView() {
 
   return (
     <div className="settings-view">
+      <button className="back-btn" onClick={() => useAppStore.getState().setView('new')}>
+        ← 返回
+      </button>
       <h2>编辑模型</h2>
       <p className="hint">
         全部自定义接入：不内置任何模型与 Key。Key 走系统加密存储（safeStorage），绝不落明文。

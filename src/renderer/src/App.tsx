@@ -1,35 +1,38 @@
+import { useEffect } from 'react'
 import { useAppStore } from './store'
+import Sidebar from './components/Sidebar'
 import ChatView from './views/ChatView'
+import NewTaskView from './views/NewTaskView'
 import SettingsView from './views/SettingsView'
 
 export default function App() {
   const view = useAppStore((s) => s.view)
-  const setView = useAppStore((s) => s.setView)
+  const loadSettings = useAppStore((s) => s.loadSettings)
+  const loadConversations = useAppStore((s) => s.loadConversations)
+  const persistActive = useAppStore((s) => s.persistActive)
+
+  useEffect(() => {
+    void loadSettings()
+    void loadConversations()
+  }, [loadSettings, loadConversations])
+
+  // 关窗前把当前会话落盘（防丢最后几轮）
+  useEffect(() => {
+    const onBeforeUnload = (): void => {
+      void persistActive()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [persistActive])
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-name">九十里路</div>
-          <div className="brand-sub">Jiushililu · P2 工作台</div>
-        </div>
-        <nav>
-          <button
-            className={view === 'chat' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('chat')}
-          >
-            对话
-          </button>
-          <button
-            className={view === 'settings' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setView('settings')}
-          >
-            设置
-          </button>
-        </nav>
-        <div className="sidebar-foot">会自己长经验的工作台</div>
-      </aside>
-      <main className="content">{view === 'chat' ? <ChatView /> : <SettingsView />}</main>
+      <Sidebar />
+      <main className="content">
+        {view === 'new' && <NewTaskView />}
+        {view === 'chat' && <ChatView />}
+        {view === 'settings' && <SettingsView />}
+      </main>
     </div>
   )
 }

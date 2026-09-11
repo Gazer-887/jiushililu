@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import type { ModelSettings } from '@shared/ipc'
+import type { ModelSettings, SkillInfo } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool } from '@shared/agent'
 import { ToolGate } from './guard'
 import { createFileTools } from './tools/file-tools'
@@ -36,6 +36,24 @@ export function ensureAgentRuntime(ctx: AgentRuntimeContext): void {
 
 export function loadAgentRegistry(ctx: AgentRuntimeContext): ReturnType<typeof mergeAgentLayers> {
   return mergeAgentLayers(ctx.builtinAgentsDir, ctx.userAgentsDir)
+}
+
+/** 侧边栏「技能」列表：把已注册的 Agent 定义摊平成可选清单（来源标注内置/自建） */
+export function listSkills(ctx: AgentRuntimeContext): SkillInfo[] {
+  const registry = loadAgentRegistry(ctx)
+  const warnings = registry.warnings.slice()
+  if (warnings.length > 0) {
+    // 坏定义文件不静默：留痕到主进程日志，界面侧由列表数量体现
+    console.warn('[agent] 定义加载告警：\n' + warnings.join('\n'))
+  }
+  return [...registry.definitions.values()]
+    .map((d) => ({
+      name: d.name,
+      description: d.description,
+      // loader 的 global → 随应用分发（builtin）；project → 用户自建（user）
+      source: d.source === 'global' ? ('builtin' as const) : ('user' as const)
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export interface RunAgentArgs {
