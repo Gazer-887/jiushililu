@@ -1,5 +1,7 @@
 // 主 / 渲染进程共享的 IPC 通道定义与类型 —— 两边类型都从这里引用，唯一来源。
 
+import type { UIPrefs } from './splitter'
+
 export type ProviderType = 'openai-compatible' | 'anthropic'
 
 /**
@@ -235,8 +237,15 @@ export const IPC = {
   /** 主进程 → 界面：请求确认某次危险操作 */
   confirmRequest: 'confirm:request',
   /** 界面 → 主进程：回传答复 */
-  confirmRespond: 'confirm:respond'
+  confirmRespond: 'confirm:respond',
+  // ── 界面布局偏好（plan7 批 A0）──
+  uiPrefsGet: 'ui-prefs:get',
+  uiPrefsSet: 'ui-prefs:set',
+  uiPrefsReset: 'ui-prefs:reset'
 } as const
+
+/** 界面布局偏好（左右抽屉宽度，plan7 批 A0）—— 定义见 @shared/splitter */
+export type { UIPrefs } from './splitter'
 
 /**
  * 危险操作确认请求（plan8 R5）。
@@ -323,4 +332,9 @@ export interface ApiBridge {
   onToolConfirmRequest(cb: (req: ToolConfirmRequest) => void): () => void
   /** 回传用户答复；无人应答时主进程超时按拒绝处理 */
   respondToolConfirm(result: ToolConfirmResult): Promise<void>
+  // ── 界面布局偏好（plan7 批 A0）──
+  getUIPrefs(): Promise<UIPrefs>
+  setUIPrefs(patch: Partial<UIPrefs>): Promise<UIPrefs>
+  /** 双击分隔条复位为默认宽度 */
+  resetUIPrefs(): Promise<UIPrefs>
 }

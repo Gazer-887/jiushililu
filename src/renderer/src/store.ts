@@ -2,6 +2,16 @@ import { create } from 'zustand'
 import type { ChatMessage, ConversationCreateInput, ConversationMeta, SettingsView } from '@shared/ipc'
 import type { ToolEvent } from '@shared/agent'
 import { estimateMessageTokens } from '@shared/tokens'
+import {
+  DOCK_DEFAULT,
+  DOCK_MAX,
+  DOCK_MIN,
+  SIDEBAR_DEFAULT,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  clampWidth,
+  type UIPrefs
+} from '@shared/splitter'
 
 // 渲染进程状态：界面数据只放这里，真正的模型请求全部走 IPC 由主进程执行。
 
@@ -13,6 +23,17 @@ export type DockTab = 'explorer' | 'changes' | 'scm' | 'terminal' | 'browser' | 
 interface AppState {
   view: AppView
   setView: (view: AppView) => void
+
+  // ── 抽屉宽度（plan7 批 A0，可拖拽 + 持久化）───────────
+  sidebarWidth: number
+  dockWidth: number
+  /** 拖动过程中实时改（不落盘） */
+  setSidebarWidth: (w: number) => void
+  setDockWidth: (w: number) => void
+  /** 松手 / 复位时落盘 */
+  persistUIPrefs: (patch: Partial<UIPrefs>) => Promise<void>
+  resetUIPrefs: () => Promise<void>
+  loadUIPrefs: () => Promise<void>
 
   // ── 抽屉侧栏（面板显隐）───────────
   /** 左侧栏（会话记录 / 设置）是否展开 */
@@ -65,6 +86,37 @@ export function usedTokens(messages: ChatMessage[]): number {
 export const useAppStore = create<AppState>((set, get) => ({
   view: 'new',
   setView: (view) => set({ view }),
+
+  // ── 抽屉宽度（plan7 批 A0）──
+  sidebarWidth: SIDEBAR_DEFAULT,
+  dockWidth: DOCK_DEFAULT,
+  setSidebarWidth: (w) => set({ sidebarWidth: clampWidth(w, SIDEBAR_MIN, SIDEBAR_MAX) }),
+  setDockWidth: (w) => set({ dockWidth: clampWidth(w, DOCK_MIN, DOCK_MAX) }),
+  persistUIPrefs: async (patch) => {
+    // 落盘失败不影响界面（宽度已经改了，只是下次重开回到默认）
+    try {
+      const next = await window.api.setUIPrefs(patch)
+      set({ sidebarWidth: next.sidebarWidth, dockWidth: next.dockWidth })
+    } catch {
+      // 忽略：布局偏好不是关键数据
+    }
+  },
+  resetUIPrefs: async () => {
+    try {
+      const next = await window.api.resetUIPrefs()
+      set({ sidebarWidth: next.sidebarWidth, dockWidth: next.dockWidth })
+    } catch {
+      set({ sidebarWidth: SIDEBAR_DEFAULT, dockWidth: DOCK_DEFAULT })
+    }
+  },
+  loadUIPrefs: async () => {
+    try {
+      const prefs = await window.api.getUIPrefs()
+      set({ sidebarWidth: prefs.sidebarWidth, dockWidth: prefs.dockWidth })
+    } catch {
+      // 保持默认值
+    }
+  },
 
   sidebarOpen: true,
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),

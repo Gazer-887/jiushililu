@@ -19,7 +19,8 @@ import {
   type LogsInfo,
   type CheckpointRun,
   type CheckpointRunMeta,
-  type RollbackReport
+  type RollbackReport,
+  type UIPrefs
 } from '@shared/ipc'
 import {
   getDecryptedApiKey,
@@ -32,6 +33,7 @@ import {
 } from './store/settings'
 // createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
+import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
@@ -484,8 +486,6 @@ export function registerIpcHandlers(deps: {
     }
   )
 
-  // ── 危险操作逐次确认（plan8 R5）──────────────────────────────
-  // 界面回传用户答复；不认识该 id（过期/伪造）时静默忽略，避免误配到新请求。
   ipcMain.handle(IPC.confirmRespond, (_e, raw: unknown): void => {
     const parsed = z
       .object({ id: z.string().min(1).max(64), allowed: z.boolean() })
@@ -493,4 +493,19 @@ export function registerIpcHandlers(deps: {
     if (!parsed.success) return
     deps.confirm.respond(parsed.data)
   })
+
+  // ── 界面布局偏好（plan7 批 A0）──────────────────────────────
+  ipcMain.handle(IPC.uiPrefsGet, (): UIPrefs => getUIPrefs())
+
+  ipcMain.handle(IPC.uiPrefsSet, (_e, raw: unknown): UIPrefs => {
+    const patch = z
+      .object({
+        sidebarWidth: z.number().min(1).max(4096).optional(),
+        dockWidth: z.number().min(1).max(4096).optional()
+      })
+      .parse(raw)
+    return setUIPref(patch)
+  })
+
+  ipcMain.handle(IPC.uiPrefsReset, (): UIPrefs => resetUIPrefs())
 }

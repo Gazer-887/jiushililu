@@ -2449,3 +2449,58 @@ label.radio {
   color: var(--muted);
   text-align: right;
 }
+
+/* ── 可拖拽分隔条（plan7 批 A0）────────────────────────────── */
+
+.splitter {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  /* 让手柄的可点区域比视觉宽度大一点（5px 太细，鼠标不好抓） */
+  z-index: 2;
+}
+
+/* 视觉上只是相邻面板之间的那条缝，hover/拖拽时才显形 */
+.splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px; /* 扩大命中区，但视觉不变 */
+  transition: background 0.12s ease;
+}
+
+.splitter:hover::after,
+.splitter-active::after {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+.splitter-active::after {
+  opacity: 0.6;
+}
+
+/*
+ * 拖拽期间**必须**关掉宽度的 transition。
+ * 否则 `.sidebar` / `.dock` 上那 0.16s 的过渡会让宽度"追"着鼠标走 ——
+ * 手感像卡了半拍，且松手后还会继续滑一段。
+ */
+body[data-resizing] .sidebar,
+body[data-resizing] .dock {
+  transition: none;
+}
+
+/* 拖拽时禁止选中文字（否则拖着手柄会把界面文字刷蓝） */
+body[data-resizing] {
+  user-select: none;
+  cursor: col-resize;
+}
+
+/*
+ * 窄窗口兜底：主区域不能被挤到无法阅读。
+ * 真正的上限由 computeWidth 里的 MAIN_RESERVE 保证（JS 层），
+ * 这里只是防止极端情况下出现横向滚动条。
+ */
+.content {
+  min-width: 0;
+}

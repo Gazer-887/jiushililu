@@ -29,7 +29,7 @@ function groupConversations(list: ConversationMeta[]): Group[] {
     .sort((a, b) => (b.items[0]?.updatedAt ?? 0) - (a.items[0]?.updatedAt ?? 0))
 }
 
-export default function Sidebar({ open }: { open: boolean }): JSX.Element {
+export default function Sidebar({ open, width }: { open: boolean; width: number }): JSX.Element {
   const view = useAppStore((s) => s.view)
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
@@ -63,7 +63,7 @@ export default function Sidebar({ open }: { open: boolean }): JSX.Element {
   }
 
   return (
-    <aside className={`sidebar ${open ? '' : 'closed'}`}>
+    <aside className={`sidebar ${open ? '' : 'closed'}`} style={open ? { width } : undefined}>
       <button className="new-task-btn" onClick={newSession}>
         <span className="plus">＋</span> 新建任务
       </button>

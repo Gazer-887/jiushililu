@@ -73,7 +73,11 @@ const api: ApiBridge = {
   onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (id) => cb(id as string)),
   // ── 危险操作逐次确认（plan8 R5）──
   onToolConfirmRequest: (cb) => subscribe(IPC.confirmRequest, (req) => cb(req as ToolConfirmRequest)),
-  respondToolConfirm: (result) => ipcRenderer.invoke(IPC.confirmRespond, result)
+  respondToolConfirm: (result) => ipcRenderer.invoke(IPC.confirmRespond, result),
+  // ── 界面布局偏好（plan7 批 A0）──
+  getUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsGet),
+  setUIPrefs: (patch) => ipcRenderer.invoke(IPC.uiPrefsSet, patch),
+  resetUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsReset)
 }
 
 contextBridge.exposeInMainWorld('api', api)

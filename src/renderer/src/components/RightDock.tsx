@@ -49,7 +49,7 @@ const PLACEHOLDER: Record<DockTab, { title: string; desc: string; dep: string }>
   }
 }
 
-export default function RightDock(): JSX.Element {
+export default function RightDock({ width }: { width: number }): JSX.Element {
   const dockOpen = useAppStore((s) => s.dockOpen)
   const dockTab = useAppStore((s) => s.dockTab)
   const setDockTab = useAppStore((s) => s.setDockTab)
@@ -58,7 +58,10 @@ export default function RightDock(): JSX.Element {
   const info = PLACEHOLDER[dockTab]
 
   return (
-    <aside className={`dock ${dockOpen ? 'open' : ''}`}>
+    <aside
+      className={`dock ${dockOpen ? 'open' : ''}`}
+      style={dockOpen ? { width } : undefined}
+    >
       <div className="dock-head">
         <div className="dock-tabs">
           {TABS.map((t) => (

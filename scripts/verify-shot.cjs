@@ -104,6 +104,10 @@ const STUBS = {
     files: ['app.log', 'app.1.log']
   }),
   'logs:open': () => true,
+  // plan7 批 A0：界面布局偏好
+  'ui-prefs:get': () => ({ sidebarWidth: 248, dockWidth: 360 }),
+  'ui-prefs:set': () => ({ sidebarWidth: 248, dockWidth: 360 }),
+  'ui-prefs:reset': () => ({ sidebarWidth: 248, dockWidth: 360 }),
   // plan8 R4：检查点与回滚
   'checkpoint:list': () => [
     {
@@ -393,6 +397,56 @@ app.whenReady().then(async () => {
     `(() => ({ dialogGone: !document.querySelector('.cf-box') }))()`
   )
 
+  // —— 批 A0：面板宽度可拖拽（真拖一次，不是看代码觉得行）——
+  // 用 executeJavaScript 派发真实鼠标事件，模拟按住左侧分隔条往右拖 80px
+  const geom = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const sp = document.querySelector('.splitter');
+        const sb = document.querySelector('.sidebar');
+        const main = document.querySelector('.content');
+        const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { w: Math.round(b.width), left: Math.round(b.left) }; };
+        return {
+          splitter: r(sp),
+          sidebar: r(sb),
+          content: r(main),
+          count: document.querySelectorAll('.splitter').length,
+          bodyResizing: document.body.getAttribute('data-resizing')
+        };
+      })()
+    `)
+
+  const beforeDrag = await geom()
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const sp = document.querySelector('.splitter');
+      if (!sp) return false;
+      const b = sp.getBoundingClientRect();
+      const y = b.top + b.height / 2;
+      const opts = (x) => ({ bubbles: true, clientX: x, clientY: y, button: 0 });
+      sp.dispatchEvent(new MouseEvent('mousedown', opts(b.left + 2)));
+      // 往右拖 80px（分几步，模拟真实移动而非瞬移）
+      for (let i = 1; i <= 4; i++) {
+        document.dispatchEvent(new MouseEvent('mousemove', opts(b.left + 2 + i * 20)));
+      }
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
+  const duringDrag = await geom()
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const afterDrag = await geom()
+  const shot7 = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-splitter.png'), shot7.toPNG())
+
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await win.webContents.executeJavaScript(`
     (() => {
@@ -429,6 +483,9 @@ app.whenReady().then(async () => {
   console.log('ROLLBACK_NOTICE=' + JSON.stringify(rollbackNotice))
   console.log('CONFIRM_DIALOG=' + JSON.stringify(confirmShown))
   console.log('CONFIRM_RESPONSES=' + JSON.stringify({ sent: confirmResponses, ...confirmClosed }))
+  console.log('SPLITTER_BEFORE=' + JSON.stringify(beforeDrag))
+  console.log('SPLITTER_DURING=' + JSON.stringify(duringDrag))
+  console.log('SPLITTER_AFTER=' + JSON.stringify(afterDrag))
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
   console.log('CSP_PROBE=' + JSON.stringify(cspProbe))
