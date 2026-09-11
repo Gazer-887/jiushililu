@@ -166,7 +166,13 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         if (!existsSync(manifest)) continue // 跳过无 manifest 的残留目录
         try {
           const run = JSON.parse(readFileSync(manifest, 'utf8')) as CheckpointRun
-          if (run.runId === name) out.push(toMeta(run))
+          if (run.runId !== name) continue
+          // 过滤掉「没改动任何文件」的轮次（2026-09-12 真机实测后补）：
+          // 每轮对话都会建检查点，包括纯闲聊 —— 不过滤的话面板会被一堆"0 个文件"刷屏，
+          // 真正改过文件的那轮反而找不到（实测 5 轮里 4 轮是噪音）。
+          // 这类空轮次在磁盘上仍留着（几 KB），由 prune 按上限清理。
+          if (run.changes.length === 0) continue
+          out.push(toMeta(run))
         } catch {
           // 坏 manifest 跳过（不因一个坏文件让整个列表不可用）
         }

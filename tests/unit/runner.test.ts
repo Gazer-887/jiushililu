@@ -81,6 +81,44 @@ describe('runAgent（工具链路集成）', () => {
     expect(res.agent).toBe('内核默认')
   })
 
+  it('【回归】提示词必须带「做事纪律」——禁止不查就答（真机实测后补）', async () => {
+    // 起因（2026-09-12 真机验收）：用户问「看看工作区里有什么文件」，
+    // 模型**没调工具**、直接答「目前是空的」，恰巧目录真空所以"对了"——
+    // 但那是运气：若有文件它会编一个假列表，且语气笃定，用户看不出来。
+    // 核因是提示词缺纪律，不是架构问题（模型确实会自主调工具）。
+    // 本测试守住这条纪律不被后续重构丢掉。
+    const ctx = makeCtx()
+    await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '看看有哪些文件' }] })
+
+    const messages = openaiSpy.mock.calls[0]?.[2] as Array<{ role: string; content: string }>
+    const system = messages.find((m) => m.role === 'system')?.content ?? ''
+
+    expect(system).toContain('能查就查')
+    expect(system).toContain('必须先调用工具核实')
+    // 防注入的既有规则不能被顶掉
+    expect(system).toContain('安全基线')
+  })
+
+  it('【回归】做事纪律对自定义子代理同样生效（不是只给内核默认加）', async () => {
+    const ctx = makeCtx()
+    mkdirSync(ctx.userAgentsDir, { recursive: true })
+    writeFileSync(
+      join(ctx.userAgentsDir, 'runner-discipline.md'),
+      '---\nname: runner-discipline\ndescription: 测纪律\n---\n只读审查',
+      'utf8'
+    )
+    await runAgent(ctx, {
+      settings,
+      apiKey: 'k',
+      history: [{ role: 'user', content: 'x' }],
+      agentName: 'runner-discipline'
+    })
+
+    const messages = openaiSpy.mock.calls[0]?.[2] as Array<{ role: string; content: string }>
+    const system = messages.find((m) => m.role === 'system')?.content ?? ''
+    expect(system).toContain('能查就查')
+  })
+
   it('自定义 Agent 显式声明才下发声明内工具（白名单生效）', async () => {
     const ctx = makeCtx()
     mkdirSync(ctx.userAgentsDir, { recursive: true })

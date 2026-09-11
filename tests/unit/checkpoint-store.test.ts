@@ -176,28 +176,53 @@ describe('中断场景：manifest 增量落盘 → 中断的轮次也能回滚',
 })
 
 describe('列表与保留策略', () => {
+  /**
+   * 建一轮并**产生一个改动** —— list() 会过滤掉"没改任何文件"的轮次
+   * （真机实测后补：每轮对话都建检查点，纯闲聊那轮没改动，不过滤会刷屏）。
+   */
+  function runWithChange(
+    store: ReturnType<typeof createCheckpointStore>,
+    ws: string,
+    agent: string,
+    rel = 'a.txt'
+  ): string {
+    const id = store.begin(ws, agent)
+    store.record(id, ws, rel, join(ws, rel))
+    store.finish(id)
+    return id
+  }
+
   it('列表按时间倒序（新的在前）', () => {
     const { ws, store } = setup()
-    const first = store.begin(ws, 'a')
-    store.finish(first)
-    const second = store.begin(ws, 'b')
-    store.finish(second)
+    runWithChange(store, ws, 'a')
+    const second = runWithChange(store, ws, 'b')
 
     const list = store.list()
     expect(list).toHaveLength(2)
     expect(list[0]!.runId).toBe(second) // 后开的在前
   })
 
+  it('**没改文件的轮次不进列表**（否则纯闲聊会把面板刷屏）', () => {
+    const { ws, store } = setup()
+    // 三轮：两轮纯聊天（无改动）+ 一轮真写了文件
+    store.finish(store.begin(ws, '内核默认'))
+    const real = runWithChange(store, ws, '内核默认', 'notes.md')
+    store.finish(store.begin(ws, '内核默认'))
+
+    const list = store.list()
+    expect(list).toHaveLength(1)
+    expect(list[0]!.runId).toBe(real)
+    expect(list.every((m) => m.fileCount > 0)).toBe(true)
+    // 空轮次在磁盘上仍在（get 拿得到），只是不展示
+    expect(store.list()).toHaveLength(1)
+  })
+
   it('**同一毫秒内开多轮也要有确定顺序**（CI 在 Linux 上抓出的不稳定）', () => {
+    const { ws, store } = setup()
     // at 只有毫秒精度，连续 begin 极易落在同一毫秒 → 单靠 at 排序会退化成任意顺序。
     // 这条测试不等时间流逝，直接连开 5 轮 —— 用 seq 保证顺序确定。
-    const { ws, store } = setup()
     const ids: string[] = []
-    for (let i = 0; i < 5; i++) {
-      const id = store.begin(ws, `agent-${i}`)
-      store.finish(id)
-      ids.push(id)
-    }
+    for (let i = 0; i < 5; i++) ids.push(runWithChange(store, ws, `agent-${i}`, `f${i}.txt`))
 
     const list = store.list()
     expect(list).toHaveLength(5)
@@ -208,11 +233,7 @@ describe('列表与保留策略', () => {
   it('列表顺序与目录读取顺序无关（全序，非"碰巧"）', () => {
     const { ws, store } = setup()
     const ids: string[] = []
-    for (let i = 0; i < 4; i++) {
-      const id = store.begin(ws, `a${i}`)
-      store.finish(id)
-      ids.push(id)
-    }
+    for (let i = 0; i < 4; i++) ids.push(runWithChange(store, ws, `a${i}`, `f${i}.txt`))
     // 反复读多次，结果必须完全一致（若排序不满足全序，会出现随机抖动）
     const runs = [0, 1, 2].map(() => store.list().map((m) => m.runId).join(','))
     expect(new Set(runs).size).toBe(1)
@@ -292,6 +313,7 @@ describe('健壮性：坏数据不致命', () => {
   it('manifest 损坏时列表跳过它，其余照常', () => {
     const { ws, store } = setup()
     const good = store.begin(ws, 'a')
+    store.record(good, ws, 'a.txt', join(ws, 'a.txt')) // 有改动才会进列表
     store.finish(good)
     // 手工塞一个坏 manifest
     const bad = join(store.dir, 'bad-run')
