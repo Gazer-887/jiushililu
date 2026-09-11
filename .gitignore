@@ -48,3 +48,6 @@ verify-*.png
 .verify-userdata/
 .git-commit-msg.tmp
 dist-stale-*/
+
+# electron-vite 构建时的临时配置副本（构建残留）
+electron.vite.config.*.mjs
