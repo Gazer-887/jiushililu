@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ModelSettings } from '@shared/ipc'
+import type { AgentRuntimeContext } from '@main/agent/runner'
+import { createCheckpointStore } from '@main/store/checkpoints'
 
 // runner 集成测试 —— 补上"工具 schema 是否真的下发给模型"这条链路的覆盖。
 // 起因（D-030）：交叉验证发现 runner 曾把空数组当工具清单传给模型，而 loop 测试注入
@@ -39,13 +41,15 @@ const settings: ModelSettings = {
   supportsImages: false
 }
 
-function makeCtx(): { getWorkspaceRoot: () => string; builtinAgentsDir: string; userAgentsDir: string } {
+function makeCtx(): AgentRuntimeContext {
   const base = mkdtempSync(join(tmpdir(), 'jsl-runner-'))
   const ws = join(base, 'ws')
   return {
     getWorkspaceRoot: () => ws,
     builtinAgentsDir: join(base, 'builtin'),
-    userAgentsDir: join(base, 'user')
+    userAgentsDir: join(base, 'user'),
+    // 检查点仓库（plan8 R4）：给一个独立临时目录，让本组测试真正走一遍快照链路
+    checkpoints: createCheckpointStore(join(base, 'checkpoints'))
   }
 }
 

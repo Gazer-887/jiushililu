@@ -103,7 +103,50 @@ const STUBS = {
     dir: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\logs',
     files: ['app.log', 'app.1.log']
   }),
-  'logs:open': () => true
+  'logs:open': () => true,
+  // plan8 R4：检查点与回滚
+  'checkpoint:list': () => [
+    {
+      runId: 'run-1',
+      at: Date.now() - 120000,
+      workspace: 'D:\\jsllworkplace_for_test',
+      agent: '内核默认',
+      status: 'done',
+      fileCount: 3,
+      createdCount: 1,
+      modifiedCount: 2
+    },
+    {
+      runId: 'run-2',
+      at: Date.now() - 60000,
+      workspace: 'D:\\jsllworkplace_for_test',
+      agent: 'planner',
+      status: 'done',
+      fileCount: 1,
+      createdCount: 0,
+      modifiedCount: 1,
+      rolledBackAt: Date.now() - 30000
+    }
+  ],
+  'checkpoint:get': () => ({
+    runId: 'run-1',
+    at: Date.now() - 120000,
+    workspace: 'D:\\jsllworkplace_for_test',
+    agent: '内核默认',
+    status: 'done',
+    changes: [
+      { rel: 'src/notes.md', kind: 'modified', beforeBytes: 128, backup: '0.bin' },
+      { rel: 'src/app.ts', kind: 'modified', beforeBytes: 640, backup: '1.bin' },
+      { rel: 'src/brand-new.md', kind: 'created', beforeBytes: 0, backup: null }
+    ]
+  }),
+  'checkpoint:rollback': () => ({
+    runId: 'run-1',
+    restored: ['src/notes.md', 'src/app.ts'],
+    deleted: ['src/brand-new.md'],
+    failed: [],
+    rejected: []
+  })
 }
 
 app.whenReady().then(async () => {
@@ -216,6 +259,89 @@ app.whenReady().then(async () => {
   const shot3 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-settings.png'), shot3.toPNG())
 
+  // —— 文件变更记录面板（plan8 R4）：真点一遍回滚，验证"改坏能退回" ──
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const tab = Array.from(document.querySelectorAll('.dock-tab'))
+        .find((b) => b.textContent.trim() === '变更');
+      if (tab) tab.click();
+      return !!tab;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1200))
+
+  // 展开第一轮
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const t = document.querySelector('.ck-run-toggle');
+      if (t) t.click();
+      return !!t;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1000))
+
+  const beforeRollback = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.ck-files');
+      const r = box ? box.getBoundingClientRect() : null;
+      const body = document.querySelector('.dock-body');
+      return {
+        runs: document.querySelectorAll('.ck-run').length,
+        files: document.querySelectorAll('.ck-file').length,
+        kinds: Array.from(document.querySelectorAll('.ck-kind')).map((e) => e.textContent.trim()),
+        rels: Array.from(document.querySelectorAll('.ck-file-rel')).map((e) => e.textContent.trim()),
+        badges: Array.from(document.querySelectorAll('.ck-badge')).map((e) => e.textContent.trim()),
+        // 关键：文件列表是否**真的可见**（存在 ≠ 用户看得到）
+        filesBox: r ? { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) } : null,
+        dockBodyH: body ? Math.round(body.getBoundingClientRect().height) : null,
+        dockScrollTop: body ? Math.round(body.scrollTop) : null,
+        dockScrollH: body ? Math.round(body.scrollHeight) : null
+      };
+    })()
+  `)
+  const shot4 = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-changes.png'), shot4.toPNG())
+
+  // 点「整轮回滚」→ 应进入二次确认（不会立刻执行）
+  // 注意：React 状态更新是异步的，点击后必须等一拍再读 DOM，
+  // 否则读到的是旧树 → 假阴性（曾在同 tick 读到 hasConfirm:false 而实际已弹出）。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.ck-run .ck-btn'))
+        .find((b) => b.textContent.trim() === '整轮回滚');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const confirmStep = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasConfirm: !!document.querySelector('.ck-confirm'),
+      confirmText: document.querySelector('.ck-btn-danger')?.textContent?.trim() ?? null,
+      // 二次确认弹出时，回滚不应已发生（这正是"危险动作要卡一下"的意义）
+      noticeBeforeConfirm:
+        document.querySelector('.ck-panel .notice-ok')?.textContent?.trim() ?? null
+    }))()
+  `)
+
+  // 真的点确认 → 走完整回滚链路，看结果提示
+  const afterRollback = await win.webContents.executeJavaScript(`
+    (() => {
+      const go = document.querySelector('.ck-btn-danger');
+      if (go) go.click();
+      return !!go;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1500))
+  const rollbackNotice = await win.webContents.executeJavaScript(`
+    (() => ({
+      notice: document.querySelector('.ck-panel .notice-ok, .ck-panel .notice-err')?.textContent?.trim() ?? null,
+      ok: !!document.querySelector('.ck-panel .notice-ok')
+    }))()
+  `)
+  const shot5 = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-rollback.png'), shot5.toPNG())
+
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await win.webContents.executeJavaScript(`
     (() => {
@@ -247,6 +373,9 @@ app.whenReady().then(async () => {
   console.log('WIDE=' + JSON.stringify(m1))
   console.log('NARROW=' + JSON.stringify(m2))
   console.log('SETTINGS=' + JSON.stringify(m3))
+  console.log('CHANGES_BEFORE=' + JSON.stringify(beforeRollback))
+  console.log('CONFIRM_STEP=' + JSON.stringify(confirmStep))
+  console.log('ROLLBACK_NOTICE=' + JSON.stringify(rollbackNotice))
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
   console.log('CSP_PROBE=' + JSON.stringify(cspProbe))

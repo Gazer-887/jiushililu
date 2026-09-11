@@ -118,6 +118,18 @@ export interface LogsInfo {
   files: string[]
 }
 
+// ── 检查点与回滚（plan8 R4）──
+// 类型定义在 @shared/checkpoint（纯逻辑层，主进程与界面共用同一口径）
+import type { CheckpointRun, CheckpointRunMeta, RollbackReport } from './checkpoint'
+export type {
+  ChangeKind,
+  CheckpointRun,
+  CheckpointRunMeta,
+  FileChange,
+  RollbackAction,
+  RollbackReport
+} from './checkpoint'
+
 /** Agent 模式执行结果（plan6：独立上下文 + 单次报告返回） */
 export interface AgentRunResult {
   ok: boolean
@@ -212,7 +224,13 @@ export const IPC = {
   browserChanged: 'browser:changed',
   /** 日志（排查入口） */
   logsOpen: 'logs:open',
-  logsInfo: 'logs:info'
+  logsInfo: 'logs:info',
+  // ── 检查点与回滚（plan8 R4）──
+  checkpointList: 'checkpoint:list',
+  checkpointGet: 'checkpoint:get',
+  checkpointRollback: 'checkpoint:rollback',
+  /** 一轮运行结束后推送（界面据此刷新"文件变更"页签） */
+  checkpointChanged: 'checkpoint:changed'
 } as const
 
 /** preload 暴露给渲染进程的受控桥（contextIsolation 下唯一的系统通道） */
@@ -262,4 +280,13 @@ export interface ApiBridge {
   /** 在系统文件管理器中打开日志目录（排查用） */
   openLogsDir(): Promise<boolean>
   getLogsInfo(): Promise<LogsInfo>
+  // ── 检查点与回滚（plan8 R4）──
+  /** 列出所有 Agent 运行轮次（新→旧） */
+  listCheckpoints(): Promise<CheckpointRunMeta[]>
+  /** 读某一轮改了哪些文件 */
+  getCheckpoint(runId: string): Promise<CheckpointRun | null>
+  /** 回滚：不传 rel 即整轮回滚 */
+  rollbackCheckpoint(runId: string, rel?: string): Promise<RollbackReport>
+  /** 一轮运行结束后触发（界面刷新用） */
+  onCheckpointChanged(cb: (runId: string) => void): () => void
 }

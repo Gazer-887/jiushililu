@@ -107,7 +107,9 @@ app.whenReady().then(() => {
     builtinAgentsDir: app.isPackaged
       ? join(process.resourcesPath, 'agents')
       : join(app.getAppPath(), 'resources/agents'),
-    userAgentsDir: join(userDataDir, 'agents')
+    userAgentsDir: join(userDataDir, 'agents'),
+    // 检查点（plan8 R4）：Agent 每轮改动前的文件快照存这里，供回滚
+    checkpointDir: join(userDataDir, 'checkpoints')
   })
   registerIpcHandlers({ agent: agentCtx, userDataDir })
   createWindow()

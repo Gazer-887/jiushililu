@@ -1,9 +1,10 @@
 import { useAppStore, type DockTab } from '../store'
 import BrowserPanel from './BrowserPanel'
+import ChangesPanel from './ChangesPanel'
 
 // 右侧工作台（抽屉，P2）：六个面板都装在这里（D-034）。
-// 已实现：浏览器（真浏览器，Agent 可操控）
-// 待实现：资源管理器 / 文件变更记录 / 源代码管理 / 终端 / 任务管理
+// 已实现：浏览器（真浏览器，Agent 可操控）/ 文件变更记录（检查点与回滚，plan8 R4）
+// 待实现：资源管理器 / 源代码管理 / 终端 / 任务管理
 // 结构原则：主区域永远只负责"对话"，新增能力一律往两侧抽屉挂，不挤占对话空间。
 
 const TABS: Array<{ id: DockTab; label: string; short: string }> = [
@@ -24,7 +25,7 @@ const PLACEHOLDER: Record<DockTab, { title: string; desc: string; dep: string }>
   changes: {
     title: '文件变更记录',
     desc: '本次会话改过哪些文件、每次改动的前后差异，支持回看与撤销。',
-    dep: '依赖：工具写入留痕'
+    dep: '已实现（检查点与回滚）'
   },
   scm: {
     title: '源代码管理',
@@ -77,9 +78,9 @@ export default function RightDock(): JSX.Element {
       </div>
 
       <div className={`dock-body ${dockTab === 'browser' ? 'dock-body-flush' : ''}`}>
-        {dockTab === 'browser' && dockOpen ? (
-          <BrowserPanel />
-        ) : (
+        {dockOpen && dockTab === 'browser' && <BrowserPanel />}
+        {dockOpen && dockTab === 'changes' && <ChangesPanel />}
+        {!(dockOpen && (dockTab === 'browser' || dockTab === 'changes')) && (
           <div className="dock-placeholder">
             <div className="dock-ph-title">{info.title}</div>
             <div className="dock-ph-desc">{info.desc}</div>

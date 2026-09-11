@@ -2,12 +2,14 @@ import { mkdirSync } from 'node:fs'
 import type { ModelSettings, PermissionPreset, SkillInfo } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
 import { ToolGate } from './guard'
-import { createFileTools } from './tools/file-tools'
+import { createFileTools, type WriteRecorder } from './tools/file-tools'
 import { createSystemTools } from './tools/system-tools'
 import { createWebTools } from './tools/web-tools'
 import { createBrowserTools } from './tools/browser-tools'
 import { mergeAgentLayers } from './loader'
 import { runAgentLoop } from './loop'
+import type { CheckpointStore } from '../store/checkpoints'
+import { createCheckpointStore } from '../store/checkpoints'
 import { streamWithToolsOpenAI } from '../providers/openai-agent'
 import { streamWithToolsAnthropic } from '../providers/anthropic-agent'
 
@@ -49,9 +51,9 @@ export function allowedToolsFor(preset: PermissionPreset, declared: string[] | u
   return declared.filter((n) => ceilingSet.has(n))
 }
 
-export function createAllTools(workspaceRoot: string): AgentTool[] {
+export function createAllTools(workspaceRoot: string, recorder?: WriteRecorder): AgentTool[] {
   return [
-    ...createFileTools(workspaceRoot),
+    ...createFileTools(workspaceRoot, recorder),
     ...createSystemTools(workspaceRoot),
     ...createWebTools(),
     ...createBrowserTools()
@@ -65,6 +67,8 @@ export interface AgentRuntimeContext {
   builtinAgentsDir: string
   /** 用户自定义 Agent 目录（userData/agents） */
   userAgentsDir: string
+  /** 检查点仓库（plan8 R4）：每轮 Agent 运行 = 一个可回滚的检查点 */
+  checkpoints: CheckpointStore
 }
 
 export function ensureAgentRuntime(ctx: AgentRuntimeContext): void {
@@ -114,18 +118,27 @@ export interface RunAgentArgs {
 export async function runAgent(
   ctx: AgentRuntimeContext,
   args: RunAgentArgs
-): Promise<AgentLoopResult & { agent: string }> {
+): Promise<AgentLoopResult & { agent: string; runId: string; changedFiles: number }> {
   const workspaceRoot = ctx.getWorkspaceRoot()
   const registry = loadAgentRegistry(ctx)
-  const allTools = createAllTools(workspaceRoot)
-  const allNames = allTools.map((t) => t.schema.name)
 
   const def = args.agentName ? (registry.definitions.get(args.agentName) ?? null) : null
+  // 先校验 Agent 名再建检查点：否则"名字写错"会留下一个永远停在 running 的空轮次
   if (args.agentName && !def) {
     throw new Error(
       `找不到名为「${args.agentName}」的 Agent 定义（已加载：${[...registry.definitions.keys()].join('、') || '无'}）`
     )
   }
+
+  // 检查点边界（plan8 R4）：**一轮 Agent 运行 = 一个可回滚的检查点**。
+  // 必须在建工具之前开始，让写文件工具拿得到 recorder。
+  const agentLabel = args.agentName ?? '内核默认'
+  const runId = ctx.checkpoints.begin(workspaceRoot, agentLabel)
+
+  const allTools = createAllTools(workspaceRoot, {
+    beforeWrite: (rel, abs) => ctx.checkpoints.record(runId, workspaceRoot, rel, abs)
+  })
+  const allNames = allTools.map((t) => t.schema.name)
 
   // 工具白名单：**权限档是硬上限**（D-032），自定义 Agent 的 tools 只能在其中再收窄
   const allowed = allowedToolsFor(args.permission ?? 'write', def?.tools, allNames)
@@ -148,17 +161,27 @@ export async function runAgent(
       : streamWithToolsOpenAI(effective, args.apiKey, messages, toolSchemas, onText, signal)
   }
 
-  const result = await runAgentLoop({
-    systemPrompt: guardedSystem,
-    history: args.history,
-    tools,
-    maxRounds: args.settings.maxToolRounds || 12,
-    contextWindow: args.settings.contextWindow || 65536,
-    chat,
-    ...(args.onText ? { onText: args.onText } : {}),
-    ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {})
-  })
-  return { ...result, agent: def?.name ?? '内核默认' }
+  let result: AgentLoopResult
+  try {
+    result = await runAgentLoop({
+      systemPrompt: guardedSystem,
+      history: args.history,
+      tools,
+      maxRounds: args.settings.maxToolRounds || 12,
+      contextWindow: args.settings.contextWindow || 65536,
+      chat,
+      ...(args.onText ? { onText: args.onText } : {}),
+      ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {})
+    })
+  } finally {
+    // 无论正常结束、抛异常还是被中止，都要收尾 ——
+    // 不收尾的话 manifest 会一直停在 running，界面把正常完成的轮次显示成"中断"。
+    // （即便这里没收尾，快照也已增量落盘、仍可回滚，只是状态标注不准。）
+    ctx.checkpoints.finish(runId)
+  }
+
+  const changedFiles = ctx.checkpoints.get(runId)?.changes.length ?? 0
+  return { ...result, agent: def?.name ?? '内核默认', runId, changedFiles }
 }
 
 /**
@@ -173,8 +196,15 @@ export function createAgentContext(opts: {
   getWorkspaceRoot: () => string
   builtinAgentsDir: string
   userAgentsDir: string
+  /** 检查点仓库目录（通常是 `userData/checkpoints`） */
+  checkpointDir: string
 }): AgentRuntimeContext {
-  const ctx: AgentRuntimeContext = { ...opts }
+  const ctx: AgentRuntimeContext = {
+    getWorkspaceRoot: opts.getWorkspaceRoot,
+    builtinAgentsDir: opts.builtinAgentsDir,
+    userAgentsDir: opts.userAgentsDir,
+    checkpoints: createCheckpointStore(opts.checkpointDir)
+  }
   ensureAgentRuntime(ctx)
   return ctx
 }

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -187,5 +187,58 @@ describe('runAgentLoop（主循环）', () => {
     })
     expect(result.output).toBe('done')
     expect(toolSaw['__raw']).toBe('{oops')
+  })
+})
+
+describe('write_file 与检查点的接缝（plan8 R4）', () => {
+  // 这条规则是回滚正确性的基石：**快照必须发生在写入之前**。
+  // 顺序若反了，快照存下的就是"已被改过的内容"，回滚等于没退。
+  it('beforeWrite 在文件真正落盘**之前**被调用，且拿到的是原内容', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jsl-rec-'))
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'a.txt'), '原始', 'utf8')
+
+    const seen: { rel: string; existing: string | null }[] = []
+    const tools = createFileTools(dir, {
+      beforeWrite: (rel, abs) => {
+        // 钩子被调用时，磁盘上还应该是**旧内容**
+        seen.push({ rel, existing: existsSync(abs) ? readFileSync(abs, 'utf8') : null })
+      }
+    })
+    const write = tools[1]!
+    await write.execute({ path: 'a.txt', content: '新内容' })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.rel).toBe('a.txt')
+    expect(seen[0]!.existing).toBe('原始') // ← 关键断言：钩子看到的是改之前
+    expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('新内容')
+  })
+
+  it('新建文件时钩子也能拿到（此时磁盘上还不存在）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jsl-rec2-'))
+    const seen: (string | null)[] = []
+    const tools = createFileTools(dir, {
+      beforeWrite: (_rel, abs) => seen.push(existsSync(abs) ? 'exists' : null)
+    })
+    await tools[1]!.execute({ path: 'brand-new.md', content: 'x' })
+
+    expect(seen).toEqual([null]) // 写入前确实不存在 → 记录为 created
+  })
+
+  it('越界写入时钩子不被调用（拒绝的写入不该留快照）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jsl-rec3-'))
+    let called = 0
+    const tools = createFileTools(dir, { beforeWrite: () => called++ })
+    const msg = await tools[1]!.execute({ path: '../evil.txt', content: 'x' })
+
+    expect(msg).toContain('越出工作区边界')
+    expect(called).toBe(0)
+  })
+
+  it('不传 recorder 时照常工作（检查点不是写文件的必要条件）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jsl-rec4-'))
+    const tools = createFileTools(dir)
+    const msg = await tools[1]!.execute({ path: 'ok.txt', content: 'y' })
+    expect(msg).toContain('已写入')
   })
 })

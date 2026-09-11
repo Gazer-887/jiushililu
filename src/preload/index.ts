@@ -63,7 +63,13 @@ const api: ApiBridge = {
   setBrowserBounds: (bounds: BrowserBounds) => ipcRenderer.invoke(IPC.browserSetBounds, bounds),
   onBrowserChanged: (cb) => subscribe(IPC.browserChanged, (s) => cb(s as BrowserState)),
   openLogsDir: () => ipcRenderer.invoke(IPC.logsOpen),
-  getLogsInfo: () => ipcRenderer.invoke(IPC.logsInfo)
+  getLogsInfo: () => ipcRenderer.invoke(IPC.logsInfo),
+  // ── 检查点与回滚（plan8 R4）──
+  listCheckpoints: () => ipcRenderer.invoke(IPC.checkpointList),
+  getCheckpoint: (runId: string) => ipcRenderer.invoke(IPC.checkpointGet, runId),
+  rollbackCheckpoint: (runId: string, rel?: string) =>
+    ipcRenderer.invoke(IPC.checkpointRollback, rel === undefined ? { runId } : { runId, rel }),
+  onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (id) => cb(id as string))
 }
 
 contextBridge.exposeInMainWorld('api', api)

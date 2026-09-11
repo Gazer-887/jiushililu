@@ -16,7 +16,10 @@ import {
   type Conversation,
   type ConversationMeta,
   type SkillInfo,
-  type LogsInfo
+  type LogsInfo,
+  type CheckpointRun,
+  type CheckpointRunMeta,
+  type RollbackReport
 } from '@shared/ipc'
 import {
   getDecryptedApiKey,
@@ -162,7 +165,7 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
     // D-032：单一通道——带工具清单 + 流式，由模型自决"直接回答还是先调工具"。
     // 文本增量 → chat:chunk（上屏）；工具生命周期 → chat:tool（进度卡片）。
     try {
-      await runAgent(deps.agent, {
+      const result = await runAgent(deps.agent, {
         settings: getSettingsView(),
         apiKey,
         history: messages as AgentMessage[],
@@ -175,6 +178,10 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
         },
         signal: controller.signal
       })
+      // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
+      if (result.changedFiles > 0 && !e.sender.isDestroyed()) {
+        e.sender.send(IPC.checkpointChanged, result.runId)
+      }
       if (!e.sender.isDestroyed()) e.sender.send(IPC.chatDone)
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
@@ -441,4 +448,33 @@ export function registerIpcHandlers(deps: { agent: AgentRuntimeContext; userData
     const dir = getLogDir()
     return { dir, files: listLogFiles() }
   })
+
+  // ── 检查点与回滚（plan8 R4）：Agent 改坏文件能退回去 ──────────
+
+  ipcMain.handle(IPC.checkpointList, (): CheckpointRunMeta[] => deps.agent.checkpoints.list())
+
+  ipcMain.handle(IPC.checkpointGet, (_e, rawRunId: unknown): CheckpointRun | null => {
+    const parsed = z.string().min(1).max(64).safeParse(rawRunId)
+    if (!parsed.success) return null
+    return deps.agent.checkpoints.get(parsed.data)
+  })
+
+  ipcMain.handle(
+    IPC.checkpointRollback,
+    (_e, raw: unknown): RollbackReport => {
+      const input = z
+        .object({ runId: z.string().min(1).max(64), rel: z.string().min(1).max(1024).optional() })
+        .parse(raw)
+      const report = deps.agent.checkpoints.rollback(input.runId, input.rel)
+      log.info('执行回滚', {
+        runId: input.runId,
+        target: input.rel ?? '（整轮）',
+        restored: report.restored.length,
+        deleted: report.deleted.length,
+        failed: report.failed.length,
+        rejected: report.rejected.length
+      })
+      return report
+    }
+  )
 }
