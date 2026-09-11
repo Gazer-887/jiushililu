@@ -123,6 +123,14 @@ app.whenReady().then(async () => {
     }
   })
 
+  // CSP 违规捕获（plan8 R3）：必须在 loadFile **之前**挂监听，否则漏掉加载期错误
+  const cspViolations = []
+  win.webContents.on('console-message', (...a) => {
+    // 兼容新旧签名：Electron 33 是 (event, level, message, ...)，35+ 是 (event, details)
+    const msg = typeof a[2] === 'string' ? a[2] : (a[0] && a[0].message) || ''
+    if (/Content Security Policy|Refused to/i.test(msg)) cspViolations.push(msg)
+  })
+
   await win.loadFile(join(ROOT, 'out/renderer/index.html'))
   await new Promise((r) => setTimeout(r, 3000))
 
@@ -208,8 +216,39 @@ app.whenReady().then(async () => {
   const shot3 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-settings.png'), shot3.toPNG())
 
+  // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
+  const cssCheck = await win.webContents.executeJavaScript(`
+    (() => {
+      const sheets = document.styleSheets.length;
+      const view = document.querySelector('.settings-view');
+      const cs = view ? getComputedStyle(view) : null;
+      return {
+        sheets,
+        padding: cs ? cs.paddingTop : null,
+        maxWidth: cs ? cs.maxWidth : null,
+        scrollable: cs ? cs.overflowY : null
+      };
+    })()
+  `)
+
+  // CSP 是否**真的在拦**：主动注入内联脚本探针。
+  // 「零违规」只能说明没打坏东西，不能证明策略生效 —— 必须主动触发一次被拦的行为。
+  // 策略为 script-src 'self' 时应拦截内联脚本，故注入的赋值不应执行。
+  const cspProbe = await win.webContents.executeJavaScript(`
+    new Promise((resolve) => {
+      window.__cspProbe = false;
+      const s = document.createElement('script');
+      s.textContent = 'window.__cspProbe = true';
+      document.head.appendChild(s);
+      setTimeout(() => resolve({ inlineScriptExecuted: window.__cspProbe }), 80);
+    })
+  `)
+
   console.log('WIDE=' + JSON.stringify(m1))
   console.log('NARROW=' + JSON.stringify(m2))
   console.log('SETTINGS=' + JSON.stringify(m3))
+  console.log('CSS=' + JSON.stringify(cssCheck))
+  console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
+  console.log('CSP_PROBE=' + JSON.stringify(cspProbe))
   app.exit(0)
 })

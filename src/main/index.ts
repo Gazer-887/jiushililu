@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu } from 'electron'
+import { app, BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { registerIpcHandlers } from './ipc'
 import { createAgentContext } from './agent/runner'
@@ -15,8 +15,46 @@ import {
   setBrowserStateListener
 } from './browser'
 import { setBrowserAdapter } from './agent/browser-bridge'
+import { isExternallyOpenable, isInternalUrl } from './url-guard'
 
 // 主进程入口：窗口生命周期 + IPC 注册。Agent 内核将来跑在 worker_threads，不在这里（P1）。
+
+/**
+ * 安全基线（plan8 R3）：主窗口「只能停在自家页面」。
+ *
+ * 两条都属 Electron 安全检查清单必做项，此前**都缺失**：
+ *   ① setWindowOpenHandler —— markdown 里 `<a target="_blank">` 会弹出**新的 Electron 窗口**
+ *      （无地址栏、看似应用内页面）→ 钓鱼风险
+ *   ② will-navigate —— 主窗口可被导航到任意网站，**整个应用被替换成外部网页**
+ *
+ * 处理原则：外部 http(s) 一律交给**系统浏览器**打开；其余协议（file: / javascript: 等）
+ * 直接拒绝——把它们交给 openExternal 是危险的。（判定逻辑见 ./url-guard，纯函数可单测）
+ *
+ * 注意：**内置浏览器面板是独立 WebContents，导航自由，不受本函数约束**。
+ */
+function applyNavigationGuards(win: BrowserWindow): void {
+  const log = createLogger('security')
+  const devURL = process.env['ELECTRON_RENDERER_URL']
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isExternallyOpenable(url)) {
+      void shell.openExternal(url)
+    } else {
+      log.warn('拒绝打开非 http(s) 外部链接', { url })
+    }
+    return { action: 'deny' } // 绝不新建 Electron 窗口
+  })
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isInternalUrl(url, devURL)) return
+    event.preventDefault()
+    if (isExternallyOpenable(url)) {
+      void shell.openExternal(url)
+    } else {
+      log.warn('拦截非法导航', { url })
+    }
+  })
+}
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -37,6 +75,8 @@ function createWindow(): void {
       sandbox: true
     }
   })
+
+  applyNavigationGuards(win)
 
   win.on('ready-to-show', () => win.show())
 
