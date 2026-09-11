@@ -77,8 +77,8 @@ export default function ChatView() {
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-empty">
-            <h2>九十里路</h2>
-            <p>行百里者半九十。说说你想做什么。</p>
+            <h2>行百里者半九十</h2>
+            <p>从何来？向何去？</p>
           </div>
         )}
         {messages.map((m, i) => (

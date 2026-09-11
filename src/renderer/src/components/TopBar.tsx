@@ -35,7 +35,7 @@ export default function TopBar(): JSX.Element {
     view === 'settings'
       ? '设置'
       : view === 'new'
-        ? '新建任务'
+        ? '' // 新建任务页不显示标题（用户 2026-09-12：页面中间已有文案，顶栏再标一次是重复）
         : (conversations.find((c) => c.id === activeId)?.title ?? '会话')
 
   return (
@@ -49,10 +49,15 @@ export default function TopBar(): JSX.Element {
       </button>
 
       <span className="topbar-brand">九十里路</span>
-      <span className="topbar-sep">·</span>
-      <span className="topbar-title" title={title}>
-        {title}
-      </span>
+      {/* 标题为空时连分隔符一起不渲染 —— 否则会留下一个孤零零的「·」 */}
+      {title && (
+        <>
+          <span className="topbar-sep">·</span>
+          <span className="topbar-title" title={title}>
+            {title}
+          </span>
+        </>
+      )}
 
       <button
         className={`panel-btn ${dockOpen ? 'on' : ''}`}

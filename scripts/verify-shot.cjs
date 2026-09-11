@@ -72,11 +72,9 @@ const STUBS = {
     skills: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    messageCount: 2,
-    messages: [
-      { role: 'user', content: '你好' },
-      { role: 'assistant', content: '你好！很高兴见到你。' }
-    ]
+    messageCount: 0,
+    // 空消息 → 对话页显示空状态（验证 0.9.9 的空状态文案）
+    messages: []
   }),
   'conv:create': () => ({ id: 'x' }),
   'conv:save': () => null,
@@ -251,6 +249,22 @@ app.whenReady().then(async () => {
 
   await enterChat()
   const m1 = await measure()
+
+  // 顶栏是否还挂着「新建任务」/ 对话页空状态文案（用户 2026-09-12 两条意见）
+  const textCheck = await win.webContents.executeJavaScript(`
+    (() => {
+      const bar = document.querySelector('.topbar');
+      const empty = document.querySelector('.chat-empty');
+      return {
+        topbarText: bar ? bar.textContent.trim() : null,
+        topbarHasSep: !!(bar && bar.querySelector('.topbar-sep')),
+        topbarHasTitle: !!(bar && bar.querySelector('.topbar-title')),
+        emptyH2: empty ? empty.querySelector('h2')?.textContent?.trim() ?? null : null,
+        emptyP: empty ? empty.querySelector('p')?.textContent?.trim() ?? null : null
+      };
+    })()
+  `)
+
   const shot1 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-wide.png'), shot1.toPNG())
 
@@ -589,7 +603,11 @@ app.whenReady().then(async () => {
           const r = el.getBoundingClientRect();
           return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) };
         })(),
-        hasInput: !!document.querySelector('.console-input')
+        hasInput: !!document.querySelector('.console-input'),
+        // 顶栏：新建任务页不应再出现标题与分隔符（用户 2026-09-12）
+        topbarText: document.querySelector('.topbar')?.textContent?.trim() ?? null,
+        topbarHasSep: !!document.querySelector('.topbar-sep'),
+        topbarHasTitle: !!document.querySelector('.topbar-title')
       };
     })()
   `)
@@ -624,6 +642,7 @@ app.whenReady().then(async () => {
     })
   `)
 
+  console.log('TEXT_CHECK=' + JSON.stringify(textCheck))
   console.log('WIDE=' + JSON.stringify(m1))
   console.log('NARROW=' + JSON.stringify(m2))
   console.log('SETTINGS=' + JSON.stringify(m3))
