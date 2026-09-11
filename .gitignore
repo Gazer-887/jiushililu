@@ -44,3 +44,5 @@ Thumbs.db
 *.log
 runs/
 out-stale-*/
+verify-*.png
+.verify-userdata/

@@ -172,28 +172,14 @@ nav {
   font-size: 13px;
 }
 
+/* 输入区：单列纵向——里面只有一个控制台组件，让它撑满可用宽度
+   （曾为"输入框+发送按钮"横排设计，2026-09-12 改为控制台后不再适用） */
 .chat-input {
   display: flex;
-  gap: 10px;
-  padding: 16px 32px;
+  flex-direction: column;
+  padding: 12px 20px 14px;
   border-top: 1px solid var(--border);
   background: var(--panel);
-}
-
-.chat-input textarea {
-  flex: 1;
-  min-height: 44px;
-  max-height: 160px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  resize: vertical;
-  font: inherit;
-}
-
-.chat-input textarea:focus {
-  outline: 2px solid var(--accent-soft);
-  border-color: var(--accent);
 }
 
 .btn-send {
@@ -456,25 +442,7 @@ label.radio {
   cursor: default;
 }
 
-/* ── P2 工作台：输入工具条 ─────────────────────────────── */
-
-.input-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 8px;
-  flex-wrap: wrap;
-}
-
-.input-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-}
-
-.input-row textarea {
-  flex: 1;
-}
+/* ── 输入工具条（旧类已随 InputConsole 取代而移除，此处仅留模型下拉基线）── */
 
 .model-switch {
   position: relative;
@@ -1594,6 +1562,8 @@ label.radio {
    对齐用户图纸：上层多行输入区（附件 chip）+ 下层工具栏（拓展·分支·权限 | 进度·优化·模型·发送） */
 
 .console {
+  width: 100%;
+  min-width: 0;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -2025,4 +1995,83 @@ label.radio {
   border-radius: 4px;
   padding: 1px 6px;
   pointer-events: none;
+}
+
+/* ══ 控制台自适应（2026-09-12）══════════════════════════
+   输入框随内容长高、工具栏窄宽度下优雅换行。
+   （.chat-input 与 .console 的定义在文件前部，此处不再重复。） */
+
+/* 输入框：随内容自动长高（Chromium 123+ 的 field-sizing，Electron 33 = Chromium 130）
+   —— 不需要 JS 监听，输入换行时高度自然增长，到上限后转为滚动 */
+.console-input {
+  field-sizing: content;
+  min-height: 56px;
+  max-height: min(50vh, 340px);
+  overflow-y: auto;
+}
+
+/* 工具栏：窄宽度下优雅换行，不做重叠 */
+.console-toolbar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  min-width: 0;
+}
+
+/* 左侧一组（＋/分支/权限）与右侧一组（进度/优化/模型/发送）各自成簇，
+   避免换行时元素散乱 */
+.console-toolbar > .tb-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 很窄时隐藏次要文字（分支名、百分比），只留图标，保证不挤压 */
+@media (max-width: 560px) {
+  .tb-branch {
+    max-width: 28px;
+    overflow: hidden;
+  }
+
+  .ctx-ring-text {
+    display: none;
+  }
+}
+
+/* 新建任务页：初始页保持居中窄栏（有意设计），但窄窗口下要退让 */
+.new-task-console {
+  width: 100%;
+  max-width: min(660px, 100%);
+  min-width: 0;
+}
+
+.new-task {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+/* ══ 控制台工具栏：两组分簇 + 优雅换行（2026-09-12 二修）════════
+   首版把左右零件平铺在一个 flex 容器里，窄宽度换行时"发送键"会独自掉到
+   下一行，视觉不平衡。改为两个成组的容器：换行时整组一起走。 */
+
+.console-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  min-width: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.tb-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 右侧组贴右（`space-between` 已保证，这里兜底左对齐时的表现） */
+.tb-right {
+  margin-left: auto;
 }

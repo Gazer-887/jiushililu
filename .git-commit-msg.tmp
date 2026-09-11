@@ -1,0 +1,29 @@
+feat: 输入栏自适应（宽度撑满 + 高度随内容 + 工具栏分簇换行）
+
+用户反馈：输入栏没有自适应缩放（截图里比上方消息区窄）。
+
+病根（两个）：
+1. .chat-input 沿用旧样式（display:flex，为"输入框 + 发送按钮"横排设计），
+   改成控制台后里面只有一个子元素且缺 flex:1 → 按内容宽度缩着，比消息区窄
+2. .chat-input textarea 这条旧规则优先级高于 .console-input，
+   给控制台内的输入框叠了一层多余边框（截图里可见）
+
+修法：
+- .chat-input 改单列纵向，让 .console 撑满可用宽度
+- 删除 .chat-input textarea 与其 :focus 旧规则（死样式，且会覆盖新样式）
+- 合并重复的 .chat-input / .console 定义为单一真相源
+- .console 加 width:100% / min-width:0
+- 输入框改用 field-sizing: content（Chromium 123+，Electron 33 = Chromium 130）：
+  高度随内容自动增长，到 min(50vh, 340px) 后转滚动，无需 JS 监听
+- 工具栏改为左右两组分簇（.tb-group）：窄宽度换行时整组一起走，
+  避免发送键独自掉到下一行（首版平铺时就是这样）
+- 极窄（<560px）时收敛次要信息：隐藏分支名文字与百分比
+
+真实渲染验证（新增 scripts/verify-shot.cjs，可复用）：
+  宽窗 1186px：chatInput 937 = content 全宽，console 897 撑满，工具栏单行 37px
+  窄窗 746px：chatInput 497 = content 全宽，console 457 撑满，工具栏换行 73px（两组各一行）
+  截图确认换行后左组、右组各占一行，发送键不再孤立
+
+门禁四道全绿（127 例）；临时截图产物已清理并加入 .gitignore
+
+Co-Authored-By: Anan (WorkBuddy) <noreply@local>

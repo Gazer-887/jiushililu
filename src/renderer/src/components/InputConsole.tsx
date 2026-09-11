@@ -129,28 +129,28 @@ export default function InputConsole({
       {attachError && <div className="console-error">{attachError}</div>}
 
       <div className="console-toolbar">
-        <PlusMenu
-          picked={pickedSkills ?? []}
-          {...(onToggleSkill ? { onToggle: onToggleSkill } : {})}
-          onAttach={() => void addAttachment()}
-        />
-        <BranchChip />
-        <PermissionChip />
+        {/* 左右两组各自成簇：换行时整组一起走，避免发送键独自掉到下一行 */}
+        <div className="tb-group tb-left">
+          <PlusMenu
+            picked={pickedSkills ?? []}
+            {...(onToggleSkill ? { onToggle: onToggleSkill } : {})}
+            onAttach={() => void addAttachment()}
+          />
+          <BranchChip />
+          <PermissionChip />
+        </div>
 
-        <span className="tb-spacer" />
-
-        <ContextRing used={usedTokens} />
-        <PolishButton
-          text={value}
-          onPolished={(next) => onChange(next)}
-        />
-        <ModelSwitcher />
-        <SendButton
-          disabled={busy || (!value.trim() && attachments.length === 0)}
-          busy={busy}
-          onSend={submit}
-          onStop={() => onStop?.()}
-        />
+        <div className="tb-group tb-right">
+          <ContextRing used={usedTokens} />
+          <PolishButton text={value} onPolished={(next) => onChange(next)} />
+          <ModelSwitcher />
+          <SendButton
+            disabled={busy || (!value.trim() && attachments.length === 0)}
+            busy={busy}
+            onSend={submit}
+            onStop={() => onStop?.()}
+          />
+        </div>
       </div>
     </div>
   )
