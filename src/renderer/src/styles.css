@@ -944,22 +944,13 @@ label.radio {
 
 .chat-head {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   flex-shrink: 0;
-}
-
-.chat-head .ws-bar {
-  border-bottom: 0;
-  padding-bottom: 4px;
-}
-
-.chat-head-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 20px 8px;
+  min-height: 34px;
 }
 
 .chat-title {
@@ -1174,3 +1165,15 @@ label.radio {
 .back-btn:hover {
   color: var(--text);
 }
+
+/* ══ 输入框内的工作区 chip（与新建任务页同形态） ═════════ */
+
+.chip-ws-inline {
+  max-width: 200px;
+}
+
+.chip-ws-inline .chip-value {
+  max-width: 120px;
+}
+
+/* 旧顶部工作区条样式已随组件移除（.ws-bar 系列保留在新建页/兼容处，不再用于对话页） */

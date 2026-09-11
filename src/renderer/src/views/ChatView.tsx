@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import MessageMarkdown from '../components/MessageMarkdown'
-import WorkspaceBar from '../components/WorkspaceBar'
+import WorkspaceChip from '../components/WorkspaceChip'
 import { ContextMeter, ModelSwitcher } from '../components/InputTools'
 
 export default function ChatView() {
@@ -77,21 +77,18 @@ export default function ChatView() {
 
   return (
     <div className="chat-view">
-      <div className="chat-head">
-        <WorkspaceBar />
-        {active && (
-          <div className="chat-head-meta">
-            <span className="chat-title" title={active.title}>
-              {active.title}
+      {active && (
+        <div className="chat-head">
+          <span className="chat-title" title={active.title}>
+            {active.title}
+          </span>
+          {active.skills.length > 0 && (
+            <span className="chat-skills" title={active.skills.join('、')}>
+              技能 {active.skills.length}
             </span>
-            {active.skills.length > 0 && (
-              <span className="chat-skills" title={active.skills.join('、')}>
-                技能 {active.skills.length}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       <div className="chat-messages">
         {messages.length === 0 && (
@@ -118,6 +115,7 @@ export default function ChatView() {
 
       <div className="chat-input">
         <div className="input-toolbar">
+          <WorkspaceChip />
           <button
             className={`btn-mode ${agentMode ? 'active' : ''}`}
             title="Agent 模式：任务在独立上下文执行，可读写工作区（结果单次回流）"

@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../store'
-import type { SkillInfo, WorkspaceInfo } from '@shared/ipc'
+import WorkspaceChip from '../components/WorkspaceChip'
+import type { SkillInfo } from '@shared/ipc'
 
 // 新建任务页（P2）：一个简洁的初始选择页——工作区、模型、内置技能，
 // 参考 opencode 的交互：中央输入框 + 下方一排可选 chips，选好直接开跑。
+// 工作区 chip 与对话页共用同一组件（WorkspaceChip），保证两处形态一致。
 
 export default function NewTaskView(): JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const createConversation = useAppStore((s) => s.createConversation)
 
-  const [workspace, setWorkspace] = useState('')
   const [model, setModel] = useState('')
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [picked, setPicked] = useState<string[]>([])
@@ -17,7 +18,6 @@ export default function NewTaskView(): JSX.Element {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    void window.api.getWorkspace().then((ws: WorkspaceInfo) => setWorkspace(ws.path))
     void window.api.listSkills().then(setSkills)
   }, [])
 
@@ -25,23 +25,20 @@ export default function NewTaskView(): JSX.Element {
     if (settings?.model && !model) setModel(settings.model)
   }, [settings?.model, model])
 
-  const pickDir = async (): Promise<void> => {
-    const ws = await window.api.pickWorkspace()
-    if (ws) setWorkspace(ws.path)
-  }
-
   const toggleSkill = (name: string): void => {
     setPicked((p) => (p.includes(name) ? p.filter((n) => n !== name) : [...p, name]))
   }
 
   const start = async (): Promise<void> => {
     if (busy) return
-    if (!workspace || !model) return
+    // 工作区以 chip 当前值为准（组件自管理；提交时取一次即可）
+    const ws = await window.api.getWorkspace()
+    if (!ws.path || !model) return
     setBusy(true)
     try {
       const text = input.trim()
       await createConversation({
-        workspace,
+        workspace: ws.path,
         model,
         skills: picked,
         ...(text ? { firstMessage: text } : {})
@@ -75,13 +72,7 @@ export default function NewTaskView(): JSX.Element {
         />
 
         <div className="new-task-controls">
-          <button className="chip chip-ws" title={workspace} onClick={() => void pickDir()}>
-            <span className="chip-label">工作区</span>
-            <span className="chip-value">
-              {workspace ? (workspace.split(/[\\/]/).filter(Boolean).pop() ?? workspace) : '选择目录'}
-            </span>
-            <span className="chip-caret">▾</span>
-          </button>
+          <WorkspaceChip />
 
           <label className="chip chip-model">
             <span className="chip-label">模型</span>
@@ -91,7 +82,7 @@ export default function NewTaskView(): JSX.Element {
             </select>
           </label>
 
-          <button className="start-btn" disabled={busy || !workspace || !model} onClick={() => void start()}>
+          <button className="start-btn" disabled={busy || !model} onClick={() => void start()}>
             {busy ? '创建中…' : '开始'}
           </button>
         </div>
@@ -121,3 +112,4 @@ export default function NewTaskView(): JSX.Element {
     </div>
   )
 }
+
