@@ -43,3 +43,4 @@ Thumbs.db
 *.sqlite3
 *.log
 runs/
+out-stale-*/
