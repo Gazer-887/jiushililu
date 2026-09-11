@@ -1,6 +1,13 @@
 /**
- * 一次性视觉验证脚本（用后即删）：启动构建产物 → 量取尺寸 → 截图 → 退出。
- * 目的：**真实渲染验证**输入控制台的宽度自适应（不靠猜）。
+ * 视觉验证脚本（可复用）：启动构建产物 → 量取尺寸 → 截图 → 退出。
+ * 目的：**真实渲染验证**（不靠猜），用于布局类改动回归。
+ *
+ * 用法：先 `npm run build`，再 `node scripts/verify-shot.cjs`
+ * 产出：verify-wide.png / verify-narrow.png / verify-settings.png
+ *
+ * 覆盖：
+ *   ① 对话页输入控制台的宽度自适应（宽窗 / 窄窗）
+ *   ② 设置页「故障排查」区（plan8 R2）
  *
  * 说明：本脚本独立于应用主进程，故需自行 stub 全部 IPC handler——
  * 数据返回空值即可，本脚本验证的是**布局几何**，不是数据流。
@@ -90,7 +97,13 @@ const STUBS = {
   'browser:forward': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
   'browser:reload': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
   'browser:set-visible': () => undefined,
-  'browser:set-bounds': () => undefined
+  'browser:set-bounds': () => undefined,
+  // plan8 R2：设置页「故障排查」
+  'logs:info': () => ({
+    dir: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\logs',
+    files: ['app.log', 'app.1.log']
+  }),
+  'logs:open': () => true
 }
 
 app.whenReady().then(async () => {
@@ -160,7 +173,43 @@ app.whenReady().then(async () => {
   const shot2 = await win.webContents.capturePage()
   writeFileSync(join(ROOT, 'verify-narrow.png'), shot2.toPNG())
 
+  // —— 设置页「故障排查」区（plan8 R2）——
+  win.setSize(1200, 800)
+  await new Promise((r) => setTimeout(r, 800))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const gear = document.querySelector('.gear-btn');
+      if (gear) gear.click();
+      return !!gear;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1200))
+
+  const m3 = await win.webContents.executeJavaScript(`
+    (() => {
+      const pick = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      return {
+        view: pick('.settings-view') ? 'settings' : '?',
+        section: pick('.settings-section'),
+        logsInfo: pick('.logs-info'),
+        logsPath: pick('.logs-path'),
+        pathText: document.querySelector('.logs-path')?.textContent?.trim() ?? null,
+        countText: document.querySelector('.logs-count')?.textContent?.trim() ?? null,
+        btnText: document.querySelector('.settings-section button')?.textContent?.trim() ?? null,
+        btnDisabled: document.querySelector('.settings-section button')?.disabled ?? null
+      };
+    })()
+  `)
+  const shot3 = await win.webContents.capturePage()
+  writeFileSync(join(ROOT, 'verify-settings.png'), shot3.toPNG())
+
   console.log('WIDE=' + JSON.stringify(m1))
   console.log('NARROW=' + JSON.stringify(m2))
+  console.log('SETTINGS=' + JSON.stringify(m3))
   app.exit(0)
 })
