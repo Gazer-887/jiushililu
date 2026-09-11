@@ -1,7 +1,8 @@
 import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'node:path'
 import { registerIpcHandlers } from './ipc'
-import { defaultAgentContext } from './agent/runner'
+import { createAgentContext } from './agent/runner'
+import { resolveWorkspaceRoot } from './store/workspace'
 
 // 主进程入口：窗口生命周期 + IPC 注册。Agent 内核将来跑在 worker_threads，不在这里（P1）。
 
@@ -39,12 +40,15 @@ function createWindow(): void {
 app.whenReady().then(() => {
   // 去掉默认的 File/Edit/View 菜单栏（P0 用不到，界面更干净）
   Menu.setApplicationMenu(null)
-  // Agent 运行时上下文：内置定义随打包资源分发，用户定义/工作区在 userData
+  // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
   const userDataDir = app.getPath('userData')
-  const agentCtx = defaultAgentContext(
-    userDataDir,
-    app.isPackaged ? join(process.resourcesPath, 'agents') : join(app.getAppPath(), 'resources/agents')
-  )
+  const agentCtx = createAgentContext({
+    getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
+    builtinAgentsDir: app.isPackaged
+      ? join(process.resourcesPath, 'agents')
+      : join(app.getAppPath(), 'resources/agents'),
+    userAgentsDir: join(userDataDir, 'agents')
+  })
   registerIpcHandlers({ agent: agentCtx, userDataDir })
   createWindow()
   app.on('activate', () => {

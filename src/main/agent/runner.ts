@@ -1,5 +1,4 @@
 import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
 import type { ModelSettings } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool } from '@shared/agent'
 import { ToolGate } from './guard'
@@ -10,7 +9,6 @@ import { mergeAgentLayers } from './loader'
 import { runAgentLoop } from './loop'
 import { chatWithToolsOpenAI } from '../providers/openai-agent'
 import { chatWithToolsAnthropic } from '../providers/anthropic-agent'
-import { resolveWorkspaceRoot } from '../store/workspace'
 
 // Agent 运行入口（IPC agent:run 的后端）：把加载器、门控、工具、Provider 通道拼成一杆枪。
 // 职责单一：不碰 UI、不碰流式对话——那是 ChatView 与 chat:* 通道的事。
@@ -97,15 +95,19 @@ export async function runAgent(
 }
 
 /**
- * 组装运行上下文。工作区用**惰性解析函数**（P2：用户可在设置里切换到真实目录，
- * 每次运行前重新解析，无需重启应用）。
+ * 组装运行上下文。工作区用**惰性解析函数**（P2：用户可在界面切换目录，每次运行前重新解析，
+ * 无需重启应用）。
+ *
+ * 注意：本模块**不得 import 任何 electron 模块**（含 electron-store）——runner 会被单元测试
+ * 直接 import，而 CI 的 Linux 环境没有 Electron 二进制，一旦引入即 `Electron failed to
+ * install correctly`（2026-09-11 实测踩过）。持久化由调用方（main/index.ts）注入。
  */
-export function defaultAgentContext(userDataDir: string, builtinAgentsDir: string): AgentRuntimeContext {
-  const ctx: AgentRuntimeContext = {
-    getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
-    builtinAgentsDir,
-    userAgentsDir: join(userDataDir, 'agents')
-  }
+export function createAgentContext(opts: {
+  getWorkspaceRoot: () => string
+  builtinAgentsDir: string
+  userAgentsDir: string
+}): AgentRuntimeContext {
+  const ctx: AgentRuntimeContext = { ...opts }
   ensureAgentRuntime(ctx)
   return ctx
 }
