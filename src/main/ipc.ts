@@ -33,6 +33,7 @@ import { getPermissionPreset, setPermissionPreset } from './store/settings'
 // 下面这几个名字语义没变（内核/界面永远只看见"当前这一个模型"），只是真源搬到了 store/models
 import {
   deleteProfileById,
+  getActiveProfile,
   getDecryptedApiKey,
   getSettingsView,
   hasApiKey,
@@ -581,7 +582,10 @@ export function registerIpcHandlers(deps: {
     if (input.workspace !== current && !knownWorkspaces().includes(input.workspace)) {
       throw new Error(`工作区未被授权：${input.workspace}`)
     }
-    return createConversation(input)
+    // **绑定当前模型档案**（plan7 F5）：`model` 记名字（给人看、老数据只有它），
+    // `modelProfileId` 才是"用哪条连接 + 哪把 Key"。渲染端不用关心 —— 它此刻用的就是当前档案。
+    const active = getActiveProfile()
+    return createConversation({ ...input, ...(active ? { model: active.model, modelProfileId: active.id } : {}) })
   })
 
   ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {

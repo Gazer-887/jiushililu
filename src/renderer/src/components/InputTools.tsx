@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
+import type { ModelsView } from '@shared/models'
 import type { GitInfo, PermissionPreset } from '@shared/ipc'
 
 // 输入框工具栏零件（P2 控制台）：模型切换 / 上下文圆环 / 权限档 / Git 分支 / 提示词优化。
@@ -41,23 +42,32 @@ export function ContextRing({ used }: { used: number }): JSX.Element {
   )
 }
 
-/** 模型快速切换（下拉 + 最近使用 + 手输） */
+/**
+ * 模型快速切换（plan7 F5 之后：**切的是档案，不是名字**）。
+ *
+ * 与设置页那个列表是同一份数据（`models:list`），这里只是紧凑版：
+ * 显示名 + 来源标签，点一下就切当前档案。
+ *
+ * 为什么不再"手输模型名"：多模型之后，光改名字 = 拿新名字去撞**当前那条连接**，
+ * 结果多半是 400。要换模型请去设置页「添加模型」——
+ * 这里保留手输只是为"同一条连接上换个模型名"这种少数情况。
+ */
 export function ModelSwitcher(): JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const loadSettings = useAppStore((s) => s.loadSettings)
   const [open, setOpen] = useState(false)
-  const [recent, setRecent] = useState<string[]>([])
+  const [models, setModels] = useState<ModelsView | null>(null)
   const [draft, setDraft] = useState('')
   const boxRef = useRef<HTMLDivElement>(null)
 
+  // 打开时才拉列表：这是"用了才查"的数据，不占首屏
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem('recentModels')
-      if (raw) setRecent((JSON.parse(raw) as string[]).slice(0, 6))
-    } catch {
-      // 本地记录损坏不影响主流程
-    }
-  }, [])
+    if (!open) return
+    void window.api
+      .listModels()
+      .then(setModels)
+      .catch(() => setModels(null))
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -68,44 +78,57 @@ export function ModelSwitcher(): JSX.Element {
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
+  /** 切档案（主进程切完之后，设置页/输入框读的都是"当前档案"，拉一次就同步了） */
+  const useProfile = async (id: string): Promise<void> => {
+    const next = await window.api.setActiveModel(id)
+    setModels(next)
+    await loadSettings()
+    setOpen(false)
+  }
+
+  /** 同一条连接上换模型名（少数情况：厂商改名、临时试个新模型） */
   const apply = async (model: string): Promise<void> => {
     const name = model.trim()
     if (!name) return
     await window.api.setModel(name)
     await loadSettings()
-    const next = [name, ...recent.filter((m) => m !== name)].slice(0, 6)
-    setRecent(next)
-    window.localStorage.setItem('recentModels', JSON.stringify(next))
     setDraft('')
     setOpen(false)
   }
 
-  const options = useMemo(() => {
-    const cur = settings?.model ?? ''
-    return [cur, ...recent.filter((m) => m && m !== cur)].filter(Boolean)
-  }, [settings?.model, recent])
+  const active = models?.profiles.find((p) => p.id === models.activeId) ?? null
+  const label = active?.name ?? settings?.model ?? '未配置模型'
 
   return (
     <div className="model-switch" ref={boxRef}>
       <button className="tb-btn tb-model" onClick={() => setOpen((v) => !v)} title="切换模型">
-        {settings?.model || '未配置模型'}
+        {label}
         <span className="tb-caret">▾</span>
       </button>
       {open && (
         <div className="model-menu">
-          {options.map((m) => (
-            <button
-              key={m}
-              className={`model-item ${m === settings?.model ? 'active' : ''}`}
-              onClick={() => void apply(m)}
-            >
-              {m}
+          {models && models.profiles.length > 0 ? (
+            models.profiles.map((p) => (
+              <button
+                key={p.id}
+                className={`model-item ${p.id === models.activeId ? 'active' : ''}`}
+                onClick={() => void useProfile(p.id)}
+                title={p.model}
+              >
+                {p.name}
+                <span className="model-item-src">{p.source === 'deepseek' ? '深度求索' : '自定义'}</span>
+              </button>
+            ))
+          ) : (
+            <button className="model-item" onClick={() => setOpen(false)}>
+              {settings?.model || '还没配模型'}
+              <span className="model-item-src">去设置页添加</span>
             </button>
-          ))}
+          )}
           <div className="model-new">
             <input
               value={draft}
-              placeholder="输入模型名后回车"
+              placeholder="同一条连接上换个模型名，回车"
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void apply(draft)

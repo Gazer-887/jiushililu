@@ -192,6 +192,8 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
         title: deriveTitle(input.firstMessage),
         workspace: input.workspace,
         model: input.model,
+        // 绑定模型档案（plan7 F5）：有就记上；老数据没有这个字段 → 打开时按名字兜底
+        ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
         skills: input.skills,
         createdAt: now,
         updatedAt: now,

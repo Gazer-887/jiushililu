@@ -172,6 +172,15 @@ export interface ConversationMeta {
   workspace: string
   /** 该会话使用的模型（创建时快照，可单独切换） */
   model: string
+  /**
+   * 该会话绑定的**模型档案 id**（plan7 F5 之后新增）。
+   *
+   * 为什么两个字段都留着：`model` 是**模型名**（给人看、也是老数据的全部信息），
+   * `modelProfileId` 才能定位"用哪条连接 + 哪把 Key"。
+   * 老会话没有这个字段 → 打开时按名字找同名档案兜底（找得到就绑上，找不到就用当前档案）
+   * —— **不许因为升级而丢掉会话或让会话打不开**。
+   */
+  modelProfileId?: string
   /** 勾选启用的内置技能（agent 定义名） */
   skills: string[]
   createdAt: number
@@ -186,6 +195,8 @@ export interface Conversation extends ConversationMeta {
 export interface ConversationCreateInput {
   workspace: string
   model: string
+  /** 绑定的模型档案 id（plan7 F5）：由主进程按"当前档案"补齐，渲染端不用管 */
+  modelProfileId?: string
   skills: string[]
   /** 首个输入（用于生成标题；可为空） */
   firstMessage?: string

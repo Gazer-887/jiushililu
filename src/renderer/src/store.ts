@@ -556,7 +556,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 会话绑定的工作区若与当前不同，一并切过去（历史按工作区分组的自然结果）
     await window.api.setKnownWorkspace(conv.workspace)
     set({ workspacePath: conv.workspace })
-    if (conv.model !== get().settings?.model) {
+    // 切模型（plan7 F5）：**优先按档案 id** —— 它才能定位"哪条连接 + 哪把 Key"。
+    // 老会话没有 id → 按**名字**找同名档案（主进程内部兜底），找不到就沿用当前档案：
+    // 三条路都不会让会话打不开，也**不会因为升级而丢模型绑定**。
+    if (conv.modelProfileId) {
+      try {
+        await window.api.setActiveModel(conv.modelProfileId)
+        await get().loadSettings()
+      } catch {
+        // 那条档案可能已被删除 → 回落到当前档案（不打扰用户，因为"能继续用"比"精确匹配"重要）
+      }
+    } else if (conv.model && conv.model !== get().settings?.model) {
       await window.api.setModel(conv.model)
       await get().loadSettings()
     }
