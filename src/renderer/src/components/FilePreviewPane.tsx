@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { formatSize, imageMimeOf, isTextPreviewable } from '@shared/fs-tree'
+import { isHtmlFile, workspaceRelToPreviewUrl } from '@shared/html-preview'
 import MessageMarkdown from './MessageMarkdown'
 
 // 文件预览 + **Markdown 轻编辑**（plan9 W3 抽出；plan7 批 A3 范围②）
@@ -130,6 +131,21 @@ export default function FilePreviewPane({
   const canEdit = view.kind === 'text' && !view.truncated
   const editing = mode === 'edit' && canEdit
 
+  /**
+   * HTML 的「渲染 / 源码」开关。
+   *
+   * 默认**渲染** —— 跟 Markdown 一个道理：打开一个页面文件，想看的是那个页面。
+   * 换文件时重置：不能带着上一个文件的选择进下一个。
+   *
+   * `previewUrl` 为 null（绝对路径 / 越界写法）时**不给**这个开关 ——
+   * 给一个注定加载不出来的白框，比没有这个按钮更糟。
+   */
+  const previewUrl = isHtmlFile(rel) ? workspaceRelToPreviewUrl(rel) : null
+  const [htmlRender, setHtmlRender] = useState(true)
+  useEffect(() => {
+    setHtmlRender(true)
+  }, [rel])
+
   const reload = async (): Promise<void> => {
     const res = await window.api.readWorkspaceFile(rel)
     if (!res.ok) return setView({ kind: 'error', message: res.error ?? '读取失败' })
@@ -192,6 +208,15 @@ export default function FilePreviewPane({
           {baseName(rel)}
         </span>
         {dirty !== undefined && <span className="fp-dirty">未保存</span>}
+        {previewUrl && view.kind === 'text' && !editing && (
+          <button
+            className="fp-html-toggle"
+            title={htmlRender ? '看这个文件的原始代码' : '按网页渲染它（沙箱：不执行脚本、不联网）'}
+            onClick={() => setHtmlRender((v) => !v)}
+          >
+            {htmlRender ? '源码' : '渲染'}
+          </button>
+        )}
         {canEdit && (
           <button
             className="fp-mode"
@@ -256,7 +281,42 @@ export default function FilePreviewPane({
             </>
           ) : (
             <>
-              {isMarkdown(rel) ? (
+              {previewUrl && htmlRender ? (
+                <div className="fp-html-wrap">
+                  {/*
+                    ⚠️ **别把这段和上面图片那条红线搞混**（那条是 SVG 专属）：
+
+                    SVG 用 `<img>` 就够 —— 只需要"显示"，img 上下文不执行脚本，
+                    所以**不需要、也不允许**换成 object/iframe。
+
+                    HTML 不一样："渲染一个页面"本身就得有文档上下文，没有 img 版。
+                    既然必须用 frame，就把口子焊死，**两道独立的锁**：
+                      ① `sandbox=""`（空值）—— 不执行脚本、不提交表单、不跳转，
+                         且是**不透明源**（读不到父页，父页也读不到它）
+                      ② 预览响应头里的 CSP —— `script-src 'none'` 断脚本、
+                         `default-src 'none'` 断网络（真源见 src/shared/html-preview.ts）
+                    响应头那条还顺带兜住"属性被误删"的情况 —— 实测里**不带** sandbox 属性的
+                    那一帧同样一行脚本都没跑，就是它挡的。
+
+                    为什么不 `srcdoc`：srcdoc/blob/data 都是本地 scheme，**子文档继承父页策略**，
+                    本应用的 `style-src 'self'` 会把预览里的内联样式全砍掉 ——
+                    实测三种写法渲染出来都是**白色骨架**。所以走自定义协议（真实 scheme，
+                    拿到全新策略容器）。代价在下面那条提示里说清楚，别让人以为坏了。
+                  */}
+                  <iframe
+                    className="fp-html"
+                    title={`预览 ${baseName(rel)}`}
+                    sandbox=""
+                    /* key 跟着 mtime：保存后重新挂载，立刻看到新内容（协议侧也发了 no-store） */
+                    key={`${rel}:${view.mtimeMs ?? 0}`}
+                    src={previewUrl}
+                  />
+                  <div className="fp-html-note">
+                    沙箱预览：不执行脚本、不联网。外链资源（远程 CSS / JS / 图片）不会加载；
+                    同目录的图片与样式能正常显示。要跑脚本看全保真效果，请用系统浏览器打开这个文件。
+                  </div>
+                </div>
+              ) : isMarkdown(rel) ? (
                 <div className="fp-md">
                   <MessageMarkdown content={draft || view.content} />
                 </div>

@@ -91,6 +91,7 @@ const TEST_ENTRIES = [
   'tests/unit/conversation-rollback.test.ts',
   'tests/unit/conversations-fs.test.ts',
   'tests/unit/conversations-store.test.ts',
+  'tests/unit/html-preview.test.ts',
   'tests/unit/providers.test.ts',
   'tests/unit/runner.test.ts',
   'tests/unit/schemas.test.ts',

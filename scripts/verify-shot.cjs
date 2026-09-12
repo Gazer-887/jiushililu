@@ -12,7 +12,7 @@
  * 说明：本脚本独立于应用主进程，故需自行 stub 全部 IPC handler——
  * 数据返回空值即可，本脚本验证的是**布局几何**，不是数据流。
  */
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol } = require('electron')
 const { mkdirSync, writeFileSync } = require('node:fs')
 const { join } = require('node:path')
 
@@ -27,6 +27,16 @@ const OUT = join(SHOTS, 'verify-shot.png')
 
 // 让 userData 独立，避免与已安装版本抢目录
 app.setPath('userData', join(ROOT, '.verify-userdata'))
+
+// ⚠️ HTML 预览协议必须赶在 ready 之前注册（真应用里 `src/main/index.ts` 也是这个位置）——
+//    迟了协议拿不到 standard/secure 语义，相对路径解析不了，本段会整段红。
+//    这里**不 require 真实现**：verify-shot 是独立的 main 进程（只加载 out/renderer），
+//    真处理器在 out/main 里，拖进来会把整个应用启动一遍。
+//    所以下面是**契约副本**：策略字面量的真源在 `src/shared/html-preview.ts`，
+//    由 `tests/unit/html-preview.test.ts` 钉住（含"构建配置不许漂移"那条）。
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'jsl-preview', privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false } }
+])
 
 // ── 断言器（plan9 W2 新增）──────────────────────────────────────────────
 //
@@ -108,6 +118,25 @@ function makePng(w, h) {
 }
 
 const PNG_BYTES = makePng(48, 32)
+
+// HTML 沙箱预览的**测谎仪**桩文件。
+//
+// 它不是"随便一个 html"：背景先刷**品红**，紧跟的脚本会把它改成**纯红**。
+// 于是像素采样能分辨三种结局，且互不混淆：
+//   品红 → 渲染成功 + 脚本被拦（红线成立，就是要这个）
+//   纯红 → **脚本真的跑了**（红线破了，必须炸）
+//   白/灰 → 根本没渲染出来（srcdoc 被 CSP 拦了，功能等于没做）
+// 换句话说：**它自己会报告自己有没有被执行**，不靠我们去信任任何一个属性。
+const HTML_STUB = [
+  '<!doctype html>',
+  '<html lang="zh">',
+  '<head><meta charset="utf-8"><title>沙箱预览桩</title></head>',
+  '<body style="margin:0;min-height:100vh;background:#ff00aa">',
+  '<h1 style="margin:0;padding:24px;font:20px/1.4 sans-serif;color:#111">HTML 沙箱预览桩</h1>',
+  "<script>document.body.style.background = '#ff0000'</script>",
+  '</body>',
+  '</html>'
+].join('\n')
 
 function check(name, actual, expected) {
   const pass = JSON.stringify(actual) === JSON.stringify(expected)
@@ -460,6 +489,8 @@ const STUBS = {
           { name: '紫水晶采购清单.txt', rel: '紫水晶采购清单.txt', kind: 'file', size: 341 },
           // 用来验证 Markdown 预览走富文本渲染（用户反馈「没有渲染」）
           { name: 'README.md', rel: 'README.md', kind: 'file', size: 128 },
+          // HTML 沙箱预览（渲染 / 源码 开关 + 脚本不执行的红线）
+          { name: '预览桩.html', rel: '预览桩.html', kind: 'file', size: HTML_STUB.length },
           // plan7 批 A3：二进制预览的三档（正常图片 / 超大图 / 未知二进制）
           { name: '示例截图.png', rel: '示例截图.png', kind: 'file', size: PNG_BYTES.length },
           { name: '超大图.png', rel: '超大图.png', kind: 'file', size: 12 * 1024 * 1024 },
@@ -473,6 +504,9 @@ const STUBS = {
     return { ok: true, entries: [] }
   },
   'fs:read': (rel) => {
+    if (String(rel).endsWith('.html')) {
+      return { ok: true, rel, content: HTML_STUB, size: HTML_STUB.length, mtimeMs: 222222 }
+    }
     if (String(rel).endsWith('.md')) {
       return {
         ok: true,
@@ -568,6 +602,25 @@ app.whenReady().then(async () => {
   const confirmResponses = []
   ipcMain.handle('confirm:respond', (_e, payload) => {
     confirmResponses.push(payload)
+  })
+
+  // HTML 预览协议：契约副本（真实现见 src/main/preview-protocol.ts）。
+  // 这里只回一个桩页：**不读盘**（本进程的 fs 全是 stub，读盘只会 404）。
+  // 要验的是"渲染管线 + 策略这套组合能不能跑通"，不是读盘本身（那由单测覆盖）。
+  // `previewHits` 记下**主进程真的收到了什么请求** —— 它是"帧到底加载没加载"的
+  // 唯一可信证据（渲染进程侧拿不到不透明源的内容，只能靠这一侧说话）。
+  const previewHits = []
+  protocol.handle('jsl-preview', (req) => {
+    previewHits.push(new URL(req.url).pathname)
+    return new Response(HTML_STUB, {
+      status: 200,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'content-security-policy':
+          "sandbox; default-src 'none'; script-src 'none'; style-src 'unsafe-inline' 'self'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'",
+        'cache-control': 'no-store'
+      }
+    })
   })
 
   const win = new BrowserWindow({
@@ -1449,6 +1502,159 @@ app.whenReady().then(async () => {
     })()
   `)
   console.log('BIN_HEX=' + JSON.stringify(hexPreview))
+
+  // —— HTML 沙箱预览（渲染 / 源码 开关 + 「不执行工作区代码」红线）——
+  //
+  // 这一段**不验"iframe 在不在 DOM 里"**（那种断言太容易绿），验的是两件真事：
+  //   ① 渲染**真的渲染出来了** —— 常见死法是 srcdoc 被页面 CSP 拦成一个空白框，
+  //      DOM 里照样有 iframe，用户看见的却是白的
+  //   ② 工作区的 HTML **一行脚本都没跑** —— 这是应用的红线（渲染进程绝不执行工作区代码）
+  // 手段是**采像素**：桩文件自己会把背景从品红改成纯红（脚本真跑了才会红），
+  // 拿 `capturePage` + `toBitmap` 直接数三种颜色各占多少。见上方 HTML_STUB 的注释。
+  const clickHtmlFile = await clickFile('预览桩.html')
+  await new Promise((r) => setTimeout(r, 900))
+
+  const readHtmlFrame = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const f = document.querySelector('.fp-html');
+        const t = document.querySelector('.fp-html-toggle');
+        const pre = document.querySelector('.fp-pre');
+        const r = f ? f.getBoundingClientRect() : null;
+        return {
+          hasFrame: !!f,
+          sandbox: f ? f.getAttribute('sandbox') : null,
+          // ⚠️ 必须**没有** srcdoc：srcdoc/blob/data 都是本地 scheme，
+          //    子文档会继承父页策略，父页的 style-src 'self' 会把内联样式全砍光
+          //    （实测三种写法渲染出来都是白色骨架）—— 所以这条是**回归守卫**
+          srcdoc: f ? f.getAttribute('srcdoc') : 'no-frame',
+          srcScheme: f ? String(f.getAttribute('src') || '').split(':')[0] : null,
+          frameRect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null,
+          toggleText: t ? t.textContent.trim() : null,
+          toggleRect: t ? (() => {
+            const b = t.getBoundingClientRect();
+            return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+          })() : null,
+          rawPreShown: !!pre,
+          preText: pre ? pre.textContent : '',
+          // 可视区：采像素要先把采样区夹进视口，不然 capturePage 会抛
+          view: { w: window.innerWidth, h: window.innerHeight },
+          hasToggle: !!t
+        };
+      })()
+    `)
+
+  const htmlRender = await readHtmlFrame()
+
+  /** 采样一个矩形里的像素，按**三个分量的大小关系**归类（不假设 BGRA / RGBA 的顺序） */
+  const sampleArea = async (area) => {
+    const out = { magenta: 0, red: 0, blank: 0, other: 0, total: 0, note: '' }
+    try {
+      const shot = await win.webContents.capturePage(area)
+      const size = shot.getSize()
+      const bmp = shot.toBitmap()
+      for (let i = 0; i + 3 < bmp.length; i += 4) {
+        const px = [bmp[i], bmp[i + 1], bmp[i + 2]].sort((a, b) => a - b)
+        const [mn, mid, mx] = px
+        out.total++
+        if (mn > 200) out.blank++
+        else if (mx > 180 && mid < 60 && mn < 60) out.red++
+        else if (mx > 180 && mid >= 90 && mid <= 230 && mn < 60) out.magenta++
+        else out.other++
+      }
+      out.note = size.width + 'x' + size.height
+    } catch (err) {
+      out.note = 'capturePage 失败: ' + (err && err.message ? err.message : String(err))
+    }
+    return out
+  }
+
+  // 采样区取 iframe 的**下半部分**：上半有标题文字，下半是纯背景，最有代表性
+  //
+  // ⚠️ **窗口必须先显示出来**：本进程的窗口一直是 `show: false`（不打扰用户），
+  //    但跨进程渲染的 iframe（沙箱帧有自己的进程）在**隐藏窗口里不会被合成**，
+  //    capturePage 拿到的就是一片白 —— 那不是"没渲染"，是"没合成"。
+  //    这两种情况长得一模一样，所以下面还有一条**主进程侧**的证据（previewHits）把二者分开。
+  win.showInactive()
+  await new Promise((r) => setTimeout(r, 400))
+
+  let htmlPixels = { magenta: 0, red: 0, blank: 0, other: 0, total: 0, note: 'no-frame' }
+  if (htmlRender.frameRect) {
+    const r = htmlRender.frameRect
+    const vw = htmlRender.view.w
+    const vh = htmlRender.view.h
+    const x0 = Math.max(0, Math.round(r.x) + 2)
+    const y0 = Math.max(0, Math.round(r.y + r.height * 0.45))
+    const x1 = Math.min(vw, Math.round(r.x + r.width) - 2)
+    const y1 = Math.min(vh, Math.round(r.y + r.height) - 2)
+    if (x1 - x0 >= 30 && y1 - y0 >= 30) {
+      htmlPixels = await sampleArea({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
+    } else {
+      htmlPixels.note = '采样区太小（预览栏被挤出可视区？）: ' + [x0, y0, x1, y1].join(',')
+    }
+  }
+
+  // 拍一张留证（人眼看得到才算数）
+  writeFileSync(join(SHOTS, 'verify-html-preview.png'), (await win.webContents.capturePage()).toPNG())
+
+  // ② 开关：点「源码」→ 换回原始代码；再点「渲染」→ 换回沙箱预览
+  //
+  // ⚠️ 真手势。**这里不能用 `el.click()`**，也不便用脚本后段声明的 `dbg` + `realClick`
+  //    ——那两个是 `const`，在这里还在 TDZ（上一轮就因为这个吃过
+  //    `Cannot access 'rbPre' before initialization`）。
+  //    `sendInputEvent` 是主进程注入真实输入、同样产生 isTrusted 的事件，是本段唯一可用的真手势通道。
+  const realClickHere = async (pos) => {
+    win.webContents.sendInputEvent({
+      type: 'mouseDown',
+      x: Math.round(pos.x),
+      y: Math.round(pos.y),
+      button: 'left',
+      clickCount: 1
+    })
+    win.webContents.sendInputEvent({
+      type: 'mouseUp',
+      x: Math.round(pos.x),
+      y: Math.round(pos.y),
+      button: 'left',
+      clickCount: 1
+    })
+    await new Promise((r) => setTimeout(r, 500))
+  }
+
+  let htmlToggle = { clicked: false, before: htmlRender.toggleText }
+  if (htmlRender.toggleRect) {
+    await realClickHere(htmlRender.toggleRect)
+    htmlToggle.clicked = true
+    const srcView = await readHtmlFrame()
+    htmlToggle.afterSrc = { toggleText: srcView.toggleText, rawPreShown: srcView.rawPreShown }
+    htmlToggle.srcHasMarkup = srcView.preText.includes('<h1') && srcView.preText.includes('<script>')
+    // 再点回来：**开关是双向的**，别做成只能往一个方向切（用户会以为坏了）
+    const backPos = srcView.toggleRect
+    if (backPos) {
+      await realClickHere(backPos)
+      const backView = await readHtmlFrame()
+      htmlToggle.afterBack = {
+        toggleText: backView.toggleText,
+        hasFrame: backView.hasFrame,
+        rawPreShown: backView.rawPreShown
+      }
+    }
+  }
+
+  console.log(
+    'HTML_PREVIEW=' +
+      JSON.stringify({
+        clicked: clickHtmlFile,
+        hasFrame: htmlRender.hasFrame,
+        sandbox: htmlRender.sandbox,
+        srcScheme: htmlRender.srcScheme,
+        srcdoc: htmlRender.srcdoc,
+        previewHits,
+        toggle: htmlToggle,
+        pixels: htmlPixels,
+        cspViolations: cspViolations.filter((m) => /frame|srcdoc|inline style/i.test(m)).slice(0, 4)
+      })
+  )
 
   // 原先这里还有一个「拖高手柄」探针（.ex-preview-resize）。plan9 W6 把预览改成
   // 右侧独立成栏之后，那个手柄**整个退役**了（连带 splitter.ts 的 resizePreview 与它的单测），
@@ -2431,6 +2637,46 @@ app.whenReady().then(async () => {
     hexPreview.firstLine
   )
   checkTrue('转储内容能认出文件头（ELF 魔数）', hexPreview.hasElfMagic === true)
+
+  // —— HTML 沙箱预览：**渲染出来没有** + **脚本跑了没有** ——
+  checkTrue('前置状态：点开了桩 HTML，且沙箱 iframe 在',
+    htmlRender.hasFrame === true && clickHtmlFile === true, {
+      clicked: clickHtmlFile,
+      hasFrame: htmlRender.hasFrame
+    })
+  check('iframe 的 sandbox 是**空值**（不执行脚本 / 不透明源）', htmlRender.sandbox, '')
+  check('预览走的是**自定义协议**（真实 scheme 才拿得到全新策略容器）', htmlRender.srcScheme, 'jsl-preview')
+  checkTrue(
+    '**没有**走 srcdoc（本地 scheme 会继承父页策略 → 内联样式被砍光；这是回归守卫）',
+    htmlRender.srcdoc === null,
+    htmlRender.srcdoc
+  )
+  checkTrue('桩文件**确实带了脚本**（否则"脚本没跑"这条断言是自我安慰，等于没验）',
+    HTML_STUB.includes('<script>'))
+  checkTrue(
+    '主进程**真的收到了预览请求**（协议这条线是通的，不是把帧晾在那儿没加载）',
+    previewHits.length > 0,
+    previewHits
+  )
+  checkTrue(
+    '**HTML 真的渲染出来了，且内联样式没被父页 CSP 砍掉**（桩页整片品红；一片白 = 走错机制了）',
+    htmlPixels.total > 0 && htmlPixels.magenta / Math.max(1, htmlPixels.total) > 0.5,
+    { total: htmlPixels.total, magenta: htmlPixels.magenta, note: htmlPixels.note }
+  )
+  checkTrue(
+    '**工作区的脚本一行都没跑**（红线）—— 脚本若执行会把背景改成纯红',
+    htmlPixels.total > 0 && htmlPixels.red / Math.max(1, htmlPixels.total) < 0.02,
+    { red: htmlPixels.red, total: htmlPixels.total }
+  )
+  check('「渲染 / 源码」开关默认渲染（按钮显示的是"源码"）', htmlRender.toggleText, '源码')
+  checkTrue('开关**双向可用**：切到源码看到原始 markup，切回来又是沙箱预览',
+    htmlToggle.clicked === true &&
+      htmlToggle.afterSrc?.rawPreShown === true &&
+      htmlToggle.afterSrc?.toggleText === '渲染' &&
+      htmlToggle.srcHasMarkup === true &&
+      htmlToggle.afterBack?.hasFrame === true &&
+      htmlToggle.afterBack?.toggleText === '源码',
+    htmlToggle)
 
   // —— ③ 文件拖进会话（**真手势**，不是合成事件）——
   checkTrue('前置状态：输入框与文件行**都在**（否则下面几条失败说明不了任何事）',

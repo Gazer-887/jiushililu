@@ -18,6 +18,7 @@ import {
 } from './browser'
 import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
+import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
 
 // 主进程入口：窗口生命周期 + IPC 注册。Agent 内核将来跑在 worker_threads，不在这里（P1）。
@@ -50,6 +51,9 @@ if (!gotTheLock) {
     win.focus()
   })
 }
+
+// HTML 预览协议：**必须赶在 ready 之前**注册（迟了就只是个普通死链）
+registerPreviewScheme()
 
 /**
  * 安全基线（plan8 R3）：主窗口「只能停在自家页面」。
@@ -179,6 +183,9 @@ app.whenReady().then(() => {
     }
   })
   registerIpcHandlers({ agent: agentCtx, userDataDir, confirm })
+  // HTML 沙箱预览：把 `jsl-preview://doc/<相对路径>` 映射到工作区文件，
+  // 带上断脚本/断网的响应头（真源见 src/shared/html-preview.ts）
+  installPreviewProtocol(() => agentCtx.getWorkspaceRoot())
   createWindow()
 
   // 内置浏览器：真 Chromium 视图，用户与 Agent 共用同一实例

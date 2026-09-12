@@ -1643,7 +1643,11 @@ label.radio {
 /* ── Markdown 轻编辑（plan7 批 A3 范围②）────────────────────────
    一条设计原则：**编辑是"够改就行"**，不是通用编辑器 —— 语法高亮/多光标/大文件
    都留给批 B 的 Monaco。所以这里只有一个 textarea，力气花在三条边界上。 */
-.fp-mode {
+/* HTML 的「渲染 / 源码」开关与「编辑 / 预览」开关长得一样（同一排同级按钮），
+   但**类名必须分开**：verify-shot 里多处用 `.fp-mode` 定位"编辑"按钮，
+   混用会让那些探针点错按钮 —— 探针之间靠选择器隔离，别互相踩。 */
+.fp-mode,
+.fp-html-toggle {
   font: inherit;
   font-size: var(--fs-xs);
   color: var(--text);
@@ -1655,7 +1659,8 @@ label.radio {
   flex-shrink: 0;
 }
 
-.fp-mode:hover {
+.fp-mode:hover,
+.fp-html-toggle:hover {
   background: var(--accent-soft);
   border-color: var(--accent-border);
 }
@@ -1903,6 +1908,32 @@ label.radio {
 
 .fp-size {
   font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* ── HTML 沙箱预览 ──
+   高度写死一档而不是 `100%`：栏的祖先链没有确定高度，`100%` 会退化成默认 150px
+   （或者干脆 0），预览区忽高忽低反而难用。给一个够看又不会顶破栏的高度，超出交给 iframe 自己滚。
+   白底是**故意的**：网页天生按白底写样式，硬塞进水墨深底会渲染成另一个样子 —— 预览要的是"浏览器里长什么样"。 */
+.fp-html-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.fp-html {
+  width: 100%;
+  height: 60vh;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+
+.fp-html-note {
+  font-size: var(--fs-xs);
+  line-height: 1.6;
   color: var(--muted);
 }
 

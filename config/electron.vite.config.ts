@@ -31,6 +31,12 @@ const noEmptyOutDir = process.env['JSL_NO_EMPTY_OUT_DIR'] === '1'
 //   img-src    https:       —— 允许 markdown 里的外链图片（README 常见），仅图片、只读
 //   object-src 'none'       —— 禁插件（Electron 不需要）
 //   base-uri   'self'       —— 防 <base> 劫持相对路径
+//   frame-src  'self' jsl-preview: —— **HTML 沙箱预览**专用。
+//     为什么必须放行自定义协议：`srcdoc`/`blob:`/`data:` 都是「本地 scheme」，
+//     子文档**继承父页策略**，我们这条 `style-src 'self'` 会把预览里的内联样式
+//     全部砍掉（实测三种写法渲染出来全是白色骨架）。走**真实 scheme** 才拿得到
+//     全新策略容器，由预览响应头自己断脚本/断网（真源 src/shared/html-preview.ts）。
+//     放行范围仍是"自家", 不放任何外部站点/通配协议。
 const CSP_PROD = [
   "default-src 'self'",
   "script-src 'self'",
@@ -41,7 +47,8 @@ const CSP_PROD = [
   "media-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",
-  "form-action 'none'"
+  "form-action 'none'",
+  "frame-src 'self' jsl-preview:"
 ].join('; ')
 
 const CSP_DEV = [
@@ -52,7 +59,8 @@ const CSP_DEV = [
   "font-src 'self' data:",
   "connect-src 'self' ws: wss: http://localhost:*", // HMR websocket
   "object-src 'none'",
-  "base-uri 'self'"
+  "base-uri 'self'",
+  "frame-src 'self' jsl-preview:"
 ].join('; ')
 
 /** 仅向主窗口文档注入 CSP meta（浏览器面板不受影响） */
