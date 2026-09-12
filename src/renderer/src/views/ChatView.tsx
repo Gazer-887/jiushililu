@@ -24,6 +24,26 @@ export default function ChatView() {
   const streaming = useAppStore((s) => s.streaming)
   const streamError = useAppStore((s) => s.streamError)
   const saveError = useAppStore((s) => s.saveError)
+  const rollbackNotice = useAppStore((s) => s.rollbackNotice)
+  const rollbackTo = useAppStore((s) => s.rollbackTo)
+  const undoRollback = useAppStore((s) => s.undoRollback)
+  /** 消息右键菜单（回到这条之前）；null = 关着 */
+  const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null)
+
+  // 点空白 / Esc 关菜单（与资源管理器、工作台页签同一套习惯，不另铺一层遮罩）
+  useEffect(() => {
+    if (!menu) return
+    const close = (): void => setMenu(null)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
   const toolEvents = useAppStore((s) => s.toolEvents)
   const reasoning = useAppStore((s) => s.reasoning)
   const sendMessage = useAppStore((s) => s.sendMessage)
@@ -155,7 +175,16 @@ export default function ChatView() {
           <Fragment key={i}>
             {/* 过程块插在最后一条助手消息**之前**：过程 → 结论，阅读顺序才对 */}
             {i === insertAt && processBlock}
-            <div className={`msg msg-${m.role}`}>
+            <div
+              className={`msg msg-${m.role}`}
+              // 右键消息 = 入口（plan10 B 批 ④）：回到这条之前。
+              // 「这条」对用户与助手消息都成立 —— 回滚到某条**助手**消息之前，
+              // 正好是"删掉这个回答、只留我的问题"，可以直接重问。
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu({ x: Math.min(e.clientX, window.innerWidth - 220), y: Math.min(e.clientY, window.innerHeight - 90), index: i })
+              }}
+            >
               <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>
               <div className="msg-content">
                 {m.role === 'assistant' && m.content ? (
@@ -171,12 +200,42 @@ export default function ChatView() {
         {/* 没有消息时（刚进会话）过程块自己挂在末尾 —— 否则它会凭空消失 */}
         {messages.length === 0 && processBlock}
 
+        {/* 回滚之后的提示条：**必须再声明一次作用域**（用户会担心"文件是不是也退了"），
+            并给一个撤销入口 —— 回滚只移游标不删数据，撤销是零成本的 */}
+        {rollbackNotice && (
+          <div className="rb-bar">
+            <span className="rb-text">
+              已回滚这段对话：之后 {rollbackNotice.hidden} 条已隐去（仅回滚对话消息，工作区文件未改动）
+            </span>
+            <button className="rb-btn" onClick={() => void undoRollback()}>
+              撤销
+            </button>
+          </div>
+        )}
+
         {streamError && <div className="chat-error">{streamError}</div>}
         {/* 落盘失败独立一条：切会话 / 点停止 / 关窗口那一刻最常发生，不能被 streamError 的清空带走
             （样式复用 .chat-error，不新增类 —— 免得又多一处"JSX 里有、样式表里没有"的死类） */}
         {saveError && <div className="chat-error">{saveError}</div>}
         <div ref={bottomRef} />
       </div>
+
+      {/* 消息右键菜单：一条命令，放在消息旁边而不是统一塞进某个面板里。
+          样式复用工作台那份（`.wb-menu` + `.wb-pick`），不另造一套。 */}
+      {menu && (
+        <div className="wb-menu" style={{ left: menu.x, top: menu.y }}>
+          <button
+            className="wb-pick"
+            onClick={() => {
+              const at = menu.index
+              setMenu(null)
+              void rollbackTo(at)
+            }}
+          >
+            回到这条之前
+          </button>
+        </div>
+      )}
 
       <div className="chat-input">
         {/* 待办清单在输入框**上方**（用户 2026-09-12 意见，形制对齐 DSH）；清单为空时自己隐藏 */}

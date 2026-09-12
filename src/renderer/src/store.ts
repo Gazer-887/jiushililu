@@ -139,6 +139,19 @@ interface AppState {
   /** 把当前消息体落盘（发送完成 / 流结束 / 切走时调用） */
   persistActive: () => Promise<void>
 
+  /**
+   * **回到第 `index` 条消息之前**（plan10 B 批 ④）。
+   *
+   * 两条纪律，缺一条都会出事故：
+   *   ① **用主进程回传的权威正文覆盖内存** —— 否则下一次保存会把回滚掉的内容又写回去，
+   *      等于"回滚被自己的界面撤销"
+   *   ② **回滚后不调用 persistActive** —— 存储那边已经是权威状态，再存一次纯属多余，
+   *      而且万一内存与权威不一致还会把错误的状态写回去
+   */
+  rollbackTo: (index: number) => Promise<void>
+  /** 撤销上一次回滚（恢复，不是破坏 —— 不弹确认） */
+  undoRollback: () => Promise<void>
+
   messages: ChatMessage[]
   streaming: boolean
   streamError: string | null
@@ -149,6 +162,11 @@ interface AppState {
    * 而切会话会把 `streamError` 清掉 —— 提示一转身就没了，等于没提示。
    */
   saveError: string | null
+  /**
+   * 刚做完的会话回滚（用于显示「已回滚 M 条 · 撤销」）。
+   * `null` = 当前没有可撤销的回滚。
+   */
+  rollbackNotice: { hidden: number; total: number } | null
   /** 工具执行活动（D-032：界面显示"正在读 xx / 完成 / 失败"）——仅当前轮 */
   toolEvents: ToolEvent[]
   /**
@@ -437,6 +455,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   streaming: false,
   streamError: null,
   saveError: null,
+  rollbackNotice: null,
   toolEvents: [],
   todos: [],
   subagents: [],
@@ -445,6 +464,51 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   clearToolEvents: () => set({ toolEvents: [] }),
 
+  rollbackTo: async (index) => {
+    const { activeId } = get()
+    if (!activeId) return
+    try {
+      // `null` = 用户拒了确认框 / 本来就没东西可回滚 —— 两种都**什么都不做**
+      const res = await window.api.rollbackConversation(activeId, index)
+      if (!res) return
+      const visible = res.conversation.messages
+      set((s) => ({
+        // ① 权威正文覆盖内存（**这一条是整件事的关键**）
+        messages: visible,
+        rollbackNotice: { hidden: res.total - visible.length, total: res.total },
+        // 侧边栏那条跟着更新（条数与时间都变了）
+        conversations: s.conversations.map((c) =>
+          c.id === activeId
+            ? { ...c, messageCount: res.conversation.messageCount, updatedAt: res.conversation.updatedAt }
+            : c
+        )
+      }))
+      // ② 刻意**不**调用 persistActive：存储里已经是权威状态
+    } catch (err) {
+      // 正在生成回复时主进程会拒绝 —— 理由要原样给用户看
+      set({ streamError: err instanceof Error ? err.message : String(err) })
+    }
+  },
+
+  undoRollback: async () => {
+    const { activeId } = get()
+    if (!activeId) return
+    try {
+      const res = await window.api.undoRollbackConversation(activeId)
+      if (!res) return
+      set((s) => ({
+        messages: res.conversation.messages,
+        rollbackNotice: null, // 撤完了就没什么可撤销的了
+        conversations: s.conversations.map((c) =>
+          c.id === activeId
+            ? { ...c, messageCount: res.conversation.messageCount, updatedAt: res.conversation.updatedAt }
+            : c
+        )
+      }))
+    } catch (err) {
+      set({ streamError: err instanceof Error ? err.message : String(err) })
+    }
+  },
   appendReasoning: (delta) => set((s) => ({ reasoning: s.reasoning + delta })),
 
   setTodos: (todos) => set({ todos }),

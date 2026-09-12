@@ -52,6 +52,9 @@ const api: ApiBridge = {
     ipcRenderer.invoke(IPC.convSave, { id, messages }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
   deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
+  rollbackConversation: (id: string, toIndex: number) =>
+    ipcRenderer.invoke(IPC.convRollback, { id, toIndex }),
+  undoRollbackConversation: (id: string) => ipcRenderer.invoke(IPC.convUndoRollback, id),
   listSkills: () => ipcRenderer.invoke(IPC.skillsList),
   getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),

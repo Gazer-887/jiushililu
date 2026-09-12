@@ -215,6 +215,10 @@ const fsOpLog = []
  */
 const attachPathCalls = []
 
+/** ④ 会话回滚的调用流水（回滚 / 撤销各一条） */
+const convRollbackCalls = []
+const convUndoCalls = []
+
 /** 后台任务样例：覆盖 running（带终止按钮）与 done（带退出码）两种渲染 */
 const FAKE_BG_TASKS = [
   {
@@ -294,6 +298,49 @@ const STUBS = {
   }),
   'conv:create': () => ({ id: 'x' }),
   'conv:save': () => null,
+  // ④ 会话回滚（plan10 B 批）：记下调用与载荷，并回一份**权威**会话 ——
+  // 渲染端必须用它覆盖内存（回滚后的条数与撤销后的条数刻意不同，好断言这份覆盖真的发生了）
+  'conv:rollback': (arg) => {
+    convRollbackCalls.push(arg)
+    return {
+      conversation: {
+        id: 'c1',
+        title: '打个招呼',
+        workspace: 'D:\\jsllworkplace_for_test',
+        model: 'deepseek-flash',
+        skills: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messageCount: 1,
+        messages: [{ role: 'user', content: '把工作区里的三个文件汇总成一份报告' }]
+      },
+      canUndo: true,
+      total: 4
+    }
+  },
+  'conv:undo-rollback': () => {
+    convUndoCalls.push(1)
+    return {
+      conversation: {
+        id: 'c1',
+        title: '打个招呼',
+        workspace: 'D:\\jsllworkplace_for_test',
+        model: 'deepseek-flash',
+        skills: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messageCount: 4,
+        messages: [
+          { role: 'user', content: '把工作区里的三个文件汇总成一份报告' },
+          { role: 'assistant', content: '好，我先读一遍。' },
+          { role: 'user', content: '顺便看看预算' },
+          { role: 'assistant', content: '预算草案在这里。' }
+        ]
+      },
+      canUndo: false,
+      total: 4
+    }
+  },
   'conv:rename': () => null,
   'conv:delete': () => undefined,
   'skills:list': () => [
@@ -2402,6 +2449,150 @@ app.whenReady().then(async () => {
   // —— ③-3 认得出是文件拖拽、却拿不到可用路径 ——
   checkTrue('载荷丢了会**说话**（以前是什么都不做 = 静默失败）',
     silentState.text.includes('没收到文件路径'), { ...silentCase, ...silentState })
+
+  // ⚠️ ④ 会话回滚的**断言**不放在这里 —— 探针在下面（声明是 `const`，
+  //    放前面会踩"暂时性死区"：`Cannot access 'rbPre' before initialization`）。
+  //    断言紧跟在探针之后，见文件末尾。
+
+  // —— ④ 会话回滚（plan10 B 批）：右键一条消息 → 回到这条之前 → 可撤销 ——
+  //
+  // 说明：这里的**右键与点击用合成事件**是够的 —— 浏览器不对 `contextmenu`
+  // 与 `click` 做"能不能触发"的门控（与拖拽不同，拖拽必须真手势，见上面 ③ 的注释）。
+  // 这一段的重点是**载荷与状态**：回滚调用带没带对下标、回滚后界面换没换成权威正文、
+  // 撤销能不能把条数换回来、以及**确认框的文案与"文件回滚"分不分得清**。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const item = Array.from(document.querySelectorAll('.conv-item'))
+        .find((b) => (b.textContent || '').includes('打个招呼'));
+      if (item) item.click();
+      return !!item;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+
+  const rbPre = await win.webContents.executeJavaScript(`
+    (() => ({
+      msgs: document.querySelectorAll('.msg').length,
+      hasChat: !!document.querySelector('.chat-view')
+    }))()
+  `)
+  console.log('RB_PRECONDITION=' + JSON.stringify(rbPre))
+
+  // 右键第一条消息 → 菜单
+  const rbMenu = await win.webContents.executeJavaScript(`
+    (() => {
+      const first = document.querySelector('.msg');
+      if (!first) return { ok: false, reason: 'no-msg' };
+      const r = first.getBoundingClientRect();
+      first.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true,
+        clientX: Math.round(r.left + 20), clientY: Math.round(r.top + 10)
+      }));
+      return { ok: true };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
+  const rbMenuState = await win.webContents.executeJavaScript(`
+    (() => {
+      const item = Array.from(document.querySelectorAll('.wb-menu button'))
+        .find((b) => (b.textContent || '').includes('回到这条之前'));
+      return { hasItem: !!item };
+    })()
+  `)
+  console.log('RB_MENU=' + JSON.stringify({ ...rbMenu, ...rbMenuState }))
+
+  // 点它 → 回滚
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const item = Array.from(document.querySelectorAll('.wb-menu button'))
+        .find((b) => (b.textContent || '').includes('回到这条之前'));
+      if (item) item.click();
+      return !!item;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  const rbAfter = await win.webContents.executeJavaScript(`
+    (() => ({
+      msgs: document.querySelectorAll('.msg').length,
+      // 提示条必须**再声明一次作用域**（用户会担心"文件是不是也退了"）
+      notice: (document.querySelector('.rb-bar .rb-text')?.textContent ?? '').trim(),
+      hasUndo: !!Array.from(document.querySelectorAll('.rb-btn')).find((b) => (b.textContent || '').includes('撤销')),
+      menuClosed: !document.querySelector('.wb-menu')
+    }))()
+  `)
+  console.log('RB_AFTER=' + JSON.stringify({ calls: convRollbackCalls, ...rbAfter }))
+
+  // 撤销 → 条数换回来
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.rb-btn')).find((x) => (x.textContent || '').includes('撤销'));
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  const rbUndone = await win.webContents.executeJavaScript(`
+    (() => ({
+      msgs: document.querySelectorAll('.msg').length,
+      noticeGone: !document.querySelector('.rb-bar')
+    }))()
+  `)
+  console.log('RB_UNDONE=' + JSON.stringify({ calls: convUndoCalls.length, ...rbUndone }))
+
+  // 确认框文案：会话回滚 vs 文件回滚**必须分得清**（plan10 §六 第 6 条）
+  win.webContents.send('confirm:request', {
+    id: 'cf-rb-1',
+    kind: 'rollback-messages',
+    tool: '会话回滚',
+    detail: '回到第 2 条消息之前 —— 之后 2 条将从对话里隐去（可撤销）',
+    agent: '打个招呼',
+    where: '仅回滚对话消息'
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  const cfText = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.cf-box');
+      return { shown: !!box, text: (box ? box.textContent : '') };
+    })()
+  `)
+  console.log('CONFIRM_RB=' + JSON.stringify({ shown: cfText.shown, len: cfText.text.length }))
+  // 收拾：按「拒绝」把它关掉，免得挡住后面
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.cf-btn')).find((x) => (x.textContent || '').includes('拒绝'));
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
+
+  // —— ④ 会话回滚的断言（紧跟探针，避免暂时性死区）——
+  checkTrue('前置状态：会话页开着、里面有消息（否则下面几条失败说明不了任何事）',
+    rbPre.hasChat === true && rbPre.msgs >= 2, rbPre)
+  checkTrue('**右键消息**能开出菜单，且里面有「回到这条之前」',
+    rbMenu.ok === true && rbMenuState.hasItem === true, { ...rbMenu, ...rbMenuState })
+  checkTrue('点了之后**真的把回滚发下去了**（不是只画了个菜单）',
+    convRollbackCalls.length === 1, convRollbackCalls)
+  check('回滚载荷带的是**被右键那条的下标**（右键第一条 → 0）',
+    convRollbackCalls[0]?.toIndex, 0)
+  checkTrue('回滚后**消息变少了** —— 界面换成了主进程给的权威正文',
+    rbAfter.msgs === 1 && rbAfter.msgs < rbPre.msgs, { before: rbPre.msgs, after: rbAfter.msgs })
+  checkTrue('回滚后菜单自己收回去（不是一直挂在那儿）', rbAfter.menuClosed === true)
+  // 下面两条对应 plan10 §六 第 6 条那三条可判定断言里的 ① 与 ③
+  checkTrue('提示条**再声明一次作用域**（含「仅回滚对话消息」）',
+    (rbAfter.notice || '').includes('仅回滚对话消息'), rbAfter.notice)
+  checkTrue('提示条**不许**用"文件已还原"这类措辞（那是文件回滚的说法）',
+    !/文件已还原|已还原文件|回滚了文件/.test(rbAfter.notice || ''), rbAfter.notice)
+  checkTrue('提示条上有个**撤销**入口', rbAfter.hasUndo === true)
+  checkTrue('点撤销 → 调了撤销通道，且条数**换回 4 条**（权威正文说了算）',
+    convUndoCalls.length === 1 && rbUndone.msgs === 4, { calls: convUndoCalls.length, ...rbUndone })
+  checkTrue('撤销之后提示条消失（没东西可撤了）', rbUndone.noticeGone === true)
+  // 第 6 条的第 ② 条：确认框文案 —— 两个回滚入口不许长得一样
+  checkTrue('**确认框**弹出来了（会话回滚也有二次确认，不是一点就走）', cfText.shown === true)
+  checkTrue('确认框说的是「会话回滚」这一档（含「仅回滚对话消息」）',
+    cfText.text.includes('仅回滚对话消息'), cfText.text.slice(0, 120))
+  checkTrue('确认框**不含**文件回滚的措辞（分得清）',
+    !/文件已还原|已还原文件|回滚文件/.test(cfText.text), cfText.text.slice(0, 160))
 
   reportAndExit()
 })

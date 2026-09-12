@@ -254,6 +254,11 @@ export const IPC = {
   confirmRequest: 'confirm:request',
   /** 界面 → 主进程：回传答复 */
   confirmRespond: 'confirm:respond',
+  // ── 会话回滚（plan10 B 批 · ④）──
+  /** 回到某条消息之前（**只移游标、不删数据**，所以天然可撤销） */
+  convRollback: 'conv:rollback',
+  /** 撤销上一次回滚 */
+  convUndoRollback: 'conv:undo-rollback',
   // ── 界面布局偏好（plan7 批 A0）──
   uiPrefsGet: 'ui-prefs:get',
   uiPrefsSet: 'ui-prefs:set',
@@ -332,6 +337,32 @@ export interface ToolConfirmRequest {
   agent: string
   /** 会影响的位置（如工作区路径） */
   where: string
+  /**
+   * 确认的种类 —— 界面据此说**不同的话**。
+   *
+   * 为什么必须分开：文件回滚（右抽屉「文件变更记录」）与会话回滚（消息右键）
+   * 是**两件事**，如果确认框说同一句话，用户会以为点一个两个都退 ——
+   * plan10 §六 第 6 条把这条拆成了三条可判定断言，其中一条专门要求
+   * 会话回滚的确认文案里**不许出现"文件"二字**。
+   *
+   * 缺省视为 `'command'`（老调用方不用改）。
+   */
+  kind?: 'command' | 'rollback-messages'
+}
+
+/** 会话回滚的结果 */
+export interface ConversationRollbackResult {
+  /**
+   * 回滚后的**权威**会话（含可见正文）。
+   *
+   * ⚠️ 渲染端**必须用它覆盖自己的内存** —— 否则下一次保存会把已经"回滚掉"的
+   * 内容又写回去，等于**回滚被自己的界面撤销**（这类功能最经典的事故）。
+   */
+  conversation: Conversation
+  /** 还能不能撤销（被裁掉的尾巴还在不在） */
+  canUndo: boolean
+  /** 完整日志长度（可见 + 被裁掉的） */
+  total: number
 }
 
 export interface ToolConfirmResult {
@@ -370,6 +401,16 @@ export interface ApiBridge {
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
   getGitInfo(): Promise<GitInfo | null>
+  /**
+   * **回到第 `toIndex` 条消息之前**（plan10 B 批 ④）。
+   *
+   * 走 R5 的确认桥：用户拒绝 → 返回 `null`（什么都不做）。
+   * **正在生成回复时拒绝**（主进程用现成的并发闸判断）——
+   * 流式还没结束就回滚，等于在动的数据上做手术。
+   */
+  rollbackConversation(id: string, toIndex: number): Promise<ConversationRollbackResult | null>
+  /** 撤销上一次回滚（把被裁掉的尾巴接回来；不需要确认 —— 它是**恢复**，不是破坏） */
+  undoRollbackConversation(id: string): Promise<ConversationRollbackResult | null>
   /** 弹文件选择器并读入内容作为附件（工作区外的文件也能选，会在界面上标出来） */
   attachFile(): Promise<Attachment | null>
   /**

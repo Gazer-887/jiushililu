@@ -1640,6 +1640,43 @@ label.radio {
   box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
 }
 
+/* ── 会话回滚提示条（plan10 B 批 · ④）──────────────────────────
+   回滚之后必须**再声明一次作用域**（用户会担心"文件是不是也退了"），
+   并给一个撤销入口 —— 回滚只移游标不删数据，撤销是零成本的。 */
+.rb-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin: var(--sp-8) 0;
+  padding: var(--sp-6) var(--sp-8);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.rb-text {
+  flex: 1;
+}
+
+.rb-btn {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-8);
+  cursor: pointer;
+}
+
+.rb-btn:hover {
+  background: var(--bg);
+  border-color: var(--accent-border);
+}
+
 .wb-pick {
   text-align: left;
   font-family: inherit;

@@ -88,6 +88,7 @@ const TEST_ENTRIES = [
   'tests/unit/agent.test.ts',
   'tests/unit/agent-infra.test.ts',
   'tests/unit/context.test.ts',
+  'tests/unit/conversation-rollback.test.ts',
   'tests/unit/conversations-fs.test.ts',
   'tests/unit/conversations-store.test.ts',
   'tests/unit/providers.test.ts',

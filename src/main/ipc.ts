@@ -25,7 +25,8 @@ import {
   type FsReadResult,
   type FsBinaryResult,
   type FsOpResult,
-  type BackgroundTask
+  type BackgroundTask,
+  type ConversationRollbackResult
 } from '@shared/ipc'
 import {
   getDecryptedApiKey,
@@ -122,7 +123,9 @@ import {
   knownWorkspaces,
   listConversations,
   renameConversation,
-  saveConversation
+  rollbackConversation,
+  saveConversation,
+  undoRollback
 } from './store/conversations'
 import { normalizeHistory } from './store/conversations-core'
 
@@ -463,6 +466,69 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {
     const input = z.object({ id: z.string().min(1).max(64), title: z.string().max(60) }).parse(raw)
     return renameConversation(input.id, input.title)
+  })
+
+  // ── 会话回滚（plan10 B 批 · ④）──────────────────────────────────
+  //
+  // 三条边界，每条都有理由：
+  //   ① **正在生成回复时拒绝回滚** —— 复用现成的并发闸（`activeChats` 按窗口记）
+  //      流式还没结束就动历史，等于在动的数据上做手术
+  //   ② **走 R5 确认桥**（`kind: 'rollback-messages'`）—— 回滚会"藏起"一段对话，
+  //      不该一点就走；而且文案必须与**文件回滚**分得清（plan10 §六 第 6 条）
+  //   ③ **回传权威正文** —— 渲染端用它覆盖内存，否则下一次保存会把回滚掉的内容写回来
+  //
+  // ⚠️ 注意回滚**不删数据**（只移游标），所以"撤销"是零成本的 ——
+  //    这也是它敢用"确认一下就执行"的原因。
+  const doRollback = async (
+    id: string,
+    toIndex: number
+  ): Promise<ConversationRollbackResult | null> => {
+    const current = getConversation(id)
+    if (!current) return null
+    const visible = current.messages.length
+    const target = Math.max(0, Math.min(Math.floor(toIndex), visible))
+    if (target === visible) return null // 没东西可回滚，不打扰用户
+
+    const hidden = visible - target
+    const allowed = await deps.confirm.ask({
+      kind: 'rollback-messages',
+      tool: '会话回滚',
+      detail: `回到第 ${target + 1} 条消息之前 —— 之后 ${hidden} 条将从对话里隐去（可撤销）`,
+      agent: current.title,
+      where: `仅回滚对话消息，不影响工作区里的文件`
+    })
+    if (!allowed) return null
+    const outcome = rollbackConversation(id, target)
+    if (!outcome) return null
+    log.info('会话回滚', { id, from: visible, to: target, hidden, canUndo: outcome.canUndo })
+    return {
+      conversation: { ...outcome.meta, messages: outcome.messages },
+      canUndo: outcome.canUndo,
+      total: outcome.total
+    }
+  }
+
+  ipcMain.handle(IPC.convRollback, async (e, raw: unknown): Promise<ConversationRollbackResult | null> => {
+    const input = z
+      .object({ id: z.string().min(1).max(64), toIndex: z.number().int().min(0).max(100000) })
+      .parse(raw)
+    if (activeChats.has(e.sender.id)) {
+      throw new Error('正在生成回复：请先等它结束、或点「停止」，再回滚')
+    }
+    return doRollback(input.id, input.toIndex)
+  })
+
+  ipcMain.handle(IPC.convUndoRollback, (_e, raw: unknown): ConversationRollbackResult | null => {
+    const id = z.string().min(1).max(64).parse(raw)
+    // 撤销是**恢复**，不是破坏 —— 不需要确认
+    const outcome = undoRollback(id)
+    if (!outcome) return null
+    log.info('撤销会话回滚', { id, cursor: outcome.meta.messageCount, total: outcome.total })
+    return {
+      conversation: { ...outcome.meta, messages: outcome.messages },
+      canUndo: outcome.canUndo,
+      total: outcome.total
+    }
   })
 
   ipcMain.handle(IPC.convDelete, (_e, raw: unknown): void => {

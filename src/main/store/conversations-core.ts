@@ -18,6 +18,26 @@ import type {
 //
 // 这也是 A 批分层的前置：先有能锁住行为的网（本文件的基线测试），再动存储结构。
 
+/** 把一条消息压成一个可比较的串（前缀比对用；内容一样就算"同一条"） */
+function keyOf(m: ChatMessage): string {
+  return `${m.role}\u0000${m.content}`
+}
+
+/**
+ * `prefix` 是不是 `full` 的前缀——**末条允许不同**。
+ *
+ * 为什么末条要放宽：**流式回复是原地生长的**（先塞一条空助手消息，token 逐段往上长）。
+ * 如果把末条也算进严格比对，每吐一个字都会被判成"不是前缀"，
+ * 于是每次保存都走"整份重写"，**追加语义就废了**。
+ */
+function isPrefixWithMutableTail(prefix: ChatMessage[], full: ChatMessage[]): boolean {
+  if (prefix.length > full.length) return false
+  for (let i = 0; i < prefix.length - 1; i += 1) {
+    if (keyOf(prefix[i]!) !== keyOf(full[i]!)) return false
+  }
+  return true
+}
+
 /** 存/取的**唯一**接缝：meta 与正文**分开走**（这就是"分层"的形状） */
 export interface ConversationsBackend {
   /** 读全部 meta —— **不含正文**。列表与白名单只该付这个代价 */
@@ -36,9 +56,40 @@ export interface ConversationsRepo {
   saveConversation(id: string, messages: ChatMessage[]): ConversationMeta | null
   renameConversation(id: string, title: string): ConversationMeta | null
   deleteConversation(id: string): void
+  /** **回到第 `toIndex` 条消息之前**（B 批 ④ 会话回滚） */
+  rollbackConversation(id: string, toIndex: number): RollbackOutcome | null
+  /** **撤销上一次回滚**（把被裁掉的尾巴重新接回来） */
+  undoRollback(id: string): RollbackOutcome | null
   /** 历史会话用过的工作区路径集合——用于收紧 workspace:set-known 的权限面 */
   knownWorkspaces(): string[]
 }
+
+/** 回滚 / 撤销回滚的结果 —— 渲染端**必须用它覆盖内存**（见下方注释） */
+export interface RollbackOutcome {
+  meta: ConversationMeta
+  /** 回滚后**可见**的正文 */
+  messages: ChatMessage[]
+  /** 完整日志长度（可见 + 被裁掉的尾巴） */
+  total: number
+  /** 还能不能撤销（= 被裁掉的尾巴还在） */
+  canUndo: boolean
+}
+
+// ── 回滚的存储形态：**追加 + 游标**（plan10 §2.2，三方独立收敛的那个结论）────
+//
+// 正文文件里存的是**完整日志、只追加、从不裁剪**；`meta.messageCount` 同时充当
+// **游标**（可见长度）。于是：
+//   · 回滚        = 把游标往回移 —— 数据一条都不删
+//   · 撤销回滚    = 把游标移回末尾 —— **免费**（这是选这个形态最大的理由）
+//   · 「保留策略（留几轮）」这个问题**自动消失**（不复制历史，就没有膨胀）
+//
+// ⚠️ 渲染端**必须用回传的 messages 覆盖自己的内存**，否则下一次 `conv:save`
+//    会把已经"回滚掉"的内容又写回来 —— 那就是**回滚被自己的界面撤销**，
+//    这类功能最经典的事故。`rollbackConversation` 返回权威正文就是为了这个。
+//
+// ⚠️ 为什么不再单独加一个 `cursor` 字段：`messageCount` 的语义本来就是
+//    "这条会话有多少条消息"，在用户眼里那就是**可见条数** —— 两者是同一个数。
+//    复用它的直接好处：老数据没有新字段也照样读得对（不需要第三次格式迁移）。
 
 /**
  * 存盘前规整消息：**把"没有内容"的消息丢掉**。
@@ -112,17 +163,23 @@ export function groupByWorkspace(list: ConversationMeta[]): ConversationGroup[] 
 //     "messageCount 说有 N 条、而正文还不存在"的状态，崩在中间就是"点进去空白"
 
 export function createConversationsRepo(backend: ConversationsBackend): ConversationsRepo {
+  /** 按游标切出**可见**正文（游标越界一律夹紧 —— 老数据/手改文件都不该让界面炸） */
+  function visibleOf(meta: ConversationMeta, log: ChatMessage[]): ChatMessage[] {
+    const cursor = Math.max(0, Math.min(meta.messageCount, log.length))
+    return log.slice(0, cursor)
+  }
+
   return {
     /** 列表：只读 meta。meta 里的 messageCount 在每次保存时同步写好 */
     listConversations() {
       return Object.values(backend.readMeta())
     },
 
-    /** 取一条：meta + 正文（两者分开取，缺正文当空处理） */
+    /** 取一条：meta + **可见**正文（游标之后的部分是"被回滚掉的尾巴"，不给界面） */
     getConversation(id) {
       const meta = backend.readMeta()[id]
       if (!meta) return null
-      return { ...meta, messages: backend.readMessages(id) }
+      return { ...meta, messages: visibleOf(meta, backend.readMessages(id)) }
     },
 
     createConversation(input) {
@@ -147,20 +204,46 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
 
     /**
      * 保存消息体。标题为默认值时，用首条用户消息自动补一个（用户没手动改过才覆盖）。
+     *
+     * ⚠️ 有了游标之后，这里要**对账**而不是"照单全收"：渲染端交上来的是一份
+     * "我希望看到的历史"，而磁盘上还躺着可能更长的**完整日志**（含被回滚掉的尾巴）。
+     * 四种情形：
+     *   ① 变长 / 等长，且是前缀（末条允许不同 —— 流式原地生长）→ **追加/原地更新**，
+     *      并把尾巴**丢掉**（用户已经往下说了，那条分支作废）
+     *   ② 变短，且仍是前缀 → **回滚**：尾巴留着（可撤销）
+     *   ③ 认不出前缀（将来的编辑功能等）→ **整份重写**（安全优先，不猜）
+     *   ④ 内容没变 → 什么都不用改（但仍会写一遍索引，保持"索引跟着正文"）
      */
     saveConversation(id, messages) {
       const current = backend.readMeta()[id]
       if (!current) return null
-      const firstUser = messages.find((m) => m.role === 'user')?.content
+      const log = backend.readMessages(id)
+      const visible = visibleOf(current, log)
+
+      let nextLog: ChatMessage[]
+      let cursor: number
+      if (messages.length >= visible.length && isPrefixWithMutableTail(visible, messages)) {
+        nextLog = messages // ① 追加 / 原地更新：尾巴作废
+        cursor = messages.length
+      } else if (messages.length < visible.length && isPrefixWithMutableTail(messages, visible)) {
+        nextLog = log // ② 回滚：**不裁数据**，只移游标
+        cursor = messages.length
+      } else {
+        nextLog = messages // ③ 整份重写
+        cursor = messages.length
+      }
+
+      // 补标题的依据仍是"首条 user 消息"（口径与分层前一致，不动它 —— 这条有基线测试钉着）
+      const firstUser = nextLog.find((m) => m.role === 'user')?.content
       const shouldRetitle = current.title === '新对话' && Boolean(firstUser)
       const next: ConversationMeta = {
         ...current,
-        messageCount: messages.length,
+        messageCount: cursor,
         updatedAt: Date.now(),
         title: shouldRetitle ? deriveTitle(firstUser) : current.title
       }
       // **先正文、后索引**（见上方约定）：索引跟着正文走，不会出现"索引说有、正文没有"
-      backend.writeMessages(id, messages)
+      backend.writeMessages(id, nextLog)
       backend.putMeta(id, next)
       return next
     },
@@ -181,6 +264,41 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       if (!(id in all)) return
       backend.removeMeta(id)
       backend.removeMessages(id)
+    },
+
+    /**
+     * **回到第 `toIndex` 条消息之前**（保留 `messages[0..toIndex)`）。
+     *
+     * 只移游标，**不删数据** —— 所以这一次操作天然可撤销，而且"误点丢消息"这个
+     * 最坏情况根本不会发生。`toIndex` 夹到 `[0, 日志长度]`：越界不该让界面炸。
+     */
+    rollbackConversation(id, toIndex) {
+      const current = backend.readMeta()[id]
+      if (!current) return null
+      const log = backend.readMessages(id)
+      const target = Math.max(0, Math.min(Math.floor(toIndex), log.length))
+      const next: ConversationMeta = { ...current, messageCount: target, updatedAt: Date.now() }
+      backend.putMeta(id, next)
+      return {
+        meta: next,
+        messages: log.slice(0, target),
+        total: log.length,
+        canUndo: target < log.length
+      }
+    },
+
+    /** 把游标移回末尾 = 撤销上一次回滚（尾巴一直都在盘上，所以这是零成本的） */
+    undoRollback(id) {
+      const current = backend.readMeta()[id]
+      if (!current) return null
+      const log = backend.readMessages(id)
+      if (current.messageCount === log.length) {
+        // 没什么可撤销的（比如回滚后已经又说过话了，尾巴早作废）—— 原样回，不落盘
+        return { meta: current, messages: log, total: log.length, canUndo: false }
+      }
+      const next: ConversationMeta = { ...current, messageCount: log.length, updatedAt: Date.now() }
+      backend.putMeta(id, next)
+      return { meta: next, messages: log, total: log.length, canUndo: false }
     },
 
     knownWorkspaces() {

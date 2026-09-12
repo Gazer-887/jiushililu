@@ -88,6 +88,16 @@ export function deleteConversation(id: string) {
   return repo().deleteConversation(id)
 }
 
+/** **回到第 `toIndex` 条消息之前**（plan10 B 批 ④）—— 只移游标、不删数据 */
+export function rollbackConversation(id: string, toIndex: number) {
+  return repo().rollbackConversation(id, toIndex)
+}
+
+/** 撤销上一次回滚（尾巴一直在盘上，所以这是零成本的） */
+export function undoRollback(id: string) {
+  return repo().undoRollback(id)
+}
+
 /** 历史会话用过的工作区路径集合——用于收紧 workspace:set-known 的权限面 */
 export function knownWorkspaces() {
   return repo().knownWorkspaces()
