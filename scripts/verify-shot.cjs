@@ -42,6 +42,13 @@ app.setPath('userData', join(ROOT, '.verify-userdata'))
 // 不再把验证的活堆到最后一批。
 const checks = []
 
+/**
+ * 记录"带 workbench 的 ui-prefs:set"调用 —— 用来断言**提交点**（plan9 §W5）：
+ * 拖拽过程中一帧都不该写盘，松手后才合并写一次。
+ * 参照实现是每帧同步写盘（它自己标注的卡顿源），我们不学它，但**不学这件事必须被验到**。
+ */
+const wbSetCalls = []
+
 function check(name, actual, expected) {
   const pass = JSON.stringify(actual) === JSON.stringify(expected)
   checks.push({ name, pass, actual, expected })
@@ -254,13 +261,16 @@ const STUBS = {
     workbench: { schemaVersion: 1, panes: [] },
     workbenchSizes: { paneWidths: [] }
   }),
-  'ui-prefs:set': (patch) => ({
-    sidebarWidth: patch?.sidebarWidth ?? 248,
-    dockWidth: patch?.dockWidth ?? 360,
-    theme: patch?.theme ?? 'classic',
-    workbench: patch?.workbench ?? { schemaVersion: 1, panes: [] },
-    workbenchSizes: patch?.workbenchSizes ?? { paneWidths: [] }
-  }),
+  'ui-prefs:set': (patch) => {
+    if (patch && patch.workbench) wbSetCalls.push(Date.now())
+    return {
+      sidebarWidth: patch?.sidebarWidth ?? 248,
+      dockWidth: patch?.dockWidth ?? 360,
+      theme: patch?.theme ?? 'classic',
+      workbench: patch?.workbench ?? { schemaVersion: 1, panes: [] },
+      workbenchSizes: patch?.workbenchSizes ?? { paneWidths: [] }
+    }
+  },
   'ui-prefs:reset': () => ({
     sidebarWidth: 248,
     dockWidth: 360,
@@ -1516,7 +1526,10 @@ app.whenReady().then(async () => {
       if (!dock) return { open: false };
       const row = document.querySelector('.wb-row');
       const panes = Array.from(document.querySelectorAll('.pane'));
-      const gaps = Array.from(document.querySelectorAll('.wb-gap'));
+      // 注意：类名是 .wb-divider（W5 把 .wb-gap 换成了可拖拽的分隔条）。
+      // 这里曾经漏改过一次 —— 查一个不存在的类名不会报错，只会**静默算出错误的间隙(0)**，
+      // 于是"栏宽之和 = 可用宽"这条断言就假失败了。**改名就要改验证脚本。**
+      const gaps = Array.from(document.querySelectorAll('.wb-divider'));
       const widths = panes.map((p) => Math.round(p.getBoundingClientRect().width));
       const gapW = gaps.reduce((a, g) => a + Math.round(g.getBoundingClientRect().width), 0);
       const sprawl = widths.reduce((a, b) => a + b, 0) + gapW;
@@ -1603,7 +1616,10 @@ app.whenReady().then(async () => {
     (() => {
       const row = document.querySelector('.wb-row');
       const panes = Array.from(document.querySelectorAll('.pane'));
-      const gaps = Array.from(document.querySelectorAll('.wb-gap'));
+      // 注意：类名是 .wb-divider（W5 把 .wb-gap 换成了可拖拽的分隔条）。
+      // 这里曾经漏改过一次 —— 查一个不存在的类名不会报错，只会**静默算出错误的间隙(0)**，
+      // 于是"栏宽之和 = 可用宽"这条断言就假失败了。**改名就要改验证脚本。**
+      const gaps = Array.from(document.querySelectorAll('.wb-divider'));
       const widths = panes.map((p) => Math.round(p.getBoundingClientRect().width));
       const gapW = gaps.reduce((a, g) => a + Math.round(g.getBoundingClientRect().width), 0);
       const sprawl = widths.reduce((a, b) => a + b, 0) + gapW;
@@ -1636,6 +1652,90 @@ app.whenReady().then(async () => {
   // 存档：多栏工作台的真渲染截图（给人看的证据，不只是数字）
   const shotWb = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-workbench.png'), shotWb.toPNG())
+
+  // —— plan9 W5：拖拽（调宽 + 换位）——
+  // 结构先验：分隔条数量必须 = 栏数 − 1（宽度数组也只存 n−1 个，一一对应）
+  const dividerInfo = await win.webContents.executeJavaScript(`
+    (() => {
+      const ds = Array.from(document.querySelectorAll('.wb-divider'));
+      return {
+        count: ds.length,
+        panes: document.querySelectorAll('.pane').length,
+        cursor: ds[0] ? getComputedStyle(ds[0]).cursor : null,
+        title: ds[0] ? ds[0].title : null
+      };
+    })()
+  `)
+  console.log('WB_DIVIDER=' + JSON.stringify(dividerInfo))
+
+  // 调宽：**合成 PointerEvent 真拖一次**。
+  // 老坑是 mousemove 会被真实鼠标位置覆盖；这里监听挂在手柄自身、且用 PointerEvent，
+  // 所以合成事件是可靠的（纯换算逻辑另有单测兜底）。
+  // 先清空写盘计数：前面开栏/开页签也写过盘，不清就数不准
+  wbSetCalls.length = 0
+  const dragResult = await win.webContents.executeJavaScript(`
+    (() => {
+      const d = document.querySelector('.wb-divider');
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      if (!d || panes.length < 2) return { ok: false, reason: 'no-divider-or-single-pane' };
+      const before = panes.map((p) => Math.round(p.getBoundingClientRect().width));
+      const r = d.getBoundingClientRect();
+      const cx = Math.round(r.left + r.width / 2);
+      const cy = Math.round(r.top + r.height / 2);
+      const mk = (type, x) =>
+        new PointerEvent(type, {
+          pointerId: 1, isPrimary: true, pointerType: 'mouse',
+          bubbles: true, cancelable: true, clientX: x, clientY: cy
+        });
+      d.dispatchEvent(mk('pointerdown', cx));
+      // **连拖三次** —— 只为把"拖拽中不写盘"验出来：若实现每帧落盘，这里会写 3 次以上
+      d.dispatchEvent(mk('pointermove', cx + 8));
+      d.dispatchEvent(mk('pointermove', cx + 16));
+      d.dispatchEvent(mk('pointermove', cx + 25));
+      d.dispatchEvent(mk('pointerup', cx + 25));
+      return { ok: true, before };
+    })()
+  `)
+  // 等过 debounce 窗口（300ms）再数写盘次数
+  await new Promise((r) => setTimeout(r, 750))
+  const persistCalls = wbSetCalls.length
+  const wbAfterDrag = await win.webContents.executeJavaScript(`
+    (() => {
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      const gaps = Array.from(document.querySelectorAll('.wb-divider'));
+      const row = document.querySelector('.wb-row');
+      const widths = panes.map((p) => Math.round(p.getBoundingClientRect().width));
+      const gapW = gaps.reduce((a, g) => a + Math.round(g.getBoundingClientRect().width), 0);
+      const sprawl = widths.reduce((a, b) => a + b, 0) + gapW;
+      const rowW = row ? Math.round(row.getBoundingClientRect().width) : -1;
+      return { widths, sprawl, rowW, exact: sprawl === rowW };
+    })()
+  `)
+  console.log('WB_DRAG=' + JSON.stringify({ before: dragResult.before, after: wbAfterDrag, persistCalls }))
+
+  // 换位：合成 HTML5 DnD（dragstart/dragover/drop）。
+  // 拖拽下标走 dataTransfer 而不是模块级变量，所以**同一轮同步派发**也拿得到。
+  const orderOf = `
+    (() => Array.from(document.querySelectorAll('.pane'))
+      .map((p) => p.querySelector('.pane-tab-name')?.textContent?.trim() ?? ''))()
+  `
+  const beforeOrder = await win.webContents.executeJavaScript(orderOf)
+  const reorder = await win.webContents.executeJavaScript(`
+    (() => {
+      const heads = Array.from(document.querySelectorAll('.pane-head'));
+      if (heads.length < 2) return { ok: false, reason: 'less-than-2-panes' };
+      const dt = new DataTransfer();
+      const mk = (type) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+      heads[0].dispatchEvent(mk('dragstart'));
+      heads[1].dispatchEvent(mk('dragover'));
+      heads[1].dispatchEvent(mk('drop'));
+      heads[0].dispatchEvent(mk('dragend'));
+      return { ok: true };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 550))
+  const afterOrder = await win.webContents.executeJavaScript(orderOf)
+  console.log('WB_REORDER=' + JSON.stringify({ before: beforeOrder, after: afterOrder }))
 
   // ── 断言（plan9 W2 起，本脚本终于有刻度了）────────────────────────────
   // 只挑"确定的"来断言；每一批新功能由那一批自己补断言，不再堆到最后一批。
@@ -1700,6 +1800,18 @@ app.whenReady().then(async () => {
     Array.isArray(wbTwo.addInsidePane) && wbTwo.addInsidePane.every((v) => v === true),
     wbTwo.addInsidePane
   )
+
+  // —— plan9 W5：拖拽 ——
+  check('分隔条数量 = 栏数 − 1（与宽度数组一一对应）', dividerInfo.count, dividerInfo.panes - 1)
+  check('分隔条光标是 col-resize', dividerInfo.cursor, 'col-resize')
+  checkTrue('**拖分隔条真的改变了栏宽**（往右拖 → 第 0 栏变宽）',
+    dragResult.ok === true && wbAfterDrag.widths[0] > dragResult.before[0],
+    { before: dragResult.before, after: wbAfterDrag.widths })
+  checkTrue('拖完之后几何仍**精确**（没有溢出、没有被裁）', wbAfterDrag.exact === true, wbAfterDrag)
+  check('拖了 3 次只落盘 **1** 次（拖拽中不写盘、松手才合并写）—— 提交点表', persistCalls, 1)
+  checkTrue('**整栏换位真的生效**（两栏内容对调）',
+    reorder.ok === true && afterOrder[0] === beforeOrder[1] && afterOrder[1] === beforeOrder[0],
+    { before: beforeOrder, after: afterOrder })
 
   reportAndExit()
 })

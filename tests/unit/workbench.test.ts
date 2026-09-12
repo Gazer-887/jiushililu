@@ -405,11 +405,12 @@ describe('allocate（宽度分配 —— 三级收缩）', () => {
 })
 
 describe('clampPaneWidth（拖拽调宽）', () => {
-  it('上限由「其他栏的 min + 末栏 min」反推 —— 不重分配其他栏', () => {
-    // 预算 996；拖第 0 栏时，别处至少要留 200（末栏 min）
+  it('上限由「其他栏已占 + 末栏的**绝对**下限」反推 —— 不重分配其他栏', () => {
+    // 预算 996；拖第 0 栏时，别处至少留 PANE_ABS_MIN(120)。
+    // 用绝对下限而不是末栏的 min —— 否则预算紧张时上限会小于本栏 min，拖拽直接失效
     expect(
       clampPaneWidth({ desired: [], mins: [], count: 2, available: 1000, index: 0, width: 9999 })
-    ).toBe(1000 - PANE_GAP - PANE_MIN)
+    ).toBe(1000 - PANE_GAP - PANE_ABS_MIN)
   })
 
   it('拖第 0 栏时会扣掉其他栏**已占**的期望宽（而不是只扣它们的 min）', () => {
@@ -421,7 +422,33 @@ describe('clampPaneWidth（拖拽调宽）', () => {
       index: 0,
       width: 9999
     })
-    expect(w).toBe(1200 - 2 * PANE_GAP - 300 - PANE_MIN)
+    expect(w).toBe(1200 - 2 * PANE_GAP - 300 - PANE_ABS_MIN)
+  })
+
+  it('**预算紧张时仍然拖得动**（回归：曾经上限被算成 min，怎么拖都没反应）', () => {
+    // 两栏、工作台只有 359px：两边都到不了各自的 min(200)，
+    // 但用户仍应该能在 200..235 之间调配
+    const w = clampPaneWidth({
+      desired: [320],
+      mins: [200, 200],
+      count: 2,
+      available: 359,
+      index: 0,
+      width: 235
+    })
+    expect(w).toBe(235)
+  })
+
+  it('预算紧张时 allocate 也**不会把拖出来的宽度悄悄收回**', () => {
+    const r = allocate({ desired: [235], mins: [200, 200], count: 2, available: 359 })
+    expect(r.widths).toEqual([235, 359 - PANE_GAP - 235])
+  })
+
+  it('新开两栏时默认近乎均分（而不是第一栏顶满、第二栏挨挤）', () => {
+    const r = allocate({ desired: [320], mins: [], count: 2, available: 359 })
+    const budget = 359 - PANE_GAP
+    expect(r.widths.reduce((a, b) => a + b, 0)).toBe(budget)
+    expect(Math.abs(r.widths[0] - r.widths[1])).toBeLessThanOrEqual(2)
   })
 
   it('不会小于该栏自己的 min', () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type DragEvent as ReactDragEvent } from 'react'
 import type { BuiltinType, Pane as PaneModel, PaneTab } from '@shared/workbench'
 import { useAppStore } from '../store'
 import BrowserPanel from './BrowserPanel'
@@ -62,7 +62,29 @@ function isFlush(tab: PaneTab | undefined): boolean {
   return tab?.content.kind === 'builtin' && tab.content.type === 'browser'
 }
 
-export default function Pane({ pane, width }: { pane: PaneModel; width: number }): JSX.Element {
+export interface PaneProps {
+  pane: PaneModel
+  width: number
+  /** 本栏下标（换位要用） */
+  index: number
+  /** 当前是否有别的栏正被拖到本栏上方（高亮落点） */
+  dropOn: boolean
+  onDragStart: (index: number, e: ReactDragEvent) => void
+  onDragOver: (index: number, e: ReactDragEvent) => void
+  onDrop: (index: number, e: ReactDragEvent) => void
+  onDragEnd: () => void
+}
+
+export default function Pane({
+  pane,
+  width,
+  index,
+  dropOn,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd
+}: PaneProps): JSX.Element {
   const [menu, setMenu] = useState(false)
   const wbOpenTab = useAppStore((s) => s.wbOpenTab)
   const wbCloseTab = useAppStore((s) => s.wbCloseTab)
@@ -78,7 +100,10 @@ export default function Pane({ pane, width }: { pane: PaneModel; width: number }
   }
 
   return (
-    <section className={`pane ${pane.collapsed ? 'pane-fold' : ''}`} style={{ width }}>
+    <section
+      className={`pane ${pane.collapsed ? 'pane-fold' : ''} ${dropOn ? 'pane-drop' : ''}`}
+      style={{ width }}
+    >
       {pane.collapsed ? (
         <button
           className="pane-unfold"
@@ -89,8 +114,17 @@ export default function Pane({ pane, width }: { pane: PaneModel; width: number }
         </button>
       ) : (
         <>
-          <div className="pane-head">
-            <span className="pane-title" title={pane.title}>
+          {/* 标题栏 = 拖拽换位的手柄（HTML5 DnD：落点可合成、验得了；
+              而"拖页签条"会和栏内滚动打架，所以只拖标题栏） */}
+          <div
+            className="pane-head"
+            draggable
+            onDragStart={(e) => onDragStart(index, e)}
+            onDragOver={(e) => onDragOver(index, e)}
+            onDrop={(e) => onDrop(index, e)}
+            onDragEnd={onDragEnd}
+          >
+            <span className="pane-title" title={`${pane.title}（拖动可换位）`}>
               {pane.title}
             </span>
             <button

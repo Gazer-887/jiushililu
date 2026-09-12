@@ -507,11 +507,20 @@ export function allocate(input: AllocateInput): AllocateResult {
   for (let i = 0; i < count - 1; i++) head.push(Math.max(pick(input.desired, i, PANE_DEFAULT), mins[i]))
   let last = budget - head.reduce((a, b) => a + b, 0)
 
-  // ② 末栏被压到低于自己的 min → 前面按余量等比让出（让不出来就接受，见 ③）
+  // ② 末栏被压到低于自己的 min → 前面按余量等比让出。
+  //
+  // ⚠️ **只在"让得出来"时才让**（plan9 W5 修）：如果前面各栏已经到自己的 min、
+  //    仍然凑不出末栏的 min，那说明这个预算本就不可满足 —— 此时**不许**把前面强行压到 min，
+  //    否则会出现"用户怎么拖都没反应"：拖出来的宽度被这里一步步缩回 min。
+  //    让末栏吃下不足的部分（它会低于 min），交给 ③ 的三级收缩做最终裁决。
   if (last < mins[count - 1] && count > 1) {
-    const shrunk = shrinkTo(head, mins.slice(0, -1), budget - mins[count - 1])
-    for (let i = 0; i < count - 1; i++) head[i] = shrunk[i]
-    last = budget - head.reduce((a, b) => a + b, 0)
+    const target = budget - mins[count - 1]
+    const headFloor = mins.slice(0, -1).reduce((a, b) => a + b, 0)
+    if (headFloor < target) {
+      const shrunk = shrinkTo(head, mins.slice(0, -1), target)
+      for (let i = 0; i < count - 1; i++) head[i] = shrunk[i]
+      last = budget - head.reduce((a, b) => a + b, 0)
+    }
   }
 
   const widths = [...head, last]
@@ -564,10 +573,13 @@ export function normalizeSizes(sizes: WorkbenchSizes, paneCount: number): Workbe
  * 拖拽调宽：算出被拖那一栏的新期望宽度。
  *
  * **上限在"拖拽源"上解**（照抄参照实现 `setPaneW`）：只改被拖的栏，
- * `hi = 预算 − 其他栏的期望宽之和 − 末栏的 min` —— 不重分配、无反馈回路。
- * 于是末栏天然被挤小（它吃余量），而中间的栏一个都不动。
+ * 上限 = `预算 − 其他栏已占的宽 − 末栏的**绝对**下限` —— 不重分配、无反馈回路。
  *
- * ⚠️ 只有前 n−1 栏可拖：分隔条共 n−1 条，第 i 条控制第 i 栏。
+ * ⚠️ 末栏这里用的是 `PANE_ABS_MIN` 而不是它的 `min`（plan9 W5 修）：
+ *    预算紧张时如果按 `min` 反推，上限会小于本栏的 `min`，**拖拽直接失效**。
+ *    实际怎么分配由 `allocate` 的三级收缩裁决，这里只负责给一个"拖得动"的区间。
+ *
+ * ⚠️ 只有前 n−1 栏可拖：分隔条共 n−1 条，第 i 条夹在第 i 栏与第 i+1 栏之间，控制**第 i 栏**。
  *
  * @returns 新的期望宽（已夹到合法区间）
  */
@@ -584,17 +596,21 @@ export function clampPaneWidth(input: {
   if (index < 0) return PANE_DEFAULT // 只有一栏时没有分隔条
 
   const gaps = (count - 1) * PANE_GAP
-  const budget = Math.max(0, Math.round(input.available) - gaps)
+  const avail = Number.isFinite(input.available) ? Math.round(input.available) : 0
+  const budget = Math.max(0, avail - gaps)
   const mins: number[] = []
   for (let i = 0; i < count; i++) mins.push(pick(input.mins, i, PANE_MIN))
 
   let others = 0
-  for (let i = 0; i < count - 1; i++) if (i !== index) others += Math.max(pick(input.desired, i, PANE_DEFAULT), mins[i])
-  const hi = Math.max(mins[index], budget - others - Math.max(mins[count - 1], PANE_ABS_MIN))
+  for (let i = 0; i < count - 1; i++) {
+    if (i !== index) others += Math.max(pick(input.desired, i, PANE_DEFAULT), mins[i])
+  }
+  const lo = mins[index]
+  const hi = Math.max(lo, budget - others - PANE_ABS_MIN)
   // 鼠标事件偶尔给 NaN / Infinity —— `Math.max(min, NaN)` 会得到 NaN，
   // 一旦写进 layout 就是满屏 0 宽，所以这里必须先兜住有限性
-  const want = Number.isFinite(input.width) ? Math.round(input.width) : mins[index]
-  return Math.max(mins[index], Math.min(want, hi))
+  const want = Number.isFinite(input.width) ? Math.round(input.width) : lo
+  return Math.max(lo, Math.min(want, hi))
 }
 
 /**
