@@ -48,8 +48,8 @@ function extractSpecifiers(source: string): string[] {
   return specs
 }
 
-/** 走一遍 import 图，返回链路中出现的被禁裸模块（含完整路径，便于定位） */
-function findBannedInGraph(entry: string): string[] {
+/** 走一遍 import 图，返回：链上出现的被禁裸模块 + **访问过的本地文件** */
+function walkGraph(entry: string): { violations: string[]; visited: string[] } {
   const violations: string[] = []
   const visited = new Set<string>()
   const queue: Array<{ file: string; chain: string[] }> = [{ file: entry, chain: [entry] }]
@@ -77,13 +77,18 @@ function findBannedInGraph(entry: string): string[] {
       }
     }
   }
-  return violations
+  return { violations, visited: [...visited] }
+}
+
+function findBannedInGraph(entry: string): string[] {
+  return walkGraph(entry).violations
 }
 
 const TEST_ENTRIES = [
   'tests/unit/agent.test.ts',
   'tests/unit/agent-infra.test.ts',
   'tests/unit/context.test.ts',
+  'tests/unit/conversations-store.test.ts',
   'tests/unit/providers.test.ts',
   'tests/unit/runner.test.ts',
   'tests/unit/schemas.test.ts',
@@ -102,5 +107,24 @@ describe('架构守卫：单测链路不得依赖 electron', () => {
     const violations = findBannedInGraph(join(ROOT, 'src/main/store/workspace.ts'))
     expect(violations.length).toBeGreaterThan(0)
     expect(violations[0]).toContain('electron-store')
+  })
+
+  it('守卫**不是空转**：每个入口都真的走进了 src/ 源码（防"改名后守卫静默变空"）', () => {
+    // 为什么要这条：`walkGraph` 读不到入口文件时会 `continue`，于是返回空的 violations ——
+    // **文件被改名/挪走之后，守卫会静默通过**，看起来一切正常。这正是本项目
+    // 反复吃过的"用恰好不算错的口径去验，只会拿到恰好是假的绿灯"。
+    // 所以额外断言：每个入口的 import 图里**必须**有 src/ 下的文件。
+    for (const entry of TEST_ENTRIES) {
+      const { visited } = walkGraph(join(ROOT, entry))
+      expect(
+        visited.some((f) => f.startsWith(join(ROOT, 'src'))),
+        `${entry} 的 import 图里没有任何 src/ 源码 —— 守卫正在空转`
+      ).toBe(true)
+    }
+  })
+
+  it('会话存储的基线测试确实覆盖到了 conversations-core（不是空过）', () => {
+    const { visited } = walkGraph(join(ROOT, 'tests/unit/conversations-store.test.ts'))
+    expect(visited).toContain(join(ROOT, 'src/main/store/conversations-core.ts'))
   })
 })
