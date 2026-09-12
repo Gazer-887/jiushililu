@@ -208,7 +208,13 @@ export function isSafeRel(rel: string): boolean {
 // ── Diff 视图取两侧内容（plan13 批 B · B3）──────────────────────
 
 /** 取不到时的原因（**枚举进共享层**，界面据此说人话，不自己编文案） */
-export type SidesFailReason = 'run-missing' | 'not-recorded' | 'backup-missing' | 'bad-rel'
+export type SidesFailReason =
+  | 'run-missing'
+  | 'not-recorded'
+  | 'backup-missing'
+  | 'bad-rel'
+  /** 这一轮属于**另一个工作区** —— 拿当前工作区去比就会比错文件（见 `RevertFailReason`） */
+  | 'other-workspace'
 
 export interface CheckpointSides {
   ok: true
@@ -230,6 +236,11 @@ export interface CheckpointSides {
    * 这与 `FilePreviewPane` 那条"截断的文件不给编辑"是同一条原则。
    */
   truncated: boolean
+  /**
+   * 任一侧**不是合法 UTF-8**（GBK / 二进制）→ 界面必须说明"逐处退回会损坏它"。
+   * 与 `truncated` 同理：这类文件只给整份退回（那走的是字节拷贝，安全）。
+   */
+  lossy: boolean
   /** 当前文件 mtime（逐块退回时的冲突基线，防"用户点拒绝的同时 Agent 正在写"）；文件不在则无 */
   mtimeMs?: number
   /** 这一轮是否还没收尾 —— `running` 时 Agent 可能**正在**写这些文件 */
@@ -249,5 +260,93 @@ export function describeSidesFailure(reason: SidesFailReason): string {
       return '这一轮的快照已不在了（检查点只保留最近若干轮），看不了改前的内容'
     case 'bad-rel':
       return '路径不合法，拒绝读取'
+    case 'other-workspace':
+      return '这一轮属于另一个工作区 —— 现在打开的不是它，看到的差异会对不上，已拒绝'
+  }
+}
+
+// ── 逐处退回（plan13 批 B · B4）────────────────────────────────
+
+export type RevertFailReason =
+  | 'bad-input'
+  | 'bad-rel'
+  | 'run-missing'
+  | 'not-recorded'
+  | 'created'
+  | 'backup-missing'
+  | 'missing-current'
+  | 'truncated'
+  /**
+   * **这个文件不是合法 UTF-8**（GBK 文本 / 二进制）。
+   *
+   * 为什么必须拦（独立审查实测）：退回会把**整份文本**按 UTF-8 重写回磁盘，
+   * 而有损解码出来的字符再编码回去 **不等于原字节** ——
+   * 实测一个 GBK 文件只改了一行，退一次之后**没被改的那几行也一起烂掉**
+   * （13 字节 → 32 字节）。这是**不可逆**的损坏，只能整份退回。
+   */
+  | 'lossy-encoding'
+  /** 界面看到的那一份已经**不是**磁盘上的这一份了（Agent 刚改过 / 用户自己编辑过） */
+  | 'changed-on-disk'
+  /**
+   * **这一轮属于另一个工作区**。
+   *
+   * 为什么必须拦：检查点目录是全局的（`userData/checkpoints`），列表里会有别的工作区的轮次；
+   * 而 rel 是**相对路径** —— 拿当前工作区去拼，就会读到/写到**同名的另一个文件**，
+   * 而且 mtime 阀拦不住（它就是那个文件的当前状态）。这是唯一会"静默改错文件"的路径。
+   */
+  | 'other-workspace'
+  | 'no-such-hunk'
+  | 'apply-failed'
+  | 'write-failed'
+
+export interface RevertHunkInput {
+  runId: string
+  rel: string
+  /** 1 基的块序号 —— 就是界面上的「第 N 处」 */
+  hunkIndex: number
+  /**
+   * 界面读到"当前内容"时的 mtime。
+   *
+   * **这条参数是安全阀，不是优化**：块序号只在"两侧内容与算差异时一致"的前提下才有效。
+   * 文件若在用户看差异的这段时间被改过（Agent 在跑 / 用户自己编辑），
+   * 主进程**必须拒绝**并让用户重看一遍 —— 否则就是"点了第 2 处、改掉第 N 处"。
+   */
+  expectedMtimeMs: number
+}
+
+export type RevertHunkResult =
+  | { ok: true; rel: string; hunkIndex: number; message: string; mtimeMs?: number }
+  | { ok: false; reason: RevertFailReason }
+
+/** 退回失败的说人话版本 */
+export function describeRevertFailure(reason: RevertFailReason): string {
+  switch (reason) {
+    case 'bad-input':
+    case 'bad-rel':
+      return '请求不合法（路径或参数有问题），已拒绝'
+    case 'run-missing':
+      return '找不到这一轮的记录（可能已被清理）'
+    case 'not-recorded':
+      return '这一轮的记录里没有这个文件'
+    case 'created':
+      return '新建的文件没有"改前的内容"可还原 —— 只能整份退回（= 删除）'
+    case 'backup-missing':
+      return '这一轮的快照已不在了（检查点只保留最近若干轮），退不了'
+    case 'missing-current':
+      return '这个文件现在读不到了（可能已被删掉），退不了'
+    case 'truncated':
+      return '文件太大，只读到了一部分 —— 逐处退回会把文件写坏，请用整份退回'
+    case 'lossy-encoding':
+      return '这个文件不是 UTF-8 编码（可能是 GBK 或二进制）—— 逐处退回会把整份内容写坏且不可恢复，只能用整份退回'
+    case 'changed-on-disk':
+      return '文件在你看差异之后被改过（Agent 或别的程序），为避免退错，请重新看一遍差异再退'
+    case 'other-workspace':
+      return '这一轮属于另一个工作区 —— 现在打开的工作区不是它，退回会改到同名的另一个文件，已拒绝'
+    case 'no-such-hunk':
+      return '这一处改动已经不在了（可能刚被退回过），请重新看一遍差异'
+    case 'apply-failed':
+      return '这一处改动和文件当前内容对不上，没法安全地退回去'
+    case 'write-failed':
+      return '退回算出来了，但写盘失败'
   }
 }

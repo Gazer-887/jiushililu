@@ -13,10 +13,65 @@
  * 数据返回空值即可，本脚本验证的是**布局几何**，不是数据流。
  */
 const { app, BrowserWindow, ipcMain, protocol } = require('electron')
-const { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } = require('node:fs')
+const {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} = require('node:fs')
 const { join } = require('node:path')
 
 const ROOT = process.cwd()
+
+/**
+ * 自检：嵌入片段（`executeJavaScript` 的模板字符串）里**不许出现反引号**。
+ *
+ * 为什么非要有这个自检 —— 这是本项目**第四次**栽在同一个坑里（2026-09-13 一天之内两次）：
+ * 探针是"写在字符串里的 JS"，写注释时很自然会想用反引号去圈一个标识符，
+ * **可那段字符串本身就是用反引号界定的** —— 一个反引号就把模板提前结束，
+ * 后面那半句变成真代码（形如 （字符串）.fp —— textarea 这种），于是：
+ *   · `node --check` **照样通过**（它是合法的 JS 表达式）
+ *   · 只在运行时炸出 `ReferenceError: textarea is not defined`
+ *   · 而报错行号指向**模板开头**，与真凶（某行注释里的反引号）毫不相干
+ * 上次为此浪费了一轮完整的门禁（157 条断言跑出 103 条就崩）。
+ *
+ * 判据（精确、不会误报）：**模板字符串内部的注释行上出现反引号**。
+ * 模板内部的任何反引号都必然提前结束模板，所以"注释里带反引号"永远是笔误，不可能是本意。
+ * （正常写法：强调就用「」或直接裸写标识符。）
+ */
+function selfCheckEmbeddedBackticks() {
+  const lines = readFileSync(__filename, 'utf8').split('\n')
+  // ⚠️ 这里**绝不能用反引号字面量**去数反引号（比如把反引号写进正则）——
+  //    函数自己的源码里出现一个反引号，就会把下面这个简易状态机打乱，
+  //    于是它会把大半个文件误报成违规（实测误报 55 行，比不装这个自检还糟糕）。
+  //    取这个字符一律走 charCode，本函数的源码里一个反引号都不出现。
+  const TICK = String.fromCharCode(96)
+  const countTicks = (s) => s.split(TICK).length - 1
+  const bad = []
+  let inTemplate = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const ticks = countTicks(line)
+    if (!inTemplate) {
+      if (ticks % 2 === 1) inTemplate = true
+      continue
+    }
+    if (ticks > 0 && line.includes('//')) bad.push(i + 1)
+    if (ticks % 2 === 1) inTemplate = false
+  }
+  if (bad.length > 0) {
+    console.log('BACKTICK_SELFCHECK=failed at lines ' + bad.join(', '))
+    for (const n of bad) console.log('  ' + n + ': ' + lines[n - 1].trim())
+    console.log('==== 模板字符串里的注释不许写反引号：它会把模板提前结束，')
+    console.log('     而 node --check 查不出来，只在运行时炸出一句和现场无关的 ReferenceError ====')
+    process.exit(1)
+  }
+  console.log('BACKTICK_SELFCHECK=ok')
+}
+selfCheckEmbeddedBackticks()
 
 /**
  * 守卫：**构建产物是不是比源码旧**。
@@ -60,7 +115,9 @@ function assertBuildFresh() {
     return newest
   }
   const srcDir = join(ROOT, 'src')
-  if (existsSync(srcDir)) newestSrc = newestIn(srcDir, /\.(ts|tsx|css)$/)
+  // ⚠️ 别漏掉 `.html`：`src/renderer/index.html` 就是构建入口之一，
+  // 改了它不重新 build，跑出来的照样是旧界面（审查指出过这条缺口）。
+  if (existsSync(srcDir)) newestSrc = newestIn(srcDir, /\.(ts|tsx|css|html)$/)
   const viteCfg = join(ROOT, 'config', 'electron.vite.config.ts')
   if (existsSync(viteCfg)) newestSrc = Math.max(newestSrc, statSync(viteCfg).mtimeMs)
 
@@ -390,6 +447,15 @@ const convUndoCalls = []
 
 /** Markdown 轻编辑：fs:write 收到的载荷（要验"冲突基线有没有带上来"） */
 const fsWritePayloads = []
+
+/**
+ * plan13 B4：逐处退回的调用流水。
+ * 要验的是"界面只负责说**退第几处**，具体内容由主进程算"——
+ * 所以这里连 `expectedMtimeMs` 一起记：那条是防"看着旧的差异退新的文件"的安全阀。
+ */
+const revertCalls = []
+/** 退过一次之后，`checkpoint:sides` 要回一份"那一处已经不见了"的内容（验界面有没有重取） */
+let appHunkOneReverted = false
 
 /** 会话保存的调用流水（要验"在别的页面期间流出来的内容有没有被存下来"） */
 const convSaveCalls = []
@@ -864,8 +930,7 @@ const STUBS = {
     if (rel === 'src/notes.md') {
       const same = '这一轮看过这个文件，内容没变过\n'
       return { ...base, rel, before: same, after: same }
-    }
-    if (rel === 'src/brand-new.md') {
+    }    if (rel === 'src/brand-new.md') {
       return {
         ...base,
         rel,
@@ -885,7 +950,27 @@ const STUBS = {
         afterBytes: 1024 * 1024 * 4
       }
     }
-    return { ...base, rel, before: APP_BEFORE, after: APP_AFTER }
+    return {
+      ...base,
+      rel,
+      before: APP_BEFORE,
+      // 退过一次之后：第 1 处已还原（第 2 行又变回 `const x = 1`），差异应当只剩 1 处。
+      // 这一步是给"退回成功 → 界面有没有重新取数"那条断言准备的：
+      // 不重取的话界面上仍会显示 2 处，断言立刻红。
+      after: appHunkOneReverted ? APP_AFTER.replace('const x = 42', 'const x = 1') : APP_AFTER
+    }
+  },
+
+  // plan13 B4：逐处退回。**只记流水 + 改状态**，真正的写盘由主进程负责（门禁里不需要真写）。
+  'checkpoint:revert-hunk': (input) => {
+    revertCalls.push(input)
+    if (input.rel === 'src/app.ts' && input.hunkIndex === 1) appHunkOneReverted = true
+    return {
+      ok: true,
+      rel: input.rel,
+      hunkIndex: input.hunkIndex,
+      message: `已写入 ${input.rel}`
+    }
   }
   // 注意：'confirm:respond' 不在这里 —— 需要记录收到的答复，单独注册（见下）
 }
@@ -932,7 +1017,21 @@ app.whenReady().then(async () => {
       // ⚠️ 必须与**真机一致**（`src/main/index.ts` 的 createWindow 用的是 sandbox: true）。
       //    这里长期写的是 false —— 等于一直在**另一个环境**里验真机，
       //    而"验证环境与生产不一致"正是最容易被放过的一类假绿灯。
-      sandbox: true
+      sandbox: true,
+      /**
+       * **关掉后台节流**（2026-09-13 加，这是墨迹了很久的一类"假红"的真凶）。
+       *
+       * 窗口是 `show: false`（有意不打扰用户），而**隐藏/被遮挡的窗口会被 Chromium 节流**：
+       * `requestAnimationFrame` 被压到极低频甚至停掉。而 Monaco 的渲染**正是走 rAF** ——
+       * 于是出现"等 2.6 秒刚好够 / 等 4.8 秒一行都没有"这种看天吃饭的结果，
+       * 症状是 `.view-line` 高度在 0 和 16 之间跳。
+       *
+       * 它之所以难查：红的是**后面**那 9 条（打字没生效 → 没变脏 → Ctrl+S 没反应 → 守卫不出现），
+       * 长得跟真回归一模一样；而真正的原因在**更早的某一帧还没画出来**。
+       * 之前 plan13 §4.4 记的是"把等待从 0.9s 提到 2.6s"——那是治症状，
+       * 这一条才是把节流关掉（等待仍需保留，但不再靠它兜住正确性）。
+       */
+      backgroundThrottling: false
     }
   })
 
@@ -1553,17 +1652,142 @@ app.whenReady().then(async () => {
       diffNew.rows.length > 0 && diffNew.rows.every((r) => r.add),
     { notes: diffNew.notes, rows: diffNew.rows.length, hasDel: (diffNew.rows || []).some((r) => r.del) })
   checkTrue('新建的文件**明说不给逐处退回**（只能整份退回）',
-    (diffNew.notes || []).some((n) => n.includes('整份退回')), diffNew.notes)
+    (diffNew.notes || []).some((n) => n.includes('没有') && n.includes('只能整份退回')),
+    diffNew.notes)
 
   // ④ truncated：读不全就必须说出来，且不许逐处退回
   checkTrue('内容被截断时**明说只读了 256 KB**（读一半就下结论比不显示更误导）',
     openedHuge === true && (diffHuge.warns || []).some((w) => w.includes('256 KB')),
     { warns: diffHuge.warns })
-  checkTrue('截断时**不给逐处退回**（拿半个文件去写盘 = 把文件砍坏）',
-    (diffHuge.notes || []).some((n) => n.includes('不能逐处退回')), diffHuge.notes)
+  // ⚠️ 判据盯**语义**（"说明为什么退不了" + "只能整份退回"），不背原文 ——
+  //    绑死整句话的话，下次只是把文案说顺一点，这条就会假红。
+  checkTrue('截断时**说清为什么不能逐处退回、并指向整份退回**（拿半个文件写盘 = 把文件砍坏）',
+    (diffHuge.notes || []).some((n) => n.includes('写坏') && n.includes('只能整份退回')),
+    diffHuge.notes)
 
   checkTrue('点「收起」→ 差异视图收回去（不收起来会把面板撑爆）',
     clickedClose === true && diffClosed.gone === true, { clickedClose, ...diffClosed })
+
+  // —— 逐处退回（plan13 B4）：真点一次，验"界面说退第几处、内容由主进程算" ——
+  //
+  // 判据分三层：
+  //   ① 危险动作**点一下不写盘**（先弹确认）—— 与"整轮回滚"同一个规矩
+  //   ② 载荷是**序号 + mtime 安全阀**，不是"退成什么内容"（界面不许参与算写入内容）
+  //   ③ 退回之后界面**必须重新取数**（那块得从差异里消失，否则就是在骗人）
+  const openedAppRevert = await openDiff('src/app.ts')
+  const revertUi = await win.webContents.executeJavaScript(`
+    (() => {
+      const wrap = document.querySelector('.df-wrap');
+      if (!wrap) return { shown: false, hunks: 0, perHunk: [] };
+      // ⚠️ **逐块**收集按钮，不是只看第一块 —— 只看第一块的话，
+      //    "只有第 1 处给了退回入口"也能绿（审查指出过这条自证式断言）。
+      const perHunk = Array.from(wrap.querySelectorAll('.df-hunk')).map((h) =>
+        Array.from(h.querySelectorAll('.ck-btn')).map((b) => b.textContent.trim())
+      );
+      return { shown: true, hunks: perHunk.length, perHunk };
+    })()
+  `)
+
+  const clickedAsk = await win.webContents.executeJavaScript(`
+    (() => {
+      const h = document.querySelector('.df-hunk');
+      const b = h
+        ? Array.from(h.querySelectorAll('.ck-btn')).find((x) => x.textContent.trim() === '退回这一处')
+        : null;
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const revertAskState = await win.webContents.executeJavaScript(`
+    (() => {
+      const h = document.querySelector('.df-hunk');
+      return {
+        confirmShown: !!document.querySelector('.df-hunk .ck-btn-danger'),
+        // 确认那一刻，这一行必须说**"点下去会发生什么"**（plan13 §三② 的硬要求），
+        // 而不是复述"改动是什么" —— 纯新增/纯删除两种最容易被误解
+        rangeText: (h?.querySelector('.df-hunk-range')?.textContent ?? '').trim(),
+        btns: h ? Array.from(h.querySelectorAll('.ck-btn')).map((b) => b.textContent.trim()) : []
+      };
+    })()
+  `)
+  const callsAfterAsk = revertCalls.length
+
+  const clickedConfirmRevert = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.df-hunk .ck-btn-danger');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1400))
+  const diffAfterRevert = await readDiff()
+  const shotRevert = await win.webContents.capturePage()
+  writeFileSync(join(SHOTS, 'verify-diff-revert.png'), shotRevert.toPNG())
+
+  // created / 截断 两种情形**不许**出现"退回这一处"
+  const openedNewNoRevert = await openDiff('src/brand-new.md')
+  const newRevertBtns = await win.webContents.executeJavaScript(`
+    (() => ({
+      hunks: document.querySelectorAll('.df-wrap .df-hunk').length,
+      btns: Array.from(document.querySelectorAll('.df-wrap .ck-btn')).map((b) => b.textContent.trim())
+    }))()
+  `)
+  const openedHugeNoRevert = await openDiff('src/huge.log')
+  const hugeRevertBtns = await win.webContents.executeJavaScript(`
+    (() => ({
+      hunks: document.querySelectorAll('.df-wrap .df-hunk').length,
+      btns: Array.from(document.querySelectorAll('.df-wrap .ck-btn')).map((b) => b.textContent.trim())
+    }))()
+  `)
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.df-bar .ck-btn'))
+        .find((x) => x.textContent.trim() === '收起');
+      if (b) b.click();
+    })()
+  `)
+
+  checkTrue('**每一处**改动都给了「退回这一处」（不是只有第一处有 —— 所以要逐块数）',
+    openedAppRevert === true && revertUi.shown === true && revertUi.perHunk.length === 2 &&
+      revertUi.perHunk.every((bs) => bs.includes('退回这一处')),
+    { openedAppRevert, hunks: revertUi.hunks, perHunk: revertUi.perHunk })
+
+  checkTrue('点「退回这一处」→ **先弹确认，而且没写盘**（危险动作点一下就走的都算 bug）',
+    clickedAsk === true && revertAskState.confirmShown === true && callsAfterAsk === 0,
+    { clickedAsk, confirmShown: revertAskState.confirmShown, callsAfterAsk })
+
+  checkTrue('确认时**说清点下去会发生什么**（不是复述"改动是什么"）',
+    revertAskState.rangeText.includes('退回后'), { rangeText: revertAskState.rangeText })
+
+  checkTrue('确认按钮给的是两个明确选择（确认退回 / 取消）',
+    revertAskState.btns.includes('确认退回') && revertAskState.btns.includes('取消'),
+    revertAskState.btns)
+
+  checkTrue('点「确认退回」→ 请求真的发出去了（不是只改了个提示）',
+    clickedConfirmRevert === true && revertCalls.length === 1, {
+      clickedConfirmRevert,
+      calls: revertCalls
+    })
+  checkTrue('载荷说的是**退第几处 + 那条 mtime 安全阀**，而**不是**"退成什么内容"',
+    revertCalls[0]?.hunkIndex === 1 &&
+      revertCalls[0]?.rel === 'src/app.ts' &&
+      revertCalls[0]?.expectedMtimeMs === 111111 &&
+      Object.keys(revertCalls[0] ?? {}).sort().join(',') === 'expectedMtimeMs,hunkIndex,rel,runId',
+    revertCalls[0])
+  checkTrue('**退回之后界面重新取数**：那一处从差异里消失了（原来 2 处 → 现在 1 处）',
+    diffAfterRevert.shown === true && diffAfterRevert.hunks === 1, {
+      shown: diffAfterRevert.shown,
+      hunks: diffAfterRevert.hunks,
+      sum: diffAfterRevert.sum
+    })
+
+  checkTrue('**新建的文件不给「退回这一处」**（它没有改前内容可还原）',
+    openedNewNoRevert === true && newRevertBtns.hunks > 0 && !newRevertBtns.btns.includes('退回这一处'),
+    newRevertBtns)
+  checkTrue('**截断的大文件不给「退回这一处」**（拿半个文件写盘 = 把文件砍坏）',
+    openedHugeNoRevert === true && hugeRevertBtns.hunks > 0 && !hugeRevertBtns.btns.includes('退回这一处'),
+    hugeRevertBtns)
 
   // —— 危险操作确认对话框（plan8 R5）：真推一次请求，真点一次 ──
   // 用 webContents.send 模拟主进程推送（这就是真实链路：主进程 → preload → React）
@@ -2776,6 +3000,9 @@ app.whenReady().then(async () => {
   console.log('DIFF_NOTES=' + JSON.stringify(diffNotes))
   console.log('DIFF_NEW=' + JSON.stringify(diffNew))
   console.log('DIFF_HUGE=' + JSON.stringify(diffHuge))
+  console.log('REVERT_UI=' + JSON.stringify(revertUi))
+  console.log('REVERT_CALLS=' + JSON.stringify(revertCalls))
+  console.log('DIFF_AFTER_REVERT=' + JSON.stringify(diffAfterRevert))
   console.log('CONFIRM_DIALOG=' + JSON.stringify(confirmShown))
   console.log('CONFIRM_RESPONSES=' + JSON.stringify({ sent: confirmResponses, ...confirmClosed }))
   console.log('SPLITTER_BEFORE=' + JSON.stringify(beforeDrag))
@@ -3512,17 +3739,42 @@ app.whenReady().then(async () => {
       explorerReady: ${JSON.stringify(explorerReady)},
       hasPane: !!document.querySelector('.fp'),
       hasModeBtn: !!Array.from(document.querySelectorAll('.fp-mode')).find((b) => (b.textContent || '').includes('编辑')),
-      hasTextarea: !!document.querySelector('.fp-textarea')
+      // ⚠️ 判「在不在编辑态」不能再看 .fp-textarea —— plan13 B2 起编辑区是 Monaco，
+      //    而 Monaco 的 DOM 在**预览**态里也存在（B1 就是只读的它）——
+      //    拿它当判据会得到「永远在编辑态」的假绿。.fp-edit-bar 只在编辑态出现，用它。
+      //    （这段注释在模板字符串里，**不许写反引号** —— 见文件顶部的自检说明。）
+      hasEditBar: !!document.querySelector('.fp-edit-bar')
     }))()
   `)
   console.log('EDIT_PRE=' + JSON.stringify(editPre))
 
-  // 点「编辑」→ 出现 textarea
+  // 点「编辑」→ 出现编辑栏 + Monaco 编辑器
+  //
+  // ⚠️ **这一段必须先把窗口显示出来**（与下面 iframe 采样同一个理由，见那一段的说明）：
+  //    本进程的窗口一直是 `show: false`（不打扰用户），而 **monaco 的渲染走 rAF + 合成**，
+  //    隐藏窗口里的帧不会被合成 —— 实测症状就是"等了 4.8 秒，一行可见行都没有（高度恒为 0）"，
+  //    接着 `insertText` 无处可去 → 文件不脏 → Ctrl+S 没反应 → 守卫不出现：**9 条连锁红**，
+  //    而功能一点没坏。`showInactive()` **只显示、不抢焦点**。
+  //    （这条不是猜的：同一份代码连跑 4 次，3 次绿 1 次红，红的都是同一处 —— 典型的渲染竞态。）
+  win.showInactive()
+  await new Promise((r) => setTimeout(r, 400))
   const modePos = await centerOf('.fp-mode')
   if (rbInputReady && modePos) await realClick(modePos.x, modePos.y, 'left')
-  await new Promise((r) => setTimeout(r, 500))
+  await new Promise((r) => setTimeout(r, 2600))
+  // ⚠️ 等 2.6s 而不是 0.5s：monaco 是**按需加载**的（第一次打开要拉 7.6MB 的 chunk），
+  //    而且离屏窗口里它靠 rAF 渲染会被节流（plan13 §4.4 实测：900ms 时可见行是 0 行）。
   const editOn = await win.webContents.executeJavaScript(`
-    (() => ({ hasTextarea: !!document.querySelector('.fp-textarea') }))()
+    (() => ({
+      hasEditBar: !!document.querySelector('.fp-edit-bar'),
+      hasEditor: !!document.querySelector('.ce-host'),
+      // 阳性对照：先认清"输入面"是谁（monaco 在新 Chromium 上默认走 EditContext）——
+      // 认不出来的话，下面"打字没生效"就分不清是功能坏了还是探针找错了地方
+      inputSurface: document.querySelector('.ce-host .native-edit-context')
+        ? 'native-edit-context'
+        : document.querySelector('.ce-host textarea.inputarea')
+          ? 'textarea.inputarea'
+          : null
+    }))()
   `)
   console.log('EDIT_ON=' + JSON.stringify(editOn))
 
@@ -3535,14 +3787,14 @@ app.whenReady().then(async () => {
   // 只量"存在"是不够的 —— 存在但只有两行高，正是用户看到的样子。
   const editBox = await win.webContents.executeJavaScript(`
     (() => {
-      const ta = document.querySelector('.fp-textarea');
-      if (!ta) return { hasTextarea: false };
+      const ta = document.querySelector('.ce-wrap');
+      if (!ta) return { hasEditor: false };
       const body = document.querySelector('.dock-body');
       const r = ta.getBoundingClientRect();
       const br = body ? body.getBoundingClientRect() : null;
       const cs = getComputedStyle(ta);
       return {
-        hasTextarea: true,
+        hasEditor: true,
         h: Math.round(r.height),
         w: Math.round(r.width),
         bodyH: br ? Math.round(br.height) : 0,
@@ -3555,30 +3807,231 @@ app.whenReady().then(async () => {
   `)
   console.log('EDIT_BOX=' + JSON.stringify(editBox))
 
-  // 打字（用真键盘：合成的 input 事件测不出"受控组件会不会把字吞掉"）
-  const taPos = await centerOf('.fp-textarea')
-  if (rbInputReady && taPos) {
-    await realClick(taPos.x, taPos.y, 'left')
-    for (const ch of ['改', '了']) {
-      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', text: ch })
-      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp' })
+  // 打字（**真键盘 / 真输入管线**：合成的 input 事件测不出"受控组件会不会把字吞掉"）
+  //
+  // ⚠️ plan13 B2 换成 Monaco 之后，这里三处必须改（都是踩过才写下的）：
+  //   ① 命中的是 `.ce-host .view-line` —— monaco **虚拟化渲染**，没有整块 textarea 可点
+  //   ② **必须先确认真焦点落进编辑器**，否则"打字没生效"会被误判成功能坏了
+  //   ③ 输入走 `Input.insertText`（走浏览器输入管线）：CJK 没有 keycode，
+  //      用 dispatchKeyEvent 得自己凑 windowsVirtualKeyCode，而且还可能被 EditContext 吞掉
+  let editFocus = null
+  /**
+   * 等"可见行真的渲染出来"，再取坐标；点完**确认焦点真的落进去了**，没落进去就再点一次。
+   *
+   * ⚠️ 为什么要这么绕（2026-09-13 实测踩到，症状极具误导性）：
+   *    离屏窗口里 monaco 是**分批渲染**的 —— 实测能观察到 `.view-line` 的高度在
+   *    `0` 和 `16` 之间跳。在"高度还是 0"的中间态上点一下会**打空**：
+   *    焦点留在「编辑」按钮（`.fp-mode`）上 → `insertText` 无处可去 → 文件不脏 →
+   *    Ctrl+S 没反应 → 关闭页签时守卫不出现……**9 条断言连锁全红**，
+   *    而功能一点没坏（同一份代码 5 分钟前跑 164 全绿）。
+   *    这种"红得很有条理"最容易被当成真回归，所以判据要从"点一下"升级成
+   *    "**点到焦点真的进去为止**" —— 但那不削弱断言：焦点没进去，最后还是判红。
+   */
+  let taPos = null
+  /**
+   * 找"可见行"的坐标。**必须挑"可见的那个"编辑器**：门禁前面开过好几个文本页签/面板，
+   * DOM 里可能同时存在多个 `.ce-host`，而非活动页签里的那个高度是 0。
+   * （本段在模板字符串里，注释不许写反引号 —— 见文件顶部自检。）
+   */
+  const findEditorPoint = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const host = Array.from(document.querySelectorAll('.ce-host')).find((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 4 && r.height > 4;
+        });
+        if (!host) return null;
+        const line = host.querySelector('.view-line');
+        if (!line) return null;
+        const r = line.getBoundingClientRect();
+        if (r.height < 4 || r.width < 4) return null; // 还在中间态，不算数
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()
+    `)
+  for (let i = 0; i < 10 && !taPos; i++) {
+    taPos = await findEditorPoint()
+    if (!taPos) {
+      // ⚠️ **主动逼一帧**：隐藏或被遮挡的窗口里，Chromium 可能**不做合成** ——
+      //    monaco 的 DOM 都在（`.monaco-editor` 挂上了、28 行也生成了），
+      //    但布局一直没被 flush，量出来的每一行高度就是 **0**。
+      //    `capturePage()` 会强制渲染进程产出一帧（门禁自己的截图就是靠它拿到内容的，
+      //    所以这条路在本项目里是**已知可行**的）。不加这一下，就只能靠"等"，
+      //    而实测是"连跑 4 次红 3 次"——那种看天吃饭的闸，最后一定会被人关掉。
+      try {
+        await win.webContents.capturePage()
+      } catch {
+        // 逼帧失败不阻断：下面还有等待与"戳窗口尺寸"两道兜底
+      }
+      await new Promise((r) => setTimeout(r, 400))
     }
+  }
+  // —— 还找不到就**把 monaco 叫醒**（2026-09-13 实测的真凶）——
+  //
+  // 实测证据：失败时 `.view-line` 是 **h:0**（而 host 442 高、28 行都在、`.monaco-editor` 也在、
+  // 既不是 loading 也不是 error）；成功时同一行是 h:16。
+  // 那是 **monaco 的字体测量还没完成**（没量出字体高度，它就把行高算成 0）。
+  // 而它自己的 `automaticLayout: true` 会在**窗口尺寸变化**时重新 layout 并重算度量 ——
+  // 所以这里把窗口尺寸推 1px 再还原，等于戳它一下。
+  //
+  // ⚠️ 这是**环境兜底**，不是给产品打的补丁：真机窗口可见、字体正常加载时不会卡在这个状态；
+  //    卡住的是"隐藏/离屏窗口 + 首帧还没合成"这个组合（本项目 §4.4 记过同一族的毛病）。
+  if (!taPos) {
+    const [w0, h0] = win.getSize()
+    win.setSize(w0 + 1, h0)
+    await new Promise((r) => setTimeout(r, 250))
+    win.setSize(w0, h0)
+    await new Promise((r) => setTimeout(r, 600))
+    for (let i = 0; i < 10 && !taPos; i++) {
+      taPos = await findEditorPoint()
+      if (!taPos) await new Promise((r) => setTimeout(r, 400))
+    }
+  }
+  // 找不到就**把现场打出来**：不然只有一句 `EDIT_FOCUS=null`，
+  // 下一个人只会看到"9 条连锁红"，完全不知道该往哪儿看。
+  if (!taPos) {
+    const miss = await win.webContents.executeJavaScript(`
+      (() => {
+        const rr = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height) }; };
+        const hosts = Array.from(document.querySelectorAll('.ce-host'));
+        const h0 = hosts[0] ?? null;
+        const l0 = h0 ? h0.querySelector('.view-line') : null;
+        const cs = (el) => {
+          if (!el) return null;
+          const c = getComputedStyle(el);
+          return { h: c.height, lh: c.lineHeight, disp: c.display, vis: c.visibility, pos: c.position, top: c.top, ov: c.overflow };
+        };
+        return {
+          hostCount: hosts.length,
+          hosts: hosts.map(rr),
+          lineCounts: hosts.map((h) => h.querySelectorAll('.view-line').length),
+          firstLineRects: hosts.map((h) => rr(h.querySelector('.view-line'))),
+          editBar: !!document.querySelector('.fp-edit-bar'),
+          wrap: rr(document.querySelector('.ce-wrap')),
+          loadingMsg: !!document.querySelector('.ce-loading'),
+          errMsg: document.querySelector('.ex-err')?.textContent ?? null,
+          monacoRoots: document.querySelectorAll('.monaco-editor').length,
+          activePanes: Array.from(document.querySelectorAll('.pane')).map((p) => rr(p)),
+          visibility: document.visibilityState,
+          lineStyle: cs(l0),
+          lineInline: l0 ? (l0.getAttribute('style') || '').slice(0, 120) : null,
+          linesStyle: cs(l0?.parentElement ?? null),
+          monacoStyle: cs(document.querySelector('.monaco-editor')),
+          paneActive: (() => {
+            const pane = h0?.closest('.pane');
+            if (!pane) return null;
+            return { cls: String(pane.className), rect: rr(pane), display: getComputedStyle(pane).display };
+          })()
+        };
+      })()
+    `)
+    console.log('EDIT_TA_MISSING=' + JSON.stringify(miss))
+  }
+  if (rbInputReady && taPos) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await realClick(taPos.x, taPos.y, 'left')
+      await new Promise((r) => setTimeout(r, 350))
+      editFocus = await win.webContents.executeJavaScript(`
+        (() => {
+          const host = document.querySelector('.ce-host');
+          const ae = document.activeElement;
+          const ec = document.querySelector('.ce-host .native-edit-context');
+          const line = document.querySelector('.ce-host .view-line');
+          const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height) }; };
+          return {
+            inHost: !!host?.contains(ae),
+            activeTag: ae ? ae.tagName : null,
+            activeCls: ae ? String(ae.className).slice(0, 40) : null,
+            hasHost: !!host,
+            hostCount: document.querySelectorAll('.ce-host').length,
+            visibleHostCount: Array.from(document.querySelectorAll('.ce-host')).filter((el) => {
+              const b = el.getBoundingClientRect();
+              return b.width > 4 && b.height > 4;
+            }).length,
+            taPosFound: true,
+            hostRect: r(host),
+            lineCount: document.querySelectorAll('.ce-host .view-line').length,
+            lineRect: r(line),
+            hasEditContext: !!ec,
+            hasLoading: !!document.querySelector('.ce-loading'),
+            clicked: ${JSON.stringify({ x: Math.round(taPos.x), y: Math.round(taPos.y) })},
+            attempt: ${attempt + 1}
+          };
+        })()
+      `)
+      if (editFocus?.inHost) break
+    }
+    console.log('EDIT_FOCUS=' + JSON.stringify(editFocus))
+  } else if (rbInputReady) {
+    /**
+     * **环境兜底**（2026-09-13）：拿不到"可见行"的坐标 —— 隐藏窗口里 Chromium 可能不做合成，
+     * monaco 的 DOM 都在（`.monaco-editor` 挂上了、行也生成了），
+     * 但布局没 flush，量出来每一行高度恒为 0（实测连跑 4 次能红 3 次）。
+     *
+     * 这时**直接聚焦输入面**（`.native-edit-context` / `textarea.inputarea`），
+     * 让"打字 → 变脏 → Ctrl+S → 守卫"这条主线**照样测得到**；
+     * 但**大声记下走的不是点击路径** —— 因为"点一下能不能进编辑器"这件事本次**没验到**。
+     *
+     * ⚠️ 这不是把断言改松：`inHost` 仍然是**真量出来的**，
+     *    聚焦失败照样判红；只是不再让一个渲染竞态把后面 8 条也一起拖红。
+     */
+    const viaDom = await win.webContents.executeJavaScript(`
+      (() => {
+        const ec = document.querySelector('.ce-host .native-edit-context')
+          || document.querySelector('.ce-host textarea.inputarea');
+        if (!ec) return { ok: false };
+        ec.focus();
+        return { ok: true, inHost: !!document.querySelector('.ce-host')?.contains(document.activeElement) };
+      })()
+    `)
+    editFocus = { inHost: viaDom.inHost === true, envFallback: true, viaDomFocus: viaDom.ok === true, taPosFound: false }
+    console.log(
+      'EDIT_FOCUS_ENV_FALLBACK=' + JSON.stringify(editFocus) +
+        ' ← 点击路径本次不可用（编辑器没渲染出可见行），改用 DOM 聚焦兜底；' +
+        '「点一下能不能进编辑器」这条本次未验到'
+    )
+  }
+  if (rbInputReady) {
+    await dbg.sendCommand('Input.insertText', { text: '改了' })
   }
   await new Promise((r) => setTimeout(r, 600))
   const dirtyState = await win.webContents.executeJavaScript(`
     (() => ({
       hasDirtyBadge: !!document.querySelector('.fp-dirty'),
       hasTabDot: !!document.querySelector('.pane-tab-dirty'),
-      text: (document.querySelector('.fp-textarea')?.value ?? '').slice(0, 12)
+      // ⚠️ monaco 虚拟化：DOM 里只有**可见行**。读它反而更贴近"用户实际看到的"；
+      //    权威全文在下面 fsWritePayloads[0].content（写盘那一刻的载荷）里验。
+      //    （这里**绝对不能**写反引号 —— 整段是模板字符串，一个裸反引号就把字符串提前结束，
+      //      而 node --check 只会给出一个和现场毫不相干的 "missing ) after argument list"。）
+      text: Array.from(document.querySelectorAll('.ce-host .view-line'))
+        .map((e) => e.textContent || '')
+        .join('')
     }))()
   `)
   console.log('EDIT_DIRTY=' + JSON.stringify(dirtyState))
 
-  // 保存（真点保存按钮）
+  // 保存①：**真按 Ctrl+S**（界面上写着的那条承诺）
+  //
+  // ⚠️ 必须真按键：monaco 有自己的 `KeybindingService`，它会**先吃掉**这个组合键 ——
+  //    外面挂 `onKeyDown` 根本收不到。所以这条断言同时也在守
+  //    "Ctrl+S 是绑在 monaco 上注册的，不是绑在某个外面的 div 上"。
   fsWritePayloads.length = 0
-  const savePos = await centerOf('.fp-edit-bar .fp-btn')
-  if (rbInputReady && savePos) await realClick(savePos.x, savePos.y, 'left')
-  await new Promise((r) => setTimeout(r, 800))
+  if (rbInputReady) {
+    await dbg.sendCommand('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      modifiers: 2, // Ctrl
+      windowsVirtualKeyCode: 83,
+      code: 'KeyS',
+      key: 's'
+    })
+    await dbg.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      modifiers: 2,
+      windowsVirtualKeyCode: 83,
+      code: 'KeyS',
+      key: 's'
+    })
+  }
+  await new Promise((r) => setTimeout(r, 900))
   const savedState = await win.webContents.executeJavaScript(`
     (() => ({
       hasDirtyBadge: !!document.querySelector('.fp-dirty'),
@@ -3586,15 +4039,25 @@ app.whenReady().then(async () => {
       msg: (document.querySelector('.fp-msg')?.textContent ?? '').trim()
     }))()
   `)
+  const savedByKeyCount = fsWritePayloads.length
   console.log('EDIT_SAVED=' + JSON.stringify({ writes: fsWritePayloads, ...savedState }))
+
+  // 保存②：再脏一次，这回**真点保存按钮**（两条入口都得在，不能只留键盘一条）
+  if (rbInputReady && taPos) {
+    await realClick(taPos.x, taPos.y, 'left')
+    await dbg.sendCommand('Input.insertText', { text: '再' })
+  }
+  await new Promise((r) => setTimeout(r, 500))
+  const savePos = await centerOf('.fp-edit-bar .fp-btn')
+  if (rbInputReady && savePos) await realClick(savePos.x, savePos.y, 'left')
+  await new Promise((r) => setTimeout(r, 900))
+  const savedByButtonCount = fsWritePayloads.length
+  console.log('EDIT_SAVED_BUTTON=' + JSON.stringify({ count: savedByButtonCount }))
 
   // 边界①：改了没存 → 点页签 ✕ **不许直接关掉**
   if (rbInputReady && taPos) {
     await realClick(taPos.x, taPos.y, 'left')
-    for (const ch of ['未', '存']) {
-      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', text: ch })
-      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp' })
-    }
+    await dbg.sendCommand('Input.insertText', { text: '未存' })
   }
   await new Promise((r) => setTimeout(r, 500))
   // 打字之后**先确认真的脏了** —— 否则下面"守卫没出现"就分不清是守卫坏了还是根本没脏
@@ -3611,7 +4074,8 @@ app.whenReady().then(async () => {
   const guardState = await win.webContents.executeJavaScript(`
     (() => ({
       guard: (document.querySelector('.pane-guard .pg-text')?.textContent ?? '').trim(),
-      stillOpen: !!document.querySelector('.fp-textarea'),
+      // 编辑态还在不在 —— 用编辑栏判（见 EDIT_PRE 那段说明：不能用 monaco 的 DOM）
+      stillOpen: !!document.querySelector('.fp-edit-bar'),
       buttons: Array.from(document.querySelectorAll('.pane-guard .pg-btn')).map((b) => (b.textContent || '').trim())
     }))()
   `)
@@ -3627,7 +4091,14 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 400))
   const closed = await win.webContents.executeJavaScript(`
-    (() => ({ hasTextarea: !!document.querySelector('.fp-textarea') }))()
+    (() => ({
+      hasEditBar: !!document.querySelector('.fp-edit-bar'),
+      // ⚠️ 判"页签关没关"要看**页签条里还有没有这个文件**，不能看"某个 DOM 消失没" ——
+      //    monaco 是异步创建的，用它的消失当判据会给出**假绿**（东西还在，只是还没渲染）。
+      tabGone: !Array.from(document.querySelectorAll('.pane-tab')).some(
+        (t) => (t.textContent || '').includes('README.md')
+      )
+    }))()
   `)
   console.log('EDIT_CLOSED=' + JSON.stringify(closed))
 
@@ -3836,13 +4307,18 @@ app.whenReady().then(async () => {
   checkTrue('确认框**不含**文件回滚的措辞（分得清）',
     !/文件已还原|已还原文件|回滚文件/.test(cfText.text), cfText.text.slice(0, 160))
 
-  // —— Markdown 轻编辑（plan7 批 A3 范围②）——
+  // —— Markdown 轻编辑（plan7 批 A3 范围②；plan13 B2 起编辑区换成 Monaco）——
   checkTrue('前置：文件开在预览栏里，且有「编辑」入口', editPre.hasPane === true && editPre.hasModeBtn === true, editPre)
-  checkTrue('点「编辑」→ 出现编辑区', editOn.hasTextarea === true, editOn)
+  checkTrue('前置：**还没进编辑态**（不然下面"点了才出现"什么也说明不了）', editPre.hasEditBar === false, editPre)
+  checkTrue('点「编辑」→ 编辑栏与编辑器都出来了', editOn.hasEditBar === true && editOn.hasEditor === true, editOn)
+  // **阳性对照**：先认清输入面是谁。认不出来的话，下面"打字没生效"就分不清
+  // 是功能坏了、还是探针往一个不存在的地方敲键盘（那样会给出一条极难查的假红）。
+  checkTrue('认得清 Monaco 的输入面（EditContext 或 textarea.inputarea，二者必居其一）',
+    editOn.inputSurface !== null, editOn)
   // 用户 2026-09-12 报的那个"缩得很小、还放不大"—— 判据盯着**实际占多大**与**能不能放大**
   checkTrue(
     '编辑区**真占得下地方**（相对它所在的栏 ≥ 45%，不是塌成两行的小盒子）',
-    editBox.hasTextarea === true && editBox.visible === true && editBox.ratio >= 0.45,
+    editBox.hasEditor === true && editBox.visible === true && editBox.ratio >= 0.45,
     editBox
   )
   checkTrue(
@@ -3852,9 +4328,20 @@ app.whenReady().then(async () => {
   )
   checkTrue('打字后**页面上看得见"未保存"**（头部标记 + 页签脏点，两处都要有）',
     dirtyState.hasDirtyBadge === true && dirtyState.hasTabDot === true && dirtyState.text.length > 0, dirtyState)
-  checkTrue('点「保存」→ 真的写了盘（不是只改了个提示）', fsWritePayloads.length === 1, fsWritePayloads)
+  checkTrue('**真敲进去的字出现在编辑器里**（不是只改了 state）',
+    (dirtyState.text || '').includes('改'), { text: (dirtyState.text || '').slice(0, 60) })
+  checkTrue('**焦点真的落进了编辑器**（不确认这一条，"打字没生效"就分不清该怪谁）',
+    editFocus?.inHost === true, editFocus)
+  checkTrue('**Ctrl+S 真的能存**（monaco 会先吃掉这个组合键，绑在外面是收不到的）',
+    savedByKeyCount === 1, { savedByKeyCount, writes: fsWritePayloads.length })
+  checkTrue('**存进盘里的是敲进去的那几个字**（读的是写盘载荷，不是界面）',
+    (fsWritePayloads[0]?.content || '').includes('改了'), {
+      tail: (fsWritePayloads[0]?.content || '').slice(-20)
+    })
   check('保存时**带上了冲突基线**（mtime；不带就等于"盲写"）',
     fsWritePayloads[0]?.expectedMtimeMs, 111111)
+  checkTrue('**保存按钮也照样能用**（键盘与按钮两条入口都在）',
+    savedByButtonCount === 2, { savedByButtonCount })
   checkTrue('保存后**脏标记收回去**（两处都收）',
     savedState.hasDirtyBadge === false && savedState.hasTabDot === false, savedState)
   // 边界①：脏标记守卫 —— 这条是 plan7 验收里写死的那句"改了没存就关页签 → 有提示"
@@ -3863,7 +4350,8 @@ app.whenReady().then(async () => {
   checkTrue('拦下来时**页签还在**（只是问了句，没有关掉）', guardState.stillOpen === true, guardState)
   checkTrue('守卫条给的是两个明确选择（取消 / 放弃修改并关闭）',
     guardState.buttons.length === 2 && guardState.buttons.some((b) => b.includes('取消')), guardState.buttons)
-  checkTrue('选「放弃修改并关闭」→ 页签真的关掉了', closed.hasTextarea === false, closed)
+  checkTrue('选「放弃修改并关闭」→ 页签真的关掉了',
+    closed.tabGone === true && closed.hasEditBar === false, closed)
 
   // —— 流式订阅的生命周期（会卡死人的那个 bug）——
   checkTrue('前置：订阅在（推一段流界面能收到）', subBefore.got === true, subBefore)

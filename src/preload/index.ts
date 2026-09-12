@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
+import type { RevertHunkInput } from '@shared/checkpoint'
 import type { ModelSaveInput } from '@shared/models'
 import type { GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
@@ -106,6 +107,8 @@ const api: ApiBridge = {
   getCheckpoint: (runId: string) => ipcRenderer.invoke(IPC.checkpointGet, runId),
   getCheckpointSides: (runId: string, rel: string) =>
     ipcRenderer.invoke(IPC.checkpointSides, { runId, rel }),
+  revertCheckpointHunk: (input: RevertHunkInput) =>
+    ipcRenderer.invoke(IPC.checkpointRevertHunk, input),
   rollbackCheckpoint: (runId: string, rel?: string) =>
     ipcRenderer.invoke(IPC.checkpointRollback, rel === undefined ? { runId } : { runId, rel }),
   onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (e) => cb(e as StreamEnvelope<string>)),

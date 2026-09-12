@@ -267,17 +267,19 @@ export default function FilePreviewPane({
                   saveMsg && <span className="fp-msg">{saveMsg}</span>
                 )}
               </div>
-              <textarea
-                className="fp-textarea"
-                spellCheck={false}
+              {/* 编辑区 —— **Monaco**（plan13 B2）。
+                  ⚠️ 三条边界一条都没搬走，它们**从来就不在这个框里**：
+                     ① 脏标记：还是 `value={draft}` + `onChange={onEdit}`（回调里跟磁盘内容比）
+                     ② 冲突：还是 `save()` 里比 mtime，冲突时把选择权交回用户
+                     ③ 截断：`editing` 只在 `canEdit`（= 未截断）时为真，压根到不了这里
+                  换内核时最容易死的恰恰是这层**胶水**，不是编辑器本身。
+                  ⚠️ 草稿必须留在这个组件里（`draft` state），**不许**搬进 monaco 的 model ——
+                     页签一卸载 model 就没了，用户改的字会**静默消失**。 */}
+              <CodeEditor
                 value={draft}
-                onChange={(e) => onEdit(e.target.value)}
-                onKeyDown={(e) => {
-                  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-                    e.preventDefault()
-                    void save()
-                  }
-                }}
+                language={languageOf(rel)}
+                onChange={onEdit}
+                onSave={() => void save()}
               />
             </>
           ) : (

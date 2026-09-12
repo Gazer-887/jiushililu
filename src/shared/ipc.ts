@@ -146,6 +146,8 @@ import type {
   CheckpointRun,
   CheckpointRunMeta,
   CheckpointSidesResult,
+  RevertHunkInput,
+  RevertHunkResult,
   RollbackReport
 } from './checkpoint'
 export type {
@@ -155,6 +157,8 @@ export type {
   CheckpointSides,
   CheckpointSidesResult,
   FileChange,
+  RevertHunkInput,
+  RevertHunkResult,
   RollbackAction,
   RollbackReport
 } from './checkpoint'
@@ -322,6 +326,7 @@ export const IPC = {
   checkpointList: 'checkpoint:list',
   checkpointGet: 'checkpoint:get',
   checkpointSides: 'checkpoint:sides',
+  checkpointRevertHunk: 'checkpoint:revert-hunk',
   checkpointRollback: 'checkpoint:rollback',
   /** 一轮运行结束后推送（界面据此刷新"文件变更"页签） */
   checkpointChanged: 'checkpoint:changed',
@@ -626,6 +631,13 @@ export interface ApiBridge {
    * **纯读** —— 打开 Diff 视图不产生任何副作用。
    */
   getCheckpointSides(runId: string, rel: string): Promise<CheckpointSidesResult>
+  /**
+   * 把某一处改动**退回去**（还原成改之前的样子）。
+   *
+   * 写入走的是**统一写入服务** —— 所以这次退回自己也会留下检查点轮次，
+   * "退错了还能再退"。最终写盘的内容由主进程用**与界面同一个** diff 实现算出来。
+   */
+  revertCheckpointHunk(input: RevertHunkInput): Promise<RevertHunkResult>
   /** 回滚：不传 rel 即整轮回滚 */
   rollbackCheckpoint(runId: string, rel?: string): Promise<RollbackReport>
   /** 一轮运行结束后触发（界面刷新用） */

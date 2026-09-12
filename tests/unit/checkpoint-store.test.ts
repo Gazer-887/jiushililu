@@ -347,6 +347,149 @@ describe('健壮性：坏数据不致命', () => {
   })
 })
 
+// ── 回滚前的自动备份（plan13 批 B）：「退错了还能再退」──────────────
+//
+// 这条补的是一个真实的丢数据路径：回滚是"把现在的内容换成别的"，
+// 而 Agent 那一版内容**只存在于磁盘上** —— 回滚一覆盖就永远没了。
+// 所以回滚前先把当前内容另存一轮，让"回滚"本身也变成可逆动作。
+
+describe('回滚前的自动备份（退错了还能再退）', () => {
+  it('回滚 → 回到改前；**再回滚那份自动备份 → Agent 改后的内容回来了**', () => {
+    const { ws, store } = setup()
+    write(ws, 'a.txt', '原始')
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'a.txt', join(ws, 'a.txt'))
+    write(ws, 'a.txt', 'Agent 改后')
+    store.finish(runId)
+
+    // 用户点「回滚」——界面先自动备份"当前（Agent 改后）"的内容
+    const preRunId = store.snapshotCurrent(runId, 'a.txt', '界面：回滚前的自动备份', 'ui')
+    expect(preRunId).toBeTruthy()
+    if (!preRunId) return
+
+    store.rollback(runId, 'a.txt')
+    expect(read(ws, 'a.txt')).toBe('原始')
+
+    // 用户发现退错了 → 回滚那份自动备份
+    const r2 = store.rollback(preRunId)
+    expect(r2.failed).toEqual([])
+    expect(read(ws, 'a.txt')).toBe('Agent 改后')
+  })
+
+  it('本轮**新建**的文件同样保得住（回滚=删除 → 再回滚那份备份=文件回来）', () => {
+    const { ws, store } = setup()
+    const runId = store.begin(ws, '内核默认')
+    const abs = join(ws, 'new.txt')
+    store.record(runId, ws, 'new.txt', abs) // 此刻还不存在 → created
+    write(ws, 'new.txt', 'Agent 新建的内容')
+    store.finish(runId)
+
+    const preRunId = store.snapshotCurrent(runId, 'new.txt', '界面：回滚前的自动备份', 'ui')
+    expect(preRunId).toBeTruthy()
+    if (!preRunId) return
+
+    store.rollback(runId, 'new.txt')
+    expect(existsSync(abs)).toBe(false) // 回滚 created = 删掉
+
+    store.rollback(preRunId)
+    expect(existsSync(abs)).toBe(true)
+    expect(read(ws, 'new.txt')).toBe('Agent 新建的内容')
+  })
+
+  it('只备份指定文件（整轮回滚时才备份整轮）', () => {
+    const { ws, store } = setup()
+    write(ws, 'a.txt', 'A0')
+    write(ws, 'b.txt', 'B0')
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'a.txt', join(ws, 'a.txt'))
+    store.record(runId, ws, 'b.txt', join(ws, 'b.txt'))
+    write(ws, 'a.txt', 'A1')
+    write(ws, 'b.txt', 'B1')
+    store.finish(runId)
+
+    const preRunId = store.snapshotCurrent(runId, 'a.txt', '界面：回滚前的自动备份', 'ui')
+    expect(preRunId).toBeTruthy()
+    if (!preRunId) return
+    const pre = store.get(preRunId)
+    expect(pre?.changes.map((c) => c.rel)).toEqual(['a.txt'])
+  })
+
+  it('**没有可备份的东西就不产生空轮次**（否则面板会被"0 个文件"刷屏）', () => {
+    const { ws, store } = setup()
+    expect(store.snapshotCurrent('不存在的轮次', undefined, 'x', 'ui')).toBeNull()
+
+    const runId = store.begin(ws, '内核默认')
+    store.finish(runId) // 这一轮一个文件都没改
+    expect(store.snapshotCurrent(runId, undefined, 'x', 'ui')).toBeNull()
+  })
+
+  it('**一条都没备份成时也不许返回"备份轮次"**（审查指出：那会让"退错了还能再退"静默失效）', () => {
+    const { ws, store } = setup()
+    write(ws, 'a.txt', 'A')
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'a.txt', join(ws, 'a.txt'))
+    store.finish(runId)
+
+    // 把 manifest 改成只剩一条**越界**记录：targets 非空，但每一条都会被 isSafeRel 跳过
+    const mf = join(store.dir, runId, 'manifest.json')
+    const m = JSON.parse(readFileSync(mf, 'utf8')) as { changes: unknown[] }
+    m.changes = [{ rel: '../evil.txt', kind: 'modified', beforeBytes: 0, backup: '0.bin' }]
+    writeFileSync(mf, JSON.stringify(m), 'utf8')
+
+    // 一条都没备份成 → 必须如实返回 null（界面才不会显示"已备份"）
+    expect(store.snapshotCurrent(runId, undefined, '界面：回滚前的自动备份', 'ui')).toBeNull()
+  })
+})
+
+describe('回滚一个**还在跑**的轮次之后，它必须继续留快照（审查指出的静默失效）', () => {
+  it('回滚中途的轮次之后，同一轮后续写文件**仍然进检查点**', () => {
+    const { ws, store } = setup()
+    write(ws, 'a.txt', 'A0')
+    // ⚠️ 故意**不 finish** —— 这一轮还在跑
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'a.txt', join(ws, 'a.txt'))
+    write(ws, 'a.txt', 'A1')
+
+    // 用户此刻点了「整轮回滚」
+    store.rollback(runId)
+    expect(read(ws, 'a.txt')).toBe('A0')
+
+    // Agent 接着又写了一个**新**文件（这一轮还没结束）
+    write(ws, 'b.txt', 'B1')
+    store.record(runId, ws, 'b.txt', join(ws, 'b.txt'))
+
+    // 旧实现这里会静默失效：`rollback` 把这一轮从内存登记里摘掉了，
+    // 于是 `record` 第一句 `active.get(runId)` 拿不到 → 直接 return → 快照没了
+    const after = store.get(runId)
+    expect(after?.changes.map((c) => c.rel).sort()).toEqual(['a.txt', 'b.txt'])
+  })
+})
+
+describe('清理上限（prune）', () => {
+  it('超上限从最旧删起，但**正在跑的那一轮绝不删**', () => {
+    const { ws, store } = setup()
+    write(ws, 'r.txt', '保留')
+    // 最早的一轮，且**不收尾** → 它是"还在跑"的
+    const running = store.begin(ws, '内核默认')
+    store.record(running, ws, 'r.txt', join(ws, 'r.txt'))
+
+    const doneIds: string[] = []
+    for (let i = 0; i < 52; i++) {
+      write(ws, `f${i}.txt`, `内容 ${i}`)
+      const id = store.begin(ws, '内核默认')
+      store.record(id, ws, `f${i}.txt`, join(ws, `f${i}.txt`))
+      store.finish(id)
+      doneIds.push(id)
+    }
+
+    store.prune()
+    // 跑着的那一轮不许被清掉（它的 manifest 还得能读回来）
+    expect(store.get(running)).not.toBeNull()
+    // 最旧的那些 done 轮次应当被清掉
+    expect(store.get(doneIds[0]!)).toBeNull()
+  })
+})
+
 describe('回滚后再次回滚（幂等性）', () => {
   it('连点两次回滚不会把文件弄丢', () => {
     const { ws, store } = setup()

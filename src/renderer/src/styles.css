@@ -1852,32 +1852,21 @@ label.radio {
   padding: 0 var(--sp-4);
 }
 
-/* 编辑区（用户 2026-09-12 报：「切回编辑它那个窗口缩得很小，而且无法扩大」）。
+/* 编辑区的几何（plan13 B2 起编辑内核是 Monaco）。
+   ⚠️ 这段历史别删 —— 它是**一条用户报过的 bug** 的来龙去脉：
+   2026-09-12 用户报「切回编辑它那个窗口缩得很小，而且无法扩大」，
    根因是**高度链断在中间**：`.dock-body` 有确定高度（flex:1），但中间的 `.fp` 是
-   "高度=内容"的盒子 —— 于是 `flex: 1` 的 textarea **没有可分配的空间**，
-   塌成最小行数；`resize: none` 又把手动放大堵死 → 两条路都没了。
+   "高度=内容"的盒子 —— 于是 `flex: 1` 的编辑区**没有可分配的空间**，塌成最小行数；
+   `resize: none` 又把手动放大堵死 → 两条路都没了。
 
-   修法两条一起上：
+   修法两条一起上（**现在这两条都长在 `.ce-wrap.ce-fill` 上**，见本节下方）：
      ① 给它一个**自己就成立**的高度（视口比例，与 HTML 预览同一档）——
         不依赖祖先链有没有确定高度，`.fp` 将来变成 flex:1 也不会打架（`1 1 auto` 会继续长）
      ② 放开 `resize: vertical`：主人嫌小就自己拖，不用等我改代码
-   上下限都留着：窗口再小也留 240px 可写，再大也不至于把外面的信息全顶走。 */
-.fp-textarea {
-  flex: 1 1 auto;
-  width: 100%;
-  height: 60vh;
-  min-height: 240px;
-  max-height: calc(100vh - 160px);
-  resize: vertical;
-  padding: var(--sp-8);
-  border: 0;
-  outline: none;
-  background: var(--bg);
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: var(--fs-sm);
-  line-height: 1.6;
-}
+   上下限都留着：窗口再小也留 240px 可写，再大也不至于把外面的信息全顶走。
+
+   `.fp-textarea` 这条规则随 B2 一起删掉了（编辑区不再是 textarea）——
+   留一条没人用的规则，迟早会有人照着它去调一个看不见的东西。 */
 
 /* 关页签的守卫条（边界①）：有草稿时问一句，不静默丢 */
 .pane-guard {
@@ -2090,6 +2079,21 @@ label.radio {
   /* 兜底：父容器没给高度时也要能看见内容（见上面那条警告） */
   min-height: 12rem;
   display: flex;
+}
+
+/* 编辑态的几何 —— **这几行是从 `.fp-textarea` 原样搬过来的**（plan13 B2）。
+   它们不是"顺手加的样式"，而是一条产品承诺：用户 2026-09-12 报过
+   「编辑区缩得很小、还放不大」，当时的两条修法是
+   ① 给它一个自己就成立的高度（视口比例）② 放开 `resize: vertical`。
+   换编辑器内核时这两条都不能丢 —— 门禁里两条断言专门盯着它们。
+   `overflow: hidden` 是 `resize` 生效的前提（overflow 为 visible 时浏览器不认 resize），
+   同时也能防止 monaco 在拖拽过程中把内容溢出去。 */
+.ce-wrap.ce-fill {
+  height: 60vh;
+  min-height: 240px;
+  max-height: calc(100vh - 160px);
+  resize: vertical;
+  overflow: hidden;
 }
 
 .ce-host {
@@ -3311,6 +3315,14 @@ label.radio {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 一处改动的「退回」按钮组（确认态是两个按钮并排） */
+.df-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
 }
 
 .df-add-n {

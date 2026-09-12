@@ -80,20 +80,28 @@ export default function ChangesPanel(): JSX.Element {
     }
   }
 
-  /** 二次确认：回滚会删掉本轮新建的文件，不能一点就走 */
+  /**
+   * 二次确认：回滚会删掉本轮新建的文件，不能一点就走。
+   *
+   * `confirmLabel` 存在的理由（审查指出）：对**新建**的文件来说，"回滚"的真实含义是
+   * **把文件删掉**，而确认按钮上写着"确认回滚"——用户根本看不出这一步会删东西。
+   * 同一个动作，后果不一样，就该在按下去之前说清。
+   */
   const ConfirmButton = ({
     k,
     label,
+    confirmLabel = '确认回滚',
     onConfirm
   }: {
     k: string
     label: string
+    confirmLabel?: string
     onConfirm: () => void
   }): JSX.Element =>
     confirmKey === k ? (
       <span className="ck-confirm">
         <button className="ck-btn ck-btn-danger" disabled={busy} onClick={onConfirm}>
-          确认回滚
+          {confirmLabel}
         </button>
         <button className="ck-btn" disabled={busy} onClick={() => setConfirmKey(null)}>
           取消
@@ -113,7 +121,11 @@ export default function ChangesPanel(): JSX.Element {
           刷新
         </button>
       </div>
-      <p className="ck-hint">Agent 每轮改文件前会自动留存快照。改坏了可一键退回改动前的样子。</p>
+      <p className="ck-hint">
+        Agent 每轮改文件前会自动留存快照。改坏了可一键退回改动前的样子 ——
+        点「看差异」能先看清它到底改成了什么样，也可以只退回其中某几处。
+        回滚前会<strong>先把当前内容也存一份</strong>，所以退错了还能再退回来。
+      </p>
 
       {runs.length === 0 ? (
         <div className="ck-empty">还没有文件改动。Agent 写文件后，这里会列出它改过什么。</div>
@@ -182,6 +194,7 @@ export default function ChangesPanel(): JSX.Element {
                           <ConfirmButton
                             k={`${r.runId}:${c.rel}`}
                             label="回滚"
+                            {...(c.kind === 'created' ? { confirmLabel: '确认删除' } : {})}
                             onConfirm={() => void doRollback(r.runId, c.rel)}
                           />
                         </div>

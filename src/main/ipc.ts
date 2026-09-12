@@ -4,6 +4,10 @@ import { z } from 'zod'
 // 检查点纯逻辑（plan13 B3）：rel 的路径安全校验与"挑出指定文件"都用共享层这一份，
 // 界面与主进程不许各写一套 —— 两套判据迟早会分岔。
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
+// 逐处退回的三道闸（plan13 B4）：抽在 `revert-flow.ts` 里，**为的是可单测** ——
+// 这段逻辑守的是"往用户文件里写东西"，而它原来长在 import 了 electron 的 handler 里，
+// CI 跑不了 → 曾经一条测试都没有。
+import { revertOneHunk, samePath } from './revert-flow'
 import {
   IPC,
   type Attachment,
@@ -22,6 +26,7 @@ import {
   type CheckpointRun,
   type CheckpointRunMeta,
   type CheckpointSidesResult,
+  type RevertHunkResult,
   type RollbackReport,
   type UIPrefs,
   type FsListResult,
@@ -942,6 +947,14 @@ export function registerIpcHandlers(deps: {
       const change = selectChanges(run.changes, rel)[0]
       if (!change) return { ok: false, reason: 'not-recorded' }
 
+      // ⚠️ **工作区一致性**（审查指出）：检查点目录是全局的，列表里会有别的工作区的轮次；
+      //    rel 是相对路径 —— 拿当前工作区去拼就会比到**同名的另一个文件**。
+      //    拦在这里，比"显示一份对不上的差异"诚实得多。
+      const workspaceRoot = deps.agent.getWorkspaceRoot()
+      if (!samePath(run.workspace, workspaceRoot)) {
+        return { ok: false, reason: 'other-workspace' }
+      }
+
       const snap = deps.agent.checkpoints.readBackup(runId, rel)
       // `created` 是**合法地**没有快照侧（当轮之前文件不存在），其余失败才是真看不了
       if (!snap.ok && snap.reason !== 'created') {
@@ -952,6 +965,8 @@ export function registerIpcHandlers(deps: {
       const after = cur.ok ? cur.content : null
       const beforeTruncated = snap.ok ? snap.truncated : false
       const afterTruncated = cur.ok && cur.truncated === true
+      // 有损解码（GBK / 二进制）：界面对这类文件必须说"逐处退回会损坏它"
+      const lossy = (snap.ok && snap.lossy) || (cur.ok && cur.lossy === true)
 
       return {
         ok: true,
@@ -963,6 +978,7 @@ export function registerIpcHandlers(deps: {
         beforeBytes: change.beforeBytes,
         afterBytes: cur.ok ? cur.size : 0,
         truncated: beforeTruncated || afterTruncated,
+        lossy,
         ...(cur.ok && cur.mtimeMs !== undefined ? { mtimeMs: cur.mtimeMs } : {}),
         runStatus: run.status
       }
@@ -975,10 +991,21 @@ export function registerIpcHandlers(deps: {
       const input = z
         .object({ runId: z.string().min(1).max(64), rel: z.string().min(1).max(1024).optional() })
         .parse(raw)
+      // ⚠️ **回滚也要能"再回滚一次"**（plan13 审查第 1 轮指出的丢数据路径）：
+      //    回滚是"把现在的内容换成别的"，它自己不留快照的话，用户退错了就**永远回不去** ——
+      //    Agent 那一版内容只存在于磁盘上，一覆盖就没了。
+      //    所以先把"即将被覆盖的当前内容"存成一轮检查点，再动手。
+      const preRunId = deps.agent.checkpoints.snapshotCurrent(
+        input.runId,
+        input.rel,
+        '界面：回滚前的自动备份',
+        UI_RUN_OWNER
+      )
       const report = deps.agent.checkpoints.rollback(input.runId, input.rel)
       log.info('执行回滚', {
         runId: input.runId,
         target: input.rel ?? '（整轮）',
+        preRunId: preRunId ?? '（无可备份内容）',
         restored: report.restored.length,
         deleted: report.deleted.length,
         failed: report.failed.length,
@@ -1080,6 +1107,28 @@ export function registerIpcHandlers(deps: {
       return { ok: false, message: err instanceof Error ? err.message : String(err) }
     } finally {
       deps.agent.checkpoints.finish(runId)
+      // ⚠️ **广播一次"检查点变了"** —— 面板据此刷新。
+      //
+      // 为什么非要在**这里**发（审查指出的一处缺口）：界面自己发起的写操作
+      // （新建 / 改名 / 删除 / 导入 / **逐处退回**）同样会产生轮次，而这条路径原先不发任何事件，
+      // 于是面板要用户手动点「刷新」才看得见新轮次。
+      // 而「逐处退回」那条刚在界面上承诺了"退错了还能再退回来" ——
+      // 承诺了一条**找不到的轮次**，就变成了骗人的话。
+      //
+      // 用广播而不是"发给发起操作的那个窗口"：检查点列表是**全局**的（所有窗口同一个目录），
+      // 谁改了它，所有窗口都该刷新。
+      //
+      // ⚠️ **必须走 `createChatEmitter`**，不许写裸 `webContents.send(IPC.checkpointChanged, …)`：
+      //    本项目有一条结构性守卫单测（plan11 §2.5）——"ipc.ts 里一个裸 `.send(` 都不许有、
+      //    流式通道常量只许在 chat-emitter.ts 里出现"。它存在的理由是：绕开唯一发送口
+      //    就会漏带会话身份，而漏带的后果是**界面串台**（A 会话的字跑进 B）。
+      //    这次我图省事直接 send，被那两条守卫当场抓住 —— 守卫按设计工作了。
+      //    界面发起的文件操作不属于任何一条会话 → 会话身份用哨兵值（与 `UI_RUN_OWNER` 同理）。
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          createChatEmitter(win.webContents, UI_RUN_OWNER).checkpoint(runId)
+        }
+      }
     }
   }
 
@@ -1154,6 +1203,76 @@ export function registerIpcHandlers(deps: {
     if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
     return runFsOp('界面 · 导入文件', (w) => w.copyIn(p.data.sourceAbs, p.data.rel))
   })
+
+  /**
+   * 逐处退回（plan13 批 B · B4）——「把 Agent 改的这一处还原成改之前」。
+   *
+   * 为什么这个 handler 写在**文件操作这一片**而不是检查点那一片：
+   * 它必须复用 `runFsOp`（统一写入服务 + 自动开检查点轮次），而 `runFsOp` 是上面才声明的。
+   *
+   * 三道闸，缺一不可：
+   *   ① **算差异的输入必须与界面看到的同一份** → 比 mtime；对不上就拒绝。
+   *      这不是洁癖：块序号只在"两侧内容和算差异时一致"的前提下才有效，
+   *      对不上就是"点了第 2 处、改掉第 N 处"——**不报错、只改错内容**。
+   *   ② **写盘必须走统一写入服务** → 于是这次退回**自己也有检查点**，"退错了还能再退"。
+   *   ③ **不安全的情形一律退化成"请用整份退回"** → `created` 没有改前内容可还原；
+   *      截断（>256KB）拿半个文件写盘就是把大文件砍坏。
+   */
+  ipcMain.handle(
+    IPC.checkpointRevertHunk,
+    async (_e, raw: unknown): Promise<RevertHunkResult> => {
+      const parsed = z
+        .object({
+          runId: z.string().min(1).max(64),
+          rel: z.string().min(1).max(1024),
+          hunkIndex: z.number().int().min(1).max(100000),
+          expectedMtimeMs: z.number()
+        })
+        .safeParse(raw)
+      if (!parsed.success) return { ok: false, reason: 'bad-input' }
+
+      // ⚠️ 三道闸（工作区一致 / mtime 安全阀 / created+截断挡住）**不写在这里** ——
+      //    它们搬去了 `revert-flow.ts`。原因很实在：handler 这一层 import 了 electron，
+      //    CI 上没有 Electron 二进制就**跑不了** → 那段逻辑曾经一条测试都没有
+      //    （审查原话："把 mtime 阀删掉，所有测试仍然全绿"，而它是唯一防
+      //     "点了第 2 处、改掉第 N 处"的东西）。
+      //    现在这里只做三件事：校验入参 → 注入依赖 → 记日志。
+      const workspaceRoot = deps.agent.getWorkspaceRoot()
+      const result = await revertOneHunk(
+        {
+          store: deps.agent.checkpoints,
+          workspaceRoot,
+          readCurrent: async (rel) => {
+            const cur = await readWorkspaceFile(workspaceRoot, rel)
+            if (!cur.ok) return null
+            return {
+              content: cur.content,
+              ...(cur.mtimeMs !== undefined ? { mtimeMs: cur.mtimeMs } : {}),
+              ...(cur.truncated === true ? { truncated: true } : {}),
+              ...(cur.lossy === true ? { lossy: true } : {})
+            }
+          },
+          // 走统一写入服务（`runFsOp` 里开检查点轮次 → 这次退回自己也留痕、也退得回）
+          writeThrough: async (rel, content) => {
+            const report = await runFsOp(
+              `界面：退回 ${rel} 第 ${parsed.data.hunkIndex} 处`,
+              (w) => w.write(rel, content)
+            )
+            if (!report.ok) throw new Error(report.message)
+            return report.message
+          }
+        },
+        parsed.data
+      )
+
+      if (result.ok) {
+        log.info('逐处退回完成', { runId: result.rel, hunkIndex: result.hunkIndex })
+      } else {
+        log.info('逐处退回被拒绝', { rel: parsed.data.rel, reason: result.reason })
+      }
+      return result
+    }
+  )
 
   ipcMain.handle(IPC.fsReveal, (_e, raw: unknown): Promise<void> => {
     const p = fsRelInput.safeParse(raw)

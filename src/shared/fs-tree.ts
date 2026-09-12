@@ -45,6 +45,15 @@ export interface FsReadResult {
    * 缺了它，编辑就只能在"盲写"和"永远冲突"之间二选一。
    */
   mtimeMs?: number
+  /**
+   * **这份内容不是无损读出来的** —— 原文不是合法 UTF-8（GBK 文本 / 二进制）。
+   *
+   * 为什么要有这个标志（plan13 批 B，独立审查实测）：`content` 是 `buf.toString('utf8')` 的
+   * 结果，坏字节会被换成 U+FFFD，而**再编码回去不等于原字节** ——
+   * 所以"读进来再整份写回去"这个动作对这类文件是**不可逆损坏**。
+   * 逐处退回（会把整份文本按 UTF-8 重写）必须靠它挡住。
+   */
+  lossy?: boolean
   error?: string
 }
 

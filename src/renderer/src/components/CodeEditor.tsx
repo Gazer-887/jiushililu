@@ -128,6 +128,14 @@ interface Props {
   language?: string
   readOnly?: boolean
   onChange?: (next: string) => void
+  /**
+   * Ctrl/Cmd+S（plan13 B2）。
+   *
+   * ⚠️ 为什么不让父组件自己在外面接 `onKeyDown`：monaco 有自己的 `KeybindingService`，
+   * 它会**先把**这个组合键吃掉 —— 外面那个监听器根本收不到。
+   * 所以必须用它自己的 `addCommand` 注册（这也是唯一 100% 生效的接法）。
+   */
+  onSave?: () => void
 }
 
 /**
@@ -138,7 +146,8 @@ export default function CodeEditor({
   value,
   language = 'plaintext',
   readOnly = false,
-  onChange
+  onChange,
+  onSave
 }: Props): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   /** 编辑器实例（保存下来才能在卸载时 dispose —— 不 dispose 会漏 Worker 与监听器） */
@@ -152,6 +161,11 @@ export default function CodeEditor({
   useEffect(() => {
     onChangeRef.current = onChange
   }, [onChange])
+  /** 同上：`onSave` 也得走 ref，否则注册进 monaco 的那一个是首渲染的那个 */
+  const onSaveRef = useRef(onSave)
+  useEffect(() => {
+    onSaveRef.current = onSave
+  }, [onSave])
   /**
    * **程序化灌内容期间为 true** —— 这是边界②的命门。
    *
@@ -184,6 +198,20 @@ export default function CodeEditor({
           minimap: { enabled: false }, // 右抽屉本来就窄，缩略图只会挤掉正文
           scrollBeyondLastLine: false,
           fontSize: 12,
+          /**
+           * **显式给行高，别让它自己去量**（2026-09-13 实测出来的坑）。
+           *
+           * 不指定时 monaco 会"测量字体信息"来推算行高；而**测量没完成时它给出的行高是 0** ——
+           * 症状极其隐蔽：`.view-line` 数量正常（28 行都在）、容器高度正常（442）、
+           * `.monaco-editor` 也挂上了，**就是每一行的 rect 高度是 0**。
+           * 隐藏/离屏窗口里这个状态可能一直不结束 —— 实测门禁连跑 4 次红 3 次，
+           * 而红的是后面 9 条（打字没生效 → 文件不脏 → Ctrl+S 没反应 → 守卫不出现），
+           * 长得跟真回归一模一样。为此我先后试过"等久一点 / 关后台节流 / 戳窗口尺寸"，**都没治住**。
+           *
+           * 显式指定行高一举三得：① 躲开这个竞态 ② 更贴近老 textarea 的 `line-height: 1.6`
+           * （12 × 1.6 ≈ 19，用户看到的行距不变）③ "一屏能看到几行"从此是确定的。
+           */
+          lineHeight: 19,
           renderWhitespace: 'selection',
           wordWrap: 'on' // 窄面板里不换行等于逼人左右拖
         })
@@ -196,6 +224,11 @@ export default function CodeEditor({
         editor.onDidChangeModelContent(() => {
           if (syncingRef.current) return // 我们灌进去的，不是用户敲的（见 syncingRef 说明）
           onChangeRef.current?.(editor.getValue())
+        })
+
+        // Ctrl/Cmd+S 交给 monaco 自己绑（见 Props.onSave 的说明：外面接不到这个键）
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+          onSaveRef.current?.()
         })
 
         setState('ready')
@@ -259,7 +292,10 @@ export default function CodeEditor({
   }
 
   return (
-    <div className="ce-wrap">
+    // 编辑态加 `ce-fill`：那一套「有确定高度 + 能手动拖大」的承诺原先长在 textarea 上
+    // （用户 2026-09-12 报过"缩得很小还放不大"），换内核时必须**原样搬过来**，
+    // 否则就是悄悄把一个用户报过的 bug 又放了回去。
+    <div className={readOnly ? 'ce-wrap' : 'ce-wrap ce-fill'}>
       <div ref={hostRef} className="ce-host" />
       {state === 'loading' && <div className="ce-loading">编辑器加载中…</div>}
     </div>

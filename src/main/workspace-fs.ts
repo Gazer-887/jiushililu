@@ -104,14 +104,22 @@ export async function readWorkspaceFile(workspaceRoot: string, rel: string): Pro
     const buf = await readFile(abs)
     const truncated = buf.byteLength > MAX_PREVIEW_BYTES
     const slice = truncated ? buf.subarray(0, MAX_PREVIEW_BYTES) : buf
+    const content = slice.toString('utf8')
     return {
       ok: true,
       rel,
-      content: slice.toString('utf8'),
+      content,
       size: st.size,
       // 冲突基线：编辑保存时带回来比对（见 FsReadResult.mtimeMs 的注释）
       mtimeMs: st.mtimeMs,
-      ...(truncated ? { truncated: true } : {})
+      ...(truncated ? { truncated: true } : {}),
+      // 有损解码判据（plan13 批 B · 独立审查实测）：
+      // **原文不是合法 UTF-8**（GBK / 二进制）时，`toString('utf8')` 会把坏字节换成 U+FFFD，
+      // 而这些字符**再编码回去不等于原字节** —— 也就是说"读进来再写回去"必然损坏它。
+      // 判据就在这条恒等式上：valid UTF-8 ⇔ `Buffer.from(text,'utf8')` 等于原字节。
+      // ⚠️ 用**整个** buf 判（不是 slice）：截断可能切在多字节字符中间，
+      //    拿切片去判会把"合法 UTF-8 的大文件"误判成有损。
+      lossy: !Buffer.from(buf.toString('utf8'), 'utf8').equals(buf)
     }
   } catch (err) {
     return { ok: false, rel, content: '', size: 0, error: humanError(err) }
