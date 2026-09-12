@@ -18,10 +18,15 @@ import type {
 //
 // 这也是 A 批分层的前置：先有能锁住行为的网（本文件的基线测试），再动存储结构。
 
-/** 存/取的**唯一**接缝：纯逻辑只认这两个动作 */
+/** 存/取的**唯一**接缝：meta 与正文**分开走**（这就是"分层"的形状） */
 export interface ConversationsBackend {
-  read(): Record<string, Conversation>
-  write(next: Record<string, Conversation>): void
+  /** 读全部 meta —— **不含正文**。列表与白名单只该付这个代价 */
+  readMeta(): Record<string, ConversationMeta>
+  putMeta(id: string, meta: ConversationMeta): void
+  removeMeta(id: string): void
+  readMessages(id: string): ChatMessage[]
+  writeMessages(id: string, messages: ChatMessage[]): void
+  removeMessages(id: string): void
 }
 
 export interface ConversationsRepo {
@@ -98,33 +103,26 @@ export function groupByWorkspace(list: ConversationMeta[]): ConversationGroup[] 
     .sort((a, b) => (b.items[0]?.updatedAt ?? 0) - (a.items[0]?.updatedAt ?? 0))
 }
 
-// ── 六个入口（plan10 步骤 0：行为基线锁的就是这几个）────────────────────
+// ── 六个入口（plan10 步骤 0 锁行为、A 批改成分层）────────────────────
 //
-// ⚠️ **每个入口只读一遍**。原实现里 `saveConversation` 调了两次 `all()`
-//    （`:61` 一次、`:72` 又一次），而 `conf` 的 `store.store` 每次访问都会
-//    `readFileSync + JSON.parse` 整个文件（`node_modules/conf/dist/source/index.js:276`）——
-//    也就是**每次保存读两遍全会话**。这里读一遍存进局部变量。
-//    基线测试里有一条专门钉这件事（数 backend 被读了几次）。
+// 三条与"读盘足迹"有关的约定：
+//   · **列表与白名单只读 meta**（不碰任何正文文件）—— 这是分层唯一要换来的东西
+//   · **每写一条会话只写它自己那份正文**，不再重写全部会话
+//   · **写序：先正文、后索引**。反过来的话，索引里会短暂出现
+//     "messageCount 说有 N 条、而正文还不存在"的状态，崩在中间就是"点进去空白"
 
 export function createConversationsRepo(backend: ConversationsBackend): ConversationsRepo {
-  // 单次操作内的读缓存：同一入口里多次取用只读一遍盘
-  function withAll<T>(fn: (all: Record<string, Conversation>) => T): T {
-    return fn(backend.read())
-  }
-
-  function toMeta(c: Conversation): ConversationMeta {
-    const { messages, ...meta } = c
-    return { ...meta, messageCount: messages.length }
-  }
-
   return {
+    /** 列表：只读 meta。meta 里的 messageCount 在每次保存时同步写好 */
     listConversations() {
-      // 只回 meta：正文不出去（侧边栏只要列表，不该付正文的代价）
-      return withAll((all) => Object.values(all).map(toMeta))
+      return Object.values(backend.readMeta())
     },
 
+    /** 取一条：meta + 正文（两者分开取，缺正文当空处理） */
     getConversation(id) {
-      return withAll((all) => all[id] ?? null)
+      const meta = backend.readMeta()[id]
+      if (!meta) return null
+      return { ...meta, messages: backend.readMessages(id) }
     },
 
     createConversation(input) {
@@ -132,7 +130,7 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       const messages: ChatMessage[] = input.firstMessage?.trim()
         ? [{ role: 'user', content: input.firstMessage.trim() }]
         : []
-      const conversation: Conversation = {
+      const meta: ConversationMeta = {
         id: randomUUID(),
         title: deriveTitle(input.firstMessage),
         workspace: input.workspace,
@@ -140,58 +138,53 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
         skills: input.skills,
         createdAt: now,
         updatedAt: now,
-        messageCount: messages.length,
-        messages
+        messageCount: messages.length
       }
-      withAll((all) => backend.write({ ...all, [conversation.id]: conversation }))
-      return conversation
+      if (messages.length > 0) backend.writeMessages(meta.id, messages)
+      backend.putMeta(meta.id, meta)
+      return { ...meta, messages }
     },
 
     /**
      * 保存消息体。标题为默认值时，用首条用户消息自动补一个（用户没手动改过才覆盖）。
      */
     saveConversation(id, messages) {
-      return withAll((all) => {
-        const current = all[id]
-        if (!current) return null
-        const firstUser = messages.find((m) => m.role === 'user')?.content
-        const shouldRetitle = current.title === '新对话' && Boolean(firstUser)
-        const next: Conversation = {
-          ...current,
-          messages,
-          messageCount: messages.length,
-          updatedAt: Date.now(),
-          title: shouldRetitle ? deriveTitle(firstUser) : current.title
-        }
-        backend.write({ ...all, [id]: next })
-        return toMeta(next)
-      })
+      const current = backend.readMeta()[id]
+      if (!current) return null
+      const firstUser = messages.find((m) => m.role === 'user')?.content
+      const shouldRetitle = current.title === '新对话' && Boolean(firstUser)
+      const next: ConversationMeta = {
+        ...current,
+        messageCount: messages.length,
+        updatedAt: Date.now(),
+        title: shouldRetitle ? deriveTitle(firstUser) : current.title
+      }
+      // **先正文、后索引**（见上方约定）：索引跟着正文走，不会出现"索引说有、正文没有"
+      backend.writeMessages(id, messages)
+      backend.putMeta(id, next)
+      return next
     },
 
     renameConversation(id, title) {
-      return withAll((all) => {
-        const current = all[id]
-        if (!current) return null
-        const clean = title.trim().slice(0, 60)
-        // 空标题视为"没改"：原样回 meta，**不落盘**（省一次无意义写）
-        if (clean.length === 0) return toMeta(current)
-        const next: Conversation = { ...current, title: clean, updatedAt: Date.now() }
-        backend.write({ ...all, [id]: next })
-        return toMeta(next)
-      })
+      const current = backend.readMeta()[id]
+      if (!current) return null
+      const clean = title.trim().slice(0, 60)
+      // 空标题视为"没改"：原样回 meta，**不落盘**（省一次无意义写）
+      if (clean.length === 0) return current
+      const next: ConversationMeta = { ...current, title: clean, updatedAt: Date.now() }
+      backend.putMeta(id, next)
+      return next
     },
 
     deleteConversation(id) {
-      withAll((all) => {
-        if (!(id in all)) return
-        const rest = { ...all }
-        delete rest[id]
-        backend.write(rest)
-      })
+      const all = backend.readMeta()
+      if (!(id in all)) return
+      backend.removeMeta(id)
+      backend.removeMessages(id)
     },
 
     knownWorkspaces() {
-      return withAll((all) => [...new Set(Object.values(all).map((c) => c.workspace))])
+      return [...new Set(Object.values(backend.readMeta()).map((m) => m.workspace))]
     }
   }
 }

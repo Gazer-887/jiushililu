@@ -1,41 +1,94 @@
-import Store from 'electron-store'
-import type { Conversation } from '@shared/ipc'
+import { app } from 'electron'
+import type { ConversationsRepo } from './conversations-core'
 import { createConversationsRepo } from './conversations-core'
+import {
+  createFsConversationsBackend,
+  migrateConversationsFormat,
+  nodeFsAdapter
+} from './conversations-fs'
+import { createLogger } from '../log'
 
 // 会话持久化（P2 侧边栏）：一个「任务」= 一条会话，绑定一个工作区。
 //
-// **本文件只剩装配**：把 electron-store 接到"读一份 / 写一份"的接缝上。
-// 六个入口的**行为全在 `conversations-core.ts`**（那边不 import electron，可单测）——
-// 这是 `tests/unit/architecture.test.ts` 那条架构守卫要求的形状：
-// 单测链路里不得出现 `electron` / `electron-store`（CI 是 Linux，没有 Electron 二进制）。
+// **本文件只剩装配**：解析数据目录 → 跑一次格式迁移 → 把磁盘后端接到逻辑层。
+// 六个入口的**行为全在 `conversations-core.ts`**（那边不依赖 electron / fs，可单测）；
+// 分层布局与原子写在 `conversations-fs.ts`（fs 可注入，所以"读盘足迹"也能单测）。
 //
-// 于是要测"新建会不会自动补标题""保存到不存在的 id 返回什么""重命名空标题落不落盘"，
-// 都去 `tests/unit/conversations-store.test.ts` 用假 backend 测，**不需要起 Electron**。
+// ## 为什么这里不再用 electron-store
+//
+// 旧版用 `new Store({ name: 'conversations' })` 存"整表 + 正文内嵌"。换掉它有两条理由：
+//   1. **要分层**：正文必须搬出整表，而 electron-store 只支持"整个对象一把写"
+//   2. **要可测**：`electron-store` 在**构造函数里**就锁死 `app.getPath('userData')`，
+//      于是它只能出现在装配层、永远进不了单测链路（架构守卫也禁止）。自己写 fs 之后，
+//      "列表到底读了几个文件、读了多少字节"变成**可断言**的事 —— 而这正是 A 批的验收口径。
+// 它原先顺带帮我们兜住的**原子写**没有丢：`conversations-fs.ts` 里显式实现（临时文件 + rename）
+// 并有测试钉着。⚠️ 这一点必须显式守住 —— 见该文件顶部第 1 条约束。
+//
+// ## 数据目录**惰性解析**
+//
+// 不在这里写 `const dir = app.getPath('userData')`：那会在**模块求值期**执行，
+// 而模块求值早于 `app.whenReady()`。惰性解析 = 第一次真正用到时才取路径，
+// 顺带从根上躲开 plan10 §2.4 P0-6 那个"'setPath' 晚于 store 构造、迁移成功却读写旧目录"的时序坑。
 
-interface ConversationStore {
-  conversations?: Record<string, Conversation>
+const log = createLogger('conversations')
+
+let cached: ConversationsRepo | null = null
+
+function dataRoot(): string {
+  return app.getPath('userData')
 }
 
-const store = new Store<ConversationStore>({ name: 'conversations' })
+function repo(): ConversationsRepo {
+  if (cached) return cached
+  const root = dataRoot()
 
-const repo = createConversationsRepo({
-  read: () => store.store.conversations ?? {},
-  // 写走 electron-store 的整表 set：它底下是**原子写**（临时文件 + rename），
-  // 所以读者永远看不到"半截文件"。⚠️ plan10 分层时要保住这个性质：
-  // checkpoints 那边的裸 writeFileSync 是另一种赌注（坏一个 manifest 只等于少一条记录），
-  // 而会话正文是用户唯一的原始数据，不能照抄。
-  //
-  // 另：`all()` 的旧写法每次访问都重读+解析整个文件，`saveConversation` 里还被调了两次。
-  // 现在读只发生在 `backend.read()`（一次），写只在这里。
-  write: (next) => store.set('conversations', next)
-})
+  // 每次启动都跑一遍迁移检查（幂等：已是新格式就立刻返回，代价是一次 existsSync + 一次 JSON.parse）
+  const migration = migrateConversationsFormat(root, nodeFsAdapter, 'v1', (message, extra) =>
+    log.warn(message, extra)
+  )
+  if (migration.migrated) {
+    log.info('会话存储已分层（正文搬出整表）', {
+      moved: migration.moved,
+      backup: migration.backupPath
+    })
+  } else if (migration.reason && migration.reason !== '已是新格式' && migration.reason !== '没有会话文件') {
+    // 失败**不阻断启动**：老文件原样留着，后端会以降级模式读它
+    log.error('会话格式迁移未完成', { reason: migration.reason })
+  }
 
-export const {
-  listConversations,
-  getConversation,
-  createConversation,
-  saveConversation,
-  renameConversation,
-  deleteConversation,
-  knownWorkspaces
-} = repo
+  cached = createConversationsRepo(
+    createFsConversationsBackend(root, nodeFsAdapter, {
+      onWarn: (message, extra) => log.warn(message, extra)
+    })
+  )
+  return cached
+}
+
+export function listConversations() {
+  return repo().listConversations()
+}
+
+export function getConversation(id: string) {
+  return repo().getConversation(id)
+}
+
+export function createConversation(input: Parameters<ConversationsRepo['createConversation']>[0]) {
+  return repo().createConversation(input)
+}
+
+export function saveConversation(id: string, messages: Parameters<ConversationsRepo['saveConversation']>[1]) {
+  return repo().saveConversation(id, messages)
+}
+
+export function renameConversation(id: string, title: string) {
+  return repo().renameConversation(id, title)
+}
+
+export function deleteConversation(id: string) {
+  return repo().deleteConversation(id)
+}
+
+/** 历史会话用过的工作区路径集合——用于收紧 workspace:set-known 的权限面 */
+export function knownWorkspaces() {
+  return repo().knownWorkspaces()
+}

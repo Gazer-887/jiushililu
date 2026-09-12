@@ -3,48 +3,85 @@ import {
   createConversationsRepo,
   type ConversationsBackend
 } from '@main/store/conversations-core'
-import type { ChatMessage, Conversation, ConversationCreateInput } from '@shared/ipc'
+import type {
+  ChatMessage,
+  Conversation,
+  ConversationCreateInput,
+  ConversationMeta
+} from '@shared/ipc'
 
-// 会话存储六个入口的**行为基线**（plan10 步骤 0）
+// 会话存储六个入口的**行为基线**（plan10 步骤 0 立，A 批分层后**必须仍然全绿**）
 //
-// 为什么要先有这张网：A 批要给会话存储**分层**（正文从整表单文件里搬出去），
+// 为什么要先有这张网：A 批要给会话存储**分层**（正文从整表里搬出去），
 // 而计划里原来写着"六个入口行为不变，**现有单测兜底**"——
 // 审查实测发现那句话是空的：`tests/unit/conversations.test.ts` 只测了三个纯函数，
 // **六个入口一条覆盖都没有**。没有网就重构，等于在没护栏的崖边换轮胎。
 //
-// 为什么能用假 backend 测：`tests/unit/architecture.test.ts` 的架构守卫要求
-// 单测链路里不得出现 `electron` / `electron-store`（CI 是 Linux，没有 Electron 二进制）。
-// 而六个入口的**可验证行为**（标题规则 / 计数 / 去重 / 返回值 / 落不落盘）**与"谁来存"无关** ——
-// 于是把读写抽成接缝（`ConversationsBackend`），逻辑在 `conversations-core.ts` 里测。
-//
-// ⚠️ 这张网锁的是**当前行为**（characterization），不是"我以为的行为"。
-//    所以每条都写清"为什么它必须如此"，而不只是抄一遍代码。
+// A 批唯一允许改变的，是**读盘足迹**（列表不再碰正文）——
+// 其余每一条语义都必须一模一样。下面每条都写清"为什么它必须如此"。
 
-/** 内存 backend：顺便数读写次数 —— "每个入口只读一遍"这条性质也要钉住 */
+/** 内存 backend：meta 与正文分开存，并分别记账 —— "列表碰不碰正文"要能断言 */
 function memBackend(seed: Record<string, Conversation> = {}): {
   backend: ConversationsBackend
-  stats: { reads: number; writes: number }
+  stats: {
+    metaReads: number
+    messageReads: number
+    metaWrites: number
+    messageWrites: number
+    messageRemoves: number
+  }
   dump: () => Record<string, Conversation>
-  reset: () => void
 } {
-  let data: Record<string, Conversation> = { ...seed }
-  const stats = { reads: 0, writes: 0 }
+  const meta: Record<string, ConversationMeta> = {}
+  const msgs: Record<string, ChatMessage[]> = {}
+  for (const [id, c] of Object.entries(seed)) {
+    const { messages, ...m } = c
+    // ⚠️ 分层带来的**真实语义变化**：旧版 `messageCount` 是**读的时候现算**的
+    //    （`toMeta` 展开 messages），所以它永远和正文一致；分层之后列表不读正文，
+    //    于是 `messageCount` 必须**落在 meta 里**、由每次保存同步写好。
+    //    这里造种子时也要按同一口径造 —— 不然就是在测一个现实中不存在的状态
+    //    （第一版就是这么红的，测试帮我抓到了这次重构真正改了什么）。
+    meta[id] = { ...m, messageCount: messages.length }
+    msgs[id] = messages
+  }
+  const stats = {
+    metaReads: 0,
+    messageReads: 0,
+    metaWrites: 0,
+    messageWrites: 0,
+    messageRemoves: 0
+  }
   return {
     backend: {
-      read: () => {
-        stats.reads += 1
-        return data
+      readMeta: () => {
+        stats.metaReads += 1
+        return { ...meta }
       },
-      write: (next) => {
-        stats.writes += 1
-        data = next
+      putMeta: (id, m) => {
+        stats.metaWrites += 1
+        meta[id] = m
+      },
+      removeMeta: (id) => {
+        delete meta[id]
+      },
+      readMessages: (id) => {
+        stats.messageReads += 1
+        return msgs[id] ?? []
+      },
+      writeMessages: (id, list) => {
+        stats.messageWrites += 1
+        msgs[id] = list
+      },
+      removeMessages: (id) => {
+        stats.messageRemoves += 1
+        delete msgs[id]
       }
     },
     stats,
-    dump: () => data,
-    reset: () => {
-      stats.reads = 0
-      stats.writes = 0
+    dump: () => {
+      const out: Record<string, Conversation> = {}
+      for (const [id, m] of Object.entries(meta)) out[id] = { ...m, messages: msgs[id] ?? [] }
+      return out
     }
   }
 }
@@ -77,37 +114,34 @@ describe('createConversation（新建）', () => {
     expect(c.createdAt).toBe(c.updatedAt)
     expect(c.messages).toEqual([{ role: 'user', content: '你好' }])
     expect(c.messageCount).toBe(1)
-    // 落盘了，而且落的就是它
     expect(dump()[c.id]!.title).toBe('你好')
   })
 
-  it('firstMessage 只有空白 → 不产生消息（标题回退默认）', () => {
-    const { backend } = memBackend()
+  it('firstMessage 只有空白 → 不产生消息（标题回退默认），也**不写正文文件**', () => {
+    const { backend, stats } = memBackend()
     const repo = createConversationsRepo(backend)
     const c = repo.createConversation(input({ firstMessage: '   \n ' }))
     expect(c.messages).toEqual([])
     expect(c.messageCount).toBe(0)
     expect(c.title).toBe('新对话')
+    // 没有正文就一个字节都不该写
+    expect(stats.messageWrites).toBe(0)
   })
 
   it('完全不传 firstMessage → 同样是空会话', () => {
     const { backend } = memBackend()
-    const repo = createConversationsRepo(backend)
-    const c = repo.createConversation(input())
-    expect(c.messages).toEqual([])
+    expect(createConversationsRepo(backend).createConversation(input()).messages).toEqual([])
   })
 
   it('首条消息**前后空白会被 trim**（存进去的不是带空白的原文）', () => {
     const { backend } = memBackend()
-    const repo = createConversationsRepo(backend)
-    const c = repo.createConversation(input({ firstMessage: '  帮我写个脚本  ' }))
+    const c = createConversationsRepo(backend).createConversation(input({ firstMessage: '  帮我写个脚本  ' }))
     expect(c.messages[0]!.content).toBe('帮我写个脚本')
   })
 
   it('标题由首条消息推导（去 Markdown 标记）', () => {
     const { backend } = memBackend()
-    const repo = createConversationsRepo(backend)
-    expect(repo.createConversation(input({ firstMessage: '## 帮我写个脚本' })).title).toBe('帮我写个脚本')
+    expect(createConversationsRepo(backend).createConversation(input({ firstMessage: '## 帮我写个脚本' })).title).toBe('帮我写个脚本')
   })
 })
 
@@ -116,12 +150,10 @@ describe('listConversations（列表）', () => {
     const { backend } = memBackend({
       a: conv({ id: 'a', messages: [{ role: 'user', content: '很长的正文' }] })
     })
-    const repo = createConversationsRepo(backend)
-    const list = repo.listConversations()
+    const list = createConversationsRepo(backend).listConversations()
 
     expect(list).toHaveLength(1)
     expect(list[0]).not.toHaveProperty('messages')
-    // messageCount 是"算出来的"，不是从存储里读的 —— 它与正文永远一致
     expect(list[0]!.messageCount).toBe(1)
   })
 
@@ -131,8 +163,8 @@ describe('listConversations（列表）', () => {
   })
 
   it('同一毫秒的时间戳下，顺序仍然**稳定**（两次调用结果一致）', () => {
-    // 注：这里**不**钉"插入序"这种具体顺序 —— A 批分层后数据源会从"整表单文件"
-    // 变成"一份份会话文件"，来源顺序**合法地**会变。真正要保住的性质是**确定性**：
+    // 注：这里**不**钉"插入序"这种具体顺序 —— 分层后数据源从"整表单文件"变成
+    // "一份份会话文件"，来源顺序**合法地**会变。真正要保住的性质是**确定性**：
     // 同样的数据、两次调用必须一样（渲染端只按 updatedAt 排序，同毫秒会退化成任意序）。
     const { backend } = memBackend({
       a: conv({ id: 'a', updatedAt: 500 }),
@@ -156,9 +188,10 @@ describe('getConversation（取一条）', () => {
     expect(c?.messages).toEqual([{ role: 'user', content: '正文' }])
   })
 
-  it('id 不存在 → null（不抛）', () => {
-    const { backend } = memBackend()
+  it('id 不存在 → null（不抛），且**不白读正文**', () => {
+    const { backend, stats } = memBackend()
     expect(createConversationsRepo(backend).getConversation('nope')).toBeNull()
+    expect(stats.messageReads).toBe(0)
   })
 })
 
@@ -172,7 +205,8 @@ describe('saveConversation（保存正文）', () => {
     const { backend, stats, dump } = memBackend()
     const repo = createConversationsRepo(backend)
     expect(repo.saveConversation('nope', msgs)).toBeNull()
-    expect(stats.writes).toBe(0)
+    expect(stats.metaWrites).toBe(0)
+    expect(stats.messageWrites).toBe(0)
     expect(dump()).toEqual({})
   })
 
@@ -190,8 +224,7 @@ describe('saveConversation（保存正文）', () => {
 
   it('**标题还是默认「新对话」+ 有首条用户消息 → 自动补标题**', () => {
     const { backend } = memBackend({ a: conv({ id: 'a', title: '新对话' }) })
-    const repo = createConversationsRepo(backend)
-    expect(repo.saveConversation('a', msgs)!.title).toBe('帮我看看这段代码')
+    expect(createConversationsRepo(backend).saveConversation('a', msgs)!.title).toBe('帮我看看这段代码')
   })
 
   it('**用户手动改过标题（≠「新对话」）→ 绝不被覆盖**（这条是那个 if 的真正语义）', () => {
@@ -203,16 +236,52 @@ describe('saveConversation（保存正文）', () => {
 
   it('没有用户消息时也不补标题（补的依据是"首条 user"，不是"首条消息"）', () => {
     const { backend } = memBackend({ a: conv({ id: 'a', title: '新对话' }) })
-    const repo = createConversationsRepo(backend)
     const onlyAssistant: ChatMessage[] = [{ role: 'assistant', content: '我先说' }]
-    expect(repo.saveConversation('a', onlyAssistant)!.title).toBe('新对话')
+    expect(createConversationsRepo(backend).saveConversation('a', onlyAssistant)!.title).toBe('新对话')
   })
 
   it('保存空正文也照样落盘（"清空一段对话"是合法动作，计数归零）', () => {
     const { backend, dump } = memBackend({ a: conv({ id: 'a' }) })
-    const repo = createConversationsRepo(backend)
-    expect(repo.saveConversation('a', [])!.messageCount).toBe(0)
+    expect(createConversationsRepo(backend).saveConversation('a', [])!.messageCount).toBe(0)
     expect(dump()['a']!.messages).toEqual([])
+  })
+
+  it('**先写正文、后写索引**（崩在中间只会"索引偏旧"，不会"索引说有正文却没有"）', () => {
+    const order: string[] = []
+    const m = memBackend({ a: conv({ id: 'a' }) })
+    const backend: ConversationsBackend = {
+      ...m.backend,
+      writeMessages: (id, list) => {
+        order.push('messages')
+        m.backend.writeMessages(id, list)
+      },
+      putMeta: (id, meta) => {
+        order.push('meta')
+        m.backend.putMeta(id, meta)
+      }
+    }
+    createConversationsRepo(backend).saveConversation('a', [{ role: 'user', content: 'x' }])
+    expect(order).toEqual(['messages', 'meta'])
+  })
+
+  it('崩在"正文已写、索引没写"之间 → 计数偏旧但**正文是对的**（这条顺序换来的就是这个）', () => {
+    // 分层之后 `messageCount` 是**存**在索引里的，于是它理论上可能与正文不一致。
+    // 这个顺序把不一致的**方向**固定住了：只会"索引偏旧"，永远不会"索引说有、正文没有"。
+    // 而偏旧的计数会在**下一次保存**时自愈。
+    const m = memBackend({ a: conv({ id: 'a' }) })
+    const crashing: ConversationsBackend = {
+      ...m.backend,
+      putMeta: () => {
+        throw new Error('索引写入时断电（注入）')
+      }
+    }
+    const repo = createConversationsRepo(crashing)
+    expect(() => repo.saveConversation('a', [{ role: 'user', content: 'x' }])).toThrow()
+
+    // 正文写进去了
+    expect(m.backend.readMessages('a')).toEqual([{ role: 'user', content: 'x' }])
+    // 但索引还是旧的计数（0）—— 方向明确，且下次保存会修正
+    expect(m.backend.readMeta()['a']!.messageCount).toBe(0)
   })
 })
 
@@ -220,7 +289,7 @@ describe('renameConversation（重命名）', () => {
   it('id 不存在 → null', () => {
     const { backend, stats } = memBackend()
     expect(createConversationsRepo(backend).renameConversation('nope', 'x')).toBeNull()
-    expect(stats.writes).toBe(0)
+    expect(stats.metaWrites).toBe(0)
   })
 
   it('trim + 截断到 60 字', () => {
@@ -233,12 +302,18 @@ describe('renameConversation（重命名）', () => {
 
   it('**空白标题 = 没改**：原样回 meta，且**不落盘**（省一次无意义的写）', () => {
     const { backend, stats, dump } = memBackend({ a: conv({ id: 'a', title: '原名', updatedAt: 1000 }) })
-    const repo = createConversationsRepo(backend)
-    const meta = repo.renameConversation('a', '   ')
+    const meta = createConversationsRepo(backend).renameConversation('a', '   ')
     expect(meta!.title).toBe('原名')
     expect(meta!.updatedAt).toBe(1000) // 连 updatedAt 都不动
-    expect(stats.writes).toBe(0)
+    expect(stats.metaWrites).toBe(0)
     expect(dump()['a']!.title).toBe('原名')
+  })
+
+  it('重命名**不碰正文**（改名是索引上的事）', () => {
+    const { backend, stats } = memBackend({ a: conv({ id: 'a' }) })
+    createConversationsRepo(backend).renameConversation('a', '新名')
+    expect(stats.messageReads).toBe(0)
+    expect(stats.messageWrites).toBe(0)
   })
 
   it('真的改名 → updatedAt 前进', () => {
@@ -254,10 +329,17 @@ describe('deleteConversation（删除）', () => {
     expect(Object.keys(dump())).toEqual(['b'])
   })
 
+  it('删除时要**连带删掉正文文件**（否则会留下永远不会被读到的孤儿）', () => {
+    const { backend, stats } = memBackend({ a: conv({ id: 'a' }) })
+    createConversationsRepo(backend).deleteConversation('a')
+    expect(stats.messageRemoves).toBe(1)
+  })
+
   it('id 不存在 → no-op，**不落盘**（免得为一次空删写盘）', () => {
     const { backend, stats } = memBackend({ a: conv({ id: 'a' }) })
     createConversationsRepo(backend).deleteConversation('nope')
-    expect(stats.writes).toBe(0)
+    expect(stats.metaWrites).toBe(0)
+    expect(stats.messageRemoves).toBe(0)
   })
 
   it('删掉之后 `getConversation` 返回 null（两处口径一致）', () => {
@@ -284,15 +366,41 @@ describe('knownWorkspaces（历史工作区白名单）', () => {
   })
 })
 
-describe('读盘足迹：**每个入口只读一遍**', () => {
-  // 这条是 A 批"分层"的先行指标：
-  // 旧实现里 `saveConversation` 调了两次 `all()`，而 electron-store 每次访问 `store.store`
-  // 都会 `readFileSync + JSON.parse` 整个文件（`conf/dist/source/index.js:276`）——
-  // 也就是**每次保存读两遍全会话**。分层要消灭的就是这类 O(全量) 代价，
-  // 所以"读几遍"必须现在就被钉住，否则改完没法证明它变好了。
-  const seeded = { a: conv({ id: 'a' }) }
+describe('读盘足迹：**分层唯一要换来的东西**', () => {
+  // A 批的验收第一条就是这个。旧版"读列表"要先解析全部正文；分层之后
+  // 列表与白名单**不许碰任何正文文件**。这条不是性能优化，是这次重构的**目的本身**。
+  const seeded = {
+    a: conv({ id: 'a', messages: [{ role: 'user', content: '正文' }] }),
+    b: conv({ id: 'b', messages: [{ role: 'user', content: '正文' }] })
+  }
 
-  it('六个入口各只读一遍', () => {
+  it('`listConversations` **一个正文文件都不读**（只读 meta）', () => {
+    const m = memBackend(seeded)
+    createConversationsRepo(m.backend).listConversations()
+    expect(m.stats.metaReads).toBe(1)
+    expect(m.stats.messageReads, '列表碰了正文文件').toBe(0)
+  })
+
+  it('`knownWorkspaces` 同样只读 meta', () => {
+    const m = memBackend(seeded)
+    createConversationsRepo(m.backend).knownWorkspaces()
+    expect(m.stats.messageReads).toBe(0)
+  })
+
+  it('`getConversation` 只读**它自己那一条**正文（不是全部）', () => {
+    const m = memBackend(seeded)
+    createConversationsRepo(m.backend).getConversation('a')
+    expect(m.stats.messageReads).toBe(1)
+  })
+
+  it('`saveConversation` 只写**它自己那一条**正文', () => {
+    const m = memBackend(seeded)
+    createConversationsRepo(m.backend).saveConversation('a', [{ role: 'user', content: '新' }])
+    expect(m.stats.messageWrites).toBe(1)
+    expect(m.stats.metaReads).toBe(1)
+  })
+
+  it('每个入口的 meta **最多读一遍**（不重复解析同一份索引）', () => {
     const cases: Array<[string, (r: ReturnType<typeof createConversationsRepo>) => void]> = [
       ['list', (r) => void r.listConversations()],
       ['get', (r) => void r.getConversation('a')],
@@ -305,13 +413,9 @@ describe('读盘足迹：**每个入口只读一遍**', () => {
     for (const [name, run] of cases) {
       const m = memBackend(seeded)
       run(createConversationsRepo(m.backend))
-      expect(m.stats.reads, `${name} 读了 ${m.stats.reads} 遍`).toBe(1)
+      // 写的是"**最多**一遍"：`create` 压根不需要读索引（0 遍是对的，比读一遍更好），
+      // 要抓的是**重复解析同一份索引**（旧实现每次保存读两遍全会话）。
+      expect(m.stats.metaReads, `${name} 读了 ${m.stats.metaReads} 遍 meta`).toBeLessThanOrEqual(1)
     }
-  })
-
-  it('一次保存最多落一次盘', () => {
-    const m = memBackend(seeded)
-    createConversationsRepo(m.backend).saveConversation('a', [{ role: 'user', content: 'x' }])
-    expect(m.stats.writes).toBe(1)
   })
 })
