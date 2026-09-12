@@ -126,19 +126,23 @@ const FRAME_RE = /^\s*at\s+\S|^\s*-->|^\s*File "|Caused by:|^\s*[~^]{3,}\s*$/
  * `Showing only X of Y total lines. Use line range…`，Claude Code 在 PARTIAL 通知里
  * 直接教模型用 offset/limit，v2.1.105 起还**按格式**给处方（JSON 给 jq、文本给算好的分块）。
  * 一句话：**别让模型自己猜重试参数**。
+ *
+ * ⚠️ 但**措辞的顺序很要命**（实测教训）：处方写在前面、且写成命令式（"请重新执行…"），
+ * 模型会**抢先重跑**；改成"条件句 + 放在最后"之后，它才会先看保留区。
+ * 所以这里一律以「只有……才」开头。
  */
 function defaultHintFor(toolName: string | undefined): string {
   switch (toolName) {
     case 'run_command':
-      return '需要被省略部分时：**重跑那条命令但收窄输出**（加 grep/findstr 过滤、`| tail -n 100`、或加 --quiet/--no-progress 之类），不要原样重跑。'
+      return '只有确认你要的东西**在中段被省略的过程输出里**时，才重取 —— 且**不要原样重跑**：收窄输出（加 grep/findstr 过滤、`| tail -n 100`、或 --quiet 之类）。'
     case 'fetch_url':
-      return '需要被省略部分时：**换更窄的请求**（带 #锚点、或抓具体子页面），或直接说明你要页面的哪一段。'
+      return '只有确认你要的内容**在中段**时，才换更窄的请求（带 #锚点、或抓具体子页面）重取。'
     case 'spawn_subagent':
-      return '需要子代理报告里被省略的部分时：让它把关键结论写在报告开头，或让它把详细内容写进文件再按行读。'
+      return '只有确认子代理的关键结论**在中段**时，才让它把结论写在报告开头、或写进文件再按行读。'
     default:
       return toolName === 'read_file'
-        ? '需要被省略部分时：用 `read_file` 的 `offset` 按行区间精确读取。'
-        : '需要被省略部分时：用更窄的查询重新获取（按行区间读、或加过滤条件），不要原样重试。'
+        ? '只有确认你要的行**在中段**时，才用 `read_file` 的 `offset` 按行区间精确读取。'
+        : '只有确认你要的内容**在中段**时，才用更窄的查询重取；不要原样重试。'
   }
 }
 
@@ -239,8 +243,7 @@ function renderWindow(
   plan: WindowPlan,
   o: { maxLineChars: number; retrievalHint: string },
   beforeBytes: number,
-  beforeTokens: number,
-  isErrorish: boolean
+  beforeTokens: number
 ): string {
   // ⚠️ 掐断必须**逐行**做：对整块 join 后的文本掐一次 = 头 60 行里只留前 420 字符，
   //    那是把"保留头部"变成"只保留第一行的一截"（第一版就是这么写错的）。
@@ -279,7 +282,20 @@ function renderWindow(
     parts.push(`—— 以下是**末尾 ${tailLen} 行**全文 ——\n${clipBlock(lines.slice(plan.tailStart))}`)
   }
 
-  const head = `[工具输出过长，已压缩展示${isErrorish ? '（含报错，已优先保留现场）' : ''}] 原文 ${beforeBytes} 字节 / 约 ${beforeTokens} token。下列省略处均标了原文行号。${o.retrievalHint}\n`
+  // ⚠️ 开头这段是**被实测打回来的**（2026-09-12 首次真机 A/B，见 harness）：
+  //    原先写的是"需要被省略部分时，请重新执行更精确的命令"——结果在"命令输出找结论"那条任务上，
+  //    **开着压缩反而比不开多花一倍 token**（80.2k vs 39.3k）：压缩本身省了 7.7k，但这句话
+  //    把模型诱导去**重跑命令 / 再读一遍**，多出来的回合把整个上下文重复计费。
+  //    现在的措辞改三件事：① 先声明**头尾是完整的、原样保留的** ② **先说"答案多半就在保留区里"**
+  //    ③ 把"怎么重取"降级成**条件句**（只有确认东西在中段里时才用）。
+  const keptHead = plan.headEnd
+  const keptTail = lines.length - plan.tailStart
+  const errNote =
+    plan.errorIdx.length > 0 ? ` **报错相关命中 ${plan.hitCount} 行已单独列出**。` : ''
+  const head =
+    `[工具输出过长，已压缩展示] 原文 ${beforeBytes} 字节 / 约 ${beforeTokens} token。` +
+    `**开头 ${keptHead} 行 + 末尾 ${keptTail} 行原样完整**，仅省略中段（省略处标了原文行号）。${errNote}` +
+    `结论/报错/退出码通常在保留区里 —— 先看它，别急着重跑。${o.retrievalHint}\n`
   return `${head}${parts.join('\n\n')}`
 }
 
@@ -315,7 +331,13 @@ export function windowToolOutput(raw: string, options: ToolWindowOptions = {}): 
   let lastTightest: { text: string; tokens: number } | null = null
   for (const scale of SCALES) {
     const map = planWindow(lines, { ...o, scale })
-    const candidate = renderWindow(lines, map, { maxLineChars: o.maxLineChars, retrievalHint: hint }, beforeBytes, beforeTokens, isErrorish)
+    const candidate = renderWindow(
+      lines,
+      map,
+      { maxLineChars: o.maxLineChars, retrievalHint: hint },
+      beforeBytes,
+      beforeTokens
+    )
     const candBytes = utf8Bytes(candidate)
     const candTokens = estimateTokens(candidate)
     if (scale === SCALES[SCALES.length - 1]) lastTightest = { text: candidate, tokens: candTokens }
