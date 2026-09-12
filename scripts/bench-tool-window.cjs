@@ -374,7 +374,7 @@ function pageScript(prompt, workspace) {
       let text = ''
       const tools = []
       const offChunk = api.onChatChunk((e) => { if (e.conversationId === id) text += e.payload })
-      const offTool = api.onChatTool((e) => { if (e.conversationId === id) tools.push({ name: e.payload.name, phase: e.payload.phase, saved: e.payload.savedTokens || 0 }) })
+      const offTool = api.onChatTool((e) => { if (e.conversationId === id) tools.push({ name: e.payload.name, phase: e.payload.phase, saved: e.payload.savedTokens || 0, detail: e.payload.detail || '' }) })
       const doneP = new Promise((res) => {
         const off = api.onChatDone((e) => { if (e.conversationId === id) { out.usage = e.payload.usage; out.avoided = e.payload.avoided || 0; off(); res() } })
       })

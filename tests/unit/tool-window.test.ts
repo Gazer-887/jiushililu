@@ -318,9 +318,12 @@ describe('窗口化：**绝对预算**（相对门控管不住"压完还是很�
 
   it('预算给得非常小的时候，也不是"过不了就整段放行"——仍然给最小的那档', () => {
     const raw = Array.from({ length: 5000 }, () => '中文内容行，用来把预算压到极限').join('\n')
-    const r = windowToolOutput(raw, { maxTokens: 400 })
+    // ⚠️ 预算从 400 提到 520（2026-09-13）：通知文案**也要占这个预算**，而通知**不许省** ——
+    //    "不静默截断"是红线，压了就必须说清。这条断言守的是"极小预算下仍给最小档、不整段放行"，
+    //    那个行为没变；变的只是"通知本身的开销"被承认进预算了。
+    const r = windowToolOutput(raw, { maxTokens: 520 })
     expect(r.compressed).toBe(true)
-    expect(r.afterTokens).toBeLessThanOrEqual(400)
+    expect(r.afterTokens).toBeLessThanOrEqual(520)
   })
 })
 
@@ -338,5 +341,31 @@ describe('窗口化：省下的量要能量出来（R9 记账用它）', () => {
     const ratio = r.afterBytes / r.beforeBytes
     expect(ratio).toBeGreaterThan(0.1) // 太狠 = 激进压缩，前辈数据显示那样会倒亏
     expect(ratio).toBeLessThanOrEqual(0.72)
+  })
+})
+
+/**
+ * 通知措辞：让模型**信**保留区（2026-09-13 实测校准后补硬）。
+ *
+ * 起因（**有实测依据，不是猜**）：一条只要求"跑一次命令"的任务，模型跑了 **9 次工具调用** ——
+ * **第 1 次就拿到了完整输出（含结论）**，第 2 次还自己用了收窄处方，
+ * 之后却用 `search_files` / `list_dir` / `read_file` / `tail` **换着法子反复确认**。
+ * → 它不是没看到结论，是**不信"被压过的输出"**（想绕开压缩去读原始文件）。
+ */
+describe('通知措辞：让模型信得过保留区', () => {
+  const head = windowToolOutput(log(3000), { toolName: 'run_command' }).text.split('\n')[0] ?? ''
+
+  it('明说保留区是**逐字节原文**、不是转述', () => {
+    expect(head).toContain('未改动的原文')
+    expect(head).toContain('不是转述')
+  })
+
+  it('明说"别为了确认再跑一遍 / 改去读别的文件"（直接针对实测里白烧的那几轮）', () => {
+    expect(head).toContain('不要为了"确认"再跑一遍')
+  })
+
+  it('**反向**：不许再出现"请重新执行"式的命令式重跑诱导', () => {
+    // 这是 2026-09-12 被实测打回来的措辞：开着压缩反而比不开多花一倍 token
+    expect(head).not.toMatch(/请重新执行|请重跑/)
   })
 })
