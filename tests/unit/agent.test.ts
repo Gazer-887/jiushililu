@@ -178,6 +178,73 @@ describe('file-tools（文件读写工具）', () => {
   })
 })
 
+describe('窗口化开关（plan8 R9.1 校准用）', () => {
+  /** 造一个"输出很大、且不自己管形状"的工具（read_file 是自管的，测不到接缝） */
+  const bigTool = (text: string): AgentTool => ({
+    schema: { name: 'big_tool', description: '吐一大段输出', parameters: { type: 'object', properties: {} } },
+    execute: () => Promise.resolve(text)
+  })
+
+  /** 跑一轮，把**模型看到的** tool 消息抓回来 */
+  const runOnce = async (output: string, toolWindow?: boolean): Promise<string> => {
+    const seen: string[] = []
+    await runAgentLoop({
+      systemPrompt: 'sys',
+      history: [{ role: 'user', content: '开始' }],
+      tools: [bigTool(output)],
+      ...(toolWindow === undefined ? {} : { toolWindow }),
+      chat: (messages) => {
+        const last = messages.filter((m) => m.role === 'tool').pop()
+        const round = messages.filter((m) => m.role === 'tool').length
+        if (last && typeof last.content === 'string') seen.push(last.content)
+        return Promise.resolve({
+          text: round > 0 ? '完毕' : null,
+          toolCalls: round > 0 ? [] : [{ id: 'c1', name: 'big_tool', arguments: '{}' }]
+        })
+      }
+    })
+    return seen.join('\n')
+  }
+
+  const bigOutput = Array.from({ length: 400 }, (_, i) => `第 ${i + 1} 行：撑大输出用的普通文本内容`).join('\n')
+
+  it('默认（开）→ 模型看到的是**成形后**的版本（有省略标记、有行号）', async () => {
+    const on = await runOnce(bigOutput)
+    expect(on).toContain('[工具输出过长，已压缩展示')
+    expect(on).toContain('行号')
+    expect(on.length).toBeLessThan(bigOutput.length)
+  })
+
+  it('`toolWindow:false` → 模型看到的是**原文**（一个字符都没动，也没有标记）', async () => {
+    const off = await runOnce(bigOutput, false)
+    expect(off).not.toContain('[工具输出过长')
+    expect(off).toContain('第 400 行：撑大输出用的普通文本内容')
+    // 两条路**结果必须不同** —— 否则这个开关就是个摆设（这是"开关真在起作用"的判据）
+    expect(off.length).toBeGreaterThan((await runOnce(bigOutput)).length)
+  })
+
+  it('关闭时**连成形回调都不该响**（不是"压了又还原"，是根本没进这套逻辑）', async () => {
+    let called = 0
+    await runAgentLoop({
+      systemPrompt: 'sys',
+      history: [{ role: 'user', content: '开始' }],
+      tools: [bigTool(bigOutput)],
+      toolWindow: false,
+      onToolWindowed: () => {
+        called++
+      },
+      chat: (messages) => {
+        const round = messages.filter((m) => m.role === 'tool').length
+        return Promise.resolve({
+          text: round > 0 ? '完毕' : null,
+          toolCalls: round > 0 ? [] : [{ id: 'c1', name: 'big_tool', arguments: '{}' }]
+        })
+      }
+    })
+    expect(called).toBe(0)
+  })
+})
+
 describe('runAgentLoop（主循环）', () => {
   const tools = fileTools(join(tmpdir(), 'jsl-loop'))
   const systemPrompt = '你是九十里路内核'

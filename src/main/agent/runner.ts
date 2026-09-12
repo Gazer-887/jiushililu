@@ -221,6 +221,11 @@ export interface RunAgentArgs {
   onToolWindowed?: (info: { name: string; beforeTokens: number; afterTokens: number; reason: string }) => void
   /** 外部取消信号（用户点"停止"）；不给则用超时信号 */
   signal?: AbortSignal
+  /**
+   * 工具输出窗口化开关（plan8 R9.1）。不给 = 开。
+   * 关掉时工具输出原样进上下文 —— 供 A/B 校准与"怀疑被压糊了"时的复现排查用。
+   */
+  toolWindow?: boolean
 }
 
 export async function runAgent(
@@ -401,7 +406,8 @@ export async function runAgent(
       chat,
       ...(args.onText ? { onText: args.onText } : {}),
       ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {}),
-      ...(args.onToolWindowed ? { onToolWindowed: args.onToolWindowed } : {})
+      ...(args.onToolWindowed ? { onToolWindowed: args.onToolWindowed } : {}),
+      ...(args.toolWindow === undefined ? {} : { toolWindow: args.toolWindow })
     })
   } finally {
     // 无论正常结束、抛异常还是被中止，都要收尾 ——

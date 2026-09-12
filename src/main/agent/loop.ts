@@ -37,6 +37,14 @@ export interface AgentLoopOptions {
   chat(messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult>
   /** 文本增量回调（流式上屏）；不传则忽略 */
   onText?: (delta: string) => void
+  /**
+   * 是否启用工具输出窗口化（plan8 R9.1）。默认 **开**。
+   *
+   * 为什么要有个开关：这套东西的效果**必须能被 A/B 量出来**（同一段任务开/关各跑一遍，
+   * 比厂商真报的 usage 与成败率）—— 没有开关的优化只能靠信仰。
+   * 另外它也是排查手段：怀疑"模型没看见原文"时，先关掉它再复现一次。
+   */
+  toolWindow?: boolean
   /** 工具执行生命周期（界面显示"正在读 xx / 完成 / 失败"） */
   onToolEvent?: (evt: ToolEvent) => void
   /**
@@ -76,6 +84,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
   let lastText = ''
   let rounds = 0
+  /** 窗口化总开关（默认开；关掉时一切原样 —— 校准用） */
+  const windowEnabled = opts.toolWindow !== false
   /** 这一轮靠窗口化省下的估算 token（plan8 R9.1 记账用） */
   let avoidedTokens = 0
 
@@ -133,7 +143,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       // 窗口化（plan8 R9.1）：输出去大时留头尾 + 中段按行号采样 + 报错现场保护，
       // 双门控不过就**原样放行**（`windowToolOutput` 自己保证"不压也不亏"）。
       let saved = 0
-      if (!SELF_MANAGED_TOOLS.has(tc.name)) {
+      if (windowEnabled && !SELF_MANAGED_TOOLS.has(tc.name)) {
         const w = windowToolOutput(output, { toolName: tc.name })
         // **静默是禁止的**：每一次成形都要留下痕迹（界面 + 主进程日志两处）。
         // 只在"确实够大、值得一记"时报（`small` = 这条输出压根没进入判断，报它等于刷日志）

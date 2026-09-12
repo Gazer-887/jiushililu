@@ -15,7 +15,8 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\" --config config/eslint.config.js",
     "test": "vitest run --config config/vitest.config.ts",
     "test:watch": "vitest --config config/vitest.config.ts",
-    "bench": "vitest run --config config/vitest.bench.config.ts"
+    "bench": "vitest run --config config/vitest.bench.config.ts",
+    "bench:window": "node scripts/bench-tool-window.cjs"
   },
   "dependencies": {
     "electron-store": "^8.2.0"

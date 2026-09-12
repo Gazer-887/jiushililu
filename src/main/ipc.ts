@@ -443,6 +443,9 @@ export function registerIpcHandlers(deps: {
         },
         // 工具输出成形留痕（plan8 R9.1）：界面那条是内存态，日志这条才追得回来
         onToolWindowed: (info) => log.info('工具输出已成形', { conversationId, ...info }),
+        // 校准开关（plan8 R9.1）：`JSL_TOOL_WINDOW=off` 时工具输出原样进上下文。
+        // 只认这一个环境变量的值，不给就是默认开 —— 免得留一个"忘了配就悄悄变了行为"的配置面。
+        ...(process.env['JSL_TOOL_WINDOW'] === 'off' ? { toolWindow: false } : {}),
         // 子代理事件（plan7 批 D）：同批内就地更新，换批则重开
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
