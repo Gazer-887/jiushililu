@@ -93,6 +93,7 @@ const TEST_ENTRIES = [
   'tests/unit/conversations-store.test.ts',
   'tests/unit/html-preview.test.ts',
   'tests/unit/chat-concurrency.test.ts',
+  'tests/unit/goal.test.ts',
   'tests/unit/providers.test.ts',
   'tests/unit/runner.test.ts',
   'tests/unit/schemas.test.ts',
