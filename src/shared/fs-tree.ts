@@ -99,3 +99,80 @@ export function isTextPreviewable(name: string): boolean {
   if (dot <= 0) return true // 无扩展名（或点开头）→ 给预览
   return TEXT_EXT.has(name.slice(dot).toLowerCase())
 }
+
+// ── 二进制预览（plan7 批 A3）────────────────────────────────────────────
+
+/**
+ * 图片预览的体积上限：超过就**只给元信息**，不给数据。
+ *
+ * 为什么必须有：图片要经 IPC 传给渲染端，而 data URL 是 base64——
+ * 内存占用约为原文件的 1.33 倍，还要走一次结构化克隆。
+ * 几十 MB 的图会直接把界面卡住，所以宁可明确告知"图太大，用系统查看器打开"。
+ */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+/**
+ * 能直接渲染的图片类型（扩展名 → MIME）。
+ *
+ * ⚠️ **安全红线（不是性能优化）**：SVG 也在列表里，但它是**可执行内容**——能带 `<script>`。
+ * 只允许通过 `<img src="data:...">` 渲染：**img 上下文不执行脚本**。
+ * **禁止**用 `<object>` / `<iframe>` / 内联 SVG 渲染工作区里的文件 ——
+ * 那等于把工作区里的代码执行在我们的界面里。
+ */
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.avif': 'image/avif',
+  '.svg': 'image/svg+xml'
+}
+
+/** 这个文件名是不是能直接渲染的图片；是就返回 MIME，否则 null */
+export function imageMimeOf(name: string): string | null {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return null
+  return IMAGE_MIME[name.slice(dot).toLowerCase()] ?? null
+}
+
+/** 读**二进制**文件用于预览的结果（图片 → data URL；其余 → 十六进制头部） */
+export interface FsBinaryResult {
+  ok: boolean
+  rel: string
+  size: number
+  /** 图片才给：`data:` URL（受 `MAX_IMAGE_BYTES` 约束） */
+  dataUrl?: string
+  /** 非图片二进制：前若干字节的十六进制转储 —— **降级而不是放弃** */
+  hexHead?: string
+  /** 超过体积上限：只给元信息，**明确告知**而不是假装能显示 */
+  tooLarge?: boolean
+  error?: string
+}
+
+/**
+ * 十六进制转储（hexdump 的样子）—— 非图片二进制的降级展示。
+ *
+ * 为什么值得做：用户点开一个 `.so` / `.db` / 无扩展名的文件时，
+ * 「暂不支持预览」是一句废话；而**看文件头**往往就能认出它是什么。
+ *
+ * 纯函数（只吃 `Uint8Array`，不碰 fs），所以能单测。
+ */
+export function hexDump(bytes: Uint8Array, maxBytes = 256, perLine = 16): string {
+  const n = Math.min(bytes.length, Math.max(0, maxBytes))
+  const lines: string[] = []
+  for (let off = 0; off < n; off += perLine) {
+    const chunk = bytes.subarray(off, Math.min(off + perLine, n))
+    const hex = Array.from(chunk, (b) => b.toString(16).padStart(2, '0'))
+    const left = hex.slice(0, 8).join(' ')
+    const right = hex.slice(8).join(' ')
+    // 可打印 ASCII 原样显示，其余打点 —— 右侧那栏是"肉眼认出它是什么"的关键
+    const ascii = Array.from(chunk, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('')
+    lines.push(
+      `${off.toString(16).padStart(8, '0')}  ${left.padEnd(23)} ${right.padEnd(23)} |${ascii}|`
+    )
+  }
+  return lines.join('\n')
+}

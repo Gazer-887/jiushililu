@@ -49,6 +49,66 @@ const checks = []
  */
 const wbSetCalls = []
 
+// ── 造一张**真实可解码**的 PNG（plan7 批 A3 图片预览要验）────────────────
+//
+// 为什么不直接写个假 base64：图片预览的断言要量 `naturalWidth` ——
+// 假串会被浏览器解码失败，naturalWidth 恒为 0，那条断言就永远是红的（测不出东西）。
+// 所以这里手搓一个最小的 PNG：IHDR + IDAT(zlib) + IEND，带正确的 CRC32。
+const zlib = require('node:zlib')
+
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    t[n] = c
+  }
+  return t
+})()
+
+function crc32(buf) {
+  let c = -1
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8)
+  return (c ^ -1) >>> 0
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(data.length)
+  const td = Buffer.concat([Buffer.from(type, 'ascii'), data])
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(td))
+  return Buffer.concat([len, td, crc])
+}
+
+/** 一张 w×h 的棋盘格 PNG（32×24 → 1024 字节左右，够看清也够小） */
+function makePng(w, h) {
+  const raw = Buffer.alloc((w * 3 + 1) * h)
+  let p = 0
+  for (let y = 0; y < h; y++) {
+    raw[p++] = 0 // 每行的 filter 字节：0 = none
+    for (let x = 0; x < w; x++) {
+      const on = ((x >> 3) + (y >> 3)) % 2 === 0
+      raw[p++] = on ? 0xb0 : 0x3a
+      raw[p++] = on ? 0x3a : 0x28
+      raw[p++] = on ? 0x28 : 0x6b
+    }
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0)
+  ihdr.writeUInt32BE(h, 4)
+  ihdr[8] = 8 // 位深
+  ihdr[9] = 2 // 颜色类型：truecolor
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0))
+  ])
+}
+
+const PNG_BYTES = makePng(48, 32)
+
 function check(name, actual, expected) {
   const pass = JSON.stringify(actual) === JSON.stringify(expected)
   checks.push({ name, pass, actual, expected })
@@ -278,6 +338,32 @@ const STUBS = {
     workbench: { schemaVersion: 1, panes: [] },
     workbenchSizes: { paneWidths: [] }
   }),
+  // plan7 批 A3：二进制预览
+  // 三种情况都要有各自的路径 —— 只验"正常图片"那一档，就是上次假绿灯的老路
+  'fs:read-binary': (arg) => {
+    const rel = typeof arg === 'string' ? arg : ''
+    if (rel.endsWith('示例截图.png')) {
+      return {
+        ok: true,
+        rel,
+        size: PNG_BYTES.length,
+        dataUrl: 'data:image/png;base64,' + PNG_BYTES.toString('base64')
+      }
+    }
+    if (rel.endsWith('超大图.png')) {
+      // 超过上限：**只给元信息、不给数据**（不该把几十 MB 塞进 IPC）
+      return { ok: true, rel, size: 12 * 1024 * 1024, tooLarge: true }
+    }
+    if (rel.endsWith('固件镜像.bin')) {
+      return {
+        ok: true,
+        rel,
+        size: 4096,
+        hexHead: '00000000  7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00  |.ELF............|\n00000010  03 00 3e 00 01 00 00 00 40 10 00 00 00 00 00 00  |..>.....@.......|'
+      }
+    }
+    return { ok: false, rel, size: 0, error: '不支持的预览类型' }
+  },
   // plan7 批 A：工作区文件树（stub 数据；真实文件系统由 tests/unit/fs-tree.test.ts 覆盖）
   'fs:list': (arg) => {
     const rel = typeof arg === 'string' ? arg : ''
@@ -289,7 +375,11 @@ const STUBS = {
           { name: '2026年度预算草案.md', rel: '2026年度预算草案.md', kind: 'file', size: 365 },
           { name: '紫水晶采购清单.txt', rel: '紫水晶采购清单.txt', kind: 'file', size: 341 },
           // 用来验证 Markdown 预览走富文本渲染（用户反馈「没有渲染」）
-          { name: 'README.md', rel: 'README.md', kind: 'file', size: 128 }
+          { name: 'README.md', rel: 'README.md', kind: 'file', size: 128 },
+          // plan7 批 A3：二进制预览的三档（正常图片 / 超大图 / 未知二进制）
+          { name: '示例截图.png', rel: '示例截图.png', kind: 'file', size: PNG_BYTES.length },
+          { name: '超大图.png', rel: '超大图.png', kind: 'file', size: 12 * 1024 * 1024 },
+          { name: '固件镜像.bin', rel: '固件镜像.bin', kind: 'file', size: 4096 }
         ]
       }
     }
@@ -1198,6 +1288,77 @@ app.whenReady().then(async () => {
   const shotMd = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-ex-preview.png'), shotMd.toPNG())
 
+  // —— plan7 批 A3：二进制预览（三档各走一遍）——
+  // ⚠️ 探针**必须放在这一段**：此时前台面板还是「资源管理器」（文件行在 DOM 里）、
+  //    工作台只有两栏（预览栏放得下）。放到脚本末尾会全红：
+  //    那时前台已切成「任务管理」→ clickFile 静默失败；而且多开一栏会溢出、预览栏被挤出可视区。
+  const clickFile = async (name) => {
+    return win.webContents.executeJavaScript(`
+      (() => {
+        const row = Array.from(document.querySelectorAll('.ex-row'))
+          .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === ${JSON.stringify(name)});
+        if (row) row.click();
+        return !!row;
+      })()
+    `)
+  }
+
+  // ① 正常图片：**必须真的解码出来**（naturalWidth > 0）——
+  //    DOM 里有 <img> 不等于图显示出来了，这是本项目"存在 ≠ 看得见"的老教训
+  const imgClicked = await clickFile('示例截图.png')
+  await new Promise((r) => setTimeout(r, 900))
+  const imagePreview = await win.webContents.executeJavaScript(`
+    (() => {
+      const img = document.querySelector('.fp-img');
+      if (!img) return { hasImg: false };
+      const r = img.getBoundingClientRect();
+      const pane = img.closest('.pane');
+      return {
+        hasImg: true,
+        // 关键：**解码成功**才有 naturalWidth
+        naturalWidth: img.naturalWidth,
+        naturalHeight: img.naturalHeight,
+        complete: img.complete,
+        boxW: Math.round(r.width),
+        boxH: Math.round(r.height),
+        // 安全：必须是 img 上下文（img 不执行脚本），不能是 object / iframe
+        tag: img.tagName,
+        isDataUrl: (img.getAttribute('src') || '').startsWith('data:image/'),
+        // 看得见才算数：它所在的那一栏真的有宽度
+        paneWidth: pane ? Math.round(pane.getBoundingClientRect().width) : 0
+      };
+    })()
+  `)
+  console.log('BIN_IMAGE=' + JSON.stringify({ clicked: imgClicked, ...imagePreview }))
+
+  // ② 超大图：**只给元信息、不给数据**（不该把几十 MB 塞进 IPC）
+  await clickFile('超大图.png')
+  await new Promise((r) => setTimeout(r, 800))
+  const tooLarge = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasImg: !!document.querySelector('.fp-img'),
+      notice: (document.querySelector('.fp .ex-msg')?.textContent ?? '').trim()
+    }))()
+  `)
+  console.log('BIN_TOO_LARGE=' + JSON.stringify(tooLarge))
+
+  // ③ 未知二进制：**降级而不是放弃** —— 十六进制转储（看文件头就能认格式）
+  await clickFile('固件镜像.bin')
+  await new Promise((r) => setTimeout(r, 800))
+  const hexPreview = await win.webContents.executeJavaScript(`
+    (() => {
+      const pre = document.querySelector('.fp-hex');
+      const text = pre ? pre.textContent : '';
+      return {
+        hasHex: !!pre,
+        firstLine: text.split('\\n')[0] ?? '',
+        // ELF 魔数的十六进制样子 —— 能认出来才说明转储是有用的
+        hasElfMagic: text.includes('7f 45 4c 46')
+      };
+    })()
+  `)
+  console.log('BIN_HEX=' + JSON.stringify(hexPreview))
+
   // 原先这里还有一个「拖高手柄」探针（.ex-preview-resize）。plan9 W6 把预览改成
   // 右侧独立成栏之后，那个手柄**整个退役**了（连带 splitter.ts 的 resizePreview 与它的单测），
   // 所以这里不再探它 —— 改为断言"它确实不在了"（见下方 exMdPreview.hasOldResizeHandle）。
@@ -1909,6 +2070,29 @@ app.whenReady().then(async () => {
   checkTrue('**整栏换位真的生效**（两栏内容对调）',
     reorder.ok === true && afterOrder[0] === beforeOrder[1] && afterOrder[1] === beforeOrder[0],
     { before: beforeOrder, after: afterOrder })
+
+  // —— plan7 批 A3：二进制预览（三档各一条，别只验顺的那种）——
+  checkTrue('图片预览：<img> 在', imagePreview.hasImg === true)
+  checkTrue(
+    '图片**真的解码出来了**（`naturalWidth > 0` —— DOM 里有 <img> 不等于图显示出来了）',
+    imagePreview.naturalWidth > 0 && imagePreview.naturalHeight > 0,
+    { w: imagePreview.naturalWidth, h: imagePreview.naturalHeight }
+  )
+  check('图片走 img 标签渲染（**安全红线**：不能用 object / iframe）', imagePreview.tag, 'IMG')
+  checkTrue('图片来源是 data:image/（走的是我们自己的读取通道）', imagePreview.isDataUrl === true)
+  checkTrue(
+    '图在画面上真占了地方（不是 0 尺寸）',
+    imagePreview.boxW > 0 && imagePreview.boxH > 0,
+    { w: imagePreview.boxW, h: imagePreview.boxH }
+  )
+  checkTrue('**超大图不给数据**（不渲染 img，避免把几十 MB 塞进 IPC）', tooLarge.hasImg === false)
+  checkTrue('超大图有明确提示（不是一片空白）', tooLarge.notice.length > 0, tooLarge.notice)
+  checkTrue(
+    '未知二进制**降级为十六进制转储**（不再是「暂不支持预览」）',
+    hexPreview.hasHex === true,
+    hexPreview.firstLine
+  )
+  checkTrue('转储内容能认出文件头（ELF 魔数）', hexPreview.hasElfMagic === true)
 
   reportAndExit()
 })

@@ -1737,6 +1737,39 @@ label.radio {
   color: var(--muted);
 }
 
+/* 图片预览（批 A3）：居中 + 限高，超出交给滚动，别把栏撑破 */
+.fp-image {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  overflow: auto;
+}
+
+.fp-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* 棋盘格底：透明 PNG 也能看清边界（不靠元素边框，免得跟图本身的边混起来） */
+  background-image:
+    linear-gradient(45deg, rgb(0 0 0 / 4%) 25%, transparent 25%),
+    linear-gradient(-45deg, rgb(0 0 0 / 4%) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgb(0 0 0 / 4%) 75%),
+    linear-gradient(-45deg, transparent 75%, rgb(0 0 0 / 4%) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+}
+
+/* 二进制文件的十六进制转储（批 A3 的降级展示） */
+.fp-hex {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text);
+  margin: 0;
+  overflow: auto;
+  white-space: pre;
+}
+
 .dock-body {
   flex: 1;
   overflow-y: auto;

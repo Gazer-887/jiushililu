@@ -1,10 +1,14 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { open, readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
   MAX_ENTRIES,
+  MAX_IMAGE_BYTES,
+  hexDump,
+  imageMimeOf,
   shouldSkipEntry,
   sortEntries,
   type FsEntry,
+  type FsBinaryResult,
   type FsListResult,
   type FsReadResult
 } from '@shared/fs-tree'
@@ -76,6 +80,14 @@ export async function listWorkspaceDir(workspaceRoot: string, rel = ''): Promise
   }
 }
 
+/** 把 fs 的错误码翻成人话（给用户看的，不是给模型看的） */
+function humanError(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException).code
+  if (code === 'ENOENT') return '文件不存在或已被移动'
+  if (code === 'EACCES' || code === 'EPERM') return '没有权限读取该文件'
+  return err instanceof Error ? err.message : String(err)
+}
+
 /** 读文件内容用于预览（限 256KB；超限截断并明确告知，不假装读全了） */
 export async function readWorkspaceFile(workspaceRoot: string, rel: string): Promise<FsReadResult> {
   const abs = resolveInsideWorkspace(workspaceRoot, rel)
@@ -99,15 +111,66 @@ export async function readWorkspaceFile(workspaceRoot: string, rel: string): Pro
       ...(truncated ? { truncated: true } : {})
     }
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    const reason =
-      code === 'ENOENT'
-        ? '文件不存在或已被移动'
-        : code === 'EACCES' || code === 'EPERM'
-          ? '没有权限读取该文件'
-          : err instanceof Error
-            ? err.message
-            : String(err)
-    return { ok: false, rel, content: '', size: 0, error: reason }
+    return { ok: false, rel, content: '', size: 0, error: humanError(err) }
+  }
+}
+
+/** 十六进制转储读多少字节 —— 够看出文件头特征，又不啰嗦 */
+const HEX_HEAD_BYTES = 256
+
+/**
+ * 读**二进制**文件用于预览（plan7 批 A3）。
+ *
+ * 两条路：
+ *   · **图片** → `data:` URL，直接能渲染；超过 `MAX_IMAGE_BYTES` 就只回元信息
+ *   · **其余二进制** → 前 256 字节的十六进制转储（「**降级而不是放弃**」）
+ *
+ * 为什么不复用 `readWorkspaceFile`：那个返回的是 UTF-8 **文本**，
+ * 二进制过它一趟会变成替换字符（U+FFFD），信息全丢；图片更是直接废掉。
+ */
+export async function readWorkspaceBinary(
+  workspaceRoot: string,
+  rel: string
+): Promise<FsBinaryResult> {
+  const abs = resolveInsideWorkspace(workspaceRoot, rel)
+  if (!abs) {
+    return { ok: false, rel, size: 0, error: `路径「${rel}」越出工作区边界，拒绝访问` }
+  }
+
+  try {
+    const st = await stat(abs)
+    if (!st.isFile()) return { ok: false, rel, size: 0, error: '该路径不是文件' }
+
+    const name = rel.split(/[\\/]/).pop() ?? rel
+    const mime = imageMimeOf(name)
+
+    if (mime) {
+      // 超限就**只回元信息**：别把几十 MB 的 base64 塞进 IPC 结构化克隆
+      if (st.size > MAX_IMAGE_BYTES) return { ok: true, rel, size: st.size, tooLarge: true }
+      const buf = await readFile(abs)
+      return {
+        ok: true,
+        rel,
+        size: st.size,
+        dataUrl: `data:${mime};base64,${buf.toString('base64')}`
+      }
+    }
+
+    // 非图片：**只读文件头那一段**（不为了 256 字节把整个文件读进内存）
+    const fh = await open(abs, 'r')
+    try {
+      const buf = Buffer.alloc(HEX_HEAD_BYTES)
+      const { bytesRead } = await fh.read(buf, 0, HEX_HEAD_BYTES, 0)
+      return {
+        ok: true,
+        rel,
+        size: st.size,
+        hexHead: hexDump(buf.subarray(0, bytesRead), HEX_HEAD_BYTES)
+      }
+    } finally {
+      await fh.close()
+    }
+  } catch (err) {
+    return { ok: false, rel, size: 0, error: humanError(err) }
   }
 }

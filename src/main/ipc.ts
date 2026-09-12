@@ -23,6 +23,7 @@ import {
   type UIPrefs,
   type FsListResult,
   type FsReadResult,
+  type FsBinaryResult,
   type FsOpResult,
   type BackgroundTask
 } from '@shared/ipc'
@@ -38,7 +39,7 @@ import {
 // createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
-import { listWorkspaceDir, readWorkspaceFile } from './workspace-fs'
+import { listWorkspaceDir, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
@@ -627,6 +628,12 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.fsRead, (_e, raw: unknown): Promise<FsReadResult> => {
     const rel = z.string().min(1).max(1024).parse(raw)
     return readWorkspaceFile(deps.agent.getWorkspaceRoot(), rel)
+  })
+
+  // 二进制预览（plan7 批 A3）：图片走 data URL、其余走十六进制头部
+  ipcMain.handle(IPC.fsReadBinary, (_e, raw: unknown): Promise<FsBinaryResult> => {
+    const rel = z.string().min(1).max(1024).parse(raw)
+    return readWorkspaceBinary(deps.agent.getWorkspaceRoot(), rel)
   })
 
   // ── 工作区写操作（plan7 批 A2）──────────────────────────────

@@ -84,6 +84,7 @@ const api: ApiBridge = {
   // ── 工作区文件树（plan7 批 A，只读）──
   listWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsList, rel),
   readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel),
+  readWorkspaceBinary: (rel) => ipcRenderer.invoke(IPC.fsReadBinary, rel),
   // ── 工作区写操作（plan7 批 A2）：全部走统一写入服务（留检查点、可回滚）──
   writeWorkspaceFile: (rel, content) => ipcRenderer.invoke(IPC.fsWrite, { rel, content }),
   createWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsMkdir, { rel }),

@@ -4,7 +4,7 @@ import type { UIPrefs } from './splitter'
 import type { TodoItem } from './todo'
 import type { SubagentJobEvent } from './agent'
 import type { BackgroundTask } from './background'
-import type { FsListResult, FsReadResult } from './fs-tree'
+import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
 
@@ -261,6 +261,8 @@ export const IPC = {
   // ── 工作区文件树（plan7 批 A，只读）──
   fsList: 'fs:list',
   fsRead: 'fs:read',
+  /** 读**二进制**文件（plan7 批 A3：图片 → data URL；其余 → 十六进制头部） */
+  fsReadBinary: 'fs:read-binary',
   // ── 工作区写操作（plan7 批 A2）：全部走统一写入服务 + 各开一个检查点轮次 ──
   fsWrite: 'fs:write',
   fsMkdir: 'fs:mkdir',
@@ -283,7 +285,7 @@ export const IPC = {
 export type { UIPrefs } from './splitter'
 
 /** 工作区文件树（plan7 批 A）—— 定义见 @shared/fs-tree */
-export type { FsEntry, FsListResult, FsReadResult } from './fs-tree'
+export type { FsEntry, FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
 
 /**
  * 工作区写操作结果（plan7 批 A2）——
@@ -400,6 +402,16 @@ export interface ApiBridge {
   listWorkspaceDir(rel: string): Promise<FsListResult>
   /** 读文件内容用于预览（限 256KB，超限截断并告知） */
   readWorkspaceFile(rel: string): Promise<FsReadResult>
+  /**
+   * 读二进制文件用于预览。
+   *
+   * 图片返回 `dataUrl`（可直接塞进 `<img src>`）、非图片返回 `hexHead`（十六进制转储）、
+   * 超过体积上限则 `tooLarge: true` 且**不给数据**。
+   *
+   * ⚠️ 渲染端**只能**用 `<img src>` 消费 `dataUrl` —— SVG 是可执行内容，
+   * 走 `<object>` / `<iframe>` / 内联就等于执行工作区里的代码。
+   */
+  readWorkspaceBinary(rel: string): Promise<FsBinaryResult>
   // ── 工作区写操作（plan7 批 A2）──
   // 全部经**统一写入服务**：留检查点快照 → 操作同样出现在「文件变更记录」里、同样退得回
   writeWorkspaceFile(rel: string, content: string): Promise<FsOpResult>
