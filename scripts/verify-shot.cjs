@@ -13,7 +13,7 @@
  * 数据返回空值即可，本脚本验证的是**布局几何**，不是数据流。
  */
 const { app, BrowserWindow, ipcMain, protocol } = require('electron')
-const { mkdirSync, writeFileSync } = require('node:fs')
+const { mkdirSync, writeFileSync, rmSync } = require('node:fs')
 const { join } = require('node:path')
 
 const ROOT = process.cwd()
@@ -25,8 +25,25 @@ const SHOTS = join(ROOT, 'Photo')
 mkdirSync(SHOTS, { recursive: true })
 const OUT = join(SHOTS, 'verify-shot.png')
 
-// 让 userData 独立，避免与已安装版本抢目录
-app.setPath('userData', join(ROOT, '.verify-userdata'))
+// 让 userData 独立，避免与已安装版本抢目录。
+//
+// ⚠️ **每次跑之前先清空**（2026-09-12 实测抓到的坑）：不清的话**连跑两遍结果不一样** ——
+//    第一遍结束后目录里留下了 Chromium 的 `Preferences` / `Cache`，
+//    第二遍的拖拽那一族探针会整片红（"文件行真拖得起来"之类 6 条），
+//    而**功能一点没坏**：换一个干净目录立刻 107/107 全绿。
+//    这种"跑第二遍就红"最危险的地方在于它长得跟**回归**一模一样 ——
+//    会让人去改根本没坏的代码。验证工具本身必须**可重复**，这是它的底线。
+const VERIFY_UD = join(ROOT, '.verify-userdata')
+try {
+  rmSync(VERIFY_UD, { recursive: true, force: true })
+} catch (err) {
+  // 上一轮进程还占着目录（Windows 文件锁）→ 不阻断本次运行，但要说出来：
+  // 这一跑的结论可能受残留状态影响
+  console.log(
+    'VERIFY_UD_RESET_FAILED=' + (err && err.message ? err.message : String(err))
+  )
+}
+app.setPath('userData', VERIFY_UD)
 
 // ⚠️ HTML 预览协议必须赶在 ready 之前注册（真应用里 `src/main/index.ts` 也是这个位置）——
 //    迟了协议拿不到 standard/secure 语义，相对路径解析不了，本段会整段红。
@@ -2464,8 +2481,17 @@ app.whenReady().then(async () => {
       return { ok: true, before };
     })()
   `)
-  // 等过 debounce 窗口（300ms）再数写盘次数
-  await new Promise((r) => setTimeout(r, 750))
+  // 等 debounce 窗口（300ms）后数写盘次数。
+  //
+  // ⚠️ **轮询等它发生，而不是睡一个定值**（2026-09-12 实测抓到的 race）：
+  //    同一份代码连跑两遍，这条断言一次是 1、一次是 0 —— 机器一忙，300ms 的定时器会被推迟，
+  //    睡固定 750ms 就可能拿到"还没写"的**假红**。而"写盘次数"这条断言的**本意**是
+  //    "3 次拖动只合并成 1 次写"，不是"在某个瞬间它已经写了"。
+  //    （它仍然抓得住"每动一下写一次"——那种情况 count 会 > 1，轮询也改变不了。）
+  const persistDeadline = Date.now() + 2000
+  while (wbSetCalls.length === 0 && Date.now() < persistDeadline) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
   const persistCalls = wbSetCalls.length
   const wbAfterDrag = await win.webContents.executeJavaScript(`
     (() => {
@@ -2928,6 +2954,35 @@ app.whenReady().then(async () => {
   `)
   console.log('EDIT_ON=' + JSON.stringify(editOn))
 
+  // —— 编辑区**必须真的是一块能写东西的地方**（用户 2026-09-12 报：
+  //    「切回编辑它那个窗口缩得很小，而且无法扩大」）——
+  //
+  // 根因是**高度链断在中间**：`.dock-body` 有确定高度，但中间的 `.fp` 是"高度=内容"的盒子，
+  // 于是 `flex: 1` 的 textarea 没有可分配空间 → 塌成最小行数；`resize: none` 又堵死手动。
+  // 所以这里量**两件事**：① 它实际有多高（相对它所在的栏）② 能不能手动放大。
+  // 只量"存在"是不够的 —— 存在但只有两行高，正是用户看到的样子。
+  const editBox = await win.webContents.executeJavaScript(`
+    (() => {
+      const ta = document.querySelector('.fp-textarea');
+      if (!ta) return { hasTextarea: false };
+      const body = document.querySelector('.dock-body');
+      const r = ta.getBoundingClientRect();
+      const br = body ? body.getBoundingClientRect() : null;
+      const cs = getComputedStyle(ta);
+      return {
+        hasTextarea: true,
+        h: Math.round(r.height),
+        w: Math.round(r.width),
+        bodyH: br ? Math.round(br.height) : 0,
+        ratio: br && br.height > 0 ? +(r.height / br.height).toFixed(2) : 0,
+        resize: cs.resize,
+        overflowY: cs.overflowY,
+        visible: r.height > 0 && r.width > 0 && r.top < window.innerHeight
+      };
+    })()
+  `)
+  console.log('EDIT_BOX=' + JSON.stringify(editBox))
+
   // 打字（用真键盘：合成的 input 事件测不出"受控组件会不会把字吞掉"）
   const taPos = await centerOf('.fp-textarea')
   if (rbInputReady && taPos) {
@@ -3117,6 +3172,17 @@ app.whenReady().then(async () => {
   // —— Markdown 轻编辑（plan7 批 A3 范围②）——
   checkTrue('前置：文件开在预览栏里，且有「编辑」入口', editPre.hasPane === true && editPre.hasModeBtn === true, editPre)
   checkTrue('点「编辑」→ 出现编辑区', editOn.hasTextarea === true, editOn)
+  // 用户 2026-09-12 报的那个"缩得很小、还放不大"—— 判据盯着**实际占多大**与**能不能放大**
+  checkTrue(
+    '编辑区**真占得下地方**（相对它所在的栏 ≥ 45%，不是塌成两行的小盒子）',
+    editBox.hasTextarea === true && editBox.visible === true && editBox.ratio >= 0.45,
+    editBox
+  )
+  checkTrue(
+    '编辑区**可以手动放大**（`resize: none` 就是把主人堵死的那一行）',
+    editBox.resize === 'vertical' || editBox.resize === 'both',
+    { resize: editBox.resize }
+  )
   checkTrue('打字后**页面上看得见"未保存"**（头部标记 + 页签脏点，两处都要有）',
     dirtyState.hasDirtyBadge === true && dirtyState.hasTabDot === true && dirtyState.text.length > 0, dirtyState)
   checkTrue('点「保存」→ 真的写了盘（不是只改了个提示）', fsWritePayloads.length === 1, fsWritePayloads)

@@ -1722,11 +1722,23 @@ label.radio {
   padding: 0 var(--sp-4);
 }
 
+/* 编辑区（用户 2026-09-12 报：「切回编辑它那个窗口缩得很小，而且无法扩大」）。
+   根因是**高度链断在中间**：`.dock-body` 有确定高度（flex:1），但中间的 `.fp` 是
+   "高度=内容"的盒子 —— 于是 `flex: 1` 的 textarea **没有可分配的空间**，
+   塌成最小行数；`resize: none` 又把手动放大堵死 → 两条路都没了。
+
+   修法两条一起上：
+     ① 给它一个**自己就成立**的高度（视口比例，与 HTML 预览同一档）——
+        不依赖祖先链有没有确定高度，`.fp` 将来变成 flex:1 也不会打架（`1 1 auto` 会继续长）
+     ② 放开 `resize: vertical`：主人嫌小就自己拖，不用等我改代码
+   上下限都留着：窗口再小也留 240px 可写，再大也不至于把外面的信息全顶走。 */
 .fp-textarea {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
   width: 100%;
-  resize: none;
+  height: 60vh;
+  min-height: 240px;
+  max-height: calc(100vh - 160px);
+  resize: vertical;
   padding: var(--sp-8);
   border: 0;
   outline: none;
