@@ -6,7 +6,7 @@ import type {
   SettingsSaveInput,
   WorkspaceInfo
 } from '@shared/ipc'
-import type { ModelEntry, ModelProfileView, ModelsView } from '@shared/models'
+import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import { useAppStore } from '../store'
 import { THEMES } from '@shared/splitter'
@@ -511,7 +511,7 @@ export default function SettingsView() {
                     <span className="model-name" title={p.name}>
                       {p.name}
                     </span>
-                    <span className="model-source">{p.source === 'deepseek' ? '深度求索' : '自定义'}</span>
+                    <span className="model-source">{sourceLabel(p.source)}</span>
                     {p.id === models.activeId && <span className="model-current">当前</span>}
                     <span className="model-actions">
                       <button className="model-act" title="编辑这个模型" onClick={() => startEdit(p)}>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
-import type { ModelsView } from '@shared/models'
+import { sourceLabel, type ModelsView } from '@shared/models'
 import type { GitInfo, PermissionPreset } from '@shared/ipc'
 
 // 输入框工具栏零件（P2 控制台）：模型切换 / 上下文圆环 / 权限档 / Git 分支 / 提示词优化。
@@ -116,7 +116,7 @@ export function ModelSwitcher(): JSX.Element {
                 title={p.models.map((m) => m.model).join('、')}
               >
                 {p.name}
-                <span className="model-item-src">{p.source === 'deepseek' ? '深度求索' : '自定义'}</span>
+                <span className="model-item-src">{sourceLabel(p.source)}</span>
               </button>
             ))
           ) : (

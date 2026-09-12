@@ -13,6 +13,7 @@ import {
   profileOf,
   removeProfile,
   settingsOf,
+  sourceOfBaseURL,
   type ModelEntry,
   type ModelProfile,
   type ModelSaveInput,
@@ -329,7 +330,8 @@ export function saveEndpoint(input: ModelSaveInput): ModelProfile {
   const created = createProfile({
     id: input.id ?? `p-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     name: input.name,
-    source: input.source ?? 'custom',
+    // 来源**从地址推**：用户没得选、也不需要选 —— 见过"老数据被一律标成深度求索"那次事故
+    source: input.source ?? sourceOfBaseURL(input.baseURL),
     providerType: input.providerType,
     baseURL: input.baseURL,
     timeoutMs: input.timeoutMs,

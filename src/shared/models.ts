@@ -44,6 +44,24 @@ export interface ModelEntry {
   settings?: Partial<ModelSettings>
 }
 
+/**
+ * **从 baseURL 推来源标签**（深度求索 / 自定义）。
+ *
+ * 为什么是"推"而不是"存一个用户选的值"：来源是**端点地址的函数**，不是用户的偏好 ——
+ * 存下来就会过期（本项目的真事：老数据升级时把每个端点都标成了"深度求索"，
+ * 连用户自己加的 agnes 端点也顶着这个标签 ✗）。**推导出来的东西不会撒谎。**
+ * 认不出来一律算自定义 —— 宁可不标品牌，也不要标错品牌。
+ */
+export function sourceOfBaseURL(baseURL: string): ModelSource {
+  const url = baseURL.toLowerCase()
+  if (url.includes('deepseek')) return 'deepseek'
+  return 'custom'
+}
+
+/** 来源标签给人看的字（界面只读这一个函数，别在各处各写一遍三元表达式） */
+export function sourceLabel(source: ModelSource): string {
+  return source === 'deepseek' ? '深度求索' : '自定义'
+}
 /** 一个**端点**：一条连接 + 它的模型目录 */
 export interface ModelProfile {
   id: string
@@ -154,13 +172,14 @@ export function createProfile(input: {
 export function profileOf(
   settings: ModelSettings,
   now: number,
-  opts?: { id?: string; name?: string }
+  opts?: { id?: string; name?: string; source?: ModelSource }
 ): ModelProfile {
   const entryId = `${opts?.id ?? 'default'}-m1`
   return createProfile({
     id: opts?.id ?? 'default',
     name: opts?.name ?? settings.model,
-    source: 'deepseek',
+    // 来源**从地址推**（不是猜的、也不是存在这儿的固定值）
+    source: opts?.source ?? sourceOfBaseURL(settings.baseURL),
     providerType: settings.providerType,
     baseURL: settings.baseURL,
     timeoutMs: settings.timeoutMs,
@@ -332,7 +351,9 @@ export function normalizeProfiles(raw: unknown): { profiles: ModelProfile[]; dro
     }
     seen.add(id)
     const createdAt = num(p.createdAt, 0)
-    const source: ModelSource = p.source === 'deepseek' ? 'deepseek' : 'custom'
+    // ⚠️ **不信盘里的 source**：它是地址的函数，老数据里存错过（全被标成深度求索）→ 读时重推一次
+    // （sourceOfBaseURL 是纯的，重推不会破坏用户任何设置 —— 它本来也不是用户能改的东西）
+    const source: ModelSource = sourceOfBaseURL(baseURL)
     const provider = providerType as ProviderType
 
     // 老形状：没有 models 数组，但有一个顶层 model 字符串 → 原地升级
