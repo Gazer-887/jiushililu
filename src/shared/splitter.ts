@@ -102,22 +102,7 @@ export function sanitizeStoredWidth(
   return clampWidth(stored, min, max)
 }
 
-/** 资源管理器「文件预览」区的高度范围（plan7 批 A2 验收反馈：预览太小） */
-export const PREVIEW_MIN = 120
-export const PREVIEW_MAX = 620
-export const PREVIEW_DEFAULT = 280
-
-/**
- * 预览区拖拽后的新高度。
- *
- * 手柄在预览区**顶部**，所以「往上拖 = 变高」：`delta = startY − currentY`。
- * 非有限值（鼠标事件偶尔给出 NaN / Infinity）一律回落到下限，别把布局搞坏。
- *
- * 抽成纯函数的原因：**合成事件验不了真实拖拽**（实测 Chrome 会把真实鼠标位置的
- * mousemove 也发过来，把合成坐标覆盖掉）—— 所以逻辑靠单测保证，界面只验结构。
- */
-export function resizePreview(startH: number, startY: number, currentY: number): number {
-  const delta = startY - currentY
-  if (!Number.isFinite(delta)) return PREVIEW_MIN
-  return Math.min(Math.max(Math.round(startH + delta), PREVIEW_MIN), PREVIEW_MAX)
-}
+// 注：原先这里有一套「文件预览区高度拖拽」的常量与纯函数（PREVIEW_MIN/MAX/DEFAULT、
+// resizePreview）—— 它们只服务于"预览压在文件树底下、拖手柄调高"的旧形态。
+// plan9 W6 把预览改成在**右侧独立成栏**之后，那个手柄不存在了，故整套删除
+//（栏宽改由 workbench.ts 的 allocate / clampPaneWidth 负责，横向而非纵向）。

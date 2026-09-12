@@ -927,7 +927,7 @@ app.whenReady().then(async () => {
     }))()
   `)
 
-  // 点文件 → 应出现预览
+  // 点文件 → 应在**右侧独立开一栏**（plan9 W6；改造前是压在文件树底下的 .ex-preview）
   await win.webContents.executeJavaScript(`
     (() => {
       const f = Array.from(document.querySelectorAll('.ex-row'))
@@ -939,22 +939,21 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 900))
   const previewState = await win.webContents.executeJavaScript(`
     (() => {
-      const pre = document.querySelector('.ex-pre');
-      const box = document.querySelector('.ex-preview');
-      const tree = document.querySelector('.ex-tree');
-      const panel = document.querySelector('.ex-panel');
-      const body = document.querySelector('.dock-body');
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      const last = panes[panes.length - 1];
+      const pre = last ? last.querySelector('.fp-pre') : null;
+      const fp = last ? last.querySelector('.fp') : null;
       const dim = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height), top: Math.round(b.top) }; };
       return {
+        paneCount: panes.length,
+        // 关键：预览必须是**自己的一栏**，而不是塞在资源管理器那一栏里面
+        isOwnPane: panes.length >= 2 && !!last && !last.querySelector('.ex-panel'),
         hasPreview: !!pre,
         firstLine: pre ? pre.textContent.split('\\n')[0] : null,
         hasOxide: pre ? pre.textContent.includes('氧化铈粉') : false,
         // 关键：**看得见**才算数（DOM 存在但高度塌成 0 等于没显示）
         preBox: dim(pre),
-        previewBox: dim(box),
-        treeBox: dim(tree),
-        panelBox: dim(panel),
-        bodyBox: dim(body)
+        fpBox: dim(fp)
       };
     })()
   `)
@@ -1158,7 +1157,7 @@ app.whenReady().then(async () => {
     (() => document.querySelector('.ex-notice')?.textContent?.trim() ?? null)()
   `)
 
-  // Markdown 预览：点 README.md → 应走**富文本渲染**（有 .md 容器、无 .ex-pre）
+  // Markdown 预览：点 README.md → 应在**同一预览栏**里开第二个页签，并走富文本渲染
   await win.webContents.executeJavaScript(`
     (() => {
       const row = Array.from(document.querySelectorAll('.ex-row'))
@@ -1167,27 +1166,27 @@ app.whenReady().then(async () => {
       return !!row;
     })()
   `)
-  await new Promise((r) => setTimeout(r, 700))
+  await new Promise((r) => setTimeout(r, 800))
   const exMdPreview = await win.webContents.executeJavaScript(`
     (() => {
-      const pv = document.querySelector('.ex-preview');
-      const panel = document.querySelector('.ex-panel');
-      const md = document.querySelector('.ex-preview-md');
-      const pre = document.querySelector('.ex-pre');
-      const pr = pv ? pv.getBoundingClientRect() : null;
-      const panr = panel ? panel.getBoundingClientRect() : null;
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      const last = panes[panes.length - 1];
+      const md = last ? last.querySelector('.fp-md') : null;
+      const pre = last ? last.querySelector('.fp-pre') : null;
+      const fp = last ? last.querySelector('.fp') : null;
+      const tabs = last ? Array.from(last.querySelectorAll('.pane-tab-name')).map((e) => e.textContent.trim()) : [];
       return {
-        hasPreview: !!pv,
+        // 复用同一栏（同一栏里多文件 = 多页签），**不是**每点一个文件就多一栏
+        paneCount: panes.length,
+        tabs,
         renderedMarkdown: !!md,
         rawPre: !!pre,
         h1: md ? (md.querySelector('h1')?.textContent?.trim() ?? null) : null,
         liCount: md ? md.querySelectorAll('li').length : 0,
-        hasHandle: !!document.querySelector('.ex-preview-resize'),
-        heightBefore: pr ? Math.round(pr.height) : 0,
-        // **看得见**才算数：高度对但落在面板可视区之外 = 用户看不到（实测踩过）
-        previewTop: pr ? Math.round(pr.top) : 0,
-        panelBottom: panr ? Math.round(panr.bottom) : 0,
-        visible: pr && panr ? pr.top < panr.bottom && pr.bottom > panr.top : false
+        // 旧形态必须**彻底退役**：那个"拖高手柄"不该还在
+        hasOldResizeHandle: !!document.querySelector('.ex-preview-resize'),
+        oldPreviewGone: !document.querySelector('.ex-preview'),
+        visible: fp ? fp.getBoundingClientRect().height > 20 : false
       };
     })()
   `)
@@ -1199,25 +1198,9 @@ app.whenReady().then(async () => {
   const shotMd = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-ex-preview.png'), shotMd.toPNG())
 
-  // 拖拽手柄：**只验结构**，不验"拖了会不会变高"。
-  // 为什么：实测 Chrome 会把**真实鼠标位置**的 mousemove 也派发过来，覆盖合成事件的
-  // 坐标（诊断见 handleTop/sentY/seenY：传进去 399、监听器也收到 399，但 React 处理器
-  // 最终算出的值对应另一个坐标）。所以换算逻辑抽成纯函数 resizePreview() 由单测覆盖，
-  // 这里只确认"手柄在、样式对"。
-  const exPreviewResize = await win.webContents.executeJavaScript(`
-    (() => {
-      const h = document.querySelector('.ex-preview-resize');
-      if (!h) return { ok: false, reason: '手柄不存在' };
-      const cs = getComputedStyle(h);
-      return {
-        ok: true,
-        cursor: cs.cursor,
-        handleHeight: Math.round(h.getBoundingClientRect().height),
-        title: h.title,
-        previewH: Math.round(document.querySelector('.ex-preview')?.getBoundingClientRect().height ?? 0)
-      };
-    })()
-  `)
+  // 原先这里还有一个「拖高手柄」探针（.ex-preview-resize）。plan9 W6 把预览改成
+  // 右侧独立成栏之后，那个手柄**整个退役**了（连带 splitter.ts 的 resizePreview 与它的单测），
+  // 所以这里不再探它 —— 改为断言"它确实不在了"（见下方 exMdPreview.hasOldResizeHandle）。
 
   // —— 新建任务页：内容完全居中 + 旧文案已移除（用户 2026-09-12 美学偏好）——
   await win.webContents.executeJavaScript(`
@@ -1509,7 +1492,6 @@ app.whenReady().then(async () => {
   console.log('EX_TOOLS=' + JSON.stringify(exTools))
   console.log('EX_NEW_TARGET=' + JSON.stringify({ title: exTargetTitle, notice: exNewInDir }))
   console.log('EX_MD_PREVIEW=' + JSON.stringify(exMdPreview))
-  console.log('EX_PREVIEW_RESIZE=' + JSON.stringify(exPreviewResize))
   console.log('EX_OP_LOG=' + JSON.stringify(fsOpLog))
   console.log('TASKS_PANEL=' + JSON.stringify(tasksState))
   console.log('THEME_BEFORE=' + JSON.stringify(themeBefore))
@@ -1563,14 +1545,16 @@ app.whenReady().then(async () => {
   const wbFolded = await win.webContents.executeJavaScript(`
     (() => {
       const pane = document.querySelector('.pane');
-      const body = document.querySelector('.dock-body');
+      const body = pane ? pane.querySelector('.dock-body') : null;
       return {
-        hasHead: !!document.querySelector('.pane-head'),
-        hasTabs: !!document.querySelector('.pane-tabs'),
+        // ⚠️ 必须**限定在第一栏内**查。全局 querySelector('.pane-head') 会查到第二栏的头，
+        //    于是"折叠了没"永远显示成"没折叠"（这个探针栽过一次）
+        hasHead: !!(pane && pane.querySelector('.pane-head')),
+        hasTabs: !!(pane && pane.querySelector('.pane-tabs')),
         hasBody: !!body,
         bodyH: body ? Math.round(body.getBoundingClientRect().height) : 0,
         width: pane ? Math.round(pane.getBoundingClientRect().width) : 0,
-        hasUnfold: !!document.querySelector('.pane-unfold')
+        hasUnfold: !!(pane && pane.querySelector('.pane-unfold'))
       };
     })()
   `)
@@ -1586,14 +1570,22 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 450))
   const wbUnfolded = await win.webContents.executeJavaScript(`
-    (() => ({
-      hasHead: !!document.querySelector('.pane-head'),
-      hasTabs: !!document.querySelector('.pane-tabs')
-    }))()
+    (() => {
+      const pane = document.querySelector('.pane');
+      return {
+        hasHead: !!(pane && pane.querySelector('.pane-head')),
+        hasTabs: !!(pane && pane.querySelector('.pane-tabs'))
+      };
+    })()
   `)
   console.log('WB_UNFOLDED=' + JSON.stringify(wbUnfolded))
 
-  // —— 开第二栏：证明「多栏」真的成立（plan9 W3 的核心诉求）——
+  // —— 开新的一栏：证明「多栏」真的成立（plan9 W3 的核心诉求）——
+  // 先记下当前栏数：W6 之后"点文件"本身就会开栏，所以这里**不能硬编码 2**，
+  // 只能断言"点 ＋ 之后栏数 +1"（否则这条断言会被上游的改动悄悄弄假）
+  const panesBeforeAdd = await win.webContents.executeJavaScript(`
+    (() => document.querySelectorAll('.pane').length)()
+  `)
   await win.webContents.executeJavaScript(`
     (() => {
       const add = document.querySelector('.wb-add');
@@ -1630,11 +1622,16 @@ app.whenReady().then(async () => {
         rowW,
         sprawl,
         exact: sprawl === rowW,
-        // 两栏各自装了什么（证明它们是**独立**的，不是同一份内容渲染两遍）
-        pane0HasExplorer: !!panes[0] && !!panes[0].querySelector('.ex-panel'),
-        pane1HasExplorer: !!panes[1] && !!panes[1].querySelector('.ex-panel'),
-        pane0Tabs: panes[0] ? panes[0].querySelectorAll('.pane-tab').length : 0,
-        pane1Tabs: panes[1] ? panes[1].querySelectorAll('.pane-tab').length : 0,
+        // 栏数多到放不下时进入"溢出"模式（横向滚动）—— 此时 sprawl 会**大于** rowW，
+        // 那是设计好的降级，不是被裁掉
+        overflow: !!row && row.classList.contains('wb-overflow'),
+        // 新栏里装的是什么（证明各栏**互相独立**，不是同一份内容渲染两遍）。
+        // 用"第一栏 / 最后一栏"而不是硬编码下标 —— 前面点文件已经开过一栏了，
+        // 写死 pane0/pane1 会让断言随上游改动而失真
+        firstHasExplorer: !!panes[0] && !!panes[0].querySelector('.ex-panel'),
+        lastHasExplorer: !!panes[panes.length - 1] && !!panes[panes.length - 1].querySelector('.ex-panel'),
+        firstTabs: panes[0] ? panes[0].querySelectorAll('.pane-tab').length : 0,
+        lastTabs: panes[panes.length - 1] ? panes[panes.length - 1].querySelectorAll('.pane-tab').length : 0,
         // 窄栏时 ＋ 会不会被页签条"滚走" —— 真渲染截图抓出来的问题，
         // 数字全绿也看不出来：必须量它**是否落在栏的边界内**
         addInsidePane: panes.map((p) => {
@@ -1652,6 +1649,51 @@ app.whenReady().then(async () => {
   // 存档：多栏工作台的真渲染截图（给人看的证据，不只是数字）
   const shotWb = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-workbench.png'), shotWb.toPNG())
+
+  // —— 三栏塞进 359px：**这是设计好的降级，不是 bug**（三级收缩的尽头）——
+  // 每栏退到绝对下限 120，总宽超出容器 → 工作台区改为横向滚动。
+  // 这条必须被**断言**：否则"溢出（设计）"与"被裁掉（真 bug）"就分不清了。
+  const wbOverflow = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = document.querySelector('.wb-row');
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      const widths = panes.map((p) => Math.round(p.getBoundingClientRect().width));
+      return {
+        paneCount: panes.length,
+        widths,
+        allAtAbsMin: widths.length > 0 && widths.every((w) => w === 120),
+        scrollable: row ? getComputedStyle(row).overflowX : null
+      };
+    })()
+  `)
+  console.log('WB_OVERFLOW=' + JSON.stringify(wbOverflow))
+
+  // 关掉最后一栏，回到 2 栏（顺便把"关栏"这个动作也真走一遍）——
+  // 之后才做拖拽：2 栏在 359px 下拖得动，3 栏塞不下时本来就该拖不动
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      const last = panes[panes.length - 1];
+      const btn = last ? last.querySelector('.pane-btn[title*="关闭本栏"]') : null;
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 600))
+  const afterClosePane = await win.webContents.executeJavaScript(`
+    (() => ({
+      paneCount: document.querySelectorAll('.pane').length,
+      exact: (() => {
+        const row = document.querySelector('.wb-row');
+        const panes = Array.from(document.querySelectorAll('.pane'));
+        const gaps = Array.from(document.querySelectorAll('.wb-divider'));
+        const sprawl = panes.reduce((a, p) => a + Math.round(p.getBoundingClientRect().width), 0)
+          + gaps.reduce((a, g) => a + Math.round(g.getBoundingClientRect().width), 0);
+        return sprawl === (row ? Math.round(row.getBoundingClientRect().width) : -1);
+      })()
+    }))()
+  `)
+  console.log('WB_AFTER_CLOSE=' + JSON.stringify(afterClosePane))
 
   // —— plan9 W5：拖拽（调宽 + 换位）——
   // 结构先验：分隔条数量必须 = 栏数 − 1（宽度数组也只存 n−1 个，一一对应）
@@ -1782,18 +1824,48 @@ app.whenReady().then(async () => {
   check('折叠**不改变栏宽**', wbFolded.width, wbGeom.widths ? wbGeom.widths[0] : -1)
   checkTrue('展开回来标题栏与页签条都回来了', wbUnfolded.hasHead && wbUnfolded.hasTabs, wbUnfolded)
 
-  // —— plan9 W3：多栏（开第二栏）——
-  checkTrue('「＋」能新建一栏', openedSecond === true, openedSecond)
-  check('第二栏开出来了（多栏成立，不是单栏换页签）', wbTwo.paneCount, 2)
-  checkTrue('两栏宽度 + 间隙仍**正好**等于可用宽', wbTwo.exact === true, {
-    widths: wbTwo.widths,
-    sprawl: wbTwo.sprawl,
-    rowW: wbTwo.rowW
-  })
+  // —— plan9 W6：文件预览独立成栏 ——
+  check('点文件后工作台是**两栏**（资源管理器 + 预览栏）', previewState.paneCount, 2)
+  checkTrue('预览开在**自己的一栏**里（不是塞在资源管理器那一栏）', previewState.isOwnPane === true, previewState)
   checkTrue(
-    '两栏内容**互相独立**（第二栏是刚选的面板，第一栏的页签没被顶掉）',
-    wbTwo.pane1HasExplorer === true && wbTwo.pane0HasExplorer === false && wbTwo.pane0Tabs >= 1,
-    { pane0Tabs: wbTwo.pane0Tabs, pane1Tabs: wbTwo.pane1Tabs, p0ex: wbTwo.pane0HasExplorer, p1ex: wbTwo.pane1HasExplorer }
+    '预览内容**看得见**（高度 > 20，不是塌成 0）',
+    !!previewState.preBox && previewState.preBox.h > 20,
+    previewState.preBox
+  )
+  checkTrue('预览读到的确实是那个文件', previewState.hasOxide === true, previewState.firstLine)
+  checkTrue(
+    'Markdown 走富文本渲染（有 .fp-md、没有 .fp-pre）',
+    exMdPreview.renderedMarkdown === true && exMdPreview.rawPre === false,
+    exMdPreview
+  )
+  checkTrue(
+    '点第二个文件**复用同一栏**（同一栏多页签，不是每点一个就多一栏）',
+    exMdPreview.paneCount === previewState.paneCount && exMdPreview.tabs.length === 2,
+    exMdPreview
+  )
+  checkTrue(
+    '旧的"压在文件树底下"的预览已**彻底退役**（无 .ex-preview、无拖高手柄）',
+    exMdPreview.oldPreviewGone === true && exMdPreview.hasOldResizeHandle === false,
+    exMdPreview
+  )
+
+  // —— plan9 W3：多栏（＋ 新建一栏）——
+  checkTrue('「＋」能新建一栏', openedSecond === true, openedSecond)
+  check('点 ＋ 之后栏数 **+1**（多栏成立，不是单栏换页签）', wbTwo.paneCount, panesBeforeAdd + 1)
+  checkTrue(
+    '各栏宽度 + 间隙满足「**放得下就正好、放不下就溢出**」这条不变量',
+    wbTwo.overflow === true ? wbTwo.sprawl >= wbTwo.rowW : wbTwo.sprawl === wbTwo.rowW,
+    { widths: wbTwo.widths, sprawl: wbTwo.sprawl, rowW: wbTwo.rowW, overflow: wbTwo.overflow }
+  )
+  checkTrue(
+    '新栏里是刚选的面板，且各栏内容**互相独立**',
+    wbTwo.lastHasExplorer === true && wbTwo.firstHasExplorer === false && wbTwo.firstTabs >= 1,
+    {
+      firstTabs: wbTwo.firstTabs,
+      lastTabs: wbTwo.lastTabs,
+      firstIsExplorer: wbTwo.firstHasExplorer,
+      lastIsExplorer: wbTwo.lastHasExplorer
+    }
   )
   checkTrue(
     '窄栏里 ＋ 仍在栏内可见（没被页签条横向滚动带走）',
@@ -1802,6 +1874,13 @@ app.whenReady().then(async () => {
   )
 
   // —— plan9 W5：拖拽 ——
+  checkTrue(
+    '三栏塞不进窄工作台时**退到绝对下限并允许横向滚动**（设计好的降级，不是被裁）',
+    wbOverflow.allAtAbsMin === true && wbOverflow.scrollable === 'auto',
+    wbOverflow
+  )
+  check('关掉一栏后回到 2 栏', afterClosePane.paneCount, 2)
+  checkTrue('2 栏重新放得下 → 几何恢复精确', afterClosePane.exact === true)
   check('分隔条数量 = 栏数 − 1（与宽度数组一一对应）', dividerInfo.count, dividerInfo.panes - 1)
   check('分隔条光标是 col-resize', dividerInfo.cursor, 'col-resize')
   checkTrue('**拖分隔条真的改变了栏宽**（往右拖 → 第 0 栏变宽）',

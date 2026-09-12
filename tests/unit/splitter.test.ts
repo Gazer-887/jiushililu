@@ -4,15 +4,11 @@ import {
   DOCK_MAX,
   DOCK_MIN,
   MAIN_RESERVE,
-  PREVIEW_DEFAULT,
-  PREVIEW_MAX,
-  PREVIEW_MIN,
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   clampWidth,
   computeWidth,
-  resizePreview,
   sanitizeStoredWidth
 } from '@shared/splitter'
 
@@ -162,28 +158,6 @@ describe('sanitizeStoredWidth（读回存档也要夹一次）', () => {
     expect(sanitizeStoredWidth(99999, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX)).toBe(DOCK_MAX)
     expect(sanitizeStoredWidth(-5, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX)).toBe(DOCK_MIN)
     expect(sanitizeStoredWidth(0, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX)).toBe(DOCK_MIN)
-  })
-})
-
-describe('resizePreview（预览区高度拖拽，plan7 批 A2 验收反馈）', () => {
-  it('往上拖变高、往下拖变矮', () => {
-    expect(resizePreview(280, 400, 300)).toBe(380) // 往上 100
-    expect(resizePreview(280, 400, 500)).toBe(180) // 往下 100
-  })
-
-  it('夹在下限与上限之间', () => {
-    expect(resizePreview(280, 400, 10000)).toBe(PREVIEW_MIN)
-    expect(resizePreview(280, 400, -10000)).toBe(PREVIEW_MAX)
-  })
-
-  it('非有限值一律回落到下限（鼠标事件偶尔给 NaN / Infinity）', () => {
-    expect(resizePreview(280, 400, NaN)).toBe(PREVIEW_MIN)
-    expect(resizePreview(280, 400, Infinity)).toBe(PREVIEW_MIN)
-  })
-
-  it('默认值本身落在合法区间内', () => {
-    expect(PREVIEW_DEFAULT).toBeGreaterThanOrEqual(PREVIEW_MIN)
-    expect(PREVIEW_DEFAULT).toBeLessThanOrEqual(PREVIEW_MAX)
   })
 })
 

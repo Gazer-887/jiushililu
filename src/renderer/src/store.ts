@@ -23,9 +23,11 @@ import {
   emptyLayout,
   emptySizes,
   normalizeSizes,
+  openInFilePane,
   openTab,
   removePane,
   toggleCollapse,
+  type FileMode,
   type PaneContent,
   type WorkbenchLayout,
   type WorkbenchSizes
@@ -80,6 +82,14 @@ interface AppState {
   // ── 工作台结构操作（plan9 W3）──
   // 全部只是"纯函数 + 内存 + 落盘"的胶水；模型运算一律在 src/shared/workbench.ts
   wbOpenTab: (paneId: string | null, content: PaneContent) => void
+  /**
+   * 打开文件到「预览栏」（plan9 W6）。
+   *
+   * 收 `path` 而不是 `PaneContent`，是因为**调用方是文件树**，它手上只有路径；
+   * 真正的去重/复用逻辑在 `openInFilePane`（已是纯函数、有单测）：
+   * 最后一栏是"纯文件栏"就复用它，否则**在右侧新开一栏**。
+   */
+  wbOpenFile: (path: string, mode?: FileMode) => void
   wbCloseTab: (paneId: string, tabId: string) => void
   wbActivateTab: (paneId: string, index: number) => void
   wbAddPane: () => void
@@ -246,6 +256,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 点了面板就必须看得见 —— 否则是"点了没反应"（默认布局是空的）
     set({ dockOpen: true })
     get().setWorkbench(openTab(get().workbench, paneId, content))
+    void get().persistWorkbench()
+  },
+  wbOpenFile: (path, mode = 'preview') => {
+    set({ dockOpen: true })
+    get().setWorkbench(openInFilePane(get().workbench, path, mode))
     void get().persistWorkbench()
   },
   wbCloseTab: (paneId, tabId) => {

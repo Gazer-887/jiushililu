@@ -4,13 +4,11 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
-  type MouseEvent as ReactMouseEvent,
   type ReactNode
 } from 'react'
 import type { FsEntry } from '@shared/fs-tree'
-import { formatSize, isTextPreviewable } from '@shared/fs-tree'
-import { PREVIEW_DEFAULT, resizePreview } from '@shared/splitter'
-import MessageMarkdown from './MessageMarkdown'
+import { formatSize } from '@shared/fs-tree'
+import { useAppStore } from '../store'
 
 // 资源管理器（plan7 批 A 只读 → 批 A2 全功能）：工作区文件树 + 预览 + 写操作。
 //
@@ -39,9 +37,6 @@ interface Editing {
 }
 
 const parentOf = (rel: string): string => rel.split('/').slice(0, -1).join('/')
-
-/** Markdown 文件走富文本渲染（其余仍按纯文本预览） */
-const isMarkdown = (name: string): boolean => /\.(md|markdown)$/i.test(name)
 
 const ICON_PROPS = {
   viewBox: '0 0 16 16',
@@ -84,6 +79,7 @@ const ICONS: { file: ReactNode; dir: ReactNode; refresh: ReactNode; collapse: Re
 }
 
 export default function ExplorerPanel(): JSX.Element {
+  const wbOpenFile = useAppStore((s) => s.wbOpenFile)
   const [tree, setTree] = useState<TreeState>({
     children: {},
     expanded: new Set(),
@@ -92,10 +88,9 @@ export default function ExplorerPanel(): JSX.Element {
   })
   const [workspace, setWorkspace] = useState<string>('')
   const [selected, setSelected] = useState<FsEntry | null>(null)
-  const [preview, setPreview] = useState<{ content: string; truncated: boolean } | null>(null)
-  const [previewErr, setPreviewErr] = useState<string>('')
-  /** 预览区高度（可拖拽调整 —— 用户反馈「预览太小」） */
-  const [previewHeight, setPreviewHeight] = useState(PREVIEW_DEFAULT)
+  // plan9 W6：**预览不再住在资源管理器里** —— 点文件改为在右侧独立开一栏
+  //（FilePreviewPane）。所以这里的 preview / previewErr / previewHeight 全退役了，
+  // 连带 splitter.ts 里的 resizePreview（那个手柄只服务于"压在树底下"的旧形态）。
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null)
   const [editing, setEditing] = useState<Editing | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
@@ -165,22 +160,6 @@ export default function ExplorerPanel(): JSX.Element {
     return selected.kind === 'dir' ? selected.rel : parentOf(selected.rel)
   }
 
-  /** 预览区高度拖拽 —— 监听挂 document（挂手柄上鼠标一快就断）；换算走纯函数（可单测） */
-  const startResize = (e: ReactMouseEvent): void => {
-    e.preventDefault()
-    const startY = e.clientY
-    const startH = previewHeight
-    const onMove = (ev: MouseEvent): void => {
-      setPreviewHeight(resizePreview(startH, startY, ev.clientY))
-    }
-    const onUp = (): void => {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
   const toggleDir = async (entry: FsEntry): Promise<void> => {
     const expanded = new Set(tree.expanded)
     if (expanded.has(entry.rel)) {
@@ -193,20 +172,17 @@ export default function ExplorerPanel(): JSX.Element {
     if (!tree.children[entry.rel]) await loadDir(entry.rel)
   }
 
-  const openFile = async (entry: FsEntry): Promise<void> => {
+  /**
+   * 点文件 = 在**右侧独立开一栏**预览（plan9 W6）。
+   *
+   * 改造前预览是压在文件树底下的（只有半截高、还得拖手柄调高）；
+   * 现在交给工作台：复用已有的「纯文件栏」，没有就在最右新建一栏 ——
+   * 于是资源管理器那一栏可以安心只当"目录树"用（对齐 DSH 的形态）。
+   */
+  const openFile = (entry: FsEntry): void => {
     setSelected(entry)
-    setPreview(null)
-    setPreviewErr('')
-    if (!isTextPreviewable(entry.name)) {
-      setPreviewErr('这个文件按二进制处理，暂不支持预览')
-      return
-    }
-    const res = await window.api.readWorkspaceFile(entry.rel)
-    if (!res.ok) {
-      setPreviewErr(res.error ?? '读取失败')
-      return
-    }
-    setPreview({ content: res.content, truncated: res.truncated === true })
+    if (entry.kind !== 'file') return
+    wbOpenFile(entry.rel)
   }
 
   const runOp = async (
@@ -354,7 +330,7 @@ export default function ExplorerPanel(): JSX.Element {
             // 点目录也要**选中**：工具栏的"新建"落到选中的文件夹下
             setSelected(e)
             if (e.kind === 'dir') void toggleDir(e)
-            else void openFile(e)
+            else openFile(e)
           }}
           onDragOver={(ev) => {
             ev.preventDefault()
@@ -460,35 +436,6 @@ export default function ExplorerPanel(): JSX.Element {
         )}
       </div>
 
-      {selected && selected.kind === 'file' && (
-        <div className="ex-preview" style={{ height: previewHeight }}>
-          {/* 拖拽手柄：往上拖 = 预览变大（用户反馈"预览太小"） */}
-          <div className="ex-preview-resize" onMouseDown={startResize} title="拖动调整预览高度" />
-          <div className="ex-preview-head">
-            <span className="ex-preview-name" title={selected.rel}>
-              {selected.name}
-            </span>
-            <button className="ex-btn" onClick={() => setSelected(null)}>
-              关闭
-            </button>
-          </div>
-          {previewErr && <div className="ex-msg ex-err">{previewErr}</div>}
-          {preview && (
-            <>
-              {preview.truncated && <div className="ex-msg">文件较大，仅显示前 256 KB</div>}
-              {isMarkdown(selected.name) ? (
-                <div className="ex-preview-md">
-                  <MessageMarkdown content={preview.content} />
-                </div>
-              ) : (
-                <pre className="ex-pre">{preview.content}</pre>
-              )}
-            </>
-          )}
-          {!preview && !previewErr && <div className="ex-msg">读取中…</div>}
-        </div>
-      )}
-
       {menu && (
         <div className="ex-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
           {menu.entry === null ? (
@@ -515,7 +462,7 @@ export default function ExplorerPanel(): JSX.Element {
                     void openFile(e)
                   }}
                 >
-                  打开预览
+                  在右侧打开预览
                 </button>
               )}
               {menu.entry.kind === 'dir' && (
