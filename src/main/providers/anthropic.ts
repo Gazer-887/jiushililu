@@ -1,5 +1,6 @@
 import type { ChatMessage, ModelSettings, ReasoningEffort, TestResult } from '@shared/ipc'
 import { createSSEParser } from './sse'
+import { usageFromAnthropicEvent } from './usage-parsers'
 import { ProviderError, isAbortError, mapHttpError } from './errors'
 import { resolveApiUrl } from './url'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
@@ -107,6 +108,10 @@ export class AnthropicProvider implements IProvider {
         if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
           cb.onChunk(json.delta.text)
         }
+        // 用量**分两处报**（plan8 R9）：`message_start` 给输入、`message_delta` 给输出。
+        // 两处都收，交给上层累加 —— 只收一处会让账面少一半。
+        const usage = usageFromAnthropicEvent(json)
+        if (usage) cb.onUsage?.(usage)
       } catch {
         // 忽略无法解析的行
       }

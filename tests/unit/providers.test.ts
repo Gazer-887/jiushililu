@@ -65,8 +65,17 @@ describe('buildOpenAIChatBody', () => {
       messages: [{ role: 'user', content: 'hi' }],
       temperature: 0.3,
       max_tokens: 1024,
-      stream: true
+      stream: true,
+      // 流式**必须**显式请求 usage（plan8 R9）：不写这句，最后一个 chunk 里根本没有 usage，
+      // 这一轮就永远拿不到真实用量、只能靠估算
+      stream_options: { include_usage: true }
     })
+  })
+
+  it('**非流式不发 `stream_options`**（它是流式专用字段；非流式的 usage 本来就在响应体里）', () => {
+    const body = buildOpenAIChatBody(settings, [{ role: 'user', content: 'hi' }], false)
+    expect(body['stream_options']).toBeUndefined()
+    expect(body['stream']).toBe(false)
   })
 
   it('思考强度非 default 时发 reasoning_effort，default 不发', () => {

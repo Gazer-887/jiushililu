@@ -2,6 +2,7 @@ import type { ChatMessage, ModelSettings, TestResult } from '@shared/ipc'
 import { createSSEParser } from './sse'
 import { ProviderError, isAbortError, mapHttpError } from './errors'
 import { resolveApiUrl } from './url'
+import { usageFromOpenAIChunk } from './usage-parsers'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 
 // 纯函数：构造请求体（单元测试覆盖）
@@ -16,6 +17,9 @@ export function buildOpenAIChatBody(
     max_tokens: settings.maxTokens,
     stream
   }
+  // 流式必须**显式请求** usage（plan8 R9）：不写这句，最后一个 chunk 里根本没有 usage ——
+  // 那这一轮就永远拿不到真实用量，只能靠估算
+  if (stream) body['stream_options'] = { include_usage: true }
   // 采样三兄弟：留空（null）不发，跟随厂商默认
   if (settings.temperature != null) body['temperature'] = settings.temperature
   if (settings.topP != null) body['top_p'] = settings.topP
@@ -51,9 +55,12 @@ export class OpenAICompatibleProvider implements IProvider {
     if (!res.ok) await throwHttpError(res)
 
     if (!settings.stream || !res.body) {
-      const json = (await res.json()) as OpenAIChunk
-      const text = json.choices?.[0]?.message?.content ?? ''
+      const json = (await res.json()) as unknown
+      const text = (json as OpenAIChunk).choices?.[0]?.message?.content ?? ''
       if (text) cb.onChunk(text)
+      // 非流式：usage 就在同一个响应里（plan8 R9）
+      const u = usageFromOpenAIChunk(json)
+      if (u) cb.onUsage?.(u)
       return
     }
 
@@ -63,6 +70,10 @@ export class OpenAICompatibleProvider implements IProvider {
         const json = JSON.parse(data) as OpenAIChunk
         const delta = json.choices?.[0]?.delta?.content
         if (delta) cb.onChunk(delta)
+        // **流式的 usage 在最后一个 chunk**（且必须显式请求 stream_options.include_usage，见 buildOpenAIChatBody）
+        // 空 choices 的那一帧就是它 —— 不解析的话这一轮用量就彻底丢了
+        const u = usageFromOpenAIChunk(json)
+        if (u) cb.onUsage?.(u)
       } catch {
         // 心跳、注释等无法解析的行直接忽略
       }

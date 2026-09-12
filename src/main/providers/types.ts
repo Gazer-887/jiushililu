@@ -1,4 +1,5 @@
 import type { ChatMessage, ModelSettings, ProviderType, TestResult } from '@shared/ipc'
+import type { TokenUsage } from '@shared/usage'
 
 export interface ProviderRequest {
   settings: ModelSettings
@@ -9,6 +10,14 @@ export interface ProviderRequest {
 
 export interface StreamCallbacks {
   onChunk: (text: string) => void
+  /**
+   * **这一轮的真实用量**（plan8 R9）。
+   *
+   * 为什么是可选回调而不是返回值：流式接口的返回值被"跑完/抛错"占着，
+   * 而 usage 在流里**可能出现在最后、也可能根本不出现**（有的厂商不报）——
+   * 回调能把"有就收下、没有就算了"表达清楚，调用方也不必区分协议。
+   */
+  onUsage?: (usage: TokenUsage) => void
 }
 
 export interface IProvider {
