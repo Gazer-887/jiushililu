@@ -23,6 +23,35 @@ import { isExternallyOpenable, isInternalUrl } from './url-guard'
 // 主进程入口：窗口生命周期 + IPC 注册。Agent 内核将来跑在 worker_threads，不在这里（P1）。
 
 /**
+ * **单实例锁**（plan8 R13，2026-09-12 用户定案）——
+ *
+ * 为什么必须有：两个实例共享同一个数据目录，各自"读旧快照 → 整文件覆盖写"，
+ * **后写的把先写的整个抹掉**，而且是静默的（会话就这么少了）。
+ * 位置迁移（plan10 C 批）更要靠它：两个进程会**同时判"新目录是空的" → 同时复制**，
+ * 正好造出"两边都有、都对不上"的半迁移状态。
+ *
+ * 三个要点：
+ *   ① **锁按数据目录区分** —— `--user-data-dir` 不同的实例**互不影响**。
+ *      这一条对本项目很关键：冒烟测试与验证脚本全都跑在 `%TEMP%` 的隔离目录里，
+ *      加了锁之后它们照样能跑（否则每次都得先关掉主人的窗口）。
+ *   ② 拿不到锁的**第二个实例直接退出**，不是"再开一个窗口"。
+ *   ③ 第二个实例启动时把**已有窗口叫到前面** —— 用户的意图是"我要用它"，
+ *      结果应该是"它出现在我面前"，而不是"什么都没发生"。
+ */
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  // 已有实例在跑：本进程什么也不做，安静退出（不是崩溃，所以不打 ERROR）
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win || win.isDestroyed()) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  })
+}
+
+/**
  * 安全基线（plan8 R3）：主窗口「只能停在自家页面」。
  *
  * 两条都属 Electron 安全检查清单必做项，此前**都缺失**：
@@ -93,6 +122,11 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // 没拿到锁的第二个实例**到这里就停**：`app.quit()` 是异步的，而 ready 回调仍会跑到，
+  // 结果是它在退出的路上还初始化了一遍日志与异常兜底 —— 日志里会多出一条「应用启动」，
+  // 排查时看着像"开了两次却只有一次运行"。一行守卫换日志干净，值。
+  if (!gotTheLock) return
+
   const userDataDir = app.getPath('userData')
 
   // ① 日志系统（plan8 R2）：先于一切初始化，让后续所有环节都能留痕
