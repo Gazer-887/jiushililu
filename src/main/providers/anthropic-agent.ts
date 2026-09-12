@@ -6,6 +6,7 @@ import { thinkingBudgetFor } from './anthropic'
 import { createSSEParser } from './sse'
 import { usageFromAnthropicEvent } from './usage-parsers'
 import type { TokenUsage } from '@shared/usage'
+import { mergeUsageHalves } from '@shared/usage'
 import { ToolCallAccumulator } from './tool-accumulator'
 
 // Anthropic tool_use 适配（plan6 → P1）：把 OpenAI 风格的 Agent 消息翻译成 Anthropic 块结构。
@@ -216,8 +217,12 @@ export async function streamWithToolsAnthropic(
         delta?: { type?: string; text?: string; partial_json?: string }
       }
       // 两处都收：只收一处账面会少一半（输入那半在 message_start 里就报完了）
+      // ⚠️ 这里必须是**合并**，不能是覆盖 —— 原来的 `usage = evtUsage` 会让后到的
+      //    `message_delta`（只报输出）把 `message_start` 报的**输入量抹成 0**：
+      //    账面少一半，而日志里什么都看不出来（2026-09-13 修）。
+      //    合并规则（逐字段取有值的那份）见 `@shared/usage` 的 `mergeUsageHalves`。
       const evtUsage = usageFromAnthropicEvent(evt)
-      if (evtUsage) usage = evtUsage
+      if (evtUsage) usage = usage ? mergeUsageHalves(usage, evtUsage) : evtUsage
       if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
         acc.startAnthropic(
           evt.index ?? 0,

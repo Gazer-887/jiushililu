@@ -16,7 +16,8 @@
  *
  * - `--tasks=1|2`  跑几个任务（默认 2）
  * - `--arms=both|on|off`  跑哪几臂（默认 both）
- * - `--keep`  保留本次 userData（默认跑完删）
+ * - `--probe`  只跑**一句最小任务**，把厂商原始 usage 形状从日志里捞出来（plan8 R9.1 §七① 的核对手段）
+ * - `--keep`  保留夹具（默认跑完删掉）
  *
  * ## 两条铁律（写在这里免得后人踩）
  *
@@ -40,7 +41,15 @@
  * 这也是本项目的一条通用教训：**"加密落盘的钥匙"永远不能靠复制文件来迁移。**
  */
 const { spawn } = require('node:child_process')
-const { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
+const {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} = require('node:fs')
 const { join } = require('node:path')
 const { tmpdir } = require('node:os')
 
@@ -52,6 +61,7 @@ const ARG = (name, dflt) => {
 const TASKS = Number(ARG('tasks', '2'))
 const ARMS = String(ARG('arms', 'both')) === 'both' ? ['on', 'off'] : [String(ARG('arms', 'on'))]
 const KEEP = process.argv.includes('--keep')
+const PROBE = process.argv.includes('--probe')
 
 const BENCH = join(ROOT, '.bench-tool-window')
 const USER_UD = join(process.env.APPDATA || '', 'jiushililu')
@@ -95,6 +105,19 @@ const FIXTURES = () => {
   lines.push('exit code 1')
   writeFileSync(join(WS, 'jsl-bench-check.js'), `console.log(${JSON.stringify(lines.join('\n'))})\n`, 'utf8')
   writeFileSync(join(WS, 'jsl-bench-noisy.log'), lines.join('\n'), 'utf8')
+}
+
+/**
+ * `--probe` 用的**最小任务**：不调工具、只求一轮模型调用。
+ *
+ * 为什么单独一个：要核对的是**厂商报了什么字段**，那只需要一条真实响应。
+ * 用校准任务（读大文件/跑命令）去拿，等于为了看一个字段多烧几万 token。
+ */
+const PROBE_TASK = {
+  id: 'usage-probe',
+  prompt: '只回答两个字：收到',
+  needle: '收到',
+  why: '最小任务：只为拿一条厂商原始 usage'
 }
 
 const TASKSET = [
@@ -283,6 +306,43 @@ async function runArm(task, arm, port) {
   }
 }
 
+/**
+ * `--probe`：只求一件事 —— **厂商到底报了哪些 usage 字段**（plan8 R9.1 §七①）。
+ *
+ * 做法：跑**一句最小任务**（一轮模型调用），再从日志里捞 provider 探针打出的形状行。
+ * 探针只在**开发态落盘**（打包版日志级别是 info，debug 直接丢弃 —— 见 `src/main/index.ts`），
+ * 所以这个模式顺带也是个"探针还活着吗"的检查。
+ */
+async function probeUsage() {
+  const logPath = join(USER_UD, 'logs', 'app.log')
+  const before = existsSync(logPath) ? statSync(logPath).size : 0
+  console.log('[probe] 跑一句最小任务（一轮模型调用）…')
+  const row = await runArm(PROBE_TASK, 'on', 9222)
+  console.log(`      答=${JSON.stringify(String(row.text || '').slice(0, 60))}${row.error ? ` 错误=${row.error}` : ''}`)
+  console.log(`      厂商报的用量（解析后）=${row.usage ? JSON.stringify(row.usage) : '未报'}`)
+
+  let fresh = ''
+  try {
+    // ⚠️ 按**字节**切片：日志里全是中文，用字符下标切会错位（before 是 statSync 给的字节数）
+    fresh = readFileSync(logPath).subarray(before).toString('utf8')
+  } catch {
+    console.log(`      读不到日志：${logPath}`)
+  }
+  const shapeLines = fresh.split('\n').filter((l) => l.includes('[usage]'))
+  console.log('\n===== 厂商原始 usage 形状 =====')
+  if (shapeLines.length) for (const l of shapeLines) console.log(l.trim())
+  else console.log('（没捞到形状行 —— 先确认 npm run build 跑过、且用的是开发态启动）')
+
+  const outDir = join(ROOT, 'bench')
+  mkdirSync(outDir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const file = join(outDir, `usage-probe-${stamp}.log`)
+  writeFileSync(file, shapeLines.join('\n') + '\n', 'utf8')
+  console.log(`\n报告：${file}`)
+  // 拿到形状才算这次核对成功（没捞到 = 探针没生效，不能算通过）
+  return !row.error && shapeLines.length > 0
+}
+
 async function main() {
   if (!existsSync(join(ROOT, 'out', 'main', 'index.js'))) {
     console.error('缺少构建产物：先跑 npm run build')
@@ -292,6 +352,9 @@ async function main() {
   if (!ok) {
     console.error('真机配置不完整（缺 settings/models/密钥档案）—— 先在应用里把模型与 Key 配好再跑')
     process.exit(1)
+  }
+  if (PROBE) {
+    process.exit((await probeUsage()) ? 0 : 1)
   }
   // 夹具住进**当前工作区根目录**（`conv:create` 只认"正好等于当前工作区"或历史授权目录）
   for (const f of FIXTURE_FILES) rmSync(join(WS, f), { force: true })

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
 import { sourceLabel, type ModelsView } from '@shared/models'
-import { formatTokens, totalTokens } from '@shared/usage'
+import { cacheHitRate, formatRate, formatTokens, reasoningShare, totalTokens } from '@shared/usage'
 import type { GitInfo, PermissionPreset } from '@shared/ipc'
 
 // 输入框工具栏零件（P2 控制台）：模型切换 / 上下文圆环 / 权限档 / Git 分支 / 提示词优化。
@@ -60,9 +60,23 @@ export function UsageChip(): JSX.Element | null {
   if (!record) return null
 
   const { total, last, avoided } = record
+  /**
+   * 命中率与思考占比（plan8 R9.1 §七①）。两个都可能是 `null` = **厂商没报这个数**，
+   * 那时界面上什么都不显示（连 0% 都不写）—— 写 0% 等于替厂商宣布"一点没命中"。
+   * 但 `思考 0%` 是**会出现的**：厂商明确报了 `reasoning_tokens: 0`（这轮确实没思考）——
+   * 那是事实，该显示就显示。这两种 0 走的是两条路（见 @shared/usage 的注释）。
+   */
+  const hit = cacheHitRate(total)
+  const think = reasoningShare(total)
   const tip = [
     `本会话累计（厂商真实值）：${totalTokens(total)} tokens`,
     `输入 ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}`,
+    hit !== null
+      ? `其中前缀缓存命中：${formatTokens(total.cachedPromptTokens ?? 0)}（${formatRate(hit)}）`
+      : '前缀缓存命中：厂商未报',
+    think !== null
+      ? `输出里推理（思考）：${formatTokens(total.reasoningTokens ?? 0)}（${formatRate(think)}）`
+      : '输出里推理（思考）：厂商未报',
     last ? `最近一轮：${totalTokens(last)} tokens` : '',
     // ⚠️ 这一行必须**说清是估算**：它和上面那个"厂商真实值"不是一个来源，
     // 混着说不清，用户就没法判断哪个数字能信。
@@ -76,6 +90,8 @@ export function UsageChip(): JSX.Element | null {
       <span className="usage-total">{formatTokens(totalTokens(total))}</span>
       <span className="usage-unit">tok</span>
       {last && <span className="usage-last">+{formatTokens(totalTokens(last))}</span>}
+      {hit !== null && <span className="usage-rate">命中 {formatRate(hit)}</span>}
+      {think !== null && <span className="usage-rate">思考 {formatRate(think)}</span>}
       {avoided > 0 && <span className="usage-saved">省 {formatTokens(avoided)}</span>}
     </span>
   )

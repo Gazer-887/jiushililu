@@ -11,7 +11,7 @@ import type {
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
-import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
+import { addUsage, emptyUsage, mergeOptionalMax, type TokenUsage } from '@shared/usage'
 import { estimateMessageTokens } from '@shared/tokens'
 import {
   DOCK_DEFAULT,
@@ -317,10 +317,19 @@ function mergeUsage(
     const storedAvoided = m.avoidedTokens ?? 0
     if (!stored && storedAvoided === 0) continue
     const cur: ConversationUsage | undefined = (next ?? prev)[m.id]
+    /**
+     * 缓存命中 / 推理量（plan8 R9.1 §七①）走**取大**合并，与下面那两个主计数同一个道理：
+     * 任一来源报过就是"已知"，两边都报就取大的（覆盖会让数字倒退）。
+     * 两边都没报才保持未知 —— 那时界面显示"—"，**不写 0**。
+     */
+    const cached = mergeOptionalMax(cur?.total.cachedPromptTokens, stored?.cachedPromptTokens)
+    const reasoning = mergeOptionalMax(cur?.total.reasoningTokens, stored?.reasoningTokens)
     const total: TokenUsage = cur
       ? {
           promptTokens: Math.max(cur.total.promptTokens, stored?.promptTokens ?? 0),
-          completionTokens: Math.max(cur.total.completionTokens, stored?.completionTokens ?? 0)
+          completionTokens: Math.max(cur.total.completionTokens, stored?.completionTokens ?? 0),
+          ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
+          ...(reasoning === undefined ? {} : { reasoningTokens: reasoning })
         }
       : (stored ?? { promptTokens: 0, completionTokens: 0 })
     const avoided = Math.max(cur?.avoided ?? 0, storedAvoided)
@@ -328,6 +337,8 @@ function mergeUsage(
       cur &&
       total.promptTokens === cur.total.promptTokens &&
       total.completionTokens === cur.total.completionTokens &&
+      (total.cachedPromptTokens ?? null) === (cur.total.cachedPromptTokens ?? null) &&
+      (total.reasoningTokens ?? null) === (cur.total.reasoningTokens ?? null) &&
       avoided === cur.avoided
     if (same) continue
     next = { ...(next ?? prev), [m.id]: { total, last: cur?.last ?? null, avoided } }

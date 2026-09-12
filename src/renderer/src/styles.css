@@ -2661,6 +2661,13 @@ label.radio {
   font-size: var(--fs-xs);
 }
 
+/* 命中率 / 思考占比（plan8 R9.1 §七①）：厂商报了才渲染，没报**整块不出**（绝不写 0%）。
+   色调与"增量"同级 —— 它们是解释数字的注脚，不是主账。 */
+.usage-rate {
+  margin-left: var(--sp-2);
+  color: var(--muted);
+}
+
 /* 圆形发送键 */
 .send-btn {
   display: flex;

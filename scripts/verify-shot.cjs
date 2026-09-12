@@ -3577,11 +3577,14 @@ app.whenReady().then(async () => {
     win.webContents.executeJavaScript(`
       (() => {
         const el = document.querySelector('.usage-chip')
-        if (!el) return { total: null, last: null, saved: null, title: '' }
+        if (!el) return { total: null, last: null, saved: null, rates: [], title: '' }
         return {
           total: el.querySelector('.usage-total')?.textContent ?? null,
           last: el.querySelector('.usage-last')?.textContent ?? null,
           saved: el.querySelector('.usage-saved')?.textContent ?? null,
+          // 命中率 / 思考占比（plan8 R9.1 §七①）：两块可能都在、只在一块、或一块都没有
+          // （"一块都没有"正是**厂商没报**那一档 —— 那时不许冒出 0%）
+          rates: Array.from(el.querySelectorAll('.usage-rate')).map((n) => n.textContent),
           title: el.getAttribute('title') ?? ''
         }
       })()
@@ -3592,17 +3595,26 @@ app.whenReady().then(async () => {
     chipNull.total === null, chipNull)
 
   // 真报一轮：1200 + 340 = 1540 → 显示 1.5k
+  // 缓存/推理都**明确报 0**（模拟"厂商说了：这一轮没命中缓存、也没思考"）——
+  // 它们该显示 0%，而不是被当成"没报"藏起来（plan8 R9.1 §七① 的口径）
   win.webContents.send('chat:done', {
     conversationId: 'c1',
-    payload: { usage: { promptTokens: 1200, completionTokens: 340 }, avoided: 4800 }
+    payload: {
+      usage: { promptTokens: 1200, completionTokens: 340, cachedPromptTokens: 0, reasoningTokens: 0 },
+      avoided: 4800
+    }
   })
   await new Promise((r) => setTimeout(r, 500))
   const chip1 = await readUsageChip()
 
   // 再来一轮：+1000 → 累计 2540 → 2.5k。**这条才是"累计"的判据**
+  // 这一轮的命中量 800 / 累计输入 2000 = 40%；推理 200 / 累计输出 540 = 37%
   win.webContents.send('chat:done', {
     conversationId: 'c1',
-    payload: { usage: { promptTokens: 800, completionTokens: 200 }, avoided: 400 }
+    payload: {
+      usage: { promptTokens: 800, completionTokens: 200, cachedPromptTokens: 800, reasoningTokens: 200 },
+      avoided: 400
+    }
   })
   await new Promise((r) => setTimeout(r, 500))
   const chip2 = await readUsageChip()
@@ -3619,6 +3631,11 @@ app.whenReady().then(async () => {
     chip2.saved === '省 5.2k' && chip2.total === '2.5k', chip2)
   checkTrue('悬停说明把"省下的量"标成**本地估算**（它和厂商账不是一个来源）',
     chip2.title.includes('本地估算'), chip2.title)
+  // plan8 R9.1 §七①：命中率 / 思考占比 —— 厂商**报了**才有资格出现
+  checkTrue('厂商报了 0 → 显示 `命中 0%` / `思考 0%`（"真 0"是事实，不许当成"没报"藏掉）',
+    chip1.rates.length === 2 && chip1.rates[0] === '命中 0%' && chip1.rates[1] === '思考 0%', chip1.rates)
+  checkTrue('第二轮按**累计**算命中率（800/2000 = 40%；推理 200/540 = 37%）',
+    chip2.rates.length === 2 && chip2.rates[0] === '命中 40%' && chip2.rates[1] === '思考 37%', chip2.rates)
 
   // 落盘那一环：界面记账只是"看得见"，**写进会话索引**才是"记得住"。
   // 这条盯的是渲染端→主进程的**载荷**（主进程侧的读写由单测钉着，两边各管一段）。
@@ -3626,6 +3643,24 @@ app.whenReady().then(async () => {
   checkTrue('`conv:save` 的载荷**带上了账本**（否则一重启"本会话累计"就归零 —— 那数字会骗人）',
     savedUsage?.promptTokens === 2000 && savedUsage?.completionTokens === 540,
     savedUsage)
+
+  // 混进一轮**没报缓存字段**的（模拟换到不报这个数的端点）→ 累计命中率变成"不知道"，
+  // 整块**消失**，而不是写一个 0%（那等于替厂商宣布"一点没命中"）。
+  // 宁可没有数字，也不给假数字 —— 这是档位开关也改不了的那条正确性红线。
+  //
+  // ⚠️ payload 里必须是**显式 null**：那才是"厂商没报"在真实链路上的形态
+  // （解析器没报就写 null）。省略键是另一回事 —— 它表示"这份账不含这条信息"，
+  // 累加时会跳过，老数据靠它保持兼容（见 @shared/usage 的 addOptional 表）。
+  win.webContents.send('chat:done', {
+    conversationId: 'c1',
+    payload: {
+      usage: { promptTokens: 100, completionTokens: 20, cachedPromptTokens: null, reasoningTokens: null }
+    }
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  const chip3 = await readUsageChip()
+  checkTrue('有一轮没报缓存 → 命中率整块消失（不写 0%），但主计数照常累计（2100+560 = 2.7k）',
+    chip3.rates.length === 0 && chip3.total === '2.7k' && chip3.last === '+120', chip3)
 
   reportAndExit()
 })
