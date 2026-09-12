@@ -67,6 +67,12 @@ export interface TestResult {
 export interface AgentRunRequest {
   task: string
   agentName?: string
+  /**
+   * 这次跑属于哪条会话（plan11）。
+   * 单次 Agent 调用（plan6 D3/D4）本就没有对话上下文，故**可选**；
+   * 缺省时主进程会记成一个明确的哨兵值，而不是留空 —— 出事时要能查"这轮是谁跑的"。
+   */
+  conversationId?: string
 }
 
 /** 工作区信息（P2）：Agent 可读写的边界目录，由用户显式选择 */
@@ -273,6 +279,11 @@ export const IPC = {
   subagentChanged: 'subagent:changed',
   /** 界面 → 主进程：挂载时拉一次 */
   subagentGet: 'subagent:get',
+  // ── 关窗口前的会话落盘（plan11 P0-2）──
+  /** 主进程 → 界面：要关窗口了，先把所有在跑的会话落盘 */
+  flushRequest: 'app:flush-request',
+  /** 界面 → 主进程：落盘完成（主进程收到才真关） */
+  flushDone: 'app:flush-done',
   // ── 工作区文件树（plan7 批 A，只读）──
   fsList: 'fs:list',
   fsRead: 'fs:read',
@@ -328,6 +339,22 @@ export type { SubagentJobEvent } from './agent'
 export type { BackgroundTask } from './background'
 
 /**
+ * **流式事件信封**（plan11 §2.1）。
+ *
+ * 所有流式/推送通道一律走这个信封：`conversationId` 说明"这条事件属于哪一轮跑"，
+ * 载荷放里面。有了它，界面在**切会话之后仍然知道每个字该落到哪条会话**——
+ * 这也正是并发的前提（没有身份，两个会话的字就会互相串）。
+ *
+ * ⚠️ 这不只是"多带一个字段"：主进程里**只有 `main/chat-emitter.ts` 一个文件**
+ * 能发流式事件，而它把 `conversationId` 在构造时闭包捕获 ——
+ * **漏带 id 在结构上不可能发生**（守常见 `tests/unit/stream-envelope.test.ts`）。
+ */
+export interface StreamEnvelope<T> {
+  conversationId: string
+  payload: T
+}
+
+/**
  * 危险操作确认请求（plan8 R5）。
  *
  * 说明：权限档管"能碰什么"（粗粒度、事先设定），本机制管"这一次要不要"（细粒度、当场决定）。
@@ -344,6 +371,12 @@ export interface ToolConfirmRequest {
   agent: string
   /** 会影响的位置（如工作区路径） */
   where: string
+  /**
+   * 哪条会话在问（plan11 P0-3）。
+   * 并发时用户必须一眼看出"我正在批的是**哪条会话**的命令" ——
+   * 否则单槽确认框会把 A 的内容换成 B，而他以为批的是看过的那一条。
+   */
+  conversationId: string
   /**
    * 确认的种类 —— 界面据此说**不同的话**。
    *
@@ -383,14 +416,18 @@ export interface ApiBridge {
   saveSettings(input: SettingsSaveInput): Promise<SettingsView>
   testConnection(input: SettingsSaveInput): Promise<TestResult>
   setModel(model: string): Promise<SettingsView>
-  chatSend(messages: ChatMessage[]): Promise<void>
-  chatAbort(): Promise<void>
-  onChatChunk(cb: (text: string) => void): () => void
+  chatSend(input: { conversationId: string; messages: ChatMessage[] }): Promise<void>
+  /**
+   * 停止**指定会话**的生成（plan11）。
+   * 参数从"无"改成必填：并发时"停止"必须指名道姓 —— 不指名就是停错会话。
+   */
+  chatAbort(conversationId: string): Promise<void>
+  onChatChunk(cb: (e: StreamEnvelope<string>) => void): () => void
   /** 思考增量（DeepSeek 系 reasoning_content）—— 界面显示"思考过程" */
-  onChatReasoning(cb: (delta: string) => void): () => void
-  onChatDone(cb: () => void): () => void
-  onChatError(cb: (message: string) => void): () => void
-  onChatTool(cb: (evt: import('./agent').ToolEvent) => void): () => void
+  onChatReasoning(cb: (e: StreamEnvelope<string>) => void): () => void
+  onChatDone(cb: (e: StreamEnvelope<null>) => void): () => void
+  onChatError(cb: (e: StreamEnvelope<string>) => void): () => void
+  onChatTool(cb: (e: StreamEnvelope<import('./agent').ToolEvent>) => void): () => void
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
   getWorkspace(): Promise<WorkspaceInfo>
   pickWorkspace(): Promise<WorkspaceInfo | null>
@@ -451,10 +488,10 @@ export interface ApiBridge {
   /** 回滚：不传 rel 即整轮回滚 */
   rollbackCheckpoint(runId: string, rel?: string): Promise<RollbackReport>
   /** 一轮运行结束后触发（界面刷新用） */
-  onCheckpointChanged(cb: (runId: string) => void): () => void
+  onCheckpointChanged(cb: (e: StreamEnvelope<string>) => void): () => void
   // ── 危险操作逐次确认（plan8 R5）──
-  /** 收到确认请求（界面弹对话框） */
-  onToolConfirmRequest(cb: (req: ToolConfirmRequest) => void): () => void
+  /** 收到确认请求（界面弹对话框）—— 载荷里带 `conversationId`，用户才知道自己在批谁的 */
+  onToolConfirmRequest(cb: (req: ToolConfirmRequest & { conversationId: string }) => void): () => void
   /** 回传用户答复；无人应答时主进程超时按拒绝处理 */
   respondToolConfirm(result: ToolConfirmResult): Promise<void>
   // ── 界面布局偏好（plan7 批 A0）──
@@ -502,11 +539,15 @@ export interface ApiBridge {
    */
   getPathForFile(file: { name: string }): string
   // ── 待办清单（plan7 批 D 提前落地）──
-  /** 当前清单：组件挂载时拉一次，之后靠 onTodoChanged 推送 */
-  getTodos(): Promise<TodoItem[]>
-  onTodoChanged(cb: (todos: TodoItem[]) => void): () => void
+  /** 指定会话的清单：组件挂载 / 切会话时拉一次，之后靠 onTodoChanged 推送 */
+  getTodos(conversationId: string): Promise<TodoItem[]>
+  onTodoChanged(cb: (e: StreamEnvelope<TodoItem[]>) => void): () => void
   // ── 子代理运行（plan7 批 D：右栏「任务」页签）──
-  /** 最近一批子代理的运行事件（挂载时拉一次，之后靠推送） */
-  getSubagents(): Promise<SubagentJobEvent[]>
-  onSubagentChanged(cb: (list: SubagentJobEvent[]) => void): () => void
+  /** 指定会话最近一批子代理的运行事件（挂载 / 切会话时拉一次，之后靠推送） */
+  getSubagents(conversationId: string): Promise<SubagentJobEvent[]>
+  onSubagentChanged(cb: (e: StreamEnvelope<SubagentJobEvent[]>) => void): () => void
+  // ── 关窗口前的会话落盘（plan11 P0-2）──
+  /** 主进程要关窗口了：渲染端把所有在跑的会话落盘，然后回执 */
+  onFlushRequest(cb: () => void): () => void
+  flushDone(): Promise<void>
 }

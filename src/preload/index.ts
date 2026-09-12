@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
+import type { StreamEnvelope } from '@shared/ipc'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import {
@@ -32,13 +33,16 @@ const api: ApiBridge = {
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
   saveSettings: (input: SettingsSaveInput) => ipcRenderer.invoke(IPC.settingsSave, input),
   testConnection: (input: SettingsSaveInput) => ipcRenderer.invoke(IPC.settingsTest, input),
-  chatSend: (messages: ChatMessage[]) => ipcRenderer.invoke(IPC.chatSend, messages),
-  chatAbort: () => ipcRenderer.invoke(IPC.chatAbort),
-  onChatChunk: (cb) => subscribe(IPC.chatChunk, (text) => cb(text as string)),
-  onChatReasoning: (cb) => subscribe(IPC.chatReasoning, (delta) => cb(delta as string)),
-  onChatDone: (cb) => subscribe(IPC.chatDone, () => cb()),
-  onChatError: (cb) => subscribe(IPC.chatError, (message) => cb(message as string)),
-  onChatTool: (cb) => subscribe(IPC.chatTool, (evt) => cb(evt as ToolEvent)),
+  chatSend: (input: { conversationId: string; messages: ChatMessage[] }) =>
+    ipcRenderer.invoke(IPC.chatSend, input),
+  chatAbort: (conversationId: string) => ipcRenderer.invoke(IPC.chatAbort, conversationId),
+  // ⚠️ 流式订阅**必须原样透传信封**（plan11 P0-5）：以前这里写的是 `cb(text as string)`，
+  //    主进程就算带了会话身份，也会在**这一行**被悄悄丢掉 —— 而"看起来一切正常"。
+  onChatChunk: (cb) => subscribe(IPC.chatChunk, (e) => cb(e as StreamEnvelope<string>)),
+  onChatReasoning: (cb) => subscribe(IPC.chatReasoning, (e) => cb(e as StreamEnvelope<string>)),
+  onChatDone: (cb) => subscribe(IPC.chatDone, (e) => cb(e as StreamEnvelope<null>)),
+  onChatError: (cb) => subscribe(IPC.chatError, (e) => cb(e as StreamEnvelope<string>)),
+  onChatTool: (cb) => subscribe(IPC.chatTool, (e) => cb(e as StreamEnvelope<ToolEvent>)),
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
   setModel: (model: string) => ipcRenderer.invoke(IPC.settingsSetModel, model),
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
@@ -77,9 +81,10 @@ const api: ApiBridge = {
   getCheckpoint: (runId: string) => ipcRenderer.invoke(IPC.checkpointGet, runId),
   rollbackCheckpoint: (runId: string, rel?: string) =>
     ipcRenderer.invoke(IPC.checkpointRollback, rel === undefined ? { runId } : { runId, rel }),
-  onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (id) => cb(id as string)),
+  onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (e) => cb(e as StreamEnvelope<string>)),
   // ── 危险操作逐次确认（plan8 R5）──
-  onToolConfirmRequest: (cb) => subscribe(IPC.confirmRequest, (req) => cb(req as ToolConfirmRequest)),
+  onToolConfirmRequest: (cb) =>
+    subscribe(IPC.confirmRequest, (req) => cb(req as ToolConfirmRequest & { conversationId: string })),
   respondToolConfirm: (result) => ipcRenderer.invoke(IPC.confirmRespond, result),
   // ── 界面布局偏好（plan7 批 A0）──
   getUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsGet),
@@ -105,12 +110,16 @@ const api: ApiBridge = {
   // 只能在 preload 里用 webUtils（渲染进程够不到这个能力）
   getPathForFile: (file) => webUtils.getPathForFile(file as File),
   // ── 待办清单（plan7 批 D 提前落地）──
-  getTodos: () => ipcRenderer.invoke(IPC.todoGet),
-  onTodoChanged: (cb) => subscribe(IPC.todoChanged, (todos) => cb(todos as TodoItem[])),
+  getTodos: (conversationId: string) => ipcRenderer.invoke(IPC.todoGet, conversationId),
+  onTodoChanged: (cb) =>
+    subscribe(IPC.todoChanged, (e) => cb(e as StreamEnvelope<TodoItem[]>)),
   // ── 子代理运行（plan7 批 D）──
-  getSubagents: () => ipcRenderer.invoke(IPC.subagentGet),
+  getSubagents: (conversationId: string) => ipcRenderer.invoke(IPC.subagentGet, conversationId),
   onSubagentChanged: (cb) =>
-    subscribe(IPC.subagentChanged, (list) => cb(list as SubagentJobEvent[])),
+    subscribe(IPC.subagentChanged, (e) => cb(e as StreamEnvelope<SubagentJobEvent[]>)),
+  // ── 关窗口前的会话落盘（plan11 P0-2）──
+  onFlushRequest: (cb) => subscribe(IPC.flushRequest, () => cb()),
+  flushDone: () => ipcRenderer.invoke(IPC.flushDone),
   // ── 后台任务（plan7 批 D）──
   listBackgroundTasks: () => ipcRenderer.invoke(IPC.bgList),
   killBackgroundTask: (id) => ipcRenderer.invoke(IPC.bgKill, id),

@@ -43,7 +43,8 @@ import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
-import { chatMessagesSchema, incomingMessagesSchema, settingsSchema, storedMessagesSchema } from './schemas'
+import { chatSendInputSchema, conversationIdSchema, incomingMessagesSchema, settingsSchema, storedMessagesSchema } from './schemas'
+import { createChatEmitter } from './chat-emitter'
 import {
   BUILTIN_TYPES,
   DIRTY_MAX_LEN,
@@ -133,7 +134,18 @@ import { normalizeHistory } from './store/conversations-core'
 // 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。
 // schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
 
-const activeChats = new Map<number, AbortController>()
+/**
+ * 进行中的对话，**按会话**记（plan11 §2.1）。
+ *
+ * 以前 key 是 `e.sender.id`（窗口）—— 一个窗口同时只能跑一条会话。
+ * 现在按 `conversationId` 记：**同会话重复发送 → 拒绝；跨会话 → 放行**。
+ *
+ * ⚠️ **总并发上限当前锁在 1**（`MAX_CONCURRENT_CHATS`）：
+ * plan11 §三 的顺序是"**落盘先修好，再放开并发**" —— 后台会话整轮丢失那个洞没堵上之前
+ * 放开并发 = 一半的活白跑。等落盘那一段的测试绿了，这里才改成 3。
+ */
+const activeChats = new Map<string, AbortController>()
+const MAX_CONCURRENT_CHATS = 1
 /** Agent 循环并发闸（按窗口）：同时只允许一个 Agent 任务 */
 const activeAgents = new Set<number>()
 
@@ -141,18 +153,29 @@ const activeAgents = new Set<number>()
  * 当前待办清单（plan7 批 D 提前落地）：**主进程内存态，不落盘** ——
  * 它表达的是"这一轮干到哪了"的即时视图，不是历史数据，重开应用从空开始符合直觉。
  * 存主进程而非渲染端：界面会随视图切换重挂载，清单不该跟着丢。
+ *
+ * plan11：改成**按会话**存 —— 以前是模块级单例，两条会话的清单会互相顶掉。
  */
-let currentTodos: TodoItem[] = []
+const todosByConversation = new Map<string, TodoItem[]>()
 
 /**
  * 最近一批子代理的运行事件（plan7 批 D）：同一 runId 内按 name+index **就地更新** ——
  * start 先落一条，end/error 到了覆盖它（与界面里"进行中 → 已完成"是同一件事）。
  * 换批次（新 runId）则清空重来：界面显示的是"当前这批"，不是历史台账。
+ *
+ * plan11：同样**按会话**存（单例会被另一条会话的子代理事件顶掉）。
  */
-let subagentEvents: SubagentJobEvent[] = []
-let subagentRunId: string | null = null
+const subagentsByConversation = new Map<string, { runId: string | null; events: SubagentJobEvent[] }>()
 
 const log = createLogger('ipc')
+
+/**
+ * 检查点轮次的**归属哨兵**（plan11 P0-11）：`begin` 的第三参必须给得出答案。
+ * 界面直接发起的文件操作不属于任何会话，单次 Agent 调用也没有对话上下文 ——
+ * 两者都记成明确的哨兵，而不是留空（留空 = 出事时查不出"这轮是谁跑的"）。
+ */
+const UI_RUN_OWNER = 'ui'
+const AGENT_TASK_OWNER = 'agent-task'
 
 // 把 zod 的英文校验错误翻译成人话（设置页直接展示，不再甩原始 JSON）
 const fieldLabels: Record<string, string> = {
@@ -197,6 +220,8 @@ export function registerIpcHandlers(deps: {
   userDataDir: string
   /** 危险操作确认桥（plan8 R5） */
   confirm: ConfirmBridge
+  /** 渲染端回报"要关窗口前的落盘已完成"（plan11 P0-2）—— 主进程收到才真关 */
+  onFlushDone?: () => void
 }): void {
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
 
@@ -227,21 +252,31 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.chatSend, async (e, raw: unknown) => {
-    const messages = friendlyParse(chatMessagesSchema, raw) as ChatMessage[]
+    const input = friendlyParse(chatSendInputSchema, raw)
+    const conversationId = input.conversationId
+    const messages = input.messages as ChatMessage[]
     const settings = getSettingsView()
 
-    // IPC 层并发防护：渲染层的 streaming 标志只是软约束，这里才是硬闸
-    if (activeChats.has(e.sender.id)) {
-      e.sender.send(IPC.chatError, '已有任务在进行：请先点「停止」或等待完成')
+    // 这一轮所有事件的**唯一发送口**：会话身份在构造时进了闭包，之后不可能漏（plan11 §2.5）
+    const emit = createChatEmitter(e.sender, conversationId)
+
+    // IPC 层并发防护：渲染层的 streaming 标志只是软约束，这里才是硬闸。
+    // 同会话重复 → 拒；跨会话 → 放行（上限见 MAX_CONCURRENT_CHATS）
+    if (activeChats.has(conversationId)) {
+      emit.error('这条会话已经在跑了：请先点「停止」或等它完成')
+      return
+    }
+    if (activeChats.size >= MAX_CONCURRENT_CHATS) {
+      emit.error(`同时最多跑 ${MAX_CONCURRENT_CHATS} 条会话：等有会话跑完再发`)
       return
     }
 
     if (!settings.baseURL || !settings.model) {
-      e.sender.send(IPC.chatError, '还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
+      emit.error('还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
       return
     }
     if (!hasApiKey()) {
-      e.sender.send(IPC.chatError, '还没有保存 API Key：请先到「设置」页填写并保存')
+      emit.error('还没有保存 API Key：请先到「设置」页填写并保存')
       return
     }
 
@@ -252,7 +287,7 @@ export function registerIpcHandlers(deps: {
       timedOut = true
       controller.abort()
     }, settings.timeoutMs)
-    activeChats.set(e.sender.id, controller)
+    activeChats.set(conversationId, controller)
 
     // D-032：单一通道——带工具清单 + 流式，由模型自决"直接回答还是先调工具"。
     // 文本增量 → chat:chunk（上屏）；工具生命周期 → chat:tool（进度卡片）。
@@ -262,69 +297,78 @@ export function registerIpcHandlers(deps: {
         apiKey,
         history: messages as AgentMessage[],
         permission: getPermissionPreset(),
-        onText: (delta) => {
-          if (!e.sender.isDestroyed()) e.sender.send(IPC.chatChunk, delta)
-        },
+        conversationId,
+        onText: (delta) => emit.chunk(delta),
         // 思考流单独走一条通道：界面把它显示成"思考过程"，不与正文混在一起
-        onReasoning: (delta) => {
-          if (!e.sender.isDestroyed()) e.sender.send(IPC.chatReasoning, delta)
-        },
-        onToolEvent: (evt) => {
-          if (!e.sender.isDestroyed()) e.sender.send(IPC.chatTool, evt)
-        },
+        onReasoning: (delta) => emit.reasoning(delta),
+        onToolEvent: (evt) => emit.tool(evt),
         // 待办清单（plan7 批 D）：先存主进程，再推给界面 —— 界面重挂载后仍能拉到
         onTodos: (todos) => {
-          currentTodos = todos
-          if (!e.sender.isDestroyed()) e.sender.send(IPC.todoChanged, todos)
+          todosByConversation.set(conversationId, todos)
+          emit.todos(todos)
         },
         // 子代理事件（plan7 批 D）：同批内就地更新，换批则重开
         onSubagentEvent: (evt) => {
-          if (subagentRunId !== evt.runId) {
-            subagentRunId = evt.runId
-            subagentEvents = []
+          const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
+          if (state.runId !== evt.runId) {
+            state.runId = evt.runId
+            state.events = []
           }
-          const idx = subagentEvents.findIndex((x) => x.name === evt.name && x.index === evt.index)
-          const next = subagentEvents.slice()
+          const idx = state.events.findIndex((x) => x.name === evt.name && x.index === evt.index)
+          const next = state.events.slice()
           if (idx >= 0) next[idx] = evt
           else next.push(evt)
-          subagentEvents = next
-          if (!e.sender.isDestroyed()) e.sender.send(IPC.subagentChanged, subagentEvents)
+          state.events = next
+          subagentsByConversation.set(conversationId, state)
+          emit.subagents(next)
         },
         signal: controller.signal
       })
       // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
-      if (result.changedFiles > 0 && !e.sender.isDestroyed()) {
-        e.sender.send(IPC.checkpointChanged, result.runId)
-      }
-      if (!e.sender.isDestroyed()) e.sender.send(IPC.chatDone)
+      if (result.changedFiles > 0) emit.checkpoint(result.runId)
+      emit.done()
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {
+        conversationId,
         timedOut,
         model: settings.model,
         error: err instanceof Error ? err.message : String(err)
       })
-      if (!e.sender.isDestroyed()) {
-        e.sender.send(IPC.chatError, friendlyChatError(err, timedOut, settings.timeoutMs))
-      }
+      emit.error(friendlyChatError(err, timedOut, settings.timeoutMs))
     } finally {
       clearTimeout(timer)
-      activeChats.delete(e.sender.id)
+      activeChats.delete(conversationId)
     }
   })
 
-  ipcMain.handle(IPC.chatAbort, (e) => {
-    activeChats.get(e.sender.id)?.abort()
+  ipcMain.handle(IPC.chatAbort, (_e, raw: unknown) => {
+    // 并发之后"停止"必须指名道姓 —— 不指名就是停错会话
+    const conversationId = friendlyParse(conversationIdSchema, raw)
+    activeChats.get(conversationId)?.abort()
+  })
+
+  // 关窗口前的落盘回执（plan11 P0-2）：主进程收到它才真关窗口
+  ipcMain.handle(IPC.flushDone, () => {
+    deps.onFlushDone?.()
   })
 
   // 待办清单：界面挂载时拉一次当前值（之后靠 chatSend 里的推送更新）
-  ipcMain.handle(IPC.todoGet, (): TodoItem[] => currentTodos)
-  ipcMain.handle(IPC.subagentGet, (): SubagentJobEvent[] => subagentEvents)
+  ipcMain.handle(IPC.todoGet, (_e, raw: unknown): TodoItem[] => {
+    const id = friendlyParse(conversationIdSchema, raw)
+    return todosByConversation.get(id) ?? []
+  })
+  ipcMain.handle(IPC.subagentGet, (_e, raw: unknown): SubagentJobEvent[] => {
+    const id = friendlyParse(conversationIdSchema, raw)
+    return subagentsByConversation.get(id)?.events ?? []
+  })
 
   // Agent 模式（plan6 D3/D4）：独立上下文 + 单次报告，不走流式
   const agentRunInput = z.object({
     task: z.string().min(1).max(200000),
-    agentName: z.string().max(64).optional()
+    agentName: z.string().max(64).optional(),
+    // 归属（plan11）：可选，缺省由主进程记成哨兵值
+    conversationId: conversationIdSchema.optional()
   })
   const failResult = (agent: string, error: string): AgentRunResult => ({
     ok: false, output: '', rounds: 0, stopReason: 'error', agent, error
@@ -332,9 +376,13 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.agentRun, async (e, raw: unknown): Promise<AgentRunResult> => {
     // 入参校验走 friendlyParse（人话错误），且失败也返回 AgentRunResult 而非抛裸 ZodError
-    let req: { task: string; agentName?: string }
+    let req: { task: string; agentName?: string; conversationId?: string }
     try {
-      req = friendlyParse(agentRunInput, raw) as { task: string; agentName?: string }
+      req = friendlyParse(agentRunInput, raw) as {
+        task: string
+        agentName?: string
+        conversationId?: string
+      }
     } catch (err) {
       return failResult('内核默认', err instanceof Error ? err.message : String(err))
     }
@@ -356,7 +404,9 @@ export function registerIpcHandlers(deps: {
         settings,
         apiKey,
         history: [{ role: 'user', content: req.task }],
-        agentName: req.agentName
+        agentName: req.agentName,
+        // 单次 Agent 调用没有对话上下文：记一个**明确的哨兵**，不留空 —— 出事时要能追溯
+        conversationId: req.conversationId ?? AGENT_TASK_OWNER
       })
       return {
         ok: result.stopReason === 'completed',
@@ -496,7 +546,9 @@ export function registerIpcHandlers(deps: {
       tool: '会话回滚',
       detail: `回到第 ${target + 1} 条消息之前 —— 之后 ${hidden} 条将从对话里隐去（可撤销）`,
       agent: current.title,
-      where: `仅回滚对话消息，不影响工作区里的文件`
+      where: `仅回滚对话消息，不影响工作区里的文件`,
+      // 这条回滚属于哪条会话 —— 确认框要显示出来（plan11 P0-3）
+      conversationId: id
     })
     if (!allowed) return null
     const outcome = rollbackConversation(id, target)
@@ -513,8 +565,8 @@ export function registerIpcHandlers(deps: {
     const input = z
       .object({ id: z.string().min(1).max(64), toIndex: z.number().int().min(0).max(100000) })
       .parse(raw)
-    if (activeChats.has(e.sender.id)) {
-      throw new Error('正在生成回复：请先等它结束、或点「停止」，再回滚')
+    if (activeChats.has(input.id)) {
+      throw new Error('这条会话正在生成回复：请先等它结束、或点「停止」，再回滚')
     }
     return doRollback(input.id, input.toIndex)
   })
@@ -767,7 +819,9 @@ export function registerIpcHandlers(deps: {
     fn: (writer: WorkspaceWriter) => Promise<string>
   ): Promise<FsOpResult> => {
     const workspaceRoot = deps.agent.getWorkspaceRoot()
-    const runId = deps.agent.checkpoints.begin(workspaceRoot, label)
+    // 界面直接发起的文件操作（新建 / 改名 / 删除）不属于任何一条会话 ——
+    // 用一个**明确的哨兵**记归属，而不是留空：检查点里"这轮是谁跑的"必须永远答得出来
+    const runId = deps.agent.checkpoints.begin(workspaceRoot, label, UI_RUN_OWNER)
     const writer = createWorkspaceWriter(workspaceRoot, {
       beforeChange: (rel, abs) => deps.agent.checkpoints.record(runId, workspaceRoot, rel, abs),
       trash: (abs) => shell.trashItem(abs)

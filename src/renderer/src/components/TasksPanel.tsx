@@ -25,12 +25,18 @@ export default function TasksPanel(): JSX.Element {
   const bgTasks = useAppStore((s) => s.backgroundTasks)
 
   useEffect(() => {
-    // 挂载时各拉一次（记录都在主进程），之后靠推送
-    void window.api.getSubagents().then((l) => useAppStore.getState().setSubagents(l))
+    // 挂载时各拉一次（记录都在主进程），之后靠推送。
+    // plan11：子代理事件**按会话**归属 —— 只拉当前会话那一份
+    const activeId = useAppStore.getState().activeId
+    if (activeId) {
+      void window.api
+        .getSubagents(activeId)
+        .then((l) => useAppStore.getState().setSubagents({ conversationId: activeId, payload: l }))
+    }
     void window.api
       .listBackgroundTasks()
       .then((l) => useAppStore.getState().setBackgroundTasks(l))
-    const offSub = window.api.onSubagentChanged((l) => useAppStore.getState().setSubagents(l))
+    const offSub = window.api.onSubagentChanged((e) => useAppStore.getState().setSubagents(e))
     const offBg = window.api.onBackgroundChanged((l) =>
       useAppStore.getState().setBackgroundTasks(l)
     )

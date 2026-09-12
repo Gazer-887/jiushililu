@@ -48,6 +48,18 @@ const messageSchema = z.object({
  */
 export const chatMessagesSchema = z.array(messageSchema).min(1).max(200)
 
+/**
+ * 会话 id 的形状（plan11）：主进程要按它给每一轮跑**记归属**，
+ * 所以它必须**必填**且格式可控（长度封顶，避免被塞进超长串当键使）。
+ */
+export const conversationIdSchema = z.string().min(1).max(64)
+
+/** `chat:send` 的入参：消息 + **这次跑属于哪条会话**（plan11 §2.1，缺 id 就是串台的起点） */
+export const chatSendInputSchema = z.object({
+  conversationId: conversationIdSchema,
+  messages: chatMessagesSchema
+})
+
 /** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */
 export const MAX_STORED_CHARS = 2_000_000
 

@@ -147,6 +147,8 @@ export interface AgentRuntimeContext {
     detail: string
     agent: string
     where: string
+    /** 哪条会话在问（plan11：并发时用户必须知道自己在批谁） */
+    conversationId: string
   }) => Promise<boolean>
 }
 
@@ -182,6 +184,14 @@ export interface RunAgentArgs {
   apiKey: string
   /** 对话历史（含本轮用户消息；D-032：合并后走完整历史，多轮有记忆） */
   history: AgentMessage[]
+  /**
+   * **这次跑属于哪条会话**（plan11）。
+   *
+   * 必填（不再是可选）：并发之后"这一轮是谁的"必须处处可查 ——
+   * 检查点要靠它记归属，危险操作确认要靠它告诉用户"是哪条会话在问"，
+   * 少了它，出事时连"这轮跑的是哪条会话"都说不清。
+   */
+  conversationId: string
   /** 指定已注册的自定义 Agent；缺省 = 内核默认（全工具） */
   agentName?: string
   /** 访问权限档（用户定的硬上限）；缺省「可写」 */
@@ -222,7 +232,7 @@ export async function runAgent(
   // 检查点边界（plan8 R4）：**一轮 Agent 运行 = 一个可回滚的检查点**。
   // 必须在建工具之前开始，让写文件工具拿得到 recorder。
   const agentLabel = args.agentName ?? '内核默认'
-  const runId = ctx.checkpoints.begin(workspaceRoot, agentLabel)
+  const runId = ctx.checkpoints.begin(workspaceRoot, agentLabel, args.conversationId)
 
   // ── 子代理派发（plan7 批 D）──
   // 主代理用 spawn_agents 把独立子任务并行派出去。两条边界：
@@ -290,7 +300,9 @@ export async function runAgent(
               tool: 'run_command',
               detail: command,
               agent: agentLabel,
-              where: workspaceRoot
+              where: workspaceRoot,
+              // 并发之后要能说出"是哪条会话在问"（plan11 P0-3：用户才知道自己在批谁）
+              conversationId: args.conversationId
             })
         }
       : {}),
@@ -398,6 +410,8 @@ export function createAgentContext(opts: {
     detail: string
     agent: string
     where: string
+    /** 哪条会话在问（plan11：并发时用户必须知道自己在批谁） */
+    conversationId: string
   }) => Promise<boolean>
   /** 后台任务注册表（plan7 批 D）；不传 = 不下发后台能力 */
   background?: BackgroundTaskStore

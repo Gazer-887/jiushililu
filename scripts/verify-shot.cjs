@@ -691,12 +691,18 @@ app.whenReady().then(async () => {
   // 推送通道与真实运行时是同一条（webContents.send → preload → store → 组件），
   // 只是数据由这里伪造：stub 环境跑不了真模型，但"推送→渲染→显示"这段是真跑的。
   win.webContents.send('chat:tool', {
-    id: 'probe-tool',
-    name: 'read_file',
-    phase: 'start',
-    detail: 'src/main/index.ts'
+    conversationId: 'c1',
+    payload: {
+      id: 'probe-tool',
+      name: 'read_file',
+      phase: 'start',
+      detail: 'src/main/index.ts'
+    }
   })
-  win.webContents.send('chat:reasoning', '先看看入口文件怎么写的…')
+  win.webContents.send('chat:reasoning', {
+    conversationId: 'c1',
+    payload: '先看看入口文件怎么写的…'
+  })
   await new Promise((r) => setTimeout(r, 600))
   const processVisible = await win.webContents.executeJavaScript(`
     (() => {
@@ -1044,7 +1050,9 @@ app.whenReady().then(async () => {
     tool: 'run_command',
     detail: 'rm -rf build && npm run build',
     agent: '内核默认',
-    where: 'D:\\jsllworkplace_for_test'
+    where: 'D:\\jsllworkplace_for_test',
+    // plan11：确认请求要能说出**哪条会话在问**（并发时用户才知道自己在批谁）
+    conversationId: 'c1'
   })
   await new Promise((r) => setTimeout(r, 900))
 
@@ -2837,7 +2845,8 @@ app.whenReady().then(async () => {
     tool: '会话回滚',
     detail: '回到第 2 条消息之前 —— 之后 2 条将从对话里隐去（可撤销）',
     agent: '打个招呼',
-    where: '仅回滚对话消息'
+    where: '仅回滚对话消息',
+    conversationId: 'c1'
   })
   await new Promise((r) => setTimeout(r, 500))
   const cfText = await win.webContents.executeJavaScript(`
@@ -3014,7 +3023,7 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 800))
 
-  win.webContents.send('chat:chunk', '切换之前的字')
+  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '切换之前的字' })
   await new Promise((r) => setTimeout(r, 500))
   const subBefore = await win.webContents.executeJavaScript(`
     (() => ({ got: (document.querySelector('.chat-messages')?.textContent ?? '').includes('切换之前的字') }))()
@@ -3033,9 +3042,9 @@ app.whenReady().then(async () => {
   //    → 界面里那段字**永远不会被存盘**。所以下面断言的是 **conv:save 的载荷**，
   //    而不是"切回来能不能看见" —— 后者会被"点会话项重新加载"掩盖（`store.ts:396-405`）。
   convSaveCalls.length = 0
-  win.webContents.send('chat:chunk', '切页期间的字')
+  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '切页期间的字' })
   await new Promise((r) => setTimeout(r, 300))
-  win.webContents.send('chat:done')
+  win.webContents.send('chat:done', { conversationId: 'c1', payload: null })
   await new Promise((r) => setTimeout(r, 700))
   const savedWhileAway = convSaveCalls.some((c) =>
     (c.messages ?? []).some((m) => String(m.content ?? '').includes('切页期间的字'))

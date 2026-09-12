@@ -37,21 +37,45 @@ import SettingsView from './views/SettingsView'
 function useStreamSubscriptions(): void {
   useEffect(() => {
     const s = (): ReturnType<typeof useAppStore.getState> => useAppStore.getState()
-    const offChunk = window.api.onChatChunk((t) => s().appendChunk(t))
-    const offReasoning = window.api.onChatReasoning((d) => s().appendReasoning(d))
-    const offDone = window.api.onChatDone(() => s().markDone())
-    const offError = window.api.onChatError((m) => s().markError(m))
-    const offTool = window.api.onChatTool((evt) => s().pushToolEvent(evt))
-    const offTodos = window.api.onTodoChanged((todos) => s().setTodos(todos))
-    // 补拉一次：待办清单存在主进程，界面挂载时不该是空的
-    void window.api.getTodos().then((todos) => s().setTodos(todos))
+    // plan11：订阅**原样收信封**，落点由 store 按 `conversationId` 分流 ——
+    // 这一层不再"猜"事件属于哪条会话（以前默认就是当前显示的那条，于是切会话就串台）
+    const offChunk = window.api.onChatChunk((e) => s().appendChunk(e))
+    const offReasoning = window.api.onChatReasoning((e) => s().appendReasoning(e))
+    const offDone = window.api.onChatDone((e) => s().markDone(e))
+    const offError = window.api.onChatError((e) => s().markError(e))
+    const offTool = window.api.onChatTool((e) => s().pushToolEvent(e))
+    const offTodos = window.api.onTodoChanged((e) => s().setTodos(e))
+    const offSubagents = window.api.onSubagentChanged((e) => s().setSubagents(e))
+    // 补拉一次：这两份状态存在主进程，界面挂载时不该是空的
+    const pull = (): void => {
+      const activeId = s().activeId
+      if (!activeId) return
+      void window.api.getTodos(activeId).then((todos) => s().setTodos({ conversationId: activeId, payload: todos }))
+      void window.api
+        .getSubagents(activeId)
+        .then((list) => s().setSubagents({ conversationId: activeId, payload: list }))
+    }
+    pull()
+
+    /**
+     * 关窗口前的落盘握手（plan11 P0-2）：主进程拦下关闭 → 请这里落盘 → 回执后才真关。
+     * `await` 必须等落盘**全部结束**再回执，否则窗口先关、内容照样丢。
+     */
+    const offFlush = window.api.onFlushRequest(() => {
+      void s()
+        .flushAll()
+        .finally(() => void window.api.flushDone())
+    })
+
     return () => {
       offChunk()
       offDone()
       offError()
       offTool()
       offTodos()
+      offSubagents()
       offReasoning()
+      offFlush()
     }
   }, [])
 }
@@ -70,7 +94,7 @@ export default function App() {
   const loadUIPrefs = useAppStore((s) => s.loadUIPrefs)
   const loadSettings = useAppStore((s) => s.loadSettings)
   const loadConversations = useAppStore((s) => s.loadConversations)
-  const persistActive = useAppStore((s) => s.persistActive)
+  const flushAll = useAppStore((s) => s.flushAll)
 
   useEffect(() => {
     void loadSettings()
@@ -83,14 +107,19 @@ export default function App() {
     void persistUIPrefs(patch)
   }
 
-  // 关窗前把当前会话落盘（防丢最后几轮）
+  // 关窗口时**全部**会话落盘（plan11 P0-2）。
+  //
+  // 两条路都留：① 主进程的 flush 握手（可靠，但它等不到回执就 2 秒超时）；
+  // ② `beforeunload` 这里再兜一次（握手超时/异常时的最后一道）。
+  // 只留 ② 是不够的：`beforeunload` 里的异步 IPC **不保证发得出去**（进程即将销毁），
+  // 那正是"关了窗口发现最后一段没了"的经典成因。
   useEffect(() => {
     const onBeforeUnload = (): void => {
-      void persistActive()
+      void flushAll()
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [persistActive])
+  }, [flushAll])
 
   return (
     <div className="app">

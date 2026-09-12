@@ -32,6 +32,12 @@ export interface CheckpointRun {
   workspace: string
   /** 哪个 Agent 干的（内核默认 / 子代理名） */
   agent: string
+  /**
+   * 这一轮属于**哪条会话**（plan11）。
+   * 并发之后必须可查："这轮是谁跑的"决定它该出现在哪条会话的变更列表里，
+   * 也是出事时唯一能追溯的线索。历史数据（本字段之前生成的）可能没有，故可选。
+   */
+  conversationId?: string
   changes: FileChange[]
   /**
    * 运行状态。
@@ -53,6 +59,12 @@ export interface CheckpointRunMeta {
   seq?: number
   workspace: string
   agent: string
+  /**
+   * 这一轮属于**哪条会话**（plan11）。
+   * 并发之后必须可查："这轮是谁跑的"决定它该出现在哪条会话的变更列表里，
+   * 也是出事时唯一能追溯的线索。历史数据的 manifest 里可能没有，故可选。
+   */
+  conversationId?: string
   status: 'running' | 'done'
   fileCount: number
   createdCount: number
@@ -109,6 +121,7 @@ export function toMeta(run: CheckpointRun): CheckpointRunMeta {
     workspace: run.workspace,
     agent: run.agent,
     status: run.status,
+    ...(run.conversationId !== undefined ? { conversationId: run.conversationId } : {}),
     ...(run.seq !== undefined ? { seq: run.seq } : {}),
     ...summarize(run.changes),
     ...(run.rolledBackAt !== undefined ? { rolledBackAt: run.rolledBackAt } : {})

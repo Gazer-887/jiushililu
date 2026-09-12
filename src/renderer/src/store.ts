@@ -1,5 +1,11 @@
 import { create } from 'zustand'
-import type { ChatMessage, ConversationCreateInput, ConversationMeta, SettingsView } from '@shared/ipc'
+import type {
+  ChatMessage,
+  ConversationCreateInput,
+  ConversationMeta,
+  SettingsView,
+  StreamEnvelope
+} from '@shared/ipc'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
@@ -47,6 +53,37 @@ export type AppView = 'new' | 'chat' | 'settings'
  */
 const WB_PERSIST_DEBOUNCE_MS = 300
 let wbPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 后台会话的落盘防抖（plan11 P0-1 兜底）。
+ *
+ * `markDone` 已经会在跑完时立刻落盘，这一层是防"没等到 done 就被强杀 / 断电"——
+ * 把最坏情况从"整轮丢"压到"丢几百毫秒的字"。
+ *
+ * **每条会话各计一个定时器**：共用一个的话，两条并发会话会互相把对方的落盘推迟。
+ */
+const BACKSTOP_PERSIST_MS = 800
+const backstopTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function schedulePersist(conversationId: string): void {
+  const existing = backstopTimers.get(conversationId)
+  if (existing) clearTimeout(existing)
+  backstopTimers.set(
+    conversationId,
+    setTimeout(() => {
+      backstopTimers.delete(conversationId)
+      void useAppStore.getState().persistConversation(conversationId)
+    }, BACKSTOP_PERSIST_MS)
+  )
+}
+
+function cancelScheduledPersist(conversationId: string): void {
+  const timer = backstopTimers.get(conversationId)
+  if (timer) {
+    clearTimeout(timer)
+    backstopTimers.delete(conversationId)
+  }
+}
 
 interface AppState {
   view: AppView
@@ -181,28 +218,151 @@ interface AppState {
    * 新一轮开始时清空（见 sendMessage）。
    */
   reasoning: string
-  appendReasoning: (delta: string) => void
-  clearToolEvents: () => void
-  pushToolEvent: (evt: ToolEvent) => void
   /** 待办清单（plan7 批 D）：Agent 用 update_todos 维护，界面显示在输入框上方 */
   todos: TodoItem[]
-  setTodos: (todos: TodoItem[]) => void
   /** 最近一批子代理运行事件（plan7 批 D：右栏「任务」页签） */
   subagents: SubagentJobEvent[]
-  setSubagents: (list: SubagentJobEvent[]) => void
   /** 后台任务（plan7 批 D）：右栏「任务」页签的"后台任务"区 */
   backgroundTasks: BackgroundTask[]
   setBackgroundTasks: (list: BackgroundTask[]) => void
-  appendChunk: (text: string) => void
-  markDone: () => void
-  markError: (message: string) => void
+  /**
+   * **后台会话的现场**（plan11 §2.7）。
+   *
+   * 界面同时只显示一条会话，所以"当前这条"的状态就该在顶层字段里（消费者一行都不用改）；
+   * 其余正在跑的会话是**后台态**，存取在这里。切走 → 存档；切回 → 恢复。
+   *
+   * 为什么不把所有字段都塞进 `runtimes[convId]` 让消费者改读派生值：
+   * 那要动 ChatView / InputConsole / TodoPanel / ProcessBlock 一大圈，
+   * 而"同时只显示一条"这个语义本来就不需要那份复杂度。
+   */
+  runtimes: Record<string, RuntimeSnapshot>
+  /** 把当前显示会话的现场收进 `runtimes`（切走 / 开跑前调用） */
+  archiveCurrent: () => void
+  /**
+   * 流式片段落位（plan11）：**按信封里的会话 id 找目标** ——
+   * 当前显示的那条改顶层字段，后台那条改它的存档。
+   * 这就是"切会话不串台"的全部秘密：事件的归属不再靠"谁在显示"来猜。
+   */
+  appendChunk: (e: StreamEnvelope<string>) => void
+  appendReasoning: (e: StreamEnvelope<string>) => void
+  pushToolEvent: (e: StreamEnvelope<ToolEvent>) => void
+  setTodos: (e: StreamEnvelope<TodoItem[]>) => void
+  setSubagents: (e: StreamEnvelope<SubagentJobEvent[]>) => void
+  markDone: (e: StreamEnvelope<null>) => void
+  markError: (e: StreamEnvelope<string>) => void
+  clearToolEvents: () => void
   sendMessage: (text: string) => Promise<void>
   stopStreaming: () => Promise<void>
+  /** 把**指定会话**落盘（plan11 P0-1：后台会话跑完也得有人存它） */
+  persistConversation: (id: string) => Promise<void>
+  /** 关窗口前把所有在跑的会话落盘（plan11 P0-2）—— 主进程等到回执才真关 */
+  flushAll: () => Promise<void>
+}
+
+/** 一条会话的运行时现场（plan11 §2.7）—— 只有后台会话需要它 */
+export interface RuntimeSnapshot {
+  messages: ChatMessage[]
+  streaming: boolean
+  streamError: string | null
+  reasoning: string
+  toolEvents: ToolEvent[]
+  todos: TodoItem[]
+  subagents: SubagentJobEvent[]
 }
 
 /** 当前上下文用量估算（口径与主进程一致，见 @shared/tokens） */
 export function usedTokens(messages: ChatMessage[]): number {
   return messages.reduce((sum, m) => sum + estimateMessageTokens(m.content), 0)
+}
+
+/** 一条会话的现场快照（深拷贝一层 —— 存引用的话，切来切去两边会互相改） */
+function snapshotOf(s: {
+  messages: ChatMessage[]
+  streaming: boolean
+  streamError: string | null
+  reasoning: string
+  toolEvents: ToolEvent[]
+  todos: TodoItem[]
+  subagents: SubagentJobEvent[]
+}): RuntimeSnapshot {
+  return {
+    messages: s.messages.map((m) => ({ ...m })),
+    streaming: s.streaming,
+    streamError: s.streamError,
+    reasoning: s.reasoning,
+    toolEvents: s.toolEvents.slice(),
+    todos: s.todos.slice(),
+    subagents: s.subagents.slice()
+  }
+}
+
+/** 往"最后一条助手消息"后面接字（与旧行为一致：片段只接在回答上） */
+function appendToTail(messages: ChatMessage[], text: string): ChatMessage[] {
+  const next = messages.slice()
+  const last = next[next.length - 1]
+  if (last && last.role === 'assistant') next[next.length - 1] = { ...last, content: last.content + text }
+  return next
+}
+
+/** 读用视图：顶层字段**本身就是**当前会话的视图 —— 这里不做深拷贝（深拷贝只在存档时做） */
+function viewOf(s: {
+  messages: ChatMessage[]
+  streaming: boolean
+  streamError: string | null
+  reasoning: string
+  toolEvents: ToolEvent[]
+  todos: TodoItem[]
+  subagents: SubagentJobEvent[]
+}): RuntimeSnapshot {
+  return {
+    messages: s.messages,
+    streaming: s.streaming,
+    streamError: s.streamError,
+    reasoning: s.reasoning,
+    toolEvents: s.toolEvents,
+    todos: s.todos,
+    subagents: s.subagents
+  }
+}
+
+/**
+ * **分流器**（plan11 §2.7）—— 全计划唯一的新逻辑。
+ *
+ * 一次改动该落到哪儿，取决于"它在哪条会话上"：
+ *   · 就是当前显示的那条 → 改**顶层字段**（消费者一行都不用改）
+ *   · 是后台那条 → 改**它的存档**
+ *
+ * ⚠️ 回调只返回**改动的字段**（`Partial`），不返回整份现场：
+ * 流式期间这个方法**每来一个字就调一次**，让它顺手深拷贝整条会话，
+ * 等于把"打字"变成"每字一次全量复制" —— 会话越长越慢（老代码只做 `messages.slice()`）。
+ *
+ * 后台会话**没有存档**时：什么都不做并告警，绝不凭空造一份空的 ——
+ * 那会让下一次落盘把"空内容"覆盖到真实会话上（丢数据，而且是静默的）。
+ * 存档会在 `sendMessage` 时先种下，所以这条分支理论上走不到，留着是为了**不冒这个险**。
+ */
+function applyToConversation(
+  s: AppState,
+  conversationId: string,
+  patch: (view: RuntimeSnapshot) => Partial<RuntimeSnapshot>
+): Partial<AppState> {
+  if (conversationId === s.activeId) {
+    const next = patch(viewOf(s))
+    const out: Partial<AppState> = {}
+    if (next.messages !== undefined) out.messages = next.messages
+    if (next.streaming !== undefined) out.streaming = next.streaming
+    if (next.streamError !== undefined) out.streamError = next.streamError
+    if (next.reasoning !== undefined) out.reasoning = next.reasoning
+    if (next.toolEvents !== undefined) out.toolEvents = next.toolEvents
+    if (next.todos !== undefined) out.todos = next.todos
+    if (next.subagents !== undefined) out.subagents = next.subagents
+    return out
+  }
+  const current = s.runtimes[conversationId]
+  if (!current) {
+    console.warn('[store] 收到不属于任何已知会话的事件，已丢弃', { conversationId })
+    return {}
+  }
+  return { runtimes: { ...s.runtimes, [conversationId]: { ...current, ...patch(current) } } }
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -380,7 +540,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openConversation: async (id) => {
-    await get().persistActive() // 切走前先把当前会话存好
+    const prev = get().activeId
+    await get().persistConversation(prev ?? '') // 切走前先把当前会话存好（空 id = 什么都没做）
     const conv = await window.api.getConversation(id)
     if (!conv) {
       await get().loadConversations()
@@ -393,15 +554,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.api.setModel(conv.model)
       await get().loadSettings()
     }
+    // **存档 / 恢复**（plan11 §2.7）：
+    //   ① 把"正在显示的这一条"收进它的存档（否则切回来就没了）
+    //   ② 若目标会话**正在跑**（存档里有 streaming），恢复它的现场 —— 用户切回来能接着看它吐字
+    //   ③ 否则按存储里的内容重建
+    get().archiveCurrent()
+    const snap = get().runtimes[id]
     set({
       activeId: id,
-      messages: conv.messages,
+      messages: snap ? snap.messages.slice() : conv.messages,
       view: 'chat',
-      streamError: null,
-      streaming: false,
-      toolEvents: [],
+      streamError: snap ? snap.streamError : null,
+      streaming: snap ? snap.streaming : false,
+      toolEvents: snap ? snap.toolEvents.slice() : [],
       // 思考流也要清：它是**当前轮**的过程，切会话还留着就成了"上一个任务的幽灵"
-      reasoning: ''
+      reasoning: snap ? snap.reasoning : '',
+      todos: snap ? snap.todos.slice() : [],
+      subagents: snap ? snap.subagents.slice() : []
     })
   },
 
@@ -444,29 +613,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().loadConversations()
   },
 
-  persistActive: async () => {
-    const { activeId, messages, conversations } = get()
-    if (!activeId || messages.length === 0) return
-    try {
-      const updated = await window.api.saveConversation(activeId, messages)
-      if (updated) {
-        // 就地更新列表项（避免整表重拉），标题可能已被自动补上
-        const next = conversations.map((c) => (c.id === activeId ? updated : c))
-        if (!next.some((c) => c.id === activeId)) next.push(updated)
-        set({ conversations: next })
-      }
-      if (get().saveError) set({ saveError: null })
-    } catch (err) {
-      // **保存失败必须让用户看见**。以前这里是裸 `await`：调用点又写的 `void persistActive()`，
-      // 于是失败 = 界面没反应 + 日志没痕迹 + 用户以为在存而实际一个字都没落盘。
-      // 单独用一个 `saveError` 而不是复用 `streamError`：切会话时后者会被清掉，
-      // 而这条提示恰恰发生在"切会话"那一刻，不能一转身就没了。
-      set({
-        saveError: `这段对话没能存进磁盘：${err instanceof Error ? err.message : String(err)}`
-      })
-    }
-  },
-
   messages: [],
   streaming: false,
   streamError: null,
@@ -476,6 +622,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   todos: [],
   subagents: [],
   backgroundTasks: [],
+  runtimes: {},
   reasoning: '',
 
   clearToolEvents: () => set({ toolEvents: [] }),
@@ -525,49 +672,75 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ streamError: err instanceof Error ? err.message : String(err) })
     }
   },
-  appendReasoning: (delta) => set((s) => ({ reasoning: s.reasoning + delta })),
+  appendReasoning: (e) =>
+    set((s) =>
+      applyToConversation(s, e.conversationId, (v) => ({ reasoning: v.reasoning + e.payload }))
+    ),
 
-  setTodos: (todos) => set({ todos }),
+  setTodos: (e) => set((s) => applyToConversation(s, e.conversationId, () => ({ todos: e.payload }))),
 
-  setSubagents: (list) => set({ subagents: list }),
+  setSubagents: (e) =>
+    set((s) => applyToConversation(s, e.conversationId, () => ({ subagents: e.payload }))),
 
   setBackgroundTasks: (list) => set({ backgroundTasks: list }),
 
-  pushToolEvent: (evt) =>
-    set((s) => {
-      // 同一调用（id）的 start→end 就地更新，避免堆两条
-      const idx = s.toolEvents.findIndex((e) => e.id === evt.id)
-      if (idx >= 0) {
-        const next = s.toolEvents.slice()
-        next[idx] = evt
-        return { toolEvents: next }
-      }
-      return { toolEvents: [...s.toolEvents, evt] }
-    }),
+  pushToolEvent: (e) =>
+    set((s) =>
+      applyToConversation(s, e.conversationId, (v) => {
+        // 同一调用（id）的 start→end 就地更新，避免堆两条
+        const idx = v.toolEvents.findIndex((x) => x.id === e.payload.id)
+        if (idx >= 0) {
+          const next = v.toolEvents.slice()
+          next[idx] = e.payload
+          return { toolEvents: next }
+        }
+        return { toolEvents: [...v.toolEvents, e.payload] }
+      })
+    ),
 
-  appendChunk: (text) =>
-    set((s) => {
-      const messages = s.messages.slice()
-      const last = messages[messages.length - 1]
-      if (last && last.role === 'assistant') {
-        messages[messages.length - 1] = { ...last, content: last.content + text }
-      }
-      return { messages }
-    }),
-
-  markDone: () => {
-    set({ streaming: false })
-    void get().persistActive()
+  archiveCurrent: () => {
+    const s = get()
+    if (!s.activeId) return
+    set((prev) => ({ runtimes: { ...prev.runtimes, [s.activeId as string]: snapshotOf(s) } }))
   },
 
-  markError: (message) => {
-    set({ streaming: false, streamError: message })
-    void get().persistActive()
+  appendChunk: (e) => {
+    set((s) =>
+      // ⚠️ 只返回改动的那一个字段（不是整份现场）—— 这个回调**每来一个字就调一次**
+      applyToConversation(s, e.conversationId, (v) => ({
+        messages: appendToTail(v.messages, e.payload)
+      }))
+    )
+    // 后台会话加一道**防抖落盘**兜底：万一应用被强杀，最多丢几百毫秒的字
+    if (e.conversationId !== get().activeId) schedulePersist(e.conversationId)
+  },
+
+  markDone: (e) => {
+    set((s) => applyToConversation(s, e.conversationId, () => ({ streaming: false })))
+    // ⚠️ 落的是**那一条**（不是当前显示的那条）—— plan11 P0-1 就是这一行的缺失
+    void get().persistConversation(e.conversationId)
+  },
+
+  markError: (e) => {
+    set((s) =>
+      applyToConversation(s, e.conversationId, () => ({
+        streaming: false,
+        streamError: e.payload
+      }))
+    )
+    // 错到一半的内容也是内容，照样落盘
+    void get().persistConversation(e.conversationId)
   },
 
   sendMessage: async (text) => {
     const content = text.trim()
+    // 并发之后"这次跑属于哪条会话"必须明确（plan11）：没有归属就发不出去
+    const conversationId = get().activeId
     if (!content || get().streaming) return
+    if (!conversationId) {
+      set({ streamError: '这条消息没有归属的会话：请先新建会话再发送' })
+      return
+    }
     const history = get().messages.filter((m) => m.content.trim().length > 0)
     const payload = [...history, { role: 'user' as const, content }]
     set({
@@ -577,21 +750,84 @@ export const useAppStore = create<AppState>((set, get) => ({
       toolEvents: [], // 新一轮，清掉上一轮的工具活动
       reasoning: '' // 思考流同样新一轮重来
     })
+    // **先把这条会话的现场存进存档**：它一旦被切到后台，
+    // 属于它的片段才知道该往哪儿落（不然只能丢）
+    get().archiveCurrent()
     try {
-      await window.api.chatSend(payload)
+      await window.api.chatSend({ conversationId, messages: payload })
     } catch {
       // 主进程入参校验失败等；常规错误已通过 chatError 事件送达
-      get().markError('发送失败：请求被主进程拒绝（参数校验未通过）')
+      get().markError({ conversationId, payload: '发送失败：请求被主进程拒绝（参数校验未通过）' })
     }
   },
 
   stopStreaming: async () => {
-    await window.api.chatAbort()
+    // 并发之后"停止"必须指名道姓（plan11）：不指名就是停错会话
+    const conversationId = get().activeId
+    if (conversationId) await window.api.chatAbort(conversationId)
     // **必须自己把 streaming 收回去**，不能只指望主进程随后发 `chat:done`：
     // 那条事件万一没到（订阅被拆过、页面在后台、渲染进程刚重载），界面就永远停在
     // "生成中"——发送键一直是「停止」，而点它正是这里，点完还是"生成中"，**死循环**。
     // 用户按了停止，界面就必须停止显示"正在生成"：这是**意图**，不是**投影**。
     set({ streaming: false })
-    await get().persistActive()
+    await get().persistConversation(conversationId ?? '')
+  },
+
+  /**
+   * 把**指定会话**落盘（plan11 P0-1）。
+   *
+   * 与老的 `persistActive` 的差别只有一个词：**谁**。这个"谁"就是后台会话
+   * 跑完之后还能不能留住的分界线 —— 以前所有落盘都写死当前会话，
+   * 于是后台那条跑完了，**没有任何人会替它存**。
+   */
+  persistConversation: async (id) => {
+    if (!id) return
+    const s = get()
+    const snap = id === s.activeId ? snapshotOf(s) : s.runtimes[id]
+    if (!snap) {
+      // **绝不"没内容也照写"**：那会把一条真实会话在盘上覆盖成空的（静默丢数据）。
+      // 但也不静默跳过 —— 留痕，方便排查"为什么这条没存上"。
+      console.warn('[store] 想落盘的会话不在内存里，已跳过', { id })
+      return
+    }
+    if (snap.messages.length === 0) return
+    // 后台会话的防抖任务已被这次落盘覆盖，取消掉
+    cancelScheduledPersist(id)
+    try {
+      const updated = await window.api.saveConversation(id, snap.messages)
+      if (updated) {
+        // 就地更新列表项（避免整表重拉），标题可能已被自动补上
+        const next = get().conversations.map((c) => (c.id === id ? updated : c))
+        if (!next.some((c) => c.id === id)) next.push(updated)
+        set({ conversations: next })
+      }
+      if (get().saveError) set({ saveError: null })
+    } catch (err) {
+      // **保存失败必须让用户看见**。以前这里是裸 `await`：调用点又写的 `void persistActive()`，
+      // 于是失败 = 界面没反应 + 日志没痕迹 + 用户以为在存而实际一个字都没落盘。
+      // 单独用一个 `saveError` 而不是复用 `streamError`：切会话时后者会被清掉，
+      // 而这条提示恰恰发生在"切会话"那一刻，不能一转身就没了。
+      set({
+        saveError: `这段对话没能存进磁盘：${err instanceof Error ? err.message : String(err)}`
+      })
+    }
+  },
+
+  persistActive: async () => {
+    // 老的"只存当前会话"入口保留（UI 侧调用点多），实现走**按会话**那条
+    await get().persistConversation(get().activeId ?? '')
+  },
+
+  /**
+   * 关窗口前把所有在跑的会话落盘（plan11 P0-2）。   *
+   * 主进程收到 `flushDone` 才真关窗口 —— 所以这个函数**必须等到所有落盘都结束**，
+   * 不能 `void` 掉（那等于回执比落盘先走，窗口一关内容还是没写下去）。
+   */
+  flushAll: async () => {
+    get().archiveCurrent() // 先把当前现场收进存档，flush 的才是最新内容
+    const s = get()
+    const ids = new Set<string>(Object.keys(s.runtimes))
+    if (s.activeId) ids.add(s.activeId)
+    await Promise.all([...ids].map((id) => get().persistConversation(id)))
   }
 }))

@@ -19,6 +19,7 @@ import {
 import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
+import { createChatEmitter } from './chat-emitter'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
 
 // 主进程入口：窗口生命周期 + IPC 注册。Agent 内核将来跑在 worker_threads，不在这里（P1）。
@@ -92,6 +93,65 @@ function applyNavigationGuards(win: BrowserWindow): void {
   })
 }
 
+/**
+ * 关窗口前先让渲染端把会话落盘（plan11 P0-2）。
+ *
+ * ## 为什么不能靠"关闭时顺手存一下"
+ *
+ * 内容在**渲染端**（主进程只有流式增量，没有完整历史），而 `conv:save` 是异步 IPC ——
+ * 窗口一关，渲染进程连同未落盘的内容一起没了。以前只有"当前显示的会话"靠防抖存，
+ * 并发之后**后台会话根本没人存**：整轮白跑，且用户完全不知道。
+ *
+ * ## 做法
+ *
+ * 拦下第一次 `close` → 请渲染端 flush 全部 → 渲染端回执 → 才真关。
+ * **必须带超时兜底**：渲染端卡死或崩了的时候，窗口不能关不掉
+ * （那种"点了叉没反应"的体验比丢一次内容更糟，而且用户会开始强杀进程 —— 那才会丢更多）。
+ */
+const FLUSH_TIMEOUT_MS = 2000
+
+/** 当前窗口的"落盘完成 → 真关"回调；由 createWindow 装上，IPC 层回调它 */
+let finishClose: (() => void) | null = null
+
+function installFlushBeforeClose(win: BrowserWindow): void {
+  const log = createLogger('main')
+  let flushed = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const closeNow = (): void => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+    flushed = true
+    finishClose = null
+    if (!win.isDestroyed()) win.close()
+  }
+
+  finishClose = closeNow
+
+  win.on('close', (event) => {
+    if (flushed || win.webContents.isDestroyed()) return
+    event.preventDefault()
+    try {
+      win.webContents.send(IPC.flushRequest)
+    } catch {
+      // 发不出去（窗口正在销毁）→ 直接放行，别把关闭卡死
+      flushed = true
+      return
+    }
+    timer = setTimeout(() => {
+      log.warn('落盘回执超时，照关窗口（渲染端可能已卡死）', { timeoutMs: FLUSH_TIMEOUT_MS })
+      closeNow()
+    }, FLUSH_TIMEOUT_MS)
+  })
+
+  win.on('closed', () => {
+    if (timer) clearTimeout(timer)
+    finishClose = null
+  })
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1200,
@@ -113,6 +173,7 @@ function createWindow(): void {
   })
 
   applyNavigationGuards(win)
+  installFlushBeforeClose(win)
 
   win.on('ready-to-show', () => win.show())
 
@@ -149,7 +210,9 @@ app.whenReady().then(() => {
     send: (req) => {
       const win = BrowserWindow.getAllWindows()[0]
       if (!win || win.isDestroyed()) return false
-      win.webContents.send(IPC.confirmRequest, req)
+      // 走同一发送口（plan11 §2.5）：确认请求也带会话身份 ——
+      // 用户必须知道**是哪条会话在问他**，否则并发时他会批了另一条的命令
+      createChatEmitter(win.webContents, req.conversationId).confirm(req)
       return true
     },
     log: (message, extra) => log.info(message, extra)
@@ -182,7 +245,13 @@ app.whenReady().then(() => {
       if (!w.isDestroyed()) w.webContents.send(IPC.bgChanged, list)
     }
   })
-  registerIpcHandlers({ agent: agentCtx, userDataDir, confirm })
+  registerIpcHandlers({
+    agent: agentCtx,
+    userDataDir,
+    confirm,
+    // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
+    onFlushDone: () => finishClose?.()
+  })
   // HTML 沙箱预览：把 `jsl-preview://doc/<相对路径>` 映射到工作区文件，
   // 带上断脚本/断网的响应头（真源见 src/shared/html-preview.ts）
   installPreviewProtocol(() => agentCtx.getWorkspaceRoot())

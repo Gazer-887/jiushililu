@@ -47,7 +47,7 @@ const MAX_RUNS = 50
 export interface CheckpointStore {
   readonly dir: string
   /** 开始一轮（写入 running manifest）→ runId */
-  begin(workspace: string, agent: string): string
+  begin(workspace: string, agent: string, conversationId: string): string
   /** 写文件**之前**调用：把原始内容快照下来（同一文件本轮只记第一次） */
   record(runId: string, workspaceRoot: string, rel: string, abs: string): void
   /** 正常收尾：标记 done */
@@ -92,7 +92,7 @@ export function createCheckpointStore(dir: string): CheckpointStore {
   const store: CheckpointStore = {
     dir,
 
-    begin(workspace, agent) {
+    begin(workspace, agent, conversationId) {
       const runId = makeRunId()
       const run: CheckpointRun = {
         runId,
@@ -100,6 +100,7 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         seq: ++seq,
         workspace,
         agent,
+        conversationId,
         changes: [],
         status: 'running'
       }
@@ -285,10 +286,16 @@ export function createCheckpointStore(dir: string): CheckpointStore {
       }
 
       // ② 超出上限则从最旧删起（用统一的比较器，避免同毫秒时删错边）
+      //
+      // ⚠️ **正在跑的那一轮绝不删**（plan11 P0-10）：并发之后，早开的那一轮可能
+      //    还在跑而"轮数超限"已经成立 —— 若照删，它的快照目录会在运行中途消失，
+      //    等它跑完要回滚时才发现**静默失效**（最难查的一类）。上限的用意是
+      //    "防无限增长"，不是"必须立刻删到 50"，所以宁可暂时多留一轮。
       const keep = entries
         .filter((e): e is { name: string; meta: CheckpointRunMeta } => e.meta !== null)
         .sort((a, b) => compareRunsNewestFirst(a.meta, b.meta))
       for (const e of keep.slice(MAX_RUNS)) {
+        if (e.meta.status === 'running') continue
         try {
           rmSync(join(dir, e.name), { recursive: true, force: true })
           removed++
