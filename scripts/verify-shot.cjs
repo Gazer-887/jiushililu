@@ -338,6 +338,17 @@ const STUBS = {
     workbench: { schemaVersion: 1, panes: [] },
     workbenchSizes: { paneWidths: [] }
   }),
+  // ③ 文件拖进会话：按路径取附件（拖拽入口；文件选择框那条走 attach:file）
+  'attach:path': (p) => {
+    const s = typeof p === 'string' ? p : ''
+    const name = s.split(/[\\/]/).pop() || 'a.txt'
+    return {
+      name,
+      path: 'D:\\jsllworkplace_for_test\\' + s.replace(/\\/g, '/'),
+      content: '氧化铈粉 120kg\n碳酸钠 45kg',
+      truncated: false
+    }
+  },
   // plan7 批 A3：二进制预览
   // 三种情况都要有各自的路径 —— 只验"正常图片"那一档，就是上次假绿灯的老路
   'fs:read-binary': (arg) => {
@@ -1371,6 +1382,73 @@ app.whenReady().then(async () => {
       return !!back;
     })()
   `)
+  await new Promise((r) => setTimeout(r, 800))
+
+  // —— ③ 文件拖进会话：把文件树里的一行拖到输入框 ——
+  //
+  // ⚠️ 探针**必须在输入框存在的时候跑**：此前插在设置页那一段，结果 5 条全红、
+  //    理由只是 `no-row-or-no-console` —— 因为工作台是**视图无关**的（文件行一直在），
+  //    而输入框只属于对话页 / 新建页。**"前置状态不对"和"功能坏了"长得一模一样**，
+  //    所以先单独断言"输入框在不在"，把这两件事分开。
+  const consoleReady = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasConsole: !!document.querySelector('.console'),
+      hasRow: !!Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt')
+    }))()
+  `)
+  console.log('DRAG_PRECONDITION=' + JSON.stringify(consoleReady))
+
+  // 载荷必须用**自定义 MIME**（两边同一个常量）：用 text/plain 的话，
+  // 拖到编辑器/终端会被当成"一段文字"贴进去，而这里携带的是一条工作区相对路径
+  const dragStart = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt');
+      const box = document.querySelector('.console');
+      if (!row || !box) return { ok: false, reason: 'no-row-or-no-console' };
+      const dt = new DataTransfer();
+      const mk = (type) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+      row.dispatchEvent(mk('dragstart'));
+      const carried = dt.getData('application/x-jiushililu-path');
+      box.dispatchEvent(mk('dragover'));
+      return { ok: true, carried };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 350))
+  const dropHighlight = await win.webContents.executeJavaScript(`
+    (() => ({ highlighted: !!document.querySelector('.console-drop') }))()
+  `)
+  console.log('DRAG_ATTACH=' + JSON.stringify({ ...dragStart, ...dropHighlight }))
+
+  // 真丢下去：dragstart → dragover → drop 走完整一遍
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt');
+      const box = document.querySelector('.console');
+      if (!row || !box) return false;
+      const dt = new DataTransfer();
+      const mk = (type) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+      row.dispatchEvent(mk('dragstart'));
+      box.dispatchEvent(mk('dragover'));
+      box.dispatchEvent(mk('drop'));
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const attachState = await win.webContents.executeJavaScript(`
+    (() => {
+      const chips = Array.from(document.querySelectorAll('.attach-chip'));
+      return {
+        count: chips.length,
+        titles: chips.map((c) => c.title || ''),
+        // 高亮要收回去（不然会一直是高亮态）
+        stillHighlighted: !!document.querySelector('.console-drop')
+      };
+    })()
+  `)
+  console.log('DRAG_ATTACH_DONE=' + JSON.stringify(attachState))
   await new Promise((r) => setTimeout(r, 900))
   // 若没有返回按钮（初始就在新建页），直接切到新建视图
   await win.webContents.executeJavaScript(`
@@ -2093,6 +2171,20 @@ app.whenReady().then(async () => {
     hexPreview.firstLine
   )
   checkTrue('转储内容能认出文件头（ELF 魔数）', hexPreview.hasElfMagic === true)
+
+  // —— ③ 文件拖进会话 ——
+  checkTrue('前置状态：输入框与文件行**都在**（否则下面几条失败说明不了任何事）',
+    consoleReady.hasConsole === true && consoleReady.hasRow === true, consoleReady)
+  checkTrue('文件行能拖起来（拖拽载荷是工作区相对路径）', dragStart.ok === true && !!dragStart.carried, dragStart)
+  check('载荷用的是**自定义 MIME**（不是 text/plain）', dragStart.carried, '紫水晶采购清单.txt')
+  checkTrue('拖到输入框上方会有**落点高亮**', dropHighlight.highlighted === true)
+  check('丢下去后输入框里出现 **1 个附件 chip**', attachState.count, 1)
+  checkTrue(
+    '附件就是被拖的那一个文件',
+    (attachState.titles[0] ?? '').includes('紫水晶采购清单.txt'),
+    attachState.titles
+  )
+  checkTrue('放下之后高亮收回去（不是一直亮着）', attachState.stillHighlighted === false)
 
   reportAndExit()
 })

@@ -1,6 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
-import { readFile } from 'node:fs/promises'
-import { basename } from 'node:path'
+// 注：`readFile` / `basename` / 附件体积上限都已随 `readAttachment` 移到
+// `workspace-fs.ts`（那边能单测）。这里不再直接碰文件读取。
 import { z } from 'zod'
 import {
   IPC,
@@ -39,7 +39,7 @@ import {
 // createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
-import { listWorkspaceDir, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
+import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
 import { chatMessagesSchema, settingsSchema } from './schemas'
@@ -469,25 +469,23 @@ export function registerIpcHandlers(deps: {
   )
 
   // 附件：选文件 → 读入内容（**限工作区内**，上限 64KB，超出截断并标注）
+  //
+  // 「路径 → 附件」的实现在 `workspace-fs.readAttachment`，**两个入口共用**
+  // （文件选择框 / 拖拽进来）—— 抽到那边是为了能单测（那里不碰 electron）
   ipcMain.handle(IPC.attachFile, async (e): Promise<Attachment | null> => {
     const ws = getWorkspaceInfo(deps.userDataDir).path
     const win = BrowserWindow.fromWebContents(e.sender) ?? undefined
     const opts = { properties: ['openFile' as const], defaultPath: ws }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     if (res.canceled || res.filePaths.length === 0) return null
-    const picked = res.filePaths[0]!
-    if (!resolveInsideWorkspace(ws, picked)) {
-      throw new Error('只能引用当前工作区内的文件（越界已被拒绝）')
-    }
-    const buf = await readFile(picked)
-    const LIMIT = 64 * 1024
-    const truncated = buf.byteLength > LIMIT
-    return {
-      name: basename(picked),
-      path: picked,
-      content: buf.subarray(0, LIMIT).toString('utf8'),
-      truncated
-    }
+    return readAttachment(ws, res.filePaths[0]!)
+  })
+
+  // 拖拽进来的文件（③ 文件拖进会话）——
+  // 相对路径来自工作区文件树，绝对路径来自系统资源管理器；越界一律拒绝
+  ipcMain.handle(IPC.attachPath, async (_e, raw: unknown): Promise<Attachment> => {
+    const pathOrRel = z.string().min(1).max(4096).parse(raw)
+    return readAttachment(getWorkspaceInfo(deps.userDataDir).path, pathOrRel)
   })
 
   // 提示词优化：一次轻量模型调用，把草稿改写成更清晰的指令

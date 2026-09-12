@@ -7,7 +7,7 @@ import {
   type ReactNode
 } from 'react'
 import type { FsEntry } from '@shared/fs-tree'
-import { formatSize } from '@shared/fs-tree'
+import { DRAG_PATH_MIME, formatSize } from '@shared/fs-tree'
 import { useAppStore } from '../store'
 
 // 资源管理器（plan7 批 A 只读 → 批 A2 全功能）：工作区文件树 + 预览 + 写操作。
@@ -326,6 +326,13 @@ export default function ExplorerPanel(): JSX.Element {
           }`}
           style={{ paddingLeft: 8 + depth * 14 }}
           title={e.rel}
+          // 文件行可以**拖进输入框当附件**（目录不行 —— 附件是"一个文件的内容"）
+          draggable={e.kind === 'file'}
+          onDragStart={(ev) => {
+            if (e.kind !== 'file') return
+            ev.dataTransfer.setData(DRAG_PATH_MIME, e.rel)
+            ev.dataTransfer.effectAllowed = 'copy'
+          }}
           onClick={() => {
             // 点目录也要**选中**：工具栏的"新建"落到选中的文件夹下
             setSelected(e)

@@ -57,6 +57,7 @@ const api: ApiBridge = {
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
   attachFile: () => ipcRenderer.invoke(IPC.attachFile),
+  attachPath: (pathOrRel) => ipcRenderer.invoke(IPC.attachPath, pathOrRel),
   polishPrompt: (text: string) => ipcRenderer.invoke(IPC.promptPolish, text),
   getBrowserState: () => ipcRenderer.invoke(IPC.browserState),
   browserNavigate: (url: string) => ipcRenderer.invoke(IPC.browserNavigate, url),

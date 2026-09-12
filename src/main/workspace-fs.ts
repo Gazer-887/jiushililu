@@ -1,5 +1,6 @@
 import { open, readdir, readFile, stat } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
+import type { Attachment } from '@shared/ipc'
 import {
   MAX_ENTRIES,
   MAX_IMAGE_BYTES,
@@ -112,6 +113,36 @@ export async function readWorkspaceFile(workspaceRoot: string, rel: string): Pro
     }
   } catch (err) {
     return { ok: false, rel, content: '', size: 0, error: humanError(err) }
+  }
+}
+
+/** 附件正文上限：64KB 够模型读懂，又不至于把上下文撑爆（超出截断并**标注**，不假装读全） */
+export const ATTACH_LIMIT = 64 * 1024
+
+/**
+ * 把「工作区里的一个文件」读成附件（③ 文件拖进会话 / 文件选择框 **共用**）。
+ *
+ * 两个入口只差"路径从哪来"，所以读取、体积上限、**工作区边界**都在这里定义一次 ——
+ * 各写一份的话，迟早有一天两个入口的边界不一致（而"从系统拖一个外部文件进来"
+ * 正是最容易踩到的那条）。
+ *
+ * `resolveInsideWorkspace` 同时做"解析相对路径"与"越界检查"，正好是这里需要的两件事。
+ *
+ * @throws 路径越界 / 文件不可读时抛错（错误信息是给用户看的人话）
+ */
+export async function readAttachment(
+  workspaceRoot: string,
+  pathOrRel: string
+): Promise<Attachment> {
+  const abs = resolveInsideWorkspace(workspaceRoot, pathOrRel)
+  if (!abs) throw new Error('只能引用当前工作区内的文件（越界已被拒绝）')
+  const buf = await readFile(abs)
+  const truncated = buf.byteLength > ATTACH_LIMIT
+  return {
+    name: basename(abs),
+    path: abs,
+    content: buf.subarray(0, ATTACH_LIMIT).toString('utf8'),
+    truncated
   }
 }
 

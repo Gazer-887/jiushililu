@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
 import type { Attachment } from '@shared/ipc'
+import { DRAG_PATH_MIME } from '@shared/fs-tree'
 import PlusMenu from './PlusMenu'
 import WorkspaceChip from './WorkspaceChip'
 import { BranchChip, ContextRing, ModelSwitcher, PermissionChip, PolishButton, SendButton } from './InputTools'
@@ -52,6 +53,8 @@ export default function InputConsole({
 }: InputConsoleProps): JSX.Element {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
+  /** 有东西正被拖到输入框上方（给个落点高亮，否则用户不知道这里能放） */
+  const [dragging, setDragging] = useState(false)
 
   // 附件清空：新一轮提交后由父组件通过 key 变化重置不方便，这里在 busy 由真转假时保留，
   // 仅在成功提交时清（见 submit）
@@ -75,6 +78,43 @@ export default function InputConsole({
     setAttachments((prev) => prev.filter((p) => p.path !== path))
   }
 
+  /** 按路径加附件（两个拖拽来源共用；去重规则与"选文件"那条一致） */
+  const addByPath = async (pathOrRel: string): Promise<void> => {
+    try {
+      const a = await window.api.attachPath(pathOrRel)
+      setAttachments((prev) => (prev.some((p) => p.path === a.path) ? prev : [...prev, a]))
+    } catch (err) {
+      // 越界（从系统拖了工作区外的文件）等情况在这里给明确理由，不静默失败
+      setAttachError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /**
+   * 拖到输入框 → 变成附件（plan7 批 A3 姊妹项：③ 文件拖进会话）。
+   *
+   * 两个来源分别处理：
+   *   ① **工作区文件树**拖来的：带自定义 MIME 的相对路径
+   *   ② **系统资源管理器**拖来的：`dataTransfer.files` + `webUtils.getPathForFile`
+   *      （Electron 32+ 已移除 `File.path`，只能走这条路）
+   *
+   * 两者的**读取与边界校验是同一份**（主进程 `readAttachment`）——
+   * 所以从系统拖一个工作区外的文件进来会被拒绝，且理由和"选文件"那条完全一致。
+   */
+  const onDrop = (e: ReactDragEvent): void => {
+    e.preventDefault()
+    setDragging(false)
+
+    const rel = e.dataTransfer.getData(DRAG_PATH_MIME)
+    if (rel) {
+      void addByPath(rel)
+      return
+    }
+    for (const f of Array.from(e.dataTransfer.files ?? [])) {
+      const abs = window.api.getPathForFile(f)
+      if (abs) void addByPath(abs)
+    }
+  }
+
   const submit = (): void => {
     if (busy || (!value.trim() && attachments.length === 0)) return
     onSubmit(attachments)
@@ -82,7 +122,22 @@ export default function InputConsole({
   }
 
   return (
-    <div className="console">
+    <div
+      className={`console ${dragging ? 'console-drop' : ''}`}
+      onDragOver={(e) => {
+        // 必须 preventDefault：否则浏览器不认为这里是合法落点，`drop` 事件**根本不会触发**
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+        setDragging(true)
+      }}
+      onDragLeave={(e) => {
+        // 在子元素之间移动也会触发 dragleave —— 用 relatedTarget 判断是不是真的离开了整个输入区，
+        // 否则高亮会一直闪
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+        setDragging(false)
+      }}
+      onDrop={onDrop}
+    >
       {attachments.length > 0 && (
         <div className="attach-list">
           {attachments.map((a) => (

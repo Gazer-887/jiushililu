@@ -2054,6 +2054,13 @@ label.radio {
   line-height: 1.6;
 }
 
+/* 有东西被拖到输入框上方时的高亮（③ 文件拖进会话）——
+   不高亮的话用户不知道"这里能放" */
+.console-drop {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
 /* 附件 chips */
 .attach-list {
   display: flex;

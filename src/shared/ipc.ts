@@ -218,6 +218,8 @@ export const IPC = {
   gitInfo: 'git:info',
   /** 选择文件作为上下文附件（读入内容） */
   attachFile: 'attach:file',
+  /** 按**路径**取附件（文件树拖进输入框 / 系统文件拖进来） */
+  attachPath: 'attach:path',
   /** 提示词优化（一次额外模型调用改写输入） */
   promptPolish: 'prompt:polish',
   // ── 内置浏览器（真浏览器，Agent 可操控）──
@@ -362,6 +364,13 @@ export interface ApiBridge {
   getGitInfo(): Promise<GitInfo | null>
   /** 弹文件选择器并读入内容作为附件（只接受工作区内文件） */
   attachFile(): Promise<Attachment | null>
+  /**
+   * 按路径取附件 —— 与 `attachFile` **共用同一份读取与边界校验**（只差"路径从哪来"）。
+   *
+   * 收**工作区相对路径**或绝对路径都行；越界会抛错。
+   * 两个入口：文件树拖进输入框（相对路径）、系统文件拖进来（绝对路径）。
+   */
+  attachPath(pathOrRel: string): Promise<Attachment>
   /** 提示词优化：把草稿改写成更清晰的指令 */
   polishPrompt(text: string): Promise<string>
   // ── 内置浏览器 ──
