@@ -3032,49 +3032,6 @@ body[data-resizing] {
   color: var(--danger);
 }
 
-.ex-preview {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-6);
-  border-top: 1px solid var(--border);
-  padding-top: var(--sp-8);
-  max-height: 45%;
-  min-height: 0;
-}
-
-.ex-preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-8);
-}
-
-.ex-preview-name {
-  font-size: var(--fs-sm);
-  color: var(--text);
-  font-family: var(--mono, monospace);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.ex-pre {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  margin: 0;
-  padding: var(--sp-8);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg);
-  font-family: var(--mono, monospace);
-  font-size: var(--fs-xs);
-  line-height: 1.55;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
 /* ── 选项卡片组（设置页通用：主题切换 / 访问权限档）────────── */
 
 .choice-list {
@@ -3541,36 +3498,4 @@ body[data-resizing] {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-}
-
-/* 预览区：高度由 JS 控制（可拖拽），手柄贴在顶部边缘 */
-.ex-preview {
-  flex-shrink: 0;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-top: 1px solid var(--border);
-}
-
-.ex-preview-resize {
-  position: absolute;
-  top: -3px;
-  left: 0;
-  right: 0;
-  height: 6px;
-  z-index: 2;
-  cursor: row-resize;
-}
-
-.ex-preview-resize:hover {
-  background: var(--accent-soft);
-}
-
-/* Markdown 预览：复用消息区的 .md 排版，这里只管滚动容器 */
-.ex-preview-md {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--sp-8) var(--sp-12);
 }
