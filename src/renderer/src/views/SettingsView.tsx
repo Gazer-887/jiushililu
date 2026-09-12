@@ -234,9 +234,7 @@ export default function SettingsView() {
             <h2>通用设置</h2>
 
             <div className="field-label">工作区</div>
-            <p className="hint">
-              Agent 读写文件的边界目录 —— 所有文件操作都被限制在此目录内，越界会被直接拒绝。
-            </p>
+            <p className="hint">Agent 只能读写这个目录里的文件，越界会被拒绝。</p>
             <div className="logs-info">
               <span className="logs-path">{ws?.path ?? '加载中…'}</span>
               {ws && !ws.custom && <span className="logs-count">内置默认</span>}
@@ -255,10 +253,8 @@ export default function SettingsView() {
             </div>
 
             <div className="field-label">访问权限</div>
-            <p className="hint">
-              能力归模型，权限归人 —— 这是唯一由你决定的档位。与输入框工具栏那处是同一个设置，
-              改哪边都生效。
-            </p>
+            {/* 只留"这句在哪还能改"这一半：前半句是产品口号，每页来一次就成了噪音 */}
+            <p className="hint">与输入框工具栏那处是同一个设置，改哪边都生效。</p>
             <div className="choice-list choice-list-fill" role="radiogroup" aria-label="访问权限">
               {PERM_ORDER.map((p) => (
                 <button
@@ -275,7 +271,8 @@ export default function SettingsView() {
             </div>
 
             <div className="field-label">界面布局</div>
-            <p className="hint">左右抽屉的宽度可在分隔处拖动调整，双击分隔条即可复位。</p>
+            {/* 原来那句在教"怎么拖分隔条"——可拖动是直觉操作，双击复位属于彩蛋，
+                不值得占一行浅字；这个标题下真正要给的只有那个按钮 */}
             <div className="actions">
               <button
                 className="btn-secondary"
@@ -290,9 +287,9 @@ export default function SettingsView() {
         {section === 'model' && (
           <>
             <h2>模型</h2>
-            <p className="hint">
-              全部自定义接入：不内置任何模型与 Key。Key 走系统加密存储（safeStorage），绝不落明文。
-            </p>
+            {/* "全部自定义接入、不内置任何模型与 Key" 是产品定位（读一次就够）；
+                这里真正承重的是**凭证怎么存** —— 用户据此判断能不能放心填 Key */}
+            <p className="hint">Key 走系统加密存储（safeStorage），不落明文。</p>
 
             <label>
               接口地址 baseURL
@@ -363,9 +360,7 @@ export default function SettingsView() {
                     ))}
                   </span>
                 </div>
-                <p className="hint">
-                  模型一次能"读进"多少。客户端元数据，不发请求——历史裁剪与成本估算的依据。
-                </p>
+                <p className="hint">模型一次能读进多少 —— 用于历史裁剪与成本估算。</p>
 
                 <div className="field-label">输出上限（Token）· 单次回答</div>
                 <div className="with-presets">
@@ -388,7 +383,7 @@ export default function SettingsView() {
                     ))}
                   </span>
                 </div>
-                <p className="hint">这次最多"说"多长。按厂商文档填——DeepSeek V4 最大 384000。</p>
+                <p className="hint">按厂商文档填（DeepSeek V4 上限 384000）。</p>
 
                 <label>
                   工具调用轮数（Agent 主循环上限，防死循环烧钱）
@@ -499,7 +494,8 @@ export default function SettingsView() {
               </div>
             )}
 
-            <p className="hint">连通性测试会发起一次真实请求，消耗少量模型 Token。</p>
+            {/* 这句承重（会花钱，得先说）—— 只把主语去掉，不删 */}
+            <p className="hint">会发起一次真实请求，消耗少量 Token。</p>
 
             <div className="actions">
               <button className="btn-secondary" onClick={reset}>
@@ -521,7 +517,7 @@ export default function SettingsView() {
           /* plan7 外观自定义：主题切换（水墨 / 经典），切换即时生效并持久化 */
           <div className="settings-section">
             <h2>外观</h2>
-            <p className="hint">切换立即生效，重启后保持。</p>
+            {/* 原来那句"切换立即生效，重启后保持"是**一切设置**的共性 —— 说了等于没说 */}
             <div className="choice-list" role="radiogroup" aria-label="主题">
               {THEMES.map((t) => (
                 <button
@@ -543,10 +539,8 @@ export default function SettingsView() {
           /* plan8 R2：故障排查入口。出问题时用户能一键找到日志，而不是只看到"出错了" */
           <div className="settings-section">
             <h2>故障排查</h2>
-            <p className="hint">
-              运行日志会自动记录在本地（已过滤 API Key 等敏感信息，不会明文落盘）。
-              遇到异常时，把最近的日志文件发给开发者即可定位。
-            </p>
+            {/* 承重（隐私 + 怎么用），但一句话说得完 —— 原来两行里有半行是重复的 */}
+            <p className="hint">日志记在本地，已过滤 API Key 等敏感信息；报障时把最近的日志发出来即可。</p>
             <div className="logs-info">
               <span className="logs-path">
                 {logs?.dir ?? '（日志目录尚未创建，产生首条日志后自动出现）'}
