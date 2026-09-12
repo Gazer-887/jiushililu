@@ -4,6 +4,8 @@ import { resolveApiUrl } from './url'
 import { ProviderError, mapHttpError } from './errors'
 import { thinkingBudgetFor } from './anthropic'
 import { createSSEParser } from './sse'
+import { usageFromAnthropicEvent } from './usage-parsers'
+import type { TokenUsage } from '@shared/usage'
 import { ToolCallAccumulator } from './tool-accumulator'
 
 // Anthropic tool_use 适配（plan6 → P1）：把 OpenAI 风格的 Agent 消息翻译成 Anthropic 块结构。
@@ -200,15 +202,22 @@ export async function streamWithToolsAnthropic(
 
   const acc = new ToolCallAccumulator()
   let text = ''
+  /** 这一轮的用量（plan8 R9）：Anthropic **分两处报**（message_start 输入 / message_delta 输出） */
+  let usage: TokenUsage | null = null
 
   const parser = createSSEParser((data) => {
     try {
       const evt = JSON.parse(data) as {
         type?: string
         index?: number
+        usage?: unknown
+        message?: { usage?: unknown }
         content_block?: { type?: string; id?: string; name?: string; input?: unknown }
         delta?: { type?: string; text?: string; partial_json?: string }
       }
+      // 两处都收：只收一处账面会少一半（输入那半在 message_start 里就报完了）
+      const evtUsage = usageFromAnthropicEvent(evt)
+      if (evtUsage) usage = evtUsage
       if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
         acc.startAnthropic(
           evt.index ?? 0,
@@ -242,5 +251,5 @@ export async function streamWithToolsAnthropic(
   parser.end()
 
   const toolCalls = acc.finish()
-  return { text: text.length > 0 ? text : null, toolCalls }
+  return { text: text.length > 0 ? text : null, toolCalls, ...(usage ? { usage } : {}) }
 }

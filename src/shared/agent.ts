@@ -1,3 +1,5 @@
+import type { TokenUsage } from './usage'
+
 // Agent 内核共享类型（P1，plan6 拍板：D1-D8）——工具、消息、循环结果。
 // 协议采用 OpenAI tool-calls 格式（DeepSeek / V4 全系原生兼容）。
 
@@ -36,6 +38,11 @@ export interface ToolCall {
 export interface AgentChatResult {
   text: string | null
   toolCalls: ToolCall[]
+  /**
+   * 这一轮的真实用量（plan8 R9）。**厂商不报就没有这个字段** ——
+   * 上层据此决定"用真实值"还是"退回估算并**标注**"，两者不可混为一谈。
+   */
+  usage?: TokenUsage
 }
 
 /** 工具执行的生命周期事件（供界面显示"正在读 xx / 完成 / 失败"） */

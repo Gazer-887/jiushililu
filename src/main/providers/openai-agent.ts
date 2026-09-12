@@ -1,6 +1,8 @@
 import type { ModelSettings } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, ToolSchema } from '@shared/agent'
 import { resolveApiUrl } from './url'
+import { usageFromOpenAIChunk } from './usage-parsers'
+import type { TokenUsage } from '@shared/usage'
 import { ProviderError, mapHttpError } from './errors'
 import { createSSEParser } from './sse'
 import { ToolCallAccumulator } from './tool-accumulator'
@@ -98,11 +100,20 @@ export async function streamWithToolsOpenAI(
 
   const acc = new ToolCallAccumulator()
   let text = ''
+  /**
+   * 这一轮的用量（plan8 R9）。
+   *
+   * ⚠️ **主循环这条才是真正花钱的**（一次对话可能调好几轮模型，每轮都消耗 token）——
+   * 上游只在**最后一个 chunk** 报 usage（且必须显式请求 `stream_options.include_usage`），
+   * 所以每个 chunk 都要试着取一次；厂商不报就留 null，上层据此退回估算并**标注**。
+   */
+  let usage: TokenUsage | null = null
 
   const parser = createSSEParser((data) => {
     if (data === '[DONE]') return
     try {
       const json = JSON.parse(data) as {
+        usage?: unknown
         choices?: Array<{
           delta?: {
             content?: string
@@ -112,6 +123,8 @@ export async function streamWithToolsOpenAI(
           }
         }>
       }
+      const chunkUsage = usageFromOpenAIChunk(json)
+      if (chunkUsage) usage = chunkUsage
       const delta = json.choices?.[0]?.delta
       if (!delta) return
       // 思考增量：**不进 text**，只外送 —— 它是过程，不是回答
@@ -145,5 +158,5 @@ export async function streamWithToolsOpenAI(
   parser.end()
 
   const toolCalls = acc.finish()
-  return { text: text.length > 0 ? text : null, toolCalls }
+  return { text: text.length > 0 ? text : null, toolCalls, ...(usage ? { usage } : {}) }
 }
