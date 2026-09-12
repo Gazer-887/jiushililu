@@ -587,6 +587,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   stopStreaming: async () => {
     await window.api.chatAbort()
+    // **必须自己把 streaming 收回去**，不能只指望主进程随后发 `chat:done`：
+    // 那条事件万一没到（订阅被拆过、页面在后台、渲染进程刚重载），界面就永远停在
+    // "生成中"——发送键一直是「停止」，而点它正是这里，点完还是"生成中"，**死循环**。
+    // 用户按了停止，界面就必须停止显示"正在生成"：这是**意图**，不是**投影**。
+    set({ streaming: false })
     await get().persistActive()
   }
 }))

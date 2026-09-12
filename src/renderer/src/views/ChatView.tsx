@@ -76,27 +76,9 @@ export default function ChatView() {
 
   const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
 
-  // 流式与工具事件订阅：只在挂载时挂一次，卸载时清理
-  useEffect(() => {
-    const offChunk = window.api.onChatChunk((t) => useAppStore.getState().appendChunk(t))
-    const offReasoning = window.api.onChatReasoning((d) =>
-      useAppStore.getState().appendReasoning(d)
-    )
-    const offDone = window.api.onChatDone(() => useAppStore.getState().markDone())
-    const offError = window.api.onChatError((m) => useAppStore.getState().markError(m))
-    const offTool = window.api.onChatTool((evt) => useAppStore.getState().pushToolEvent(evt))
-    const offTodos = window.api.onTodoChanged((todos) => useAppStore.getState().setTodos(todos))
-    // 挂载时补拉一次：清单存在主进程，切走再回来不该是空的
-    void window.api.getTodos().then((todos) => useAppStore.getState().setTodos(todos))
-    return () => {
-      offChunk()
-      offDone()
-      offError()
-      offTool()
-      offTodos()
-      offReasoning()
-    }
-  }, [])
+  // 流式与工具事件订阅**不在这里** —— 它挂在 `App` 上（见 `App.tsx` 的 `useStreamSubscriptions`）。
+  // 原因：这里是**条件渲染**（`view === 'chat' && <ChatView />`），订阅挂在这儿意味着
+  // "切到设置页 = 把订阅全解绑" —— 会丢字，还会因为收不到 `chat:done` 而**卡在生成中**。
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

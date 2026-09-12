@@ -19,7 +19,45 @@ import SettingsView from './views/SettingsView'
 // 三段式布局（P2）：顶栏（面板开关） + 左抽屉（会话/设置） + 主区域（对话） + 右抽屉（工作台）。
 // 主区域永远只负责"对话"，新增能力一律往两侧抽屉挂。
 
+/**
+ * **流式订阅挂在这一层，不挂在 ChatView 里**（2026-09-12 修）。
+ *
+ * 原来它挂在 `ChatView` 的 effect 上，而 `App` rendering 主区域用的是**条件渲染**
+ * （`view === 'chat' && <ChatView />`）—— 于是**切到设置页就等于把订阅全解绑**
+ *（`ChatView.tsx` 原 79-99 行）。后果有两条，第二条是会卡死人的：
+ *
+ *   ① 在设置页期间流式吐出来的字**永远看不到**（没人接）；
+ *   ② 如果流在那一刻**跑完**了，`chat:done` 就丢了 → `streaming` 永远停在 true
+ *      → 回到对话页之后发送键一直是「停止」，**点它也没用**（`stopStreaming` 当时也不清这个标志）。
+ *
+ * 挂在 App 上之后，订阅的生命周期 = 应用的生命周期，与"正在看哪一页"无关 ——
+ * 这也正是流式事件本该有的归属：**它属于这个窗口，不属于某个视图**。
+ * （plan11「多会话并发」还要在后面给它加上"按会话分流"，那一步只改这里的落点。）
+ */
+function useStreamSubscriptions(): void {
+  useEffect(() => {
+    const s = (): ReturnType<typeof useAppStore.getState> => useAppStore.getState()
+    const offChunk = window.api.onChatChunk((t) => s().appendChunk(t))
+    const offReasoning = window.api.onChatReasoning((d) => s().appendReasoning(d))
+    const offDone = window.api.onChatDone(() => s().markDone())
+    const offError = window.api.onChatError((m) => s().markError(m))
+    const offTool = window.api.onChatTool((evt) => s().pushToolEvent(evt))
+    const offTodos = window.api.onTodoChanged((todos) => s().setTodos(todos))
+    // 补拉一次：待办清单存在主进程，界面挂载时不该是空的
+    void window.api.getTodos().then((todos) => s().setTodos(todos))
+    return () => {
+      offChunk()
+      offDone()
+      offError()
+      offTool()
+      offTodos()
+      offReasoning()
+    }
+  }, [])
+}
+
 export default function App() {
+  useStreamSubscriptions()
   const view = useAppStore((s) => s.view)
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const dockOpen = useAppStore((s) => s.dockOpen)

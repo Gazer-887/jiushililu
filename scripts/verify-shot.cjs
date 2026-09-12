@@ -222,6 +222,9 @@ const convUndoCalls = []
 /** Markdown 轻编辑：fs:write 收到的载荷（要验"冲突基线有没有带上来"） */
 const fsWritePayloads = []
 
+/** 会话保存的调用流水（要验"在别的页面期间流出来的内容有没有被存下来"） */
+const convSaveCalls = []
+
 /** 后台任务样例：覆盖 running（带终止按钮）与 done（带退出码）两种渲染 */
 const FAKE_BG_TASKS = [
   {
@@ -300,7 +303,11 @@ const STUBS = {
     ]
   }),
   'conv:create': () => ({ id: 'x' }),
-  'conv:save': () => null,
+  // 记流水：要验「在别的页面期间流出来的内容有没有被存下来」
+  'conv:save': ({ id, messages }) => {
+    convSaveCalls.push({ id, messages })
+    return null
+  },
   // ④ 会话回滚（plan10 B 批）：记下调用与载荷，并回一份**权威**会话 ——
   // 渲染端必须用它覆盖内存（回滚后的条数与撤销后的条数刻意不同，好断言这份覆盖真的发生了）
   'conv:rollback': (arg) => {
@@ -2742,6 +2749,78 @@ app.whenReady().then(async () => {
   `)
   console.log('EDIT_CLOSED=' + JSON.stringify(closed))
 
+  // —— 流式订阅**不该跟着视图卸载**（2026-09-12 修的一个会卡死人的 bug）——
+  //
+  // 现象：流式期间去「设置」页 → 中途吐出来的字**全丢**；若流恰好在那一刻跑完，
+  //      `chat:done` 收不到 → `streaming` 永远停在 true → 回来卡在「停止」状态，
+  //      而且**点它也没用**（旧代码的 `stopStreaming` 不清这个标志）。
+  // 根因：订阅挂在 `ChatView` 的 effect 上，而主区域是**条件渲染**（切页就卸载）。
+  // 修法：订阅搬到 `App`（应用级），视图怎么切都不解绑。
+  //
+  // 这一段不驱动真实发送 —— 直接推事件就够：要验的是**订阅在不在**，不是模型跑不跑。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const item = Array.from(document.querySelectorAll('.conv-item'))
+        .find((b) => (b.textContent || '').includes('打个招呼'));
+      if (item) item.click();
+      return !!item;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+
+  win.webContents.send('chat:chunk', '切换之前的字')
+  await new Promise((r) => setTimeout(r, 500))
+  const subBefore = await win.webContents.executeJavaScript(`
+    (() => ({ got: (document.querySelector('.chat-messages')?.textContent ?? '').includes('切换之前的字') }))()
+  `)
+
+  // 切到设置页（**真鼠标**点齿轮）—— 这一步会让 ChatView 卸载
+  const gearPos = await centerOf('.gear-btn')
+  if (rbInputReady && gearPos) await realClick(gearPos.x, gearPos.y, 'left')
+  await new Promise((r) => setTimeout(r, 800))
+  const onSettings = await win.webContents.executeJavaScript(`
+    (() => ({ settings: !!document.querySelector('.settings, .settings-view, .settings-page'), chat: !!document.querySelector('.chat-view') }))()
+  `)
+
+  // 在设置页期间继续推：一段正文 + 结束。
+  // ⚠️ 这一段是**这条修复的核心**：旧代码里 `chat:done` 收不到 → `markDone` 永不执行
+  //    → 界面里那段字**永远不会被存盘**。所以下面断言的是 **conv:save 的载荷**，
+  //    而不是"切回来能不能看见" —— 后者会被"点会话项重新加载"掩盖（`store.ts:396-405`）。
+  convSaveCalls.length = 0
+  win.webContents.send('chat:chunk', '切页期间的字')
+  await new Promise((r) => setTimeout(r, 300))
+  win.webContents.send('chat:done')
+  await new Promise((r) => setTimeout(r, 700))
+  const savedWhileAway = convSaveCalls.some((c) =>
+    (c.messages ?? []).some((m) => String(m.content ?? '').includes('切页期间的字'))
+  )
+
+  // 切回会话
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const item = Array.from(document.querySelectorAll('.conv-item'))
+        .find((b) => (b.textContent || '').includes('打个招呼'));
+      if (item) item.click();
+      return !!item;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  const subAfter = await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.send-btn');
+      const all = document.querySelector('.chat-messages')?.textContent ?? '';
+      return {
+        text: all.slice(-40),
+        hasChunkAfterUnmount: all.includes('切页期间的字'),
+        stopping: !!btn && btn.classList.contains('stopping'),
+        sendTitle: btn ? (btn.getAttribute('title') || '') : ''
+      };
+    })()
+  `)
+  console.log(
+    'SUB_LIFECYCLE=' + JSON.stringify({ before: subBefore.got, onSettings, savedWhileAway, ...subAfter })
+  )
+
   if (rbInputReady) {
     try {
       dbg.detach()
@@ -2797,6 +2876,15 @@ app.whenReady().then(async () => {
   checkTrue('守卫条给的是两个明确选择（取消 / 放弃修改并关闭）',
     guardState.buttons.length === 2 && guardState.buttons.some((b) => b.includes('取消')), guardState.buttons)
   checkTrue('选「放弃修改并关闭」→ 页签真的关掉了', closed.hasTextarea === false, closed)
+
+  // —— 流式订阅的生命周期（会卡死人的那个 bug）——
+  checkTrue('前置：订阅在（推一段流界面能收到）', subBefore.got === true, subBefore)
+  checkTrue('前置：确实切到了设置页（ChatView 已被卸载 —— 否则下面一条说明不了任何事）',
+    onSettings.settings === true && onSettings.chat === false, onSettings)
+  checkTrue('**在设置页期间流出来的内容，仍然被存盘**（订阅没跟着视图卸载 —— 旧代码这里必红）',
+    savedWhileAway === true, { savedWhileAway, saves: convSaveCalls.length })
+  checkTrue('**收到 `chat:done` 之后不卡在"生成中"**（发送键回到「发送」）',
+    subAfter.stopping === false && subAfter.sendTitle.includes('发送'), subAfter)
 
   reportAndExit()
 })
