@@ -2080,6 +2080,33 @@ label.radio {
   margin: 0;
 }
 
+/* ── Monaco 编辑器壳（plan13 批 B）────────────────────────────
+   按需加载：加载期间显示这层薄壳（一句话），加载完 monaco 自己在 .ce-host 里渲染。
+   ⚠️ 高度必须由**父容器**给死：monaco 不会自己撑高，容器算出 0 高度时
+      它会渲染出"一行都没有"的白框 —— 不报错，是最难查的那种。 */
+.ce-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  /* 兜底：父容器没给高度时也要能看见内容（见上面那条警告） */
+  min-height: 12rem;
+  display: flex;
+}
+
+.ce-host {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ce-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
 .fp-size {
   font-size: var(--fs-xs);
   color: var(--muted);

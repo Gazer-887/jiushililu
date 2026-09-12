@@ -1418,23 +1418,39 @@ app.whenReady().then(async () => {
       return !!f;
     })()
   `)
-  await new Promise((r) => setTimeout(r, 900))
+  // ⚠️ plan13 B1：Monaco 靠 requestAnimationFrame 渲染，而验证窗口是**离屏**的 ——
+  //    实测 900ms 时容器已建、尺寸正常，但 `.view-line` 是 **0 行**（渲染循环被节流）。
+  //    给到 2.6s，让 rAF 真的跑起来。
+  await new Promise((r) => setTimeout(r, 2600))
   const previewState = await win.webContents.executeJavaScript(`
     (() => {
       const panes = Array.from(document.querySelectorAll('.pane'));
       const last = panes[panes.length - 1];
-      const pre = last ? last.querySelector('.fp-pre') : null;
+      /**
+       * ⚠️ plan13 批 B：非 Markdown 的文本改用 **Monaco** 渲染。
+       * 它**虚拟化**（全文不在 DOM 里，只有可见行有 \`.view-line\`），所以这里读"可见行拼起来"。
+       * 这对"能不能看见这个关键词"这类断言足够，而且**更贴近用户实际看到的** ——
+       * 直接读编辑器 API 反而会验到"DOM 里没有的东西"。
+       */
+      const editor = last ? last.querySelector('.ce-host') : null;
+      const visibleText = editor
+        ? Array.from(editor.querySelectorAll('.view-line')).map((el) => el.textContent).join('\\n')
+        : '';
       const fp = last ? last.querySelector('.fp') : null;
       const dim = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height), top: Math.round(b.top) }; };
       return {
         paneCount: panes.length,
         // 关键：预览必须是**自己的一栏**，而不是塞在资源管理器那一栏里面
         isOwnPane: panes.length >= 2 && !!last && !last.querySelector('.ex-panel'),
-        hasPreview: !!pre,
-        firstLine: pre ? pre.textContent.split('\\n')[0] : null,
-        hasOxide: pre ? pre.textContent.includes('氧化铈粉') : false,
+        hasPreview: !!editor,
+        firstLine: visibleText.split('\\n')[0] || null,
+        // ⚠️ Monaco **虚拟化**：只有可见行在 DOM 里 —— 所以这条查的是"可见行里能不能看到
+        //    这个文件的内容特征"。原实现读 .fp-pre 的全文，换编辑器后不再适用。
+        //    ⚠️ 注：这段注释在**模板字符串**里 —— 里面的反引号必须转义，否则会提前结束字符串
+        //    （2026-09-13 实际踩到：node --check 照样通过，运行时才报 pre is not defined）。
+        hasFileContent: visibleText.includes('紫水晶'),
         // 关键：**看得见**才算数（DOM 存在但高度塌成 0 等于没显示）
-        preBox: dim(pre),
+        preBox: dim(editor),
         fpBox: dim(fp)
       };
     })()
@@ -1767,7 +1783,11 @@ app.whenReady().then(async () => {
       (() => {
         const f = document.querySelector('.fp-html');
         const t = document.querySelector('.fp-html-toggle');
-        const pre = document.querySelector('.fp-pre');
+        /* 源码视图现在也是 Monaco（plan13 批 B）—— 同样读"可见行"（它虚拟化，全文不在 DOM 里） */
+        const editor = document.querySelector('.ce-host');
+        const visibleText = editor
+          ? Array.from(editor.querySelectorAll('.view-line')).map((el) => el.textContent).join('\\n')
+          : '';
         const r = f ? f.getBoundingClientRect() : null;
         return {
           hasFrame: !!f,
@@ -1783,8 +1803,8 @@ app.whenReady().then(async () => {
             const b = t.getBoundingClientRect();
             return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
           })() : null,
-          rawPreShown: !!pre,
-          preText: pre ? pre.textContent : '',
+          rawPreShown: !!editor,
+          preText: visibleText,
           // 可视区：采像素要先把采样区夹进视口，不然 capturePage 会抛
           view: { w: window.innerWidth, h: window.innerHeight },
           hasToggle: !!t
@@ -1875,7 +1895,9 @@ app.whenReady().then(async () => {
     htmlToggle.clicked = true
     const srcView = await readHtmlFrame()
     htmlToggle.afterSrc = { toggleText: srcView.toggleText, rawPreShown: srcView.rawPreShown }
-    htmlToggle.srcHasMarkup = srcView.preText.includes('<h1') && srcView.preText.includes('<script>')
+    // ⚠️ Monaco 虚拟化：只断言**可见行**里出现了标签形态的文本 ——
+    //    意图不变（"看到的是源码 markup，不是渲染后的页面"），但不再要求整份文件都在 DOM 里。
+    htmlToggle.srcHasMarkup = /<[a-zA-Z!/]/.test(srcView.preText)
     // 再点回来：**开关是双向的**，别做成只能往一个方向切（用户会以为坏了）
     const backPos = srcView.toggleRect
     if (backPos) {
@@ -2853,7 +2875,7 @@ app.whenReady().then(async () => {
     !!previewState.preBox && previewState.preBox.h > 20,
     previewState.preBox
   )
-  checkTrue('预览读到的确实是那个文件', previewState.hasOxide === true, previewState.firstLine)
+  checkTrue('预览读到的确实是那个文件', previewState.hasFileContent === true, previewState.firstLine)
   checkTrue(
     'Markdown 走富文本渲染（有 .fp-md、没有 .fp-pre）',
     exMdPreview.renderedMarkdown === true && exMdPreview.rawPre === false,

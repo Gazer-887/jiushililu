@@ -19,7 +19,9 @@
     "bench:window": "node scripts/bench-tool-window.cjs"
   },
   "dependencies": {
-    "electron-store": "^8.2.0"
+    "diff": "^9.0.0",
+    "electron-store": "^8.2.0",
+    "monaco-editor": "^0.56.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.0",

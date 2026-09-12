@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { formatSize, imageMimeOf, isTextPreviewable } from '@shared/fs-tree'
 import { isHtmlFile, workspaceRelToPreviewUrl } from '@shared/html-preview'
 import MessageMarkdown from './MessageMarkdown'
+import CodeEditor, { languageOf } from './CodeEditor'
 
 // 文件预览 + **Markdown 轻编辑**（plan9 W3 抽出；plan7 批 A3 范围②）
 //
@@ -321,7 +322,10 @@ export default function FilePreviewPane({
                   <MessageMarkdown content={draft || view.content} />
                 </div>
               ) : (
-                <pre className="fp-pre">{draft || view.content}</pre>
+                // 非 Markdown 的文本 → **Monaco**（plan13 批 B）：语法高亮 + 行号 + 大文件能翻。
+                // ⚠️ 这一版只换"看"这一半（只读）；"改"那一半（下面的 textarea）属 B2。
+                //    分开做是有意的：换编辑器内核最容易顺手弄丢的，就是那三条边界。
+                <CodeEditor value={draft || view.content} language={languageOf(rel)} readOnly />
               )}
               <div className="fp-size">{formatSize((draft || view.content).length)}</div>
             </>
