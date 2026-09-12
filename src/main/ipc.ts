@@ -449,7 +449,11 @@ export function registerIpcHandlers(deps: {
         ...(process.env['JSL_TOOL_WINDOW'] === 'off' ? { toolWindow: false } : {}),
         // 省 token 档位（plan8 R9.1 §七②）：**在这里解析**（组合根读了设置再往下给 policy）。
         // runner 不许碰 electron-store（CI 无 Electron 二进制），所以读设置只能发生在本层。
-        policy: resolvePolicy(getTokenTier()),
+        //
+        // `JSL_TOKEN_TIER`（§七⑤）：与 `JSL_TOOL_WINDOW` 同族的**校准钩子** ——
+        // 让 harness 能按档位切臂去跑（"8k/12k/0.72 该不该调"的直接证据正是档位本身）。
+        // 环境变量不存在时行为与以前完全一样（生产环境不会有它）。
+        policy: resolvePolicy(process.env['JSL_TOKEN_TIER'] ?? getTokenTier()),
         // 子代理事件（plan7 批 D）：同批内就地更新，换批则重开
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }

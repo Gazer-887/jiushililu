@@ -10,14 +10,61 @@
  * ## 怎么跑
  *
  * ```bash
- * npm run build                                   # 先构建（harness 驱动的是构建产物）
- * node scripts/bench-tool-window.cjs --tasks=2    # 4 次真实调用（2 任务 × 2 臂）
+ * npm run build                                              # 先构建（harness 驱动的是构建产物）
+ * node scripts/bench-tool-window.cjs --tasks=2 --arms=both --repeat=3   # 12 次真实调用（2 任务 × 2 臂 × 3 次）
  * ```
  *
  * - `--tasks=1|2`  跑几个任务（默认 2）
  * - `--arms=both|on|off`  跑哪几臂（默认 both）
+ * - `--repeat=N`  每臂重复几次（**默认 1；要下结论必须 ≥3**，取中位数）
  * - `--probe`  只跑**一句最小任务**，把厂商原始 usage 形状从日志里捞出来（plan8 R9.1 §七① 的核对手段）
  * - `--keep`  保留夹具（默认跑完删掉）
+ *
+ * ## 结论状态（**读数字之前先看这里**）
+ *
+ * - **2026-09-12 首轮（旧夹具：命令输出 700 行 ≈ 3k token）→ 结论是"还没量出结论"**：
+ *   同一个「关」臂两轮差 **3.3 倍** —— **对照组自身的方差大于要测的效应**（n=1 的 A/B 不是 A/B）；
+ *   而且夹具**太小**（一轮就塞得下），窗口化根本没有用武之地。
+ * - **2026-09-13 改版**（按上面那两条教训改的）：
+ *   ① 夹具换成**塞不下**型（`HUGE_LINES` = 15000 行 ≈ 7 万 token）；
+ *   ② 去掉与命令输出**重复**的 `noisy.log`（它会把模型引去再读一遍文件，污染对比）；
+ *   ③ `--repeat` 默认 1、**下结论要 ≥3**，取中位数并把原始值一起打印；
+ *   ④ 报告带**工具调用次数** —— 解释 token 差异的分母是"轮数 × 上下文规模"，不是单轮文本大小。
+ *   **结论见 `PLAN/plan8` 的 §七⑤ 与 `bench/tool-window-*.json`。**
+ *
+ * ### 2026-09-13 第一轮改版后实测（3 次/臂取中位数）
+ *
+ * | 任务 | 开 | 关 | 差 |
+ * |---|---:|---:|---:|
+ * | **命令输出找结论**（15000 行 ≈ 7 万 token） | **27,932** | **486,619** | **−94%** |
+ * | 大文件找针（`read_file`，走工具自带窗口） | 31,420 | 8,240 | +281%（**全是模型方差**，见下） |
+ *
+ * - 第一行是**决定性**结论：大输出下不压根本跑不动（关臂单次已在 40–50 万 token 量级）。
+ * - 第二行**不可用于比较**：`read_file` 在 `SELF_MANAGED_TOOLS` 里，主循环窗口化不参与
+ *   （"省 = 0"就是证据）→ 两臂差别纯属模型行为方差（`[32048, 8230, 31420]`，差 3.8 倍）。
+ *   它留着是为了当"**关臂也不该崩**"的对照组。
+ *
+ * ### 2026-09-13 第二轮：**按档位跑**（`--arms=tier:light,tier:balanced,tier:ultimate`）
+ *
+ * | 任务 | 轻量 4k/0.5 | 平衡 8k/0.72 | 极致 16k/0.85 |
+ * |---|---:|---:|---:|
+ * | `tail-command`（≈7 万 token 输出） | 40,355 | 55,034 | 59,257 |
+ * | `mid-command`（≈2.5 万 token 输出） | 12,585 | 59,634 | 21,120 |
+ *
+ * **三档调不出可测差别**：顺序在两行之间都不一致，而每臂的内部跨度远大于档间差
+ * （极致档 `mid` 三次为 `12811 / 165665 / 21120`，13 倍）。
+ * → **8k / 12k / 0.72 保持现状**（它们落在"调了也测不出"的区间里）。
+ *
+ * 另跑一组 `tier:rich` vs `tier:balanced`（`mid-command`）：**212,991 vs 75,235（−65%）**
+ * → **「够小就别压」在 19% 窗口这个量级不成立** —— 该压。
+ *
+ * ## ★ 这套 harness 量出来的最重要的一件事
+ *
+ * **token 的主导变量是"工具调用次数"，不是压缩档位。**
+ * 把两轮共 30 次运行放一起：调用 **3~4 次**的落在 **1~2 万** token，
+ * 调用 **13~28 次**的落在 **4.5~16.5 万** —— **差 13 倍**。
+ * 档位带来的几千 token 差异在这个量级面前是**零头**。
+ * → **下一步该做的是"别让模型多跑几轮"，不是继续调 8k / 12k / 0.72。**
  *
  * ## 两条铁律（写在这里免得后人踩）
  *
@@ -59,9 +106,37 @@ const ARG = (name, dflt) => {
   return hit ? hit.slice(name.length + 3) : dflt
 }
 const TASKS = Number(ARG('tasks', '2'))
-const ARMS = String(ARG('arms', 'both')) === 'both' ? ['on', 'off'] : [String(ARG('arms', 'on'))]
+/**
+ * 臂名（逗号分隔）：`on` / `off` / `tier:light` / `tier:balanced` / `tier:ultimate` / `tier:rich`
+ *
+ * - `both` = `on,off`（旧的窗口化开关对照）
+ * - `tier:xxx` = **按档位跑**（§七⑤ 的正题）：档位本身就是 8k/12k/0.72 的一组取值，
+ *   所以"该不该调"最直接的证据就是**换档比一遍**。
+ */
+const ARMS = (() => {
+  const raw = String(ARG('arms', 'both'))
+  if (raw === 'both') return ['on', 'off']
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+})()
 const KEEP = process.argv.includes('--keep')
 const PROBE = process.argv.includes('--probe')
+/**
+ * 每臂重复几次（**默认 1；要下结论必须 ≥3**）。
+ *
+ * 为什么非重复不可：这套 harness 的第一次实测里，同一个「关」臂两轮差了 **3.3 倍** ——
+ * **对照组自身的方差大于要测的效应**，于是"开 vs 关谁更省"根本没法下结论
+ * （n=1 的 A/B 不是 A/B，是两次孤例）。
+ * 现在取**中位数**，并且把每次的原始值一起打印 —— 方差本身就是结论的一部分。
+ */
+const REPEAT = Math.max(1, Number(ARG('repeat', '1')))
+/** `--only=tail-in-command,mid-command`：只跑指定的任务（按 id）—— 免得为了两条任务把全部跑一遍 */
+const ONLY = String(ARG('only', ''))
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
 
 const BENCH = join(ROOT, '.bench-tool-window')
 const USER_UD = join(process.env.APPDATA || '', 'jiushililu')
@@ -84,27 +159,67 @@ const WS = realWorkspace()
  * 子目录不在其中（第一版就是把夹具放进 `.jsl-bench/` 子目录 → "工作区未被授权"）。
  * 用带前缀的固定文件名，既不撞用户已有的文件，也好精确删回去。
  */
-const FIXTURE_FILES = ['jsl-bench-big-report.md', 'jsl-bench-check.js', 'jsl-bench-noisy.log']
+/**
+ * 夹具文件（跑完全部删掉）。
+ *
+ * ⚠️ **2026-09-13 改版**：上一版夹具**太小了**（命令输出 700 行 ≈ 3k token）——
+ * "一轮就塞得下"，窗口化压它省不了多少，于是**量不出开/关的差别**
+ * （当时的结论老实写着"没量出结论"）。
+ * 现在的取向是**塞不下**：命令输出拉到下面那个 `HUGE_LINES`（约 300KB / 约 7 万估算 token）——
+ * 大到"不压就吃掉大半个上下文窗口"，才轮到窗口化证明自己。
+ */
+const FIXTURE_FILES = ['jsl-bench-big-report.md', 'jsl-bench-check.js', 'jsl-bench-mid.js']
 
-/** 夹具与判据：**针**（needle）埋在任务必须"读到/看到"的位置，答不出来就是失败 */
+/**
+ * 命令输出的行数 —— **这套校准的主变量**。
+ *
+ * 为什么取 15000：一行约 20 字节 → 约 300KB → 估算 **约 7 万 token**。
+ * 这个量级的用意是让它**塞得进、但代价明显**（用户的 contextWindow 默认 131072）——
+ * 于是"开 / 关"两臂都能跑完，差别体现在真值 token 上，而不是"关臂直接超窗失败"。
+ */
+const HUGE_LINES = 15000
+
+/**
+ * **中等**输出的行数 —— 「够小就别压」那条候选设计（§七⑤ 第二问）的验区。
+ *
+ * 5000 行 ≈ 100KB ≈ 2.5 万估算 token：**远大于** `minBytes`（平衡档 1400 字节，一定会压），
+ * 但只占 131072 窗口的**约 19%** —— 所以"整段 ≤ 窗口某比例就原样放行"那条设计会**放过**它。
+ * 两边的差别恰好落在这个区间，别处测不到。
+ */
+const MID_LINES = 5000
+
 const FIXTURES = () => {
   mkdirSync(WS, { recursive: true })
-  // ① 大文件：针在第 380 行 —— 只有"按窗口读 + 能续读"才拿得到（全文倾倒也拿得到，但代价是 9 万 token）
+  // ① 大文件：针在第 380 行 —— 考"按窗口读 + 能续读"
+  //    （`read_file` 自带行窗口与绝对预算，所以这条**不依赖**主循环的窗口化，
+  //     它是"关臂也不该崩"的对照组）
   const big = []
   for (let i = 1; i <= 600; i++) {
     big.push(i === 380 ? '审计编号：JSL-7742' : `第 ${i} 行：这是用来撑大文件体积的普通内容，不含关键信息。`)
   }
   writeFileSync(join(WS, 'jsl-bench-big-report.md'), big.join('\n'), 'utf8')
 
-  // ② 命令输出：**结论在末尾**（这正是旧代码 `slice(0,8000)` 会切掉的那半截）
+  // ② 命令输出：**结论在末尾**（旧代码 `slice(0,8000)` 恰好会切掉的那半截）
+  //    ⚠️ 上一版还额外写了一份 `jsl-bench-noisy.log`，内容与命令输出**重复** ——
+  //    那会把模型引去"再读一遍文件"，于是省下来的 token 不一定是窗口化的功劳（污染对比）。
+  //    现在**只留一条路径**：让模型跑那条命令。
   const lines = []
-  for (let i = 0; i < 700; i++) lines.push(`[info] 处理第 ${i} 个条目，一切正常`)
+  for (let i = 0; i < HUGE_LINES; i++) lines.push(`[info] 处理第 ${i} 个条目，一切正常`)
   lines.push('[info] 开始跑检查用例')
   lines.push('✕ 3) 端口占用检查')
   lines.push('   Expected 3000, received 8080')
   lines.push('exit code 1')
   writeFileSync(join(WS, 'jsl-bench-check.js'), `console.log(${JSON.stringify(lines.join('\n'))})\n`, 'utf8')
-  writeFileSync(join(WS, 'jsl-bench-noisy.log'), lines.join('\n'), 'utf8')
+
+  // ③ **中等输出**：考"够小就别压"（§七⑤ 第二问）—— 远大于 minBytes（一定会压），
+  //    但只占窗口约 19%（"≤窗口某比例就放行"那条设计会放过它）。结论一样埋在末尾。
+  const mid = []
+  for (let i = 0; i < MID_LINES; i++) mid.push(`[info] 检查第 ${i} 项，一切正常`)
+  mid.push('[info] 汇总：共检查完毕')
+  mid.push('✕ 7) 校验和比对')
+  mid.push('   Expected c0ffee, received deadbeef')
+  mid.push('exit code 1')
+  writeFileSync(join(WS, 'jsl-bench-mid.js'), `console.log(${JSON.stringify(mid.join('\n'))})\n`, 'utf8')
 }
 
 /**
@@ -132,6 +247,12 @@ const TASKSET = [
     prompt: '在工作区里执行 `node jsl-bench-check.js`，然后告诉我：哪个用例失败了、期望值是多少、实际值是多少。简短回答。',
     needle: '8080',
     why: '考"结论在末尾"——旧代码只留前 8000 字符，这半截会被切掉'
+  },
+  {
+    id: 'mid-command',
+    prompt: '在工作区里执行 `node jsl-bench-mid.js`，然后告诉我：哪个用例失败了、期望值是多少、实际值是多少。简短回答。',
+    needle: 'deadbeef',
+    why: '考"够小就别压"（§七⑤ 第二问）—— 输出约 100KB / 2.5 万 token：远大于 minBytes（一定会压），但只占窗口约 19%'
   }
 ]
 
@@ -276,7 +397,21 @@ function pageScript(prompt, workspace) {
 }
 
 async function runArm(task, arm, port) {
-  const env = { ...process.env, JSL_TOOL_WINDOW: arm === 'off' ? 'off' : 'on' }
+  /**
+   * 臂名 → 环境变量。
+   *
+   * - `on` / `off`：窗口化开关（`JSL_TOOL_WINDOW`，旧的校准钩子）
+   * - `tier:light` / `tier:balanced` / `tier:ultimate` / `tier:rich`：**按档位跑**（§七⑤ 的正题）
+   *   —— 档位本身就是 8k/12k/0.72 的一组取值，所以"该不该调"最直接的证据是**换档比一遍**。
+   *   ⚠️ tier 臂下 `JSL_TOOL_WINDOW` 保持 `on`：`off` 会**压过**档位（那是校准用的强关），
+   *   而这里要测的正是档位自己的 `windowEnabled`。
+   */
+  const tier = arm.startsWith('tier:') ? arm.slice('tier:'.length) : null
+  const env = {
+    ...process.env,
+    ...(tier ? { JSL_TOKEN_TIER: tier } : {}),
+    JSL_TOOL_WINDOW: arm === 'off' ? 'off' : 'on'
+  }
   const bin = require('electron') // 在**纯 Node** 里，require('electron') 返回可执行文件路径
   // ⚠️ **用真实 userData**（不传 --user-data-dir）—— 密文搬家解不开，见文件头实测
   const child = spawn(bin, ['.', `--remote-debugging-port=${port}`], {
@@ -293,7 +428,13 @@ async function runArm(task, arm, port) {
     const secs = Math.round((Date.now() - t0) / 1000)
     const hit = res.text.includes(task.needle)
     const total = res.usage ? res.usage.promptTokens + res.usage.completionTokens : null
-    return { task: task.id, arm, seconds: secs, hit, usage: res.usage, total, avoided: res.avoided, error: res.error, text: res.text.slice(0, 400), tools: res.tools, cleaned: res.cleaned }
+    /**
+     * 工具调用次数（plan8 R9.1 §七⑤）—— 报告里**必须带它**。
+     * 因为解释 token 差异的钥匙是**分母**："轮数 × 上下文规模"，
+     * 而不是单轮文本的大小（上一轮实测正是被"多出来的回合"主导的）。
+     */
+    const toolCalls = Array.isArray(res.tools) ? res.tools.filter((t) => t.phase === 'start').length : null
+    return { task: task.id, arm, seconds: secs, hit, usage: res.usage, total, avoided: res.avoided, error: res.error, text: res.text.slice(0, 400), toolCalls, tools: res.tools, cleaned: res.cleaned }
   } catch (err) {
     return { task: task.id, arm, error: err.message || String(err), hit: false, total: null }
   } finally {
@@ -360,18 +501,21 @@ async function main() {
   for (const f of FIXTURE_FILES) rmSync(join(WS, f), { force: true })
   FIXTURES()
   console.log(`[fix] 夹具已写入 ${WS}（${FIXTURE_FILES.join('、')}，跑完会删）`)
-  const tasks = TASKSET.slice(0, TASKS)
+  const tasks = ONLY.length > 0 ? TASKSET.filter((t) => ONLY.includes(t.id)) : TASKSET.slice(0, TASKS)
   const rows = []
   let port = 9222
   for (const task of tasks) {
     for (const arm of ARMS) {
-      console.log(`\n[run] ${task.id} · 窗口化=${arm} …`)
-      const row = await runArm(task, arm, port++)
-      rows.push(row)
-      console.log(
-        `      → 答对=${row.hit} 真值token=${row.total ?? '未报'} 省=${row.avoided ?? 0} 用时=${row.seconds ?? '?'}s` +
-          (row.error ? ` 错误=${row.error}` : '')
-      )
+      for (let i = 1; i <= REPEAT; i++) {
+        const label = REPEAT > 1 ? ` · 第 ${i}/${REPEAT} 次` : ''
+        console.log(`\n[run] ${task.id} · 窗口化=${arm}${label} …`)
+        const row = await runArm(task, arm, port++)
+        rows.push(row)
+        console.log(
+          `      → 答对=${row.hit} 真值token=${row.total ?? '未报'} 省=${row.avoided ?? 0} 工具调用=${row.toolCalls ?? '?'} 用时=${row.seconds ?? '?'}s` +
+            (row.error ? ` 错误=${row.error}` : '')
+        )
+      }
     }
   }
 
@@ -381,12 +525,34 @@ async function main() {
   const file = join(outDir, `tool-window-${stamp}.json`)
   writeFileSync(file, JSON.stringify({ when: stamp, tasks: tasks.map((t) => ({ id: t.id, why: t.why })), rows }, null, 2), 'utf8')
 
-  console.log('\n===== 汇总 =====')
+  console.log('\n===== 汇总（中位数；方括号里是每次的原始值）=====')
+  /** 中位数：排序后取中间；偶数个取中间两个的平均。**判据写死在这里，免得每次手算** */
+  const median = (xs) => {
+    const v = xs.filter((x) => typeof x === 'number' && Number.isFinite(x)).sort((a, b) => a - b)
+    if (v.length === 0) return null
+    const mid = Math.floor(v.length / 2)
+    return v.length % 2 ? v[mid] : Math.round((v[mid - 1] + v[mid]) / 2)
+  }
+  const armRows = (taskId, arm) => rows.filter((r) => r.task === taskId && r.arm === arm)
   for (const task of tasks) {
-    const on = rows.find((r) => r.task === task.id && r.arm === 'on')
-    const off = rows.find((r) => r.task === task.id && r.arm === 'off')
-    const fmt = (r) => (r ? `${r.hit ? '答对' : '答错'} / ${r.total ?? '未报'} token / 省 ${r.avoided ?? 0}` : '—')
-    console.log(`${task.id}\n  开：${fmt(on)}\n  关：${fmt(off)}`)
+    console.log(`\n${task.id}`)
+    for (const arm of ARMS) {
+      const rs = armRows(task.id, arm)
+      if (rs.length === 0) continue
+      const okCount = rs.filter((r) => r.hit).length
+      console.log(
+        `  窗口化=${arm}：中位数 ${median(rs.map((r) => r.total)) ?? '未报'} token` +
+          ` / 答对 ${okCount}/${rs.length}` +
+          ` / 工具调用中位 ${median(rs.map((r) => r.toolCalls)) ?? '?'}` +
+          ` / 每次原始值 [${rs.map((r) => `${r.total ?? '未报'}${r.error ? '(错误)' : ''}`).join(', ')}]`
+      )
+    }
+    const on = median(armRows(task.id, 'on').map((r) => r.total))
+    const off = median(armRows(task.id, 'off').map((r) => r.total))
+    if (on !== null && off !== null && off !== 0) {
+      const delta = Math.round(((on - off) / off) * 100)
+      console.log(`  → 开 相对 关：${delta > 0 ? '+' : ''}${delta}%（负数 = 开更省）`)
+    }
   }
   console.log(`\n报告：${file}`)
   // 收尾：夹具删掉；**会话已在每轮里当场删除**（`out.cleaned`），这里只报有没有漏

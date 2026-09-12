@@ -232,7 +232,10 @@ describe('接线守卫：档位真的接进了主循环与组合根', () => {
   })
 
   it('组合根读了用户设置并解析成 policy（runner 不许碰 electron-store，所以只能在这儿）', () => {
-    expect(ipc).toContain('policy: resolvePolicy(getTokenTier())')
+    // ⚠️ 这条断言的用意是"**默认路径必须读用户设置**"。
+    // `JSL_TOKEN_TIER` 是 §七⑤ 加的**校准钩子**（与 `JSL_TOOL_WINDOW` 同族），允许覆盖 ——
+    // 但它只是个 `??` 的前项，读设置那一步**还在**。（改这行时，先确认自己没把默认路径改掉。）
+    expect(ipc).toContain("resolvePolicy(process.env['JSL_TOKEN_TIER'] ?? getTokenTier())")
   })
 
   it('`read_file` 的默认行数按档位走（工具工厂真的收下了 policy）', () => {
