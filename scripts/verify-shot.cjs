@@ -194,6 +194,27 @@ process.on('unhandledRejection', (err) => {
   app.exit(1)
 })
 
+/**
+ * 模型档案的公共字段（plan7 F5）：三条假档案共用一份，只改 id / 名字 / 来源 / Key。
+ * 写成一个常量是为了让"列表形态"这件事在 stub 里只描述一次 —— 三份复制必然漂移。
+ */
+const FAKE_PROFILE_BASE = {
+  providerType: 'openai-compatible',
+  baseURL: 'https://api.deepseek.com',
+  temperature: null,
+  topP: null,
+  topK: null,
+  maxTokens: 4096,
+  timeoutMs: 60000,
+  stream: true,
+  contextWindow: 131072,
+  reasoningEffort: 'default',
+  maxToolRounds: 200,
+  supportsImages: false,
+  createdAt: Date.now() - 86400000,
+  updatedAt: Date.now()
+}
+
 const settingsView = {
   providerType: 'openai-compatible',
   baseURL: 'https://api.deepseek.com',
@@ -310,6 +331,36 @@ const STUBS = {
   'settings:save': () => settingsView,
   'settings:test': () => ({ ok: true, message: 'ok' }),
   'settings:set-model': () => settingsView,
+  // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
+  'models:list': () => ({
+    profiles: [
+      { ...FAKE_PROFILE_BASE, id: 'm1', name: 'DeepSeek-V4 Flash', model: 'deepseek-v4-flash', source: 'deepseek', hasApiKey: true, apiKeyMasked: 'sk-…abcd' },
+      { ...FAKE_PROFILE_BASE, id: 'm2', name: 'agnes-2.5-flash', model: 'agnes-2.5-flash', source: 'custom', hasApiKey: false, apiKeyMasked: '' },
+      { ...FAKE_PROFILE_BASE, id: 'm3', name: 'deepseek-flash', model: 'deepseek-flash', source: 'custom', hasApiKey: false, apiKeyMasked: '' }
+    ],
+    activeId: 'm1',
+    filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
+  }),
+  'models:save': (input) => ({
+    ...FAKE_PROFILE_BASE,
+    id: input?.id ?? 'm-new',
+    name: input?.name || input?.settings?.model || '新模型',
+    model: input?.settings?.model ?? 'new-model',
+    source: 'custom',
+    hasApiKey: Boolean(input?.apiKey),
+    apiKeyMasked: input?.apiKey ? 'sk-…new' : ''
+  }),
+  'models:delete': () => undefined,
+  'models:set-active': (id) => ({
+    profiles: [
+      { ...FAKE_PROFILE_BASE, id: 'm1', name: 'DeepSeek-V4 Flash', model: 'deepseek-v4-flash', source: 'deepseek', hasApiKey: true, apiKeyMasked: 'sk-…abcd' },
+      { ...FAKE_PROFILE_BASE, id: 'm2', name: 'agnes-2.5-flash', model: 'agnes-2.5-flash', source: 'custom', hasApiKey: false, apiKeyMasked: '' },
+      { ...FAKE_PROFILE_BASE, id: 'm3', name: 'deepseek-flash', model: 'deepseek-flash', source: 'custom', hasApiKey: false, apiKeyMasked: '' }
+    ],
+    activeId: id,
+    filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
+  }),
+  'models:test': () => ({ ok: true, message: '连接正常', latencyMs: 42 }),
   'chat:send': () => undefined,
   'chat:abort': () => undefined,
   'agent:run': () => ({ ok: true, output: '', rounds: 0, stopReason: 'completed', agent: 'x' }),
@@ -927,6 +978,39 @@ app.whenReady().then(async () => {
       })()
     `)
     console.log('SETTINGS_SECTION=' + slug + ' ' + JSON.stringify(secInfo))
+    if (slug === 'model') {
+      // ── 模型列表（plan7 F5 多模型管理）────────────────────────────────
+      // 形态照用户给的那张图：图标 / 名字 / 来源 / 当前标记 / 三个操作。
+      // 判据盯着**看得见的东西**：条数、当前标记只有 1 个、每行 3 个操作、页面里出现真实路径。
+      const modelPage = await win.webContents.executeJavaScript(`
+        (() => {
+          const rows = Array.from(document.querySelectorAll('.model-row'));
+          const first = rows[0];
+          return {
+            rows: rows.length,
+            names: rows.map((r) => r.querySelector('.model-name')?.textContent?.trim() ?? ''),
+            sources: rows.map((r) => r.querySelector('.model-source')?.textContent?.trim() ?? ''),
+            currentCount: document.querySelectorAll('.model-current').length,
+            currentRow: rows.findIndex((r) => r.querySelector('.model-current')) ,
+            actsPerRow: rows.map((r) => r.querySelectorAll('.model-act').length),
+            hasAddBtn: !!Array.from(document.querySelectorAll('.model-add')).find(
+              (b) => (b.textContent || '').includes('添加模型')
+            ),
+            filePathShown: document.querySelector('.model-file')?.textContent?.trim() ?? '',
+            // 表单**不该**在列表态出现（以前它是常驻的，那才是"表单而不是列表"）
+            formVisible: !!document.querySelector('.model-form-title'),
+            addVisible: (() => {
+              const b = Array.from(document.querySelectorAll('.model-add'))[0];
+              if (!b) return false;
+              const r = b.getBoundingClientRect();
+              return r.width > 0 && r.height > 0 && r.top < window.innerHeight;
+            })(),
+            rowVisibleH: first ? Math.round(first.getBoundingClientRect().height) : 0
+          };
+        })()
+      `)
+      console.log('MODELS=' + JSON.stringify(modelPage))
+    }
     const png = await win.webContents.capturePage()
     writeFileSync(join(SHOTS, 'verify-settings-' + slug + '.png'), png.toPNG())
   }

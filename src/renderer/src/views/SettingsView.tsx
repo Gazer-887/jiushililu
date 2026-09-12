@@ -1,12 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type {
   LogsInfo,
+  ModelSettings,
   PermissionPreset,
   ProviderType,
   ReasoningEffort,
   SettingsSaveInput,
   WorkspaceInfo
 } from '@shared/ipc'
+import type { ModelProfileView, ModelsView } from '@shared/models'
 import { useAppStore } from '../store'
 import { THEMES } from '@shared/splitter'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
@@ -93,6 +95,67 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
   }
 ]
 
+// 模型行的图标（plan7 F5）：**内联 SVG 手绘，不用 emoji** ——
+// 与项目其它图标同一口径（emoji 会随系统字体变样，也压不住水墨那套黑白灰）。
+// 语义：鲸鱼 = DeepSeek 官方来源；菱形闪光 = 用户自定义；其余是操作图标。
+function IconWhale(): JSX.Element {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden focusable="false">
+      <path
+        d="M2 6.5c0-1.4 1.1-2.5 2.5-2.5h5C11 4 12 5 12 6.5V8c0 2.2-1.8 4-4 4H5.5A3.5 3.5 0 0 1 2 8.5z"
+        fill="currentColor"
+      />
+      <circle cx="5.4" cy="7" r="0.9" fill="var(--panel)" />
+      <path d="M12 6.2c1.4-.6 2.6-.2 2.6 1.3 0 1.6-1.4 2-2.6 1.4z" fill="currentColor" />
+    </svg>
+  )
+}
+
+function IconSpark(): JSX.Element {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden focusable="false">
+      <path d="M8 1.6 9.5 6 14 7.5 9.5 9 8 13.4 6.5 9 2 7.5 6.5 6z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function IconPencil(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden focusable="false">
+      <path d="M11.2 2.3l2.5 2.5-8 8-3.2.7.7-3.2z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function IconLink(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden focusable="false">
+      <path
+        d="M6.5 9.5 9.5 6.5M6 11.5l-1 1a2.4 2.4 0 0 1-3.4-3.4l2-2a2.4 2.4 0 0 1 3-.3M10 4.5l1-1a2.4 2.4 0 0 1 3.4 3.4l-2 2a2.4 2.4 0 0 1-3 .3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function IconTrash(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden focusable="false">
+      <path
+        d="M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 export default function SettingsView() {
   const settings = useAppStore((s) => s.settings)
   const loadSettings = useAppStore((s) => s.loadSettings)
@@ -111,6 +174,29 @@ export default function SettingsView() {
   const [perm, setPerm] = useState<PermissionPreset>('write')
   /** 故障排查区（plan8 R2）：日志目录与最近文件，用于"出问题能查" */
   const [logs, setLogs] = useState<LogsInfo | null>(null)
+
+  // ── 多模型管理（plan7 F5）──
+  /** 模型列表（含"当前用哪个"与 models.json 的真实路径，都由主进程给真值） */
+  const [models, setModels] = useState<ModelsView | null>(null)
+  /** 正在编辑哪一条；`null` = 只看列表。`{id: undefined}` = 新增 */
+  const [editingModel, setEditingModel] = useState<{ id?: string } | null>(null)
+  /** 编辑中的显示名（与"模型 ID"是两件事：前者给人看，后者给厂商看） */
+  const [draftName, setDraftName] = useState('')
+  /** 哪一条在测连接（按钮显示"测试中"） */
+  const [modelBusy, setModelBusy] = useState<string | null>(null)
+  const [modelNotice, setModelNotice] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const refreshModels = async (): Promise<void> => {
+    try {
+      setModels(await window.api.listModels())
+    } catch {
+      setModels(null)
+    }
+  }
+
+  useEffect(() => {
+    void refreshModels()
+  }, [])
 
   useEffect(() => {
     if (!useAppStore.getState().settingsLoaded) void loadSettings()
@@ -182,12 +268,35 @@ export default function SettingsView() {
     setApiKey('')
     setNotice(null)
   }
+  void reset // 多模型之后「重置」被「取消」取代（重置成当前模型没有意义 —— 表单只在编辑时出现）
 
+  /**
+   * 保存。
+   *
+   * 多模型之后，"保存"写的是**这一条档案**（新增则创建），不是"全局那一份设置"——
+   * 它是用户此刻在编辑的那个模型，语义上必须是"存进这一条"。
+   */
   const save = async (): Promise<void> => {
     if (!draft) return
     setSaving(true)
     setNotice(null)
     try {
+      if (editingModel) {
+        const saved = await window.api.saveModel({
+          ...(editingModel.id ? { id: editingModel.id } : {}),
+          name: draftName,
+          settings: draft as ModelSettings,
+          apiKey
+        })
+        await refreshModels()
+        await loadSettings()
+        setDraftName(saved.name)
+        setEditingModel({ id: saved.id })
+        setApiKey('')
+        setNotice({ ok: true, text: apiKey ? '已保存（Key 已加密入库）' : '已保存' })
+        return
+      }
+      // 理论到不了这儿（表单只在编辑时出现）；留着是为了万一有别的入口
       const view = await window.api.saveSettings({ ...draft, apiKey })
       useAppStore.setState({ settings: view })
       setApiKey('')
@@ -204,7 +313,11 @@ export default function SettingsView() {
     setTesting(true)
     setNotice(null)
     try {
-      const result = await window.api.testConnection({ ...draft, apiKey })
+      // 编辑既有模型 → 测**它自己**（用它已存的 Key，不必重新填）
+      // 新增中 → 用表单里的值现测（还没入库，没有档案可测）
+      const result = editingModel?.id
+        ? await window.api.testModel(editingModel.id)
+        : await window.api.testConnection({ ...draft, apiKey })
       const tail = result.latencyMs != null ? `（${result.latencyMs}ms）` : ''
       setNotice({ ok: result.ok, text: result.message + tail })
     } catch (err) {
@@ -222,6 +335,89 @@ export default function SettingsView() {
 
   const choosePerm = async (p: PermissionPreset): Promise<void> => {
     setPerm(await window.api.setPermission(p))
+  }
+
+  // ── 多模型：增删改与"改用这个"（plan7 F5）──
+  //
+  // 三条纪律：
+  //   ① **删除先确认**（红线）：确认框里说清它叫什么
+  //   ② **至少要留一个** —— 护栏在主进程，这里只把它的理由原样显示
+  //   ③ 每次改动都 `refreshModels()` 重新拉真值，而不是在本地猜一份（列表就是真值）
+
+  /** 新增：把表单清空成"一个像是要给新模型填的模板"（沿用当前设置做默认，少填几栏） */
+  const startCreate = (): void => {
+    if (!settings) return
+    setDraft({ ...settings, model: '', apiKey: '' })
+    setApiKey('')
+    setNotice(null)
+    setModelNotice(null)
+    setEditingModel({})
+  }
+
+  const startEdit = (p: ModelProfileView): void => {
+    const { id, name, hasApiKey, apiKeyMasked, source, createdAt, updatedAt, ...rest } = p
+    void id
+    void hasApiKey
+    void apiKeyMasked
+    void source
+    void createdAt
+    void updatedAt
+    setDraft({ ...(rest as SettingsSaveInput), apiKey: '' })
+    setDraftName(name)
+    setApiKey('')
+    setNotice(null)
+    setModelNotice(null)
+    setEditingModel({ id })
+  }
+
+  const cancelEdit = (): void => {
+    setEditingModel(null)
+    setApiKey('')
+    setNotice(null)
+    if (settings) setDraft({ ...settings, apiKey: '' })
+  }
+
+  const useProfile = async (id: string): Promise<void> => {
+    setModelNotice(null)
+    try {
+      setModels(await window.api.setActiveModel(id))
+      // 当前模型变了 → 设置页与输入框读的都是"当前档案"，拉一次保持一致
+      await loadSettings()
+    } catch (err) {
+      setModelNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  const testProfile = async (id: string): Promise<void> => {
+    setModelBusy(id)
+    setModelNotice(null)
+    try {
+      const result = await window.api.testModel(id)
+      const tail = result.latencyMs != null ? `（${result.latencyMs}ms）` : ''
+      setModelNotice({ ok: result.ok, text: result.message + tail })
+    } catch (err) {
+      setModelNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setModelBusy(null)
+    }
+  }
+
+  const removeProfileById = async (id: string): Promise<void> => {
+    const target = models?.profiles.find((p) => p.id === id)
+    // 红线：删除先问。这里用系统确认框 —— 与文件删除同一套"问一句"的纪律
+    if (!window.confirm(`删除模型「${target?.name ?? id}」？\n\n它的 API Key 会一起删掉（工作区文件不受影响）。`)) {
+      return
+    }
+    setModelNotice(null)
+    try {
+      await window.api.deleteModel(id)
+      await refreshModels()
+      await loadSettings()
+      setModelNotice({ ok: true, text: '已删除' })
+    } catch (err) {
+      // 护栏（至少要留一个）会从主进程抛出**人话**理由，原样显示
+      setModelNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
+    }
   }
 
   return (
@@ -287,40 +483,120 @@ export default function SettingsView() {
         {section === 'model' && (
           <>
             <h2>模型</h2>
-            {/* "全部自定义接入、不内置任何模型与 Key" 是产品定位（读一次就够）；
-                这里真正承重的是**凭证怎么存** —— 用户据此判断能不能放心填 Key */}
-            <p className="hint">Key 走系统加密存储（safeStorage），不落明文。</p>
 
-            <label>
-              接口地址 baseURL
-              <input
-                value={draft.baseURL}
-                placeholder="如 https://api.deepseek.com（/v1 可带可不带）"
-                onChange={(e) => update('baseURL', e.target.value)}
-              />
-            </label>
+            {/* ── 模型列表（plan7 F5 多模型管理）──────────────────────────────
+                形态照用户给的那张：标题 + "会自动写进本地 …models.json" + [添加模型]，
+                下面是 图标 / 名字 / 来源 / 三个操作（编辑 · 测试连接 · 删除）。
+                为什么要有"当前用哪个"：列表没有当前态就是一坨——用户看不出正在用谁。
+                （路径来自主进程的真值，不硬编码 —— 说得出口就得是真的） */}
+            <div className="model-head">
+              <div className="model-head-text">
+                <div className="model-head-title">自定义模型</div>
+                <p className="hint">
+                  模型添加后会自动写入到本地 <code className="model-file">{models?.filePath ?? '…'}</code> 文件
+                </p>
+              </div>
+              <button className="btn-secondary model-add" onClick={startCreate}>
+                添加模型
+              </button>
+            </div>
 
-            <label>
-              模型 ID（要与厂商菜单一字不差）
-              <input
-                value={draft.model}
-                placeholder="如 deepseek-v4-flash-vision-exp"
-                onChange={(e) => update('model', e.target.value)}
-              />
-            </label>
+            {models && models.profiles.length === 0 && (
+              <p className="hint">还没有模型。点右上「添加模型」填一个 —— 填完就能开始对话。</p>
+            )}
 
-            <label>
-              协议类型
-              <select
-                value={draft.providerType}
-                onChange={(e) => update('providerType', e.target.value as ProviderType)}
-              >
-                <option value="openai-compatible">
-                  OpenAI 兼容（DeepSeek / 通义 / 智谱 / Ollama / vLLM 等）
-                </option>
-                <option value="anthropic">Anthropic 原生</option>
-              </select>
-            </label>
+            {models && models.profiles.length > 0 && (
+              <div className="model-list">
+                {models.profiles.map((p) => (
+                  <div key={p.id} className={`model-row ${p.id === models.activeId ? 'on' : ''}`}>
+                    <span className="model-mark" aria-hidden>
+                      {p.source === 'deepseek' ? <IconWhale /> : <IconSpark />}
+                    </span>
+                    <span className="model-name" title={p.name}>
+                      {p.name}
+                    </span>
+                    <span className="model-source">{p.source === 'deepseek' ? '深度求索' : '自定义'}</span>
+                    {p.id === models.activeId && <span className="model-current">当前</span>}
+                    <span className="model-actions">
+                      <button className="model-act" title="编辑这个模型" onClick={() => startEdit(p)}>
+                        <IconPencil />
+                      </button>
+                      <button
+                        className="model-act"
+                        title={p.hasApiKey ? '测试连接（用它自己的 Key）' : '还没有填 API Key'}
+                        disabled={modelBusy === p.id}
+                        onClick={() => void testProfile(p.id)}
+                      >
+                        <IconLink />
+                      </button>
+                      <button className="model-act model-act-del" title="删除这个模型" onClick={() => void removeProfileById(p.id)}>
+                        <IconTrash />
+                      </button>
+                      {p.id !== models.activeId && (
+                        <button
+                          className="model-act model-act-use"
+                          title="改用这个模型"
+                          onClick={() => void useProfile(p.id)}
+                        >
+                          改用
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {modelNotice && (
+              <div className={modelNotice.ok ? 'notice-ok' : 'notice-err'}>{modelNotice.text}</div>
+            )}
+
+            {/* ── 编辑表单：只在新增 / 编辑时出现（列表演示时不该占着半屏）── */}
+            {editingModel && (
+              <>
+                <div className="model-form-title">{editingModel.id ? '编辑模型' : '添加模型'}</div>
+
+                <label>
+                  显示名称（列表里显示这个）
+                  <input
+                    value={draftName}
+                    placeholder="如 DeepSeek-V4 Flash"
+                    onChange={(e) => setDraftName(e.target.value)}
+                  />
+                </label>
+
+                <p className="hint">Key 走系统加密存储（safeStorage），不落明文。</p>
+
+                <label>
+                  接口地址 baseURL
+                  <input
+                    value={draft.baseURL}
+                    placeholder="如 https://api.deepseek.com（/v1 可带可不带）"
+                    onChange={(e) => update('baseURL', e.target.value)}
+                  />
+                </label>
+
+                <label>
+                  模型 ID（要与厂商菜单一字不差）
+                  <input
+                    value={draft.model}
+                    placeholder="如 deepseek-v4-flash-vision-exp"
+                    onChange={(e) => update('model', e.target.value)}
+                  />
+                </label>
+
+                <label>
+                  协议类型
+                  <select
+                    value={draft.providerType}
+                    onChange={(e) => update('providerType', e.target.value as ProviderType)}
+                  >
+                    <option value="openai-compatible">
+                      OpenAI 兼容（DeepSeek / 通义 / 智谱 / Ollama / vLLM 等）
+                    </option>
+                    <option value="anthropic">Anthropic 原生</option>
+                  </select>
+                </label>
 
             <label>
               API 密钥（{settings?.hasApiKey ? `已保存：${settings.apiKeyMasked}` : '尚未保存'}）
@@ -498,18 +774,20 @@ export default function SettingsView() {
             <p className="hint">会发起一次真实请求，消耗少量 Token。</p>
 
             <div className="actions">
-              <button className="btn-secondary" onClick={reset}>
-                重置
+              <button className="btn-secondary" onClick={cancelEdit}>
+                取消
               </button>
               <button className="btn-send" disabled={saving} onClick={() => void save()}>
-                {saving ? '保存中…' : '保存模型'}
+                {saving ? '保存中…' : editingModel?.id ? '保存修改' : '保存模型'}
               </button>
               <button className="btn-secondary" disabled={testing} onClick={() => void test()}>
                 {testing ? '测试中…' : '测试连接'}
               </button>
             </div>
 
-            {notice && <div className={notice.ok ? 'notice-ok' : 'notice-err'}>{notice.text}</div>}
+                {notice && <div className={notice.ok ? 'notice-ok' : 'notice-err'}>{notice.text}</div>}
+              </>
+            )}
           </>
         )}
 

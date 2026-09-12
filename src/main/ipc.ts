@@ -28,22 +28,40 @@ import {
   type BackgroundTask,
   type ConversationRollbackResult
 } from '@shared/ipc'
+import { getPermissionPreset, setPermissionPreset } from './store/settings'
+// 「当前用哪个模型」现在由**模型档案**决定（plan7 F5 多模型）：
+// 下面这几个名字语义没变（内核/界面永远只看见"当前这一个模型"），只是真源搬到了 store/models
 import {
+  deleteProfileById,
   getDecryptedApiKey,
-  getPermissionPreset,
   getSettingsView,
   hasApiKey,
+  listProfiles,
+  modelsFilePath,
+  profileForTest,
+  saveProfile,
   saveSettings,
-  setModel,
-  setPermissionPreset
-} from './store/settings'
+  setActiveProfile,
+  setModel
+} from './store/models'
+import { getProfileKey, hasProfileKey } from './store/settings'
+import { maskKey } from './store/mask'
+import type { ModelProfileView, ModelsView, ModelSaveInput } from '@shared/models'
+import type { ModelSettings } from '@shared/ipc'
 // createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
-import { chatSendInputSchema, conversationIdSchema, incomingMessagesSchema, settingsSchema, storedMessagesSchema } from './schemas'
+import {
+  chatSendInputSchema,
+  conversationIdSchema,
+  incomingMessagesSchema,
+  modelSaveSchema,
+  settingsSchema,
+  storedMessagesSchema
+} from './schemas'
 import { createChatEmitter } from './chat-emitter'
 import { createChatGate } from './agent/concurrency'
 import {
@@ -249,6 +267,72 @@ export function registerIpcHandlers(deps: {
       return await provider.testConnection({
         settings: input,
         apiKey,
+        messages: [],
+        signal: controller.signal
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+  })
+
+  // ── 多模型管理（plan7 F5）────────────────────────────────────────────
+  //
+  // 视图里**只给 Key 的掩码**（`hasApiKey` / `apiKeyMasked`）—— 与 `settings:get` 同一条规矩：
+  // 明文 Key 永远不回渲染进程。
+  const modelsView = (): ModelsView => {
+    const { profiles, activeId } = listProfiles()
+    return {
+      profiles: profiles.map((p) => ({
+        ...p,
+        hasApiKey: hasProfileKey(p.id),
+        apiKeyMasked: maskKey(getProfileKey(p.id))
+      })),
+      activeId,
+      filePath: modelsFilePath()
+    }
+  }
+
+  ipcMain.handle(IPC.modelsList, () => modelsView())
+
+  ipcMain.handle(IPC.modelsSave, (_e, raw: unknown): ModelProfileView => {
+    const input = friendlyParse(modelSaveSchema, raw) as ModelSaveInput
+    const saved = saveProfile({
+      ...(input.id ? { id: input.id } : {}),
+      settings: input.settings as unknown as ModelSettings,
+      name: input.name,
+      apiKey: input.apiKey
+    })
+    const view = modelsView().profiles.find((p) => p.id === saved.id)
+    if (!view) throw new Error('保存后没能读回这个模型（存储异常）')
+    return view
+  })
+
+  ipcMain.handle(IPC.modelsDelete, (_e, raw: unknown) => {
+    const id = friendlyParse(conversationIdSchema, raw) // 与其它 id 同一条长度约束
+    deleteProfileById(id) // 护栏（至少留一个）在里面，抛出的是人话
+  })
+
+  ipcMain.handle(IPC.modelsSetActive, (_e, raw: unknown): ModelsView => {
+    const id = friendlyParse(conversationIdSchema, raw)
+    setActiveProfile(id)
+    // 切换模型要立刻生效：设置页与输入框读的都是"当前档案"，无需重启 ✓
+    return modelsView()
+  })
+
+  ipcMain.handle(IPC.modelsTest, async (_e, raw: unknown): Promise<TestResult> => {
+    const id = friendlyParse(conversationIdSchema, raw)
+    const target = profileForTest(id)
+    if (!target) return { ok: false, message: '这个模型不存在（可能已经被删过了）' }
+    if (!target.apiKey) {
+      return { ok: false, message: '这个模型还没有填 API Key：点「编辑」补上再测' }
+    }
+    const provider = createProvider(target.settings.providerType)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), target.settings.timeoutMs)
+    try {
+      return await provider.testConnection({
+        settings: target.settings,
+        apiKey: target.apiKey,
         messages: [],
         signal: controller.signal
       })

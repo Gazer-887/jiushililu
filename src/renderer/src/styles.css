@@ -1646,6 +1646,136 @@ label.radio {
 /* HTML 的「渲染 / 源码」开关与「编辑 / 预览」开关长得一样（同一排同级按钮），
    但**类名必须分开**：verify-shot 里多处用 `.fp-mode` 定位"编辑"按钮，
    混用会让那些探针点错按钮 —— 探针之间靠选择器隔离，别互相踩。 */
+/* ── 模型列表（plan7 F5 多模型管理）──────────────────────────────────────
+   形态照用户给的那张：标题 + 路径提示 + [添加模型]，下面是
+   图标 / 名字 / 来源 / （当前） / 三个操作。 */
+.model-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-12);
+  margin-bottom: var(--sp-12);
+}
+
+.model-head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-head-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.model-file {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.model-add {
+  flex-shrink: 0;
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: var(--sp-16);
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.model-mark {
+  display: flex;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.model-name {
+  font-size: var(--fs-md);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-source {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* 「当前」标记：列表没有当前态就是一坨 —— 用户看不出正在用谁 */
+.model-current {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-4);
+  flex-shrink: 0;
+}
+
+.model-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-shrink: 0;
+}
+
+/* 三个操作做成图标按钮：它们高频、语义明确，占太多字面反而挡视线 */
+.model-act {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-4);
+  cursor: pointer;
+}
+
+.model-act:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.model-act:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.model-act-del:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.model-act-use {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.model-form-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+  margin: var(--sp-12) 0 var(--sp-8);
+  padding-top: var(--sp-12);
+  border-top: 1px solid var(--border);
+}
+
 .fp-mode,
 .fp-html-toggle {
   font: inherit;

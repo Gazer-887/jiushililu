@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { StreamEnvelope } from '@shared/ipc'
+import type { ModelSaveInput } from '@shared/models'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import {
@@ -45,6 +46,12 @@ const api: ApiBridge = {
   onChatTool: (cb) => subscribe(IPC.chatTool, (e) => cb(e as StreamEnvelope<ToolEvent>)),
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
   setModel: (model: string) => ipcRenderer.invoke(IPC.settingsSetModel, model),
+  // ── 多模型管理（plan7 F5）──
+  listModels: () => ipcRenderer.invoke(IPC.modelsList),
+  saveModel: (input: ModelSaveInput) => ipcRenderer.invoke(IPC.modelsSave, input),
+  deleteModel: (id: string) => ipcRenderer.invoke(IPC.modelsDelete, id),
+  setActiveModel: (id: string) => ipcRenderer.invoke(IPC.modelsSetActive, id),
+  testModel: (id: string) => ipcRenderer.invoke(IPC.modelsTest, id),
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
   pickWorkspace: () => ipcRenderer.invoke(IPC.workspacePick),
   setKnownWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceSetKnown, path),

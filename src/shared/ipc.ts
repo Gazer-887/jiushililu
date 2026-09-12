@@ -204,6 +204,17 @@ export const IPC = {
   settingsSave: 'settings:save',
   settingsTest: 'settings:test',
   settingsSetModel: 'settings:set-model',
+  // ── 多模型管理（plan7 F5）──
+  /** 列出全部模型档案 + 当前用哪个 + models.json 的真实路径 */
+  modelsList: 'models:list',
+  /** 新建或编辑一个模型（`apiKey` 空串 = 不动已存的 Key） */
+  modelsSave: 'models:save',
+  /** 删除一个模型（至少要留一个；被会话引用时界面要给提示） */
+  modelsDelete: 'models:delete',
+  /** 切换"当前用哪个模型" */
+  modelsSetActive: 'models:set-active',
+  /** 测试某个模型的连通性（用它自己的 Key） */
+  modelsTest: 'models:test',
   chatSend: 'chat:send',
   chatAbort: 'chat:abort',
   chatChunk: 'chat:chunk',
@@ -416,6 +427,14 @@ export interface ApiBridge {
   saveSettings(input: SettingsSaveInput): Promise<SettingsView>
   testConnection(input: SettingsSaveInput): Promise<TestResult>
   setModel(model: string): Promise<SettingsView>
+  // ── 多模型管理（plan7 F5）──
+  listModels(): Promise<import('./models').ModelsView>
+  saveModel(input: import('./models').ModelSaveInput): Promise<import('./models').ModelProfileView>
+  /** 删除一个模型；至少要留一个（护栏在主进程，拦下时抛出人话理由） */
+  deleteModel(id: string): Promise<void>
+  setActiveModel(id: string): Promise<import('./models').ModelsView>
+  /** 测试某个模型的连通性 —— 用**它自己的** Key，不是当前那把 */
+  testModel(id: string): Promise<TestResult>
   chatSend(input: { conversationId: string; messages: ChatMessage[] }): Promise<void>
   /**
    * 停止**指定会话**的生成（plan11）。

@@ -42,6 +42,28 @@ export interface ModelProfile extends ModelSettings {
 /** 档案 id 的形状：与其它 id 一致（长度封顶，避免被塞进超长串当文件名/键用） */
 export const PROFILE_NAME_MAX = 60
 
+/** 设置页看到的档案视图：**Key 永远不明文回传**，只给掩码与"有没有" ✓ 同 settings 的规矩 */
+export interface ModelProfileView extends ModelProfile {
+  hasApiKey: boolean
+  apiKeyMasked: string
+}
+
+/** 模型页要的一份数据：列表 + 当前用哪个 */
+export interface ModelsView {
+  profiles: ModelProfileView[]
+  activeId: string | null
+  /** `models.json` 的真实路径（设置页要把它显示给用户 —— 说得出就得是真的） */
+  filePath: string
+}
+
+/** 新建/编辑一个模型的入参（`apiKey` 为空串 = 保留已存的那把不动） */
+export interface ModelSaveInput {
+  id?: string
+  name: string
+  settings: ModelSettings
+  apiKey: string
+}
+
 /**
  * 新建档案。**name 为空时退回模型名** —— 空名字在列表里就是一行无从辨认的空白。
  * 其余字段的合法性由 zod 在 IPC 边界兜（这里只管"档案"这一层的事）。

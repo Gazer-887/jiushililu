@@ -60,6 +60,19 @@ export const chatSendInputSchema = z.object({
   messages: chatMessagesSchema
 })
 
+/**
+ * 保存一个模型档案（plan11 F5）：**设置就是 `settingsSchema`**，外面套一层名字与 id。
+ * 复用同一份设置 schema 的理由：档案里的字段与"当前模型"完全同构 ——
+ * 两个 schema 各写一遍必然漂移，而漂移的表现是"某个参数改了不生效"这类难查的怪象。
+ */
+export const modelSaveSchema = z.object({
+  id: z.string().min(1).max(64).optional(),
+  name: z.string().max(60),
+  settings: settingsSchema,
+  // 空串 = 保留已存的那把 Key 不动（与 settings:save 同一约定）
+  apiKey: z.string().max(500)
+})
+
 /** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */
 export const MAX_STORED_CHARS = 2_000_000
 
