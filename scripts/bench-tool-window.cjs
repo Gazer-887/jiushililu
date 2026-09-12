@@ -20,10 +20,24 @@
  *
  * ## 两条铁律（写在这里免得后人踩）
  *
- * 1. **绝不打印凭据**。模型端点/密钥沿用用户**已配置**的那份（只复制 `settings.json` 等
- *    **密文**文件，明文永不出现、也永不进入本脚本的日志）。脚本只报告"密钥在不在"这种布尔事实。
+ * 1. **绝不打印凭据**。模型端点/密钥沿用用户**已配置**的那份；本脚本只报告"密钥在不在"这种布尔事实。
  * 2. **每臂一个独立进程**。窗口化开关在进程的环境变量上（`JSL_TOOL_WINDOW`），
  *    同一个进程里切臂会互相污染（缓存/会话/模型侧状态），所以**一次启动只跑一臂**。
+ *
+ * ## ⚠️ 为什么必须用**用户真实的 userData**（2026-09-12 实测定论）
+ *
+ * 第一版 harness 把 `settings.json` / `models.json` **拷贝**到临时 userData 再启动 —— 结果拿到了
+ * 厂商的 **401**。查下来根因不是"钥匙不对"，而是**保险箱不跟人走**：
+ *
+ * - `safeStorage`（Windows 上走 DPAPI 的 app-bound encryption）把密钥**绑在"应用身份 + userData 路径"**上；
+ * - 实测：同一个 Electron 进程，读**真实** userData 里那两个档案 → 解密 `ok: true`；
+ *   读**拷贝**出来的同一份密文 → `throw: Error while decrypting the ciphertext`。
+ * - 于是一条链全对（真机 → 真 IPC → 真厂商 HTTP），只有最后一步 401 ——
+ *   **密文搬了家就解不开，密钥为空，请求等于没带钥匙。**
+ *
+ * 所以现在的做法是：**用真实 userData 启动，什么都不搬**；夹具写进**已被授权的工作区**里的一个
+ * `.jsl-bench/` 子目录（跑完删），每轮建的会话**当场用 `deleteConversation` 删掉**。
+ * 这也是本项目的一条通用教训：**"加密落盘的钥匙"永远不能靠复制文件来迁移。**
  */
 const { spawn } = require('node:child_process')
 const { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
@@ -40,9 +54,27 @@ const ARMS = String(ARG('arms', 'both')) === 'both' ? ['on', 'off'] : [String(AR
 const KEEP = process.argv.includes('--keep')
 
 const BENCH = join(ROOT, '.bench-tool-window')
-const UD = join(BENCH, 'userdata')
-const WS = join(BENCH, 'workspace')
 const USER_UD = join(process.env.APPDATA || '', 'jiushililu')
+
+/** 真实工作区（夹具住进它下面的 `.jsl-bench/`，跑完删 —— 不去动用户其它文件） */
+function realWorkspace() {
+  try {
+    const w = JSON.parse(readFileSync(join(USER_UD, 'workspace.json'), 'utf8'))
+    if (w && typeof w.workspaceRoot === 'string' && w.workspaceRoot) return w.workspaceRoot
+  } catch {
+    /* 没配就用默认内置工作区 */
+  }
+  return join(USER_UD, 'agent-workspace')
+}
+const WS = realWorkspace()
+/**
+ * 夹具文件名带统一前缀（`jsl-bench-`），跑完全部删掉。
+ *
+ * 为什么不放进子目录：`conv:create` 要求会话工作区**正好等于当前工作区**或历史授权过的目录，
+ * 子目录不在其中（第一版就是把夹具放进 `.jsl-bench/` 子目录 → "工作区未被授权"）。
+ * 用带前缀的固定文件名，既不撞用户已有的文件，也好精确删回去。
+ */
+const FIXTURE_FILES = ['jsl-bench-big-report.md', 'jsl-bench-check.js', 'jsl-bench-noisy.log']
 
 /** 夹具与判据：**针**（needle）埋在任务必须"读到/看到"的位置，答不出来就是失败 */
 const FIXTURES = () => {
@@ -52,7 +84,7 @@ const FIXTURES = () => {
   for (let i = 1; i <= 600; i++) {
     big.push(i === 380 ? '审计编号：JSL-7742' : `第 ${i} 行：这是用来撑大文件体积的普通内容，不含关键信息。`)
   }
-  writeFileSync(join(WS, 'big-report.md'), big.join('\n'), 'utf8')
+  writeFileSync(join(WS, 'jsl-bench-big-report.md'), big.join('\n'), 'utf8')
 
   // ② 命令输出：**结论在末尾**（这正是旧代码 `slice(0,8000)` 会切掉的那半截）
   const lines = []
@@ -61,47 +93,56 @@ const FIXTURES = () => {
   lines.push('✕ 3) 端口占用检查')
   lines.push('   Expected 3000, received 8080')
   lines.push('exit code 1')
-  writeFileSync(join(WS, 'check.js'), `console.log(${JSON.stringify(lines.join('\n'))})\n`, 'utf8')
-  writeFileSync(join(WS, 'noisy.log'), lines.join('\n'), 'utf8')
+  writeFileSync(join(WS, 'jsl-bench-check.js'), `console.log(${JSON.stringify(lines.join('\n'))})\n`, 'utf8')
+  writeFileSync(join(WS, 'jsl-bench-noisy.log'), lines.join('\n'), 'utf8')
 }
 
 const TASKSET = [
   {
     id: 'needle-in-file',
-    prompt: '读工作区里的 big-report.md，把里面的「审计编号」原样告诉我。只回答编号，不要解释。',
+    prompt: '读工作区里的 jsl-bench-big-report.md，把里面的「审计编号」原样告诉我。只回答编号，不要解释。',
     needle: 'JSL-7742',
     why: '考"大文件里的一条信息"——窗口化之后必须还能按行取回'
   },
   {
     id: 'tail-in-command',
-    prompt: '在工作区里执行 `node check.js`，然后告诉我：哪个用例失败了、期望值是多少、实际值是多少。简短回答。',
+    prompt: '在工作区里执行 `node jsl-bench-check.js`，然后告诉我：哪个用例失败了、期望值是多少、实际值是多少。简短回答。',
     needle: '8080',
     why: '考"结论在末尾"——旧代码只留前 8000 字符，这半截会被切掉'
   }
 ]
 
-function seedUserData() {
-  mkdirSync(UD, { recursive: true })
-  const files = ['settings.json', 'models.json', 'ui-prefs.json']
-  const copied = []
-  for (const f of files) {
-    const src = join(USER_UD, f)
-    const dst = join(UD, f)
-    if (existsSync(src) && !existsSync(dst)) {
-      copyFileSync(src, dst)
-      copied.push(f)
-    }
+/**
+ * 检查真机配置**在不在**（只读、只报布尔）。
+ *
+ * ⚠️ 这里**不再搬任何文件**：密文搬了家就解不开（见文件头那段实测）。
+ * 所以只在原地检查，缺什么就明说缺什么。
+ */
+function checkUserData() {
+  const settingsPath = join(USER_UD, 'settings.json')
+  const modelsPath = join(USER_UD, 'models.json')
+  const has = (p) => existsSync(p)
+  let vault = 0
+  let active = null
+  let host = null
+  try {
+    const s = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    vault = Object.keys((s && s.apiKeysEncrypted) || {}).length
+  } catch {
+    /* 读不到就是没有 */
   }
-  // ⚠️ 只报"搬了哪几个文件名"与"密钥在不在"，**绝不打印内容**
-  const settings = existsSync(join(UD, 'settings.json'))
-    ? JSON.parse(readFileSync(join(UD, 'settings.json'), 'utf8'))
-    : {}
-  const hasKey = Boolean(settings && typeof settings === 'object' && Object.keys(settings.apiKeysEncrypted || {}).length > 0)
-  // 工作区授权（`conv:create` 会拦）：会话工作区必须是"当前工作区"或历史授权过的目录。
-  // 所以这里直接把当前工作区指到夹具目录 —— 不去改用户的 workspace.json，也不往用户的真实工作区里写东西。
-  writeFileSync(join(UD, 'workspace.json'), JSON.stringify({ workspaceRoot: WS }), 'utf8')
-  console.log(`[seed] 已就位：${copied.join('、') || '（沿用上一轮）'}；工作区已指向夹具目录；密钥保险箱：${hasKey ? '有' : '没有（本脚本无法伪造，需先在应用里配好）'}`)
-  return hasKey
+  try {
+    const m = JSON.parse(readFileSync(modelsPath, 'utf8'))
+    active = m && m.activeId ? m.activeId : null
+    const p = (m.profiles || []).find((x) => x.id === active)
+    if (p && typeof p.baseURL === 'string') host = new URL(p.baseURL).host
+  } catch {
+    /* 同上 */
+  }
+  console.log(
+    `[cfg] userData=${USER_UD}\n      密钥档案：${vault} 个；当前档案=${active ?? '未知'}；端点主机=${host ?? '未知'}`
+  )
+  return has(settingsPath) && has(modelsPath) && vault > 0 && Boolean(host)
 }
 
 /** 等 CDP 端点起来，拿到**渲染页**的 ws 地址 */
@@ -202,6 +243,8 @@ function pageScript(prompt, workspace) {
       out.text = text
       out.tools = tools
       out.ok = true
+      // 用过就删（不往主人的会话列表里留垃圾）：删掉才是"没动过人家的数据"
+      try { await api.deleteConversation(id); out.cleaned = true } catch (e) { out.cleaned = false }
     } catch (err) {
       out.error = err && err.message ? err.message : String(err)
     }
@@ -212,7 +255,8 @@ function pageScript(prompt, workspace) {
 async function runArm(task, arm, port) {
   const env = { ...process.env, JSL_TOOL_WINDOW: arm === 'off' ? 'off' : 'on' }
   const bin = require('electron') // 在**纯 Node** 里，require('electron') 返回可执行文件路径
-  const child = spawn(bin, ['.', `--user-data-dir=${UD}`, `--remote-debugging-port=${port}`], {
+  // ⚠️ **用真实 userData**（不传 --user-data-dir）—— 密文搬家解不开，见文件头实测
+  const child = spawn(bin, ['.', `--remote-debugging-port=${port}`], {
     cwd: ROOT,
     env,
     stdio: 'ignore'
@@ -226,7 +270,7 @@ async function runArm(task, arm, port) {
     const secs = Math.round((Date.now() - t0) / 1000)
     const hit = res.text.includes(task.needle)
     const total = res.usage ? res.usage.promptTokens + res.usage.completionTokens : null
-    return { task: task.id, arm, seconds: secs, hit, usage: res.usage, total, avoided: res.avoided, error: res.error, text: res.text.slice(0, 400), tools: res.tools }
+    return { task: task.id, arm, seconds: secs, hit, usage: res.usage, total, avoided: res.avoided, error: res.error, text: res.text.slice(0, 400), tools: res.tools, cleaned: res.cleaned }
   } catch (err) {
     return { task: task.id, arm, error: err.message || String(err), hit: false, total: null }
   } finally {
@@ -244,9 +288,15 @@ async function main() {
     console.error('缺少构建产物：先跑 npm run build')
     process.exit(1)
   }
-  rmSync(BENCH, { recursive: true, force: true })
+  const ok = checkUserData()
+  if (!ok) {
+    console.error('真机配置不完整（缺 settings/models/密钥档案）—— 先在应用里把模型与 Key 配好再跑')
+    process.exit(1)
+  }
+  // 夹具住进**当前工作区根目录**（`conv:create` 只认"正好等于当前工作区"或历史授权目录）
+  for (const f of FIXTURE_FILES) rmSync(join(WS, f), { force: true })
   FIXTURES()
-  const hasKey = seedUserData()
+  console.log(`[fix] 夹具已写入 ${WS}（${FIXTURE_FILES.join('、')}，跑完会删）`)
   const tasks = TASKSET.slice(0, TASKS)
   const rows = []
   let port = 9222
@@ -266,7 +316,7 @@ async function main() {
   const outDir = join(ROOT, 'bench')
   mkdirSync(outDir, { recursive: true })
   const file = join(outDir, `tool-window-${stamp}.json`)
-  writeFileSync(file, JSON.stringify({ when: stamp, hasKey, tasks: tasks.map((t) => ({ id: t.id, why: t.why })), rows }, null, 2), 'utf8')
+  writeFileSync(file, JSON.stringify({ when: stamp, tasks: tasks.map((t) => ({ id: t.id, why: t.why })), rows }, null, 2), 'utf8')
 
   console.log('\n===== 汇总 =====')
   for (const task of tasks) {
@@ -276,13 +326,18 @@ async function main() {
     console.log(`${task.id}\n  开：${fmt(on)}\n  关：${fmt(off)}`)
   }
   console.log(`\n报告：${file}`)
-  if (!hasKey) console.log('⚠️ 没有密钥保险箱 —— 上面的结果不算数（应用里没配模型）')
+  // 收尾：夹具删掉；**会话已在每轮里当场删除**（`out.cleaned`），这里只报有没有漏
+  const notCleaned = rows.filter((r) => r.cleaned === false)
+  if (notCleaned.length) console.log(`⚠️ 有 ${notCleaned.length} 条自建会话没删掉，请到侧边栏手动删（都是 .jsl-bench 那几条）`)
   if (!KEEP) {
-    try {
-      rmSync(UD, { recursive: true, force: true })
-    } catch {
-      console.log('（userData 暂时删不掉，下次跑会被重置）')
+    for (const f of FIXTURE_FILES) {
+      try {
+        rmSync(join(WS, f), { force: true })
+      } catch {
+        console.log(`（夹具 ${f} 暂时删不掉，下次跑会被重置）`)
+      }
     }
+    console.log('[fix] 夹具已清理')
   }
   process.exit(0)
 }
