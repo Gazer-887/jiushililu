@@ -113,6 +113,25 @@ export const modelEntryPickSchema = z.object({
   entryId: z.string().min(1).max(64)
 })
 
+/** 新建目标（plan12）：正文与"怎么算做到"都限长 —— 目标是"一句话意图"，不是任务书 */
+export const goalCreateSchema = z.object({
+  conversationId: conversationIdSchema,
+  text: z.string().min(1).max(200),
+  doneWhen: z.string().max(200).optional()
+})
+
+/** 目标动作：六种之一（合法与否由状态机判，这里只管形状） */
+export const goalActionSchema = z.object({
+  id: z.string().min(1).max(64),
+  action: z.enum(['pause', 'resume', 'complete', 'reopen', 'drop', 'edit']),
+  patch: z
+    .object({
+      text: z.string().max(200).optional(),
+      doneWhen: z.string().max(200).optional()
+    })
+    .optional()
+})
+
 /** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */
 export const MAX_STORED_CHARS = 2_000_000
 

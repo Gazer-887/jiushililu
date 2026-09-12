@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { StreamEnvelope } from '@shared/ipc'
 import type { ModelSaveInput } from '@shared/models'
+import type { GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import {
@@ -55,6 +56,13 @@ const api: ApiBridge = {
   listAvailableModels: (id: string) => ipcRenderer.invoke(IPC.modelsAvailable, id),
   setActiveModelEntry: (profileId: string, entryId: string) =>
     ipcRenderer.invoke(IPC.modelsSetEntry, { profileId, entryId }),
+  // ── 目标（plan12）──
+  listGoals: (conversationId: string) => ipcRenderer.invoke(IPC.goalList, conversationId),
+  createGoal: (input: { conversationId: string; text: string; doneWhen?: string }) =>
+    ipcRenderer.invoke(IPC.goalCreate, input),
+  actOnGoal: (id: string, action: GoalAction, patch?: { text?: string; doneWhen?: string }) =>
+    ipcRenderer.invoke(IPC.goalAction, { id, action, patch }),
+  deleteGoal: (id: string) => ipcRenderer.invoke(IPC.goalDelete, id),
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
   pickWorkspace: () => ipcRenderer.invoke(IPC.workspacePick),
   setKnownWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceSetKnown, path),

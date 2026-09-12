@@ -254,6 +254,27 @@ const settingsView = {
   apiKeyMasked: 'sk-***'
 }
 
+const FAKE_GOALS = [
+  {
+    id: 'g1',
+    conversationId: 'c1',
+    text: '把工作台做成每天都能用的东西',
+    status: 'active',
+    createdBy: 'user',
+    createdAt: Date.now() - 86400000,
+    updatedAt: Date.now() - 3600000
+  },
+  {
+    id: 'g2',
+    conversationId: 'c1',
+    text: '给核心模块补上端到端测试',
+    status: 'paused',
+    createdBy: '内核默认',
+    createdAt: Date.now() - 7200000,
+    updatedAt: Date.now() - 1800000
+  }
+]
+
 const FAKE_TODOS = [
   { id: 't1', text: '读取工作区里的紫水晶采购清单', status: 'completed' },
   { id: 't2', text: '汇总各品类数量并核对单位', status: 'completed' },
@@ -343,6 +364,11 @@ const STUBS = {
   // 待办清单（plan7 批 D）：界面挂载时会拉一次，故这里给一份样例 ——
   // 验证的是**面板渲染与位置**，不是 Agent 会不会调 update_todos（那要真机跑）
   'todo:get': () => FAKE_TODOS,
+  // 目标（plan12）：契约副本 —— 一条进行中 + 一条暂停（覆盖两种状态的行内外观）
+  'goal:list': () => [FAKE_GOALS[0], FAKE_GOALS[1]],
+  'goal:create': (input) => ({ ...FAKE_GOALS[0], id: 'g-new', text: input?.text ?? '新目标' }),
+  'goal:action': (input) => ({ ...FAKE_GOALS[0], id: input?.id ?? 'g1', status: 'done' }),
+  'goal:delete': () => undefined,
   // 子代理运行记录（plan7 批 D）：同上，覆盖 start / end / error 三种渲染分支
   'subagent:get': () => FAKE_SUBAGENTS,
   // 后台任务（plan7 批 D）：覆盖 running（带终止）与 done（带退出码）
@@ -822,6 +848,31 @@ app.whenReady().then(async () => {
     payload: '先看看入口文件怎么写的…'
   })
   await new Promise((r) => setTimeout(r, 600))
+  // —— 目标面板（plan12）：输入框上方一条，摆在待办**上面** ——
+  // 判据：两条目标（一进行中一暂停）都渲染出来、行内动作齐、且几何上真在待办上方
+  const goalPanel = await win.webContents.executeJavaScript(`
+    (() => {
+      const panel = document.querySelector('.goal-panel');
+      if (!panel) return { hasPanel: false };
+      const rows = Array.from(document.querySelectorAll('.goal-row'));
+      const todo = document.querySelector('.todo-panel') ?? document.querySelector('.console-todos');
+      const pr = panel.getBoundingClientRect();
+      const tr = todo ? todo.getBoundingClientRect() : null;
+      return {
+        hasPanel: true,
+        rows: rows.length,
+        texts: rows.map((r) => r.querySelector('.goal-text')?.textContent?.trim() ?? ''),
+        pausedCount: rows.filter((r) => r.classList.contains('paused')).length,
+        btnTexts: rows.map((r) => Array.from(r.querySelectorAll('.goal-btn')).map((b) => b.textContent.trim()).join('/')),
+        hasAdd: !!document.querySelector('.goal-add'),
+        topOfPanel: Math.round(pr.top),
+        topOfTodo: tr ? Math.round(tr.top) : null,
+        visible: pr.height > 0 && pr.width > 0
+      };
+    })()
+  `)
+  console.log('GOAL_PANEL=' + JSON.stringify(goalPanel))
+
   const processVisible = await win.webContents.executeJavaScript(`
     (() => {
       const tool = document.querySelector('.tool-item');
@@ -3483,6 +3534,21 @@ app.whenReady().then(async () => {
     concurrencyResult.runningAfterADone)
   checkTrue('④ **后台那条（A）跑完真的落了盘，且落的是它自己**（P0-1：以前只存"当前显示的那条"）',
     concurrencyResult.savedAOnly.includes('c1'), concurrencyResult.savedAOnly)
+  // —— plan12：目标面板（跨轮次的长期意图）——
+  checkTrue('目标面板在输入框上方，且**两条目标都渲染出来**（一进行中、一暂停）',
+    goalPanel?.hasPanel === true && goalPanel?.rows === 2 && goalPanel?.pausedCount === 1 && goalPanel?.visible === true,
+    goalPanel)
+  checkTrue('行内动作齐（进行中：暂停/编辑/完成/删除；暂停：继续/编辑/完成/删除）+ 有「加目标」',
+    goalPanel?.hasAdd === true &&
+      (goalPanel?.btnTexts ?? []).some((s) => s.includes('暂停') && s.includes('完成') && s.includes('删除')) &&
+      (goalPanel?.btnTexts ?? []).some((s) => s.includes('继续') && s.includes('完成')),
+    goalPanel?.btnTexts)
+  // ⚠️ **"目标摆在待办上面"这条没写成断言**（2026-09-12）：
+  //    待办面板在"没有待办"时**自己不占位**，探针跑到那一刻它根本不在 DOM 里 → 几何对比无从判。
+  //    写成"todo 为 null 就放行"只会得到一条**永远绿的假断言**（本项目最反对的那种），
+  //    所以宁可先不写：顺序目前由 JSX 结构保证（`<GoalPanel />` 在 `<TodoPanel />` 之前）。
+  //    TODO：等有一个"待办非空"的稳定场景时补上真判据。
+
   // —— plan7 F5.1：模型目录（一把 Key 能调多个模型 + 每个模型的高级设置）——
   checkTrue('点「编辑」→ 出现**模型目录编辑器**（这是 F5.1 的核心形态）',
     modelCatalog?.open === true, modelCatalog)

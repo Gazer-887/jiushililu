@@ -4,6 +4,7 @@ import type { Attachment } from '@shared/ipc'
 import MessageMarkdown from '../components/MessageMarkdown'
 import InputConsole from '../components/InputConsole'
 import TodoPanel from '../components/TodoPanel'
+import GoalPanel from '../components/GoalPanel'
 
 // 对话页（D-032：单一通道）——不再有"对话/Agent 模式"开关：
 // 用不用工具由模型自己决定；界面负责**让过程可见**（工具执行卡片）。
@@ -249,6 +250,9 @@ export default function ChatView() {
       )}
 
       <div className="chat-input">
+        {/* **目标**（跨轮次的长期意图）摆在待办**上面** —— 形态对齐 DSH。
+            两者分开摆、各自说清：目标是「要持续达成什么」，待办是「这一轮干什么」（plan12） */}
+        <GoalPanel />
         {/* 待办清单在输入框**上方**（用户 2026-09-12 意见，形制对齐 DSH）；清单为空时自己隐藏 */}
         <TodoPanel />
         <InputConsole

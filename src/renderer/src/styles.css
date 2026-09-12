@@ -3367,6 +3367,138 @@ label.radio {
   color: var(--accent);
 }
 
+/* ── 目标面板（plan12）：输入框上方一条，摆在待办上面 ─────────────────────
+   形态对齐 DSH：图标 + 文字 + 暂停/继续 · 编辑 · 完成 · 删除。
+   没有目标时**整条不占位**（空着占一行是最招人烦的设计）；最多显示 3 条，多的折起来。 */
+.goal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-8);
+  padding: var(--sp-8);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+}
+
+.goal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  font-size: var(--fs-xs);
+  color: var(--accent);
+}
+
+.goal-icon {
+  flex-shrink: 0;
+}
+
+.goal-label {
+  font-weight: 500;
+}
+
+.goal-add {
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.goal-done-count {
+  color: var(--muted);
+}
+
+.goal-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.goal-row.paused {
+  color: var(--muted);
+}
+
+.goal-state {
+  width: 12px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--accent);
+}
+
+.goal-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-by {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.goal-edit,
+.goal-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+.goal-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.goal-input {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.goal-btn {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-6);
+  cursor: pointer;
+}
+
+.goal-btn:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.goal-btn-go {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.goal-btn-go:hover {
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+.goal-btn-del:hover {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.goal-notice {
+  font-size: var(--fs-xs);
+  color: var(--warn-deep);
+}
 /* 「正在生成」标记（plan11）：并发时哪几条会话在跑，必须一眼看得出 ——   否则用户切走之后会以为那条停了。用点 + 小字，不抢标题的地方。 */
 .conv-running {
   flex-shrink: 0;

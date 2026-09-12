@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { Goal, GoalAction } from '@shared/goal'
 import type {
   ChatMessage,
   ConversationCreateInput,
@@ -257,6 +258,12 @@ interface AppState {
   persistConversation: (id: string) => Promise<void>
   /** 关窗口前把所有在跑的会话落盘（plan11 P0-2）—— 主进程等到回执才真关 */
   flushAll: () => Promise<void>
+  // ── 目标（plan12）──
+  goals: Goal[]
+  loadGoals: (conversationId: string) => Promise<void>
+  createGoal: (conversationId: string, text: string) => Promise<void>
+  actOnGoal: (id: string, action: GoalAction, patch?: { text?: string; doneWhen?: string }) => Promise<void>
+  deleteGoal: (id: string) => Promise<void>
   /**
    * 并发提醒（plan11 §2.3）：同时跑第二条会话时提醒一次"两个会话改同一个工作区会互相覆盖"。
    * **只提醒不拦** —— 应用没法判断两件事会不会碰同一批文件，把知情权交给用户。
@@ -860,6 +867,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     const ids = new Set<string>(Object.keys(s.runtimes))
     if (s.activeId) ids.add(s.activeId)
     await Promise.all([...ids].map((id) => get().persistConversation(id)))
+  },
+
+  // ── 目标（plan12）：跨轮次存活的长期意图 ──
+  //
+  // 目标是**会话的属性**（plan11 给的会话身份），所以切换会话时像 messages 一样重新拉一份 ——
+  // 不放进 plan11 的 `runtimes` 分流器：那是给"流式期间每字都在变"的状态用的，
+  // 目标变更很稀疏，切会话时拉一次就够，简单且不会错。
+  goals: [] as Goal[],
+  loadGoals: async (conversationId: string) => {
+    try {
+      set({ goals: await window.api.listGoals(conversationId) })
+    } catch {
+      set({ goals: [] })
+    }
+  },
+  createGoal: async (conversationId: string, text: string) => {
+    await window.api.createGoal({ conversationId, text })
+    await get().loadGoals(conversationId)
+  },
+  /** 动作：非法转移会抛出人话理由（由界面显示），这里**不吞掉** */
+  actOnGoal: async (id: string, action: GoalAction, patch?: { text?: string; doneWhen?: string }) => {
+    await window.api.actOnGoal(id, action, patch)
+    const activeId = get().activeId
+    if (activeId) await get().loadGoals(activeId)
+  },
+  deleteGoal: async (id: string) => {
+    await window.api.deleteGoal(id)
+    const activeId = get().activeId
+    if (activeId) await get().loadGoals(activeId)
   },
 
   concurrencyNotice: null,

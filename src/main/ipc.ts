@@ -1,6 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 // 注：`readFile` / `basename` / 附件体积上限都已随 `readAttachment` 移到
-// `workspace-fs.ts`（那边能单测）。这里不再直接碰文件读取。
 import { z } from 'zod'
 import {
   IPC,
@@ -61,12 +60,16 @@ import {
   conversationIdSchema,
   incomingMessagesSchema,
   modelEntryPickSchema,
+  goalActionSchema,
+  goalCreateSchema,
   modelSaveSchema,
   settingsSchema,
   storedMessagesSchema
 } from './schemas'
 import { createChatEmitter } from './chat-emitter'
 import { createChatGate } from './agent/concurrency'
+import { actOnGoal, createGoalFor, listGoals, removeGoal } from './store/goal'
+import type { Goal } from '@shared/goal'
 import {
   BUILTIN_TYPES,
   DIRTY_MAX_LEN,
@@ -350,6 +353,35 @@ export function registerIpcHandlers(deps: {
     } finally {
       clearTimeout(timer)
     }
+  })
+
+  // ── 目标（plan12）──────────────────────────────────────────────────
+  //
+  // 目标属于**一条会话**（plan11 给的会话身份在这儿第二次派上用场）：
+  // 切回那条会话还看得见它，是自然结果而不是另建索引。
+  ipcMain.handle(IPC.goalList, (_e, raw: unknown): Goal[] => {
+    const conversationId = friendlyParse(conversationIdSchema, raw)
+    return listGoals(conversationId)
+  })
+
+  ipcMain.handle(IPC.goalCreate, (_e, raw: unknown): Goal => {
+    const input = friendlyParse(goalCreateSchema, raw)
+    return createGoalFor({
+      conversationId: input.conversationId,
+      text: input.text,
+      createdBy: 'user',
+      ...(input.doneWhen ? { doneWhen: input.doneWhen } : {})
+    })
+  })
+
+  ipcMain.handle(IPC.goalAction, (_e, raw: unknown): Goal => {
+    const input = friendlyParse(goalActionSchema, raw)
+    return actOnGoal(input.id, input.action, input.patch)
+  })
+
+  ipcMain.handle(IPC.goalDelete, (_e, raw: unknown): void => {
+    const id = friendlyParse(conversationIdSchema, raw)
+    removeGoal(id)
   })
 
   ipcMain.handle(IPC.chatSend, async (e, raw: unknown) => {

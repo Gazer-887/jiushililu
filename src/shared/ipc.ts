@@ -230,6 +230,15 @@ export const IPC = {
   modelsAvailable: 'models:available',
   /** 切换某端点内**当前用哪个模型**（模型目录里的「用」） */
   modelsSetEntry: 'models:set-entry',
+  // ── 目标（plan12）：跨轮次存活的长期意图 ──
+  /** 列某条会话的目标 */
+  goalList: 'goal:list',
+  /** 新建目标（用户手建，或 Agent 自建） */
+  goalCreate: 'goal:create',
+  /** 施加动作：暂停 / 继续 / 完成 / 重开 / 放弃 / 编辑 */
+  goalAction: 'goal:action',
+  /** 彻底删除（与「放弃」不同：放弃留痕） */
+  goalDelete: 'goal:delete',
   chatSend: 'chat:send',
   chatAbort: 'chat:abort',
   chatChunk: 'chat:chunk',
@@ -454,6 +463,20 @@ export interface ApiBridge {
   listAvailableModels(id: string): Promise<import('./models').AvailableModels>
   /** 切换某端点内当前用哪个模型 */
   setActiveModelEntry(profileId: string, entryId: string): Promise<import('./models').ModelsView>
+  // ── 目标（plan12）──
+  listGoals(conversationId: string): Promise<import('./goal').Goal[]>
+  createGoal(input: {
+    conversationId: string
+    text: string
+    doneWhen?: string
+  }): Promise<import('./goal').Goal>
+  /** 非法转移会抛出人话理由（例如「这条目标已经结束了，要先重开」） */
+  actOnGoal(
+    id: string,
+    action: import('./goal').GoalAction,
+    patch?: { text?: string; doneWhen?: string }
+  ): Promise<import('./goal').Goal>
+  deleteGoal(id: string): Promise<void>
   chatSend(input: { conversationId: string; messages: ChatMessage[] }): Promise<void>
   /**
    * 停止**指定会话**的生成（plan11）。
