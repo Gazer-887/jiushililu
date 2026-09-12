@@ -104,6 +104,8 @@ const api: ApiBridge = {
   // ── 检查点与回滚（plan8 R4）──
   listCheckpoints: () => ipcRenderer.invoke(IPC.checkpointList),
   getCheckpoint: (runId: string) => ipcRenderer.invoke(IPC.checkpointGet, runId),
+  getCheckpointSides: (runId: string, rel: string) =>
+    ipcRenderer.invoke(IPC.checkpointSides, { runId, rel }),
   rollbackCheckpoint: (runId: string, rel?: string) =>
     ipcRenderer.invoke(IPC.checkpointRollback, rel === undefined ? { runId } : { runId, rel }),
   onCheckpointChanged: (cb) => subscribe(IPC.checkpointChanged, (e) => cb(e as StreamEnvelope<string>)),

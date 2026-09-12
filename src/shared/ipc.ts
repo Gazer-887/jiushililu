@@ -142,11 +142,18 @@ export interface LogsInfo {
 
 // ── 检查点与回滚（plan8 R4）──
 // 类型定义在 @shared/checkpoint（纯逻辑层，主进程与界面共用同一口径）
-import type { CheckpointRun, CheckpointRunMeta, RollbackReport } from './checkpoint'
+import type {
+  CheckpointRun,
+  CheckpointRunMeta,
+  CheckpointSidesResult,
+  RollbackReport
+} from './checkpoint'
 export type {
   ChangeKind,
   CheckpointRun,
   CheckpointRunMeta,
+  CheckpointSides,
+  CheckpointSidesResult,
   FileChange,
   RollbackAction,
   RollbackReport
@@ -314,6 +321,7 @@ export const IPC = {
   // ── 检查点与回滚（plan8 R4）──
   checkpointList: 'checkpoint:list',
   checkpointGet: 'checkpoint:get',
+  checkpointSides: 'checkpoint:sides',
   checkpointRollback: 'checkpoint:rollback',
   /** 一轮运行结束后推送（界面据此刷新"文件变更"页签） */
   checkpointChanged: 'checkpoint:changed',
@@ -613,6 +621,11 @@ export interface ApiBridge {
   listCheckpoints(): Promise<CheckpointRunMeta[]>
   /** 读某一轮改了哪些文件 */
   getCheckpoint(runId: string): Promise<CheckpointRun | null>
+  /**
+   * 取某个文件"改前快照 vs 当前内容"两侧正文（Diff 视图用）。
+   * **纯读** —— 打开 Diff 视图不产生任何副作用。
+   */
+  getCheckpointSides(runId: string, rel: string): Promise<CheckpointSidesResult>
   /** 回滚：不传 rel 即整轮回滚 */
   rollbackCheckpoint(runId: string, rel?: string): Promise<RollbackReport>
   /** 一轮运行结束后触发（界面刷新用） */

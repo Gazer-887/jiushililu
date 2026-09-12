@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { describeKind, type CheckpointRun, type CheckpointRunMeta } from '@shared/checkpoint'
+import DiffView from './DiffView'
 
 // 文件变更记录（plan8 R4）：把 Agent 每一轮的写入留痕摊开，支持一键回滚。
 //
@@ -18,6 +19,14 @@ export default function ChangesPanel(): JSX.Element {
   const [detail, setDetail] = useState<CheckpointRun | null>(null)
   const [confirmKey, setConfirmKey] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** 正在看差异的那个文件（`null` = 没展开）。看完不收起来会一直占着面板高度 */
+  const [diffTarget, setDiffTarget] = useState<{ runId: string; rel: string } | null>(null)
+  /**
+   * 差异视图的刷新令牌。
+   * 回滚会**改掉磁盘内容**，而 DiffView 的依赖只有 (runId, rel) —— 不给它一个变化的 key，
+   * 它就会继续显示回滚前算出来的差异（"看着还有改动，其实已经退回去了"，会把人骗到）。
+   */
+  const [diffNonce, setDiffNonce] = useState(0)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
 
   const reload = useCallback(async (): Promise<void> => {
@@ -38,9 +47,11 @@ export default function ChangesPanel(): JSX.Element {
     if (openId === runId) {
       setOpenId(null)
       setDetail(null)
+      setDiffTarget(null) // 收起这一轮时，别把差异视图留在别处悬着
       return
     }
     setOpenId(runId)
+    setDiffTarget(null)
     setDetail(await window.api.getCheckpoint(runId))
   }
 
@@ -60,6 +71,7 @@ export default function ChangesPanel(): JSX.Element {
       })
       await reload()
       setDetail(await window.api.getCheckpoint(runId))
+      setDiffNonce((n) => n + 1) // 内容被改过了，差异视图必须重算（见 diffNonce 说明）
     } catch (err) {
       setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
     } finally {
@@ -140,21 +152,47 @@ export default function ChangesPanel(): JSX.Element {
                     <div className="ck-file-empty">这一轮没有写文件</div>
                   ) : (
                     detail.changes.map((c) => (
-                      <div key={c.rel} className="ck-file">
-                        <span className={`ck-kind ${c.kind === 'created' ? 'ck-kind-new' : ''}`}>
-                          {describeKind(c.kind)}
-                        </span>
-                        <span className="ck-file-rel" title={c.rel}>
-                          {c.rel}
-                        </span>
-                        <span className="ck-file-size">
-                          {c.kind === 'modified' ? `${c.beforeBytes} B` : '—'}
-                        </span>
-                        <ConfirmButton
-                          k={`${r.runId}:${c.rel}`}
-                          label="回滚"
-                          onConfirm={() => void doRollback(r.runId, c.rel)}
-                        />
+                      <div key={c.rel} className="ck-file-item">
+                        <div className="ck-file">
+                          <span className={`ck-kind ${c.kind === 'created' ? 'ck-kind-new' : ''}`}>
+                            {describeKind(c.kind)}
+                          </span>
+                          <span className="ck-file-rel" title={c.rel}>
+                            {c.rel}
+                          </span>
+                          <span className="ck-file-size">
+                            {c.kind === 'modified' ? `${c.beforeBytes} B` : '—'}
+                          </span>
+                          {/* 看清楚**改成了什么样**，再决定退不退 —— B3 只读展示，退回在 B4 */}
+                          <button
+                            className="ck-btn"
+                            disabled={busy}
+                            onClick={() =>
+                              setDiffTarget((t) =>
+                                t?.rel === c.rel && t.runId === r.runId
+                                  ? null
+                                  : { runId: r.runId, rel: c.rel }
+                              )
+                            }
+                          >
+                            {diffTarget?.rel === c.rel && diffTarget.runId === r.runId
+                              ? '收起差异'
+                              : '看差异'}
+                          </button>
+                          <ConfirmButton
+                            k={`${r.runId}:${c.rel}`}
+                            label="回滚"
+                            onConfirm={() => void doRollback(r.runId, c.rel)}
+                          />
+                        </div>
+                        {diffTarget?.rel === c.rel && diffTarget.runId === r.runId && (
+                          <DiffView
+                            key={diffNonce}
+                            runId={r.runId}
+                            rel={c.rel}
+                            onClose={() => setDiffTarget(null)}
+                          />
+                        )}
                       </div>
                     ))
                   )}

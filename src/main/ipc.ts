@@ -1,6 +1,9 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 // 注：`readFile` / `basename` / 附件体积上限都已随 `readAttachment` 移到
 import { z } from 'zod'
+// 检查点纯逻辑（plan13 B3）：rel 的路径安全校验与"挑出指定文件"都用共享层这一份，
+// 界面与主进程不许各写一套 —— 两套判据迟早会分岔。
+import { isSafeRel, selectChanges } from '@shared/checkpoint'
 import {
   IPC,
   type Attachment,
@@ -18,6 +21,7 @@ import {
   type LogsInfo,
   type CheckpointRun,
   type CheckpointRunMeta,
+  type CheckpointSidesResult,
   type RollbackReport,
   type UIPrefs,
   type FsListResult,
@@ -913,6 +917,57 @@ export function registerIpcHandlers(deps: {
     if (!parsed.success) return null
     return deps.agent.checkpoints.get(parsed.data)
   })
+
+  /**
+   * Diff 视图取两侧内容（plan13 B3）。
+   *
+   * **纯读**：不落盘、不动检查点、不产生轮次 —— 打开 Diff 看一眼不该有任何副作用。
+   * 两侧**都在这里读**（快照 + 当前），而不是让界面自己去读磁盘：
+   * 一次 IPC 拿到的两侧才是**同一时刻**的一致快照，分两次读中间可能被 Agent 改掉。
+   */
+  ipcMain.handle(
+    IPC.checkpointSides,
+    async (_e, raw: unknown): Promise<CheckpointSidesResult> => {
+      const parsed = z
+        .object({ runId: z.string().min(1).max(64), rel: z.string().min(1).max(1024) })
+        .safeParse(raw)
+      if (!parsed.success) return { ok: false, reason: 'bad-rel' }
+      const { runId, rel } = parsed.data
+
+      // 先挡路径：rel 会用来拼磁盘路径（与回滚同一道防线）
+      if (!isSafeRel(rel)) return { ok: false, reason: 'bad-rel' }
+
+      const run = deps.agent.checkpoints.get(runId)
+      if (!run) return { ok: false, reason: 'run-missing' }
+      const change = selectChanges(run.changes, rel)[0]
+      if (!change) return { ok: false, reason: 'not-recorded' }
+
+      const snap = deps.agent.checkpoints.readBackup(runId, rel)
+      // `created` 是**合法地**没有快照侧（当轮之前文件不存在），其余失败才是真看不了
+      if (!snap.ok && snap.reason !== 'created') {
+        return { ok: false, reason: 'backup-missing' }
+      }
+
+      const cur = await readWorkspaceFile(deps.agent.getWorkspaceRoot(), rel)
+      const after = cur.ok ? cur.content : null
+      const beforeTruncated = snap.ok ? snap.truncated : false
+      const afterTruncated = cur.ok && cur.truncated === true
+
+      return {
+        ok: true,
+        runId,
+        rel: change.rel,
+        kind: change.kind,
+        before: snap.ok ? snap.content : null,
+        after,
+        beforeBytes: change.beforeBytes,
+        afterBytes: cur.ok ? cur.size : 0,
+        truncated: beforeTruncated || afterTruncated,
+        ...(cur.ok && cur.mtimeMs !== undefined ? { mtimeMs: cur.mtimeMs } : {}),
+        runStatus: run.status
+      }
+    }
+  )
 
   ipcMain.handle(
     IPC.checkpointRollback,

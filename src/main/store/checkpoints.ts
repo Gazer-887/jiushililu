@@ -1,8 +1,12 @@
 import {
+  closeSync,
   copyFileSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   rmSync,
   statSync,
@@ -44,6 +48,21 @@ import {
 /** 保留的轮次上限（超出即从最旧的开始清理） */
 const MAX_RUNS = 50
 
+/**
+ * 读快照正文的上限（plan13 B3）。
+ *
+ * 为什么要有：Diff 视图要把快照内容读进内存再算差异。快照是本轮的**真实文件拷贝**，
+ * 一个几百 MB 的文件就能把主进程读爆。超过上限就**只读前 256 KB 并标记截断** ——
+ * 界面据此说明"不完整"，且**禁止逐块退回**（拿半个文件去写盘就是数据丢失）。
+ * 这个值与 `workspace-fs` 的 `MAX_PREVIEW_BYTES` 保持一致，两侧同时截断才谈得上"可比"。
+ */
+const MAX_SNAPSHOT_BYTES = 256 * 1024
+
+/** 读快照的结果：失败一律给出**可读的原因**，让界面说得清"为什么看不了" */
+export type ReadBackupResult =
+  | { ok: true; content: string; truncated: boolean; bytes: number }
+  | { ok: false; reason: 'run-missing' | 'not-recorded' | 'created' | 'backup-missing' }
+
 export interface CheckpointStore {
   readonly dir: string
   /** 开始一轮（写入 running manifest）→ runId */
@@ -56,6 +75,11 @@ export interface CheckpointStore {
   list(): CheckpointRunMeta[]
   /** 读某一轮明细 */
   get(runId: string): CheckpointRun | null
+  /**
+   * 读某个文件的**改前快照正文**（plan13 B3：Diff 视图要拿它跟当前内容比）。
+   * 只读不写 —— 打开 Diff 视图本身**不产生**任何副作用。
+   */
+  readBackup(runId: string, rel: string): ReadBackupResult
   /** 回滚：不传 rel = 整轮回滚 */
   rollback(runId: string, rel?: string): RollbackReport
   /** 清理超限的旧轮次 + 残留空目录 */
@@ -191,6 +215,44 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         return JSON.parse(readFileSync(manifest, 'utf8')) as CheckpointRun
       } catch {
         return null
+      }
+    },
+
+    readBackup(runId, rel) {
+      const run = store.get(runId)
+      if (!run) return { ok: false, reason: 'run-missing' }
+
+      const change = selectChanges(run.changes, rel)[0]
+      if (!change) return { ok: false, reason: 'not-recorded' }
+      // created 没有"改前的样子"可给 —— 它当轮的改前状态就是"文件不存在"。
+      // （注意这里**不**退化成"给个空串"：空串会被界面当成"文件本来是空的"，
+      //   那是另一回事，而 created 的正确语义是"原来没有这个文件"。）
+      if (change.kind === 'created' || change.backup === null) {
+        return { ok: false, reason: 'created' }
+      }
+
+      const src = join(runDir(runId), 'files', change.backup)
+      if (!existsSync(src)) return { ok: false, reason: 'backup-missing' }
+
+      try {
+        const fd = openSync(src, 'r')
+        try {
+          const size = fstatSync(fd).size
+          const cap = Math.min(size, MAX_SNAPSHOT_BYTES)
+          const buf = Buffer.alloc(cap)
+          readSync(fd, buf, 0, cap, 0)
+          return {
+            ok: true,
+            content: buf.toString('utf8'),
+            truncated: size > MAX_SNAPSHOT_BYTES,
+            bytes: size
+          }
+        } finally {
+          closeSync(fd)
+        }
+      } catch {
+        // 读失败（权限 / 文件被占用）不当成崩溃，交给界面说"看不了"
+        return { ok: false, reason: 'backup-missing' }
       }
     },
 

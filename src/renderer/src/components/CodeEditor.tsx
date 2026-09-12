@@ -143,8 +143,24 @@ export default function CodeEditor({
   const hostRef = useRef<HTMLDivElement>(null)
   /** 编辑器实例（保存下来才能在卸载时 dispose —— 不 dispose 会漏 Worker 与监听器） */
   const editorRef = useRef<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null)
+  /** monaco 模块本身（改语言要用它的 `setModelLanguage`） */
+  const monacoRef = useRef<Monaco | null>(null)
   /** 最新的 value：它每敲一个字都变，但**不能**进 effect 依赖（否则每次按键都重建编辑器） */
   const valueRef = useRef(value)
+  /** 最新的 onChange：理由同上 —— 父组件的内联函数每次渲染都是新的 */
+  const onChangeRef = useRef(onChange)
+  useEffect(() => {
+    onChangeRef.current = onChange
+  }, [onChange])
+  /**
+   * **程序化灌内容期间为 true** —— 这是边界②的命门。
+   *
+   * monaco 的 `setValue` **也会**触发 `onDidChangeModelContent`。
+   * 不区分的话，"外部把内容换掉（换文件 / 重新载入 / 回滚后刷新）"会被当成
+   * "用户敲了字"，回灌给父组件 → 父组件据此更新草稿 → 磁盘文本反过来盖掉用户输入。
+   * （事件是同步派发的，所以 try/finally 就够，不需要等到某个 tick 之后。）
+   */
+  const syncingRef = useRef(false)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [error, setError] = useState('')
 
@@ -156,7 +172,10 @@ export default function CodeEditor({
       try {
         const monaco = await loadMonaco()
         if (!alive || !hostRef.current) return
+        monacoRef.current = monaco
 
+        // ⚠️ 这里的 `language` / `readOnly` 是**首次渲染**的值（依赖为空，见 effect 末尾）。
+        //    "初值用第一次的，后续变化就地施加"是有意设计 —— 它们各自的 effect 在下面。
         const editor = monaco.editor.create(hostRef.current, {
           value: valueRef.current,
           language,
@@ -171,8 +190,12 @@ export default function CodeEditor({
         editorRef.current = editor
 
         // 内容变化 → 回调（**只在这里**接一次；value 的后续同步走下面那个 effect）
+        // ⚠️ 走 `onChangeRef`，**不能**直接用闭包里的 `onChange`：这个 effect 依赖为空，
+        //    直接闭包捕获的会是**首次渲染那一个**函数 —— 父组件后来传的新回调（带着新的
+        //    rel / 新的磁盘基线）永远进不来，"脏标记"就会拿旧基准去比。
         editor.onDidChangeModelContent(() => {
-          onChange?.(editor.getValue())
+          if (syncingRef.current) return // 我们灌进去的，不是用户敲的（见 syncingRef 说明）
+          onChangeRef.current?.(editor.getValue())
         })
 
         setState('ready')
@@ -187,19 +210,48 @@ export default function CodeEditor({
       alive = false
       editorRef.current?.dispose()
       editorRef.current = null
+      monacoRef.current = null
     }
-    // ⚠️ 依赖只留 `language` 与 `readOnly`：
-    //    `value` 每次按键都变，进依赖会让编辑器**每敲一个字重建一次**（光标跳、撤销栈清空）。
-    //    `onChange` 同理：父组件多半每渲染都传一个新函数。
+    // ⚠️ 依赖**故意为空**。monaco 实例是重资产（Worker + 监听器 + model），
+    //    重建一次的代价是**丢撤销栈、丢光标、丢滚动位置**，还会闪一下。
+    //    所以 `value` / `language` / `readOnly` 的后续变化**都不重建**，
+    //    分别由下面三个 effect 就地施加：
+    //      · value    → setValue（带回声屏蔽）
+    //      · language → setModelLanguage
+    //      · readOnly → updateOptions
     //    （这里不写 eslint-disable —— 本项目没装 react-hooks 插件，写了反而会因为"规则不存在"报错。）
-  }, [language, readOnly])
+  }, [])
+
+  // 语言变了（切到另一个文件）→ **就地**换语言，不重建编辑器
+  useEffect(() => {
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+    if (!editor || !monaco || state !== 'ready') return
+    const model = editor.getModel()
+    // 传同一个 id 时 monaco 内部会直接返回，所以这里不必自己判"变没变"
+    if (model) monaco.editor.setModelLanguage(model, language)
+  }, [language, state])
+
+  // 只读态变了（预览 ↔ 编辑）→ **就地**改选项，不重建编辑器（重建会丢撤销栈）
+  useEffect(() => {
+    if (!editorRef.current || state !== 'ready') return
+    editorRef.current.updateOptions({ readOnly })
+  }, [readOnly, state])
 
   // 外部把 value 换掉时（切文件 / 重新载入 / 回滚后刷新），同步进编辑器
   useEffect(() => {
     const editor = editorRef.current
     if (!editor || state !== 'ready') return
     valueRef.current = value
-    if (editor.getValue() !== value) editor.setValue(value)
+    if (editor.getValue() === value) return // 自己敲出来的回灌，不动
+    // `setValue` 会**清空撤销栈并把光标归位** —— 所以只在"外部真的换了内容"时才走。
+    // 灌的时候必须屏蔽 onDidChangeModelContent：那是我们在写，不是用户在敲。
+    syncingRef.current = true
+    try {
+      editor.setValue(value)
+    } finally {
+      syncingRef.current = false
+    }
   }, [value, state])
 
   if (state === 'error') {

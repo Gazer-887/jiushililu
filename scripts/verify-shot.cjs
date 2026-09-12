@@ -13,10 +13,70 @@
  * 数据返回空值即可，本脚本验证的是**布局几何**，不是数据流。
  */
 const { app, BrowserWindow, ipcMain, protocol } = require('electron')
-const { mkdirSync, writeFileSync, rmSync } = require('node:fs')
+const { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } = require('node:fs')
 const { join } = require('node:path')
 
 const ROOT = process.cwd()
+
+/**
+ * 守卫：**构建产物是不是比源码旧**。
+ *
+ * 为什么非加不可（2026-09-13 亲身踩到）：本脚本加载的是 `out/`（构建产物），
+ * 忘了 `npm run build` 就直接跑，它**不会报错**，只会拿着一份**旧界面**把那套断言全跑一遍 ——
+ * 结果就是"新加的功能一条都不对"，长得**和真回归一模一样**：
+ * 我那次 16 条新断言全红，`{files:0, withBtn:0}` 看着像是列表没渲染出来，
+ * 真相是旧包里压根没有那些 DOM。差点照着假根因去改根本没坏的代码。
+ *
+ * 判据：`out/` 树里**最新的**那个文件，必须比 `src/` 里**最新的**源文件新。
+ * （不盯单个文件比如 `index.html` —— 万一某次构建没重写它，就会变成永久假阳性，
+ *   而假阳性守卫会被当成"门禁坏了"，最后被人关掉。用"整棵树最新"才稳。）
+ * 逃生舱：确实要跑旧包时设 `SKIP_FRESH=1`（但那样出的结论不能当回归依据）。
+ */
+function assertBuildFresh() {
+  if (process.env.SKIP_FRESH === '1') {
+    console.log('FRESH_CHECK=skipped')
+    return
+  }
+  const outputs = [
+    join(ROOT, 'out', 'main', 'index.js'),
+    join(ROOT, 'out', 'preload', 'index.js'),
+    join(ROOT, 'out', 'renderer', 'index.html')
+  ]
+  const missing = outputs.filter((p) => !existsSync(p))
+  if (missing.length > 0) {
+    console.log('FRESH_CHECK=missing ' + JSON.stringify(missing))
+    console.log('==== 先跑 `npm run build` 再跑门禁 ====')
+    process.exit(1)
+  }
+
+  let newestSrc = 0
+  const newestIn = (dir, tag) => {
+    let newest = 0
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) newest = Math.max(newest, newestIn(p, tag))
+      else if (tag.test(e.name)) newest = Math.max(newest, statSync(p).mtimeMs)
+    }
+    return newest
+  }
+  const srcDir = join(ROOT, 'src')
+  if (existsSync(srcDir)) newestSrc = newestIn(srcDir, /\.(ts|tsx|css)$/)
+  const viteCfg = join(ROOT, 'config', 'electron.vite.config.ts')
+  if (existsSync(viteCfg)) newestSrc = Math.max(newestSrc, statSync(viteCfg).mtimeMs)
+
+  const outDir = join(ROOT, 'out')
+  const newestOut = newestIn(outDir, /.*/)
+
+  if (newestSrc > newestOut) {
+    const stale = Math.round((newestSrc - newestOut) / 1000)
+    console.log(`FRESH_CHECK=stale by ${stale}s`)
+    console.log('==== 构建产物比源码旧：现在跑出来的是**旧界面**，结果不能当依据 ====')
+    console.log('==== 先跑 `npm run build` 再跑门禁（确要用旧包：SKIP_FRESH=1）====')
+    process.exit(1)
+  }
+  console.log('FRESH_CHECK=ok')
+}
+assertBuildFresh()
 /**
  * 截图统一落这里 —— 用户要求「项目下的图片建档（Photo 目录）收录」：
  * 验证产出不该散在项目根（此前根目录堆过 17 张）。
@@ -700,9 +760,9 @@ const STUBS = {
       workspace: 'D:\\jsllworkplace_for_test',
       agent: '内核默认',
       status: 'done',
-      fileCount: 3,
+      fileCount: 4,
       createdCount: 1,
-      modifiedCount: 2
+      modifiedCount: 3
     },
     {
       runId: 'run-2',
@@ -725,7 +785,9 @@ const STUBS = {
     changes: [
       { rel: 'src/notes.md', kind: 'modified', beforeBytes: 128, backup: '0.bin' },
       { rel: 'src/app.ts', kind: 'modified', beforeBytes: 640, backup: '1.bin' },
-      { rel: 'src/brand-new.md', kind: 'created', beforeBytes: 0, backup: null }
+      { rel: 'src/brand-new.md', kind: 'created', beforeBytes: 0, backup: null },
+      // plan13 B3：超大文件 —— 验"截断必须说出来、且不给逐处退回"
+      { rel: 'src/huge.log', kind: 'modified', beforeBytes: 3145728, backup: '3.bin' }
     ]
   }),
   'checkpoint:rollback': () => ({
@@ -734,7 +796,97 @@ const STUBS = {
     deleted: ['src/brand-new.md'],
     failed: [],
     rejected: []
-  })
+  }),
+
+  // plan13 B3：Diff 视图的两侧内容。
+  //
+  // ⚠️ 这份 fixture 是**刻意设计**的，四种情形各管一件事（随手编的数据测不出东西）：
+  //   · src/app.ts      → 两处**相隔很远**的改动 —— 断言"块数 == 2"才有意义
+  //                        （只造一处的话，写成"恒等于 1"也能绿）
+  //   · src/notes.md    → 两侧**完全一致** —— 阴性对照，证明它不是"恒显示有改动"
+  //   · src/brand-new.md→ created：改前不存在，必须走"没有快照侧"的分支，且**不给逐处退回**
+  //   · src/huge.log    → truncated：只读了前 256KB，界面必须说出来、且**不给逐处退回**
+  'checkpoint:sides': ({ runId, rel }) => {
+    const APP_BEFORE = [
+      "import { a } from './a'",
+      'const x = 1',
+      'function f() {',
+      '  return x',
+      '}',
+      '// section A',
+      'const u1 = 0',
+      'const u2 = 0',
+      'const u3 = 0',
+      'const u4 = 0',
+      'const u5 = 0',
+      'const u6 = 0',
+      'const u7 = 0',
+      'const u8 = 0',
+      'const u9 = 0',
+      '// section B',
+      'const y = 2',
+      'export { f, x }'
+    ].join('\n')
+    // 改动 ①：第 2 行  ②：第 17 行起（并把 `const z = y * 2` 插成第 18 行）
+    const APP_AFTER = [
+      "import { a } from './a'",
+      'const x = 42',
+      'function f() {',
+      '  return x',
+      '}',
+      '// section A',
+      'const u1 = 0',
+      'const u2 = 0',
+      'const u3 = 0',
+      'const u4 = 0',
+      'const u5 = 0',
+      'const u6 = 0',
+      'const u7 = 0',
+      'const u8 = 0',
+      'const u9 = 0',
+      '// section B',
+      'const y = 3',
+      'const z = y * 2',
+      'export { f, x, z }'
+    ].join('\n')
+
+    const base = {
+      ok: true,
+      runId: runId ?? 'run-1',
+      kind: 'modified',
+      beforeBytes: 0,
+      afterBytes: 0,
+      truncated: false,
+      mtimeMs: 111111,
+      runStatus: 'done'
+    }
+
+    if (rel === 'src/notes.md') {
+      const same = '这一轮看过这个文件，内容没变过\n'
+      return { ...base, rel, before: same, after: same }
+    }
+    if (rel === 'src/brand-new.md') {
+      return {
+        ...base,
+        rel,
+        kind: 'created',
+        before: null, // created **没有**快照侧
+        after: ['# 新建的说明', '', '这一轮把它造出来的。'].join('\n')
+      }
+    }
+    if (rel === 'src/huge.log') {
+      return {
+        ...base,
+        rel,
+        before: 'old line\n',
+        after: 'new line\n',
+        truncated: true, // 两侧只读了前 256KB —— 界面必须说出来
+        beforeBytes: 1024 * 1024 * 3,
+        afterBytes: 1024 * 1024 * 4
+      }
+    }
+    return { ...base, rel, before: APP_BEFORE, after: APP_AFTER }
+  }
   // 注意：'confirm:respond' 不在这里 —— 需要记录收到的答复，单独注册（见下）
 }
 
@@ -1282,6 +1434,136 @@ app.whenReady().then(async () => {
   `)
   const shot5 = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-rollback.png'), shot5.toPNG())
+
+  // —— 文件差异（plan13 B3）：真点开一个文件，看它算出来的差异**对不对** ——
+  //
+  // ⚠️ 这一段刻意**不**用"有没有出现某个元素"当判据 —— 那样把块切错、把行号算错也照样绿。
+  //    判据落在**内容与行号**上：哪一个文件、第几块、哪一行、改前还是改后。
+  /** 点某个文件的「看差异」并等它读完（读盘 + 算差异都是异步的） */
+  const openDiff = async (rel) => {
+    const clicked = await win.webContents.executeJavaScript(`
+      (() => {
+        const item = Array.from(document.querySelectorAll('.ck-file-item'))
+          .find((el) => el.querySelector('.ck-file-rel')?.textContent?.trim() === ${JSON.stringify(rel)});
+        const btn = item
+          ? Array.from(item.querySelectorAll('.ck-btn')).find((b) => b.textContent.trim() === '看差异')
+          : null;
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 900))
+    return clicked
+  }
+  /** 把当前差异视图读成结构化数据 */
+  const readDiff = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const wrap = document.querySelector('.df-wrap');
+        if (!wrap) return { shown: false, hunks: 0, rows: [], warns: [], notes: [] };
+        const rows = Array.from(wrap.querySelectorAll('.df-line')).map((el) => {
+          const nos = Array.from(el.querySelectorAll('.df-no')).map((n) => n.textContent.trim());
+          return {
+            add: el.className.includes('df-add'),
+            del: el.className.includes('df-del'),
+            text: el.querySelector('.df-text')?.textContent ?? '',
+            oldNo: nos[0] ?? '',
+            newNo: nos[1] ?? ''
+          };
+        });
+        return {
+          shown: true,
+          hunks: wrap.querySelectorAll('.df-hunk').length,
+          hunkNos: Array.from(wrap.querySelectorAll('.df-hunk-no')).map((e) => e.textContent.trim()),
+          sum: wrap.querySelector('.df-sum')?.textContent?.trim() ?? null,
+          warns: Array.from(wrap.querySelectorAll('.df-warn')).map((e) => e.textContent.trim()),
+          notes: Array.from(wrap.querySelectorAll('.df-note')).map((e) => e.textContent.trim()),
+          identical: !!wrap.querySelector('.df-none'),
+          rows
+        };
+      })()
+    `)
+
+  const diffEntry = await win.webContents.executeJavaScript(`
+    (() => ({
+      files: document.querySelectorAll('.ck-file-item').length,
+      withBtn: Array.from(document.querySelectorAll('.ck-file-item')).filter((el) =>
+        Array.from(el.querySelectorAll('.ck-btn')).some((b) => b.textContent.trim() === '看差异')
+      ).length
+    }))()
+  `)
+
+  const openedApp = await openDiff('src/app.ts')
+  const diffApp = await readDiff()
+  const shotDiff = await win.webContents.capturePage()
+  writeFileSync(join(SHOTS, 'verify-diff.png'), shotDiff.toPNG())
+
+  const openedNotes = await openDiff('src/notes.md')
+  const diffNotes = await readDiff()
+  const openedNew = await openDiff('src/brand-new.md')
+  const diffNew = await readDiff()
+  const openedHuge = await openDiff('src/huge.log')
+  const diffHuge = await readDiff()
+
+  const clickedClose = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.df-bar .ck-btn'))
+        .find((x) => x.textContent.trim() === '收起');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const diffClosed = await win.webContents.executeJavaScript(
+    `(() => ({ gone: !document.querySelector('.df-wrap') }))()`
+  )
+
+  // —— 文件差异的**断言**（紧跟探针，避免暂时性死区）——
+  checkTrue('每个改动文件都给了「看差异」入口',
+    diffEntry.files > 0 && diffEntry.withBtn === diffEntry.files, diffEntry)
+  checkTrue('点「看差异」→ 差异视图真的出来了', openedApp === true && diffApp.shown === true,
+    { openedApp, shown: diffApp.shown })
+
+  // ① 切块：fixture 里 app.ts 是**两处相隔很远**的改动，所以必须切成 2 块
+  checkTrue('差异切成 **2 处**（fixture 就是两处远离的改动；切错会立刻暴露）',
+    diffApp.hunks === 2, { hunks: diffApp.hunks, hunkNos: diffApp.hunkNos, sum: diffApp.sum })
+  check('块号是「第 1 处 / 第 2 处」且连续',
+    (diffApp.hunkNos || []).join(','), '第 1 处,第 2 处')
+
+  const delX = (diffApp.rows || []).find((r) => r.del && r.text === 'const x = 1')
+  const addX = (diffApp.rows || []).find((r) => r.add && r.text === 'const x = 42')
+  checkTrue('删掉的行显示的是**改前那一行**（`const x = 1`）', !!delX, delX ?? diffApp.rows?.slice(0, 8))
+  checkTrue('新增的行显示的是**改后那一行**（`const x = 42`）', !!addX, addX ?? null)
+  // 行号是这套视图最容易算错的地方 —— 算错就是在骗用户"第几行改了"
+  checkTrue('改前那行的**行号是 2**（不是从 0 或 1 重数）', delX?.oldNo === '2', { oldNo: delX?.oldNo })
+  checkTrue('新增那行的**改后行号是 2**', addX?.newNo === '2', { newNo: addX?.newNo })
+  const addZ = (diffApp.rows || []).find((r) => r.add && r.text === 'const z = y * 2')
+  checkTrue('插进去的新行拿到的是**改后行号 18**（前面增过行，行号必须跟着错开）',
+    addZ?.newNo === '18', { newNo: addZ?.newNo, text: addZ?.text })
+  checkTrue('摘要写着「共 2 处改动」', (diffApp.sum || '').includes('共 2 处改动'), diffApp.sum)
+
+  // ② 阴性对照：内容与快照一致时**不许**显示改动
+  checkTrue('**内容与快照一致时显示"完全一致"**（阴性对照：证明它不是恒显示有改动）',
+    diffNotes.shown === true && diffNotes.identical === true && diffNotes.hunks === 0,
+    { shown: diffNotes.shown, identical: diffNotes.identical, hunks: diffNotes.hunks })
+
+  // ③ created：改前根本不存在
+  checkTrue('新建的文件：说清"改前不存在"，且**全是新增行**（一行删除都不该有）',
+    openedNew === true && diffNew.notes.some((n) => n.includes('不存在')) &&
+      diffNew.rows.length > 0 && diffNew.rows.every((r) => r.add),
+    { notes: diffNew.notes, rows: diffNew.rows.length, hasDel: (diffNew.rows || []).some((r) => r.del) })
+  checkTrue('新建的文件**明说不给逐处退回**（只能整份退回）',
+    (diffNew.notes || []).some((n) => n.includes('整份退回')), diffNew.notes)
+
+  // ④ truncated：读不全就必须说出来，且不许逐处退回
+  checkTrue('内容被截断时**明说只读了 256 KB**（读一半就下结论比不显示更误导）',
+    openedHuge === true && (diffHuge.warns || []).some((w) => w.includes('256 KB')),
+    { warns: diffHuge.warns })
+  checkTrue('截断时**不给逐处退回**（拿半个文件去写盘 = 把文件砍坏）',
+    (diffHuge.notes || []).some((n) => n.includes('不能逐处退回')), diffHuge.notes)
+
+  checkTrue('点「收起」→ 差异视图收回去（不收起来会把面板撑爆）',
+    clickedClose === true && diffClosed.gone === true, { clickedClose, ...diffClosed })
 
   // —— 危险操作确认对话框（plan8 R5）：真推一次请求，真点一次 ──
   // 用 webContents.send 模拟主进程推送（这就是真实链路：主进程 → preload → React）
@@ -2490,6 +2772,10 @@ app.whenReady().then(async () => {
   console.log('CHANGES_BEFORE=' + JSON.stringify(beforeRollback))
   console.log('CONFIRM_STEP=' + JSON.stringify(confirmStep))
   console.log('ROLLBACK_NOTICE=' + JSON.stringify(rollbackNotice))
+  console.log('DIFF_APP=' + JSON.stringify(diffApp))
+  console.log('DIFF_NOTES=' + JSON.stringify(diffNotes))
+  console.log('DIFF_NEW=' + JSON.stringify(diffNew))
+  console.log('DIFF_HUGE=' + JSON.stringify(diffHuge))
   console.log('CONFIRM_DIALOG=' + JSON.stringify(confirmShown))
   console.log('CONFIRM_RESPONSES=' + JSON.stringify({ sent: confirmResponses, ...confirmClosed }))
   console.log('SPLITTER_BEFORE=' + JSON.stringify(beforeDrag))

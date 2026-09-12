@@ -362,3 +362,130 @@ describe('回滚后再次回滚（幂等性）', () => {
     expect(read(ws, 'a.txt')).toBe('原样') // 仍是原样，没被删也没被清空
   })
 })
+
+// ── 读快照正文（plan13 批 B · B3）：Diff 视图的取数侧 ──────────────
+//
+// 这组测的是"看差异"这件事**看得对**、且**看的时候不会把文件弄坏**。
+// （Diff 视图是纯读的，所以这里同时断言"读完之后磁盘内容一个字没变"。）
+
+/** 与 checkpoints.ts 的 MAX_SNAPSHOT_BYTES 保持一致 */
+const SNAPSHOT_CAP = 256 * 1024
+
+describe('读快照正文（Diff 视图用）', () => {
+  it('修改过的文件：读回来的就是**改前**的内容（不是改后的）', () => {
+    const { ws, store } = setup()
+    write(ws, 'a.txt', '改前的内容')
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'a.txt', join(ws, 'a.txt'))
+    write(ws, 'a.txt', '改后的内容')
+    store.finish(runId)
+
+    const r = store.readBackup(runId, 'a.txt')
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.content).toBe('改前的内容')
+    expect(r.truncated).toBe(false)
+    // 纯读：磁盘上仍然是改后的内容（读快照不该有任何副作用）
+    expect(read(ws, 'a.txt')).toBe('改后的内容')
+  })
+
+  it('新建的文件：给的是 `created`，**不是空串**', () => {
+    const { ws, store } = setup()
+    const runId = store.begin(ws, '内核默认')
+    // ⚠️ 顺序就是产品语义：**快照发生在写文件之前**，那时文件还不存在 → 判为 created。
+    //    （先建文件再 record 会被记成 modified —— 那测的就不是这条了。）
+    const abs = join(ws, 'new.txt')
+    store.record(runId, ws, 'new.txt', abs)
+    write(ws, 'new.txt', '新写的内容')
+    store.finish(runId)
+
+    const r = store.readBackup(runId, 'new.txt')
+    // 空串会被界面当成"文件本来是空的" —— 那是另一回事，必须能区分开
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe('created')
+  })
+
+  it('这一轮没记录过这个文件 → not-recorded（不瞎给内容）', () => {
+    const { ws, store } = setup()
+    write(ws, 'a.txt', 'x')
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'a.txt', join(ws, 'a.txt'))
+    store.finish(runId)
+
+    const r = store.readBackup(runId, 'other.txt')
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe('not-recorded')
+  })
+
+  it('轮次不存在 → run-missing', () => {
+    const { store } = setup()
+    const r = store.readBackup('不存在的轮次', 'a.txt')
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe('run-missing')
+  })
+
+  it('备份文件被清理掉了 → backup-missing（**如实说看不了**，不假装文件是空的）', () => {
+    const { ws, store } = setup()
+    write(ws, 'a.txt', '原样')
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'a.txt', join(ws, 'a.txt'))
+    store.finish(runId)
+
+    // 模拟"检查点过了保留期，备份已被清理"
+    rmSync(join(store.dir, runId, 'files', '0.bin'), { force: true })
+
+    const r = store.readBackup(runId, 'a.txt')
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe('backup-missing')
+  })
+
+  it('**大文件只读前 256KB 并标记截断**（拿整个大文件进内存会把主进程读爆）', () => {
+    const { ws, store } = setup()
+    const big = 'x'.repeat(SNAPSHOT_CAP + 5000)
+    write(ws, 'big.txt', big)
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'big.txt', join(ws, 'big.txt'))
+    store.finish(runId)
+
+    const r = store.readBackup(runId, 'big.txt')
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.truncated).toBe(true)
+    expect(r.content.length).toBe(SNAPSHOT_CAP) // 只给前 256KB
+    // bytes 必须是**真实总大小**（界面要说"共 xxB，只显示前 256KB"）
+    expect(r.bytes).toBe(SNAPSHOT_CAP + 5000)
+  })
+
+  it('刚好不超限时**不许**误标截断（否则界面会白说一句"内容不完整"）', () => {
+    const { ws, store } = setup()
+    const exact = 'y'.repeat(SNAPSHOT_CAP)
+    write(ws, 'exact.txt', exact)
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'exact.txt', join(ws, 'exact.txt'))
+    store.finish(runId)
+
+    const r = store.readBackup(runId, 'exact.txt')
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.truncated).toBe(false)
+    expect(r.content.length).toBe(SNAPSHOT_CAP)
+  })
+
+  it('路径用反斜杠也能读到（rel 两侧都要归一，否则 Diff 一点就是"没记录"）', () => {
+    const { ws, store } = setup()
+    mkdirSync(join(ws, 'sub'), { recursive: true })
+    write(ws, 'sub/a.txt', '原样')
+    const runId = store.begin(ws, '内核默认')
+    store.record(runId, ws, 'sub/a.txt', join(ws, 'sub', 'a.txt'))
+    store.finish(runId)
+
+    const r = store.readBackup(runId, 'sub\\a.txt')
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.content).toBe('原样')
+  })
+})

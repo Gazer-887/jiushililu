@@ -204,3 +204,50 @@ export function isSafeRel(rel: string): boolean {
   if (/^[a-zA-Z]:/.test(r)) return false // Windows 绝对路径
   return !r.split('/').includes('..')
 }
+
+// ── Diff 视图取两侧内容（plan13 批 B · B3）──────────────────────
+
+/** 取不到时的原因（**枚举进共享层**，界面据此说人话，不自己编文案） */
+export type SidesFailReason = 'run-missing' | 'not-recorded' | 'backup-missing' | 'bad-rel'
+
+export interface CheckpointSides {
+  ok: true
+  runId: string
+  rel: string
+  kind: ChangeKind
+  /** **改前**正文（快照）。`created` 文件为 `null` —— 它当轮之前根本不存在 */
+  before: string | null
+  /** **当前**磁盘正文。本轮改完之后文件又被删掉了则为 `null` */
+  after: string | null
+  /** 改前字节数（`created` 恒为 0） */
+  beforeBytes: number
+  afterBytes: number
+  /**
+   * 任一侧被截断（超过 256KB 读上限）。
+   *
+   * ⚠️ 界面**必须**说明"内容不完整"，并**禁止逐块退回** ——
+   * 拿半个文件算出来的差异去写盘，等于把大文件砍成截断长度（数据丢失）。
+   * 这与 `FilePreviewPane` 那条"截断的文件不给编辑"是同一条原则。
+   */
+  truncated: boolean
+  /** 当前文件 mtime（逐块退回时的冲突基线，防"用户点拒绝的同时 Agent 正在写"）；文件不在则无 */
+  mtimeMs?: number
+  /** 这一轮是否还没收尾 —— `running` 时 Agent 可能**正在**写这些文件 */
+  runStatus: 'running' | 'done'
+}
+
+export type CheckpointSidesResult = CheckpointSides | { ok: false; reason: SidesFailReason }
+
+/** 失败原因的说人话版本（界面直接显示，**不许**把裸枚举名甩给用户） */
+export function describeSidesFailure(reason: SidesFailReason): string {
+  switch (reason) {
+    case 'run-missing':
+      return '找不到这一轮的记录（可能已被清理）'
+    case 'not-recorded':
+      return '这一轮的记录里没有这个文件'
+    case 'backup-missing':
+      return '这一轮的快照已不在了（检查点只保留最近若干轮），看不了改前的内容'
+    case 'bad-rel':
+      return '路径不合法，拒绝读取'
+  }
+}

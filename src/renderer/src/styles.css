@@ -3210,6 +3210,167 @@ label.radio {
   color: var(--muted);
 }
 
+/* ── 文件差异（plan13 批 B · B3）────────────────────────────
+   一个文件一条容器：上面是文件行，下面按需挂差异视图。
+   配色**不新增 token**：新增用 --ok（水墨体系里正向就是墨色，见 --ok 的注释），
+   删除用 --danger（朱砂）。两个主题下都成立，不另造一套 diff 色板。 */
+
+.ck-file-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.df-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.df-loading,
+.df-none {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.df-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  font-size: var(--fs-sm);
+}
+
+.df-rel {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-stat {
+  flex-shrink: 0;
+  font-family: var(--mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.df-warn,
+.df-note {
+  font-size: var(--fs-xs);
+  padding: var(--sp-4) var(--sp-6);
+  border-radius: var(--radius-sm);
+}
+
+.df-warn {
+  color: var(--warn-deep);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+}
+
+.df-note {
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.df-sum {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.df-hunk {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.df-hunk-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-4) var(--sp-6);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.df-hunk-no {
+  color: var(--text);
+}
+
+.df-hunk-range {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.df-add-n {
+  color: var(--ok);
+}
+
+.df-del-n {
+  color: var(--danger);
+}
+
+.df-lines {
+  font-family: var(--mono, monospace);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+.df-line {
+  display: flex;
+  align-items: flex-start;
+  min-height: 1.6em;
+  white-space: pre;
+}
+
+.df-no {
+  flex-shrink: 0;
+  width: 3.2em;
+  padding: 0 var(--sp-4);
+  text-align: right;
+  color: var(--muted);
+  opacity: 0.7;
+  user-select: none;
+}
+
+.df-sign {
+  flex-shrink: 0;
+  width: 1.2em;
+  text-align: center;
+  user-select: none;
+}
+
+.df-text {
+  flex: 1;
+  padding-right: var(--sp-6);
+}
+
+.df-add {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.df-del {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.df-context .df-text {
+  color: var(--text);
+}
+
 /* ── 危险操作确认对话框（plan8 R5）────────────────────────── */
 
 .cf-mask {
