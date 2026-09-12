@@ -226,6 +226,10 @@ export const IPC = {
   modelsSetActive: 'models:set-active',
   /** 测试某个模型的连通性（用它自己的 Key） */
   modelsTest: 'models:test',
+  /** 「获取可用模型」：拉厂商那边的模型列表（F5.1） */
+  modelsAvailable: 'models:available',
+  /** 切换某端点内**当前用哪个模型**（模型目录里的「用」） */
+  modelsSetEntry: 'models:set-entry',
   chatSend: 'chat:send',
   chatAbort: 'chat:abort',
   chatChunk: 'chat:chunk',
@@ -446,6 +450,10 @@ export interface ApiBridge {
   setActiveModel(id: string): Promise<import('./models').ModelsView>
   /** 测试某个模型的连通性 —— 用**它自己的** Key，不是当前那把 */
   testModel(id: string): Promise<TestResult>
+  /** 「获取可用模型」（F5.1）：拉这个端点能调的模型 ID 列表 */
+  listAvailableModels(id: string): Promise<import('./models').AvailableModels>
+  /** 切换某端点内当前用哪个模型 */
+  setActiveModelEntry(profileId: string, entryId: string): Promise<import('./models').ModelsView>
   chatSend(input: { conversationId: string; messages: ChatMessage[] }): Promise<void>
   /**
    * 停止**指定会话**的生成（plan11）。

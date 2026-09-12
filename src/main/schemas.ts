@@ -65,12 +65,52 @@ export const chatSendInputSchema = z.object({
  * 复用同一份设置 schema 的理由：档案里的字段与"当前模型"完全同构 ——
  * 两个 schema 各写一遍必然漂移，而漂移的表现是"某个参数改了不生效"这类难查的怪象。
  */
+/**
+ * 保存一个**端点**（plan7 F5.1）：连接信息 + 整份模型目录。
+ *
+ * 为什么模型目录用 zod 逐条校验而不是"整块 unknown 塞过去"：
+ * 它是用户手打的模型 ID，一个空串就会让整个端点变成"一条空连接" ——
+ * 拦住比事后猜便宜得多。
+ */
 export const modelSaveSchema = z.object({
   id: z.string().min(1).max(64).optional(),
   name: z.string().max(60),
-  settings: settingsSchema,
-  // 空串 = 保留已存的那把 Key 不动（与 settings:save 同一约定）
-  apiKey: z.string().max(500)
+  providerType: z.enum(['openai-compatible', 'anthropic']),
+  baseURL: settingsSchema.shape.baseURL,
+  timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+  stream: z.boolean().optional(),
+  models: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(64),
+        model: z.string().min(1).max(200),
+        name: z.string().max(60).optional(),
+        // 模型级"高级设置"：只存改过的字段，故整体可选
+        settings: z
+          .object({
+            temperature: z.number().min(0).max(2).nullable().optional(),
+            topP: z.number().min(0).max(1).nullable().optional(),
+            topK: z.number().int().min(1).max(200).nullable().optional(),
+            maxTokens: z.number().int().min(1).max(1_000_000).optional(),
+            contextWindow: z.number().int().min(1000).max(10_000_000).optional(),
+            reasoningEffort: z.enum(['default', 'low', 'medium', 'high']).optional(),
+            maxToolRounds: z.number().int().min(1).max(1000).optional(),
+            supportsImages: z.boolean().optional()
+          })
+          .optional()
+      })
+    )
+    .min(1)
+    .max(50),
+  activeModelId: z.string().max(64).optional(),
+  apiKey: z.string().max(500),
+  source: z.enum(['deepseek', 'custom']).optional()
+})
+
+/** 切"端点内的当前模型" */
+export const modelEntryPickSchema = z.object({
+  profileId: z.string().min(1).max(64),
+  entryId: z.string().min(1).max(64)
 })
 
 /** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */

@@ -102,4 +102,43 @@ export class OpenAICompatibleProvider implements IProvider {
       return { ok: false, message: err instanceof Error ? err.message : String(err) }
     }
   }
+
+  /**
+   * 「获取可用模型」：OpenAI 兼容协议的标准端点 `GET {baseURL}/models`。
+   * 返回体约定是 `{ data: [{ id }] }`（少数实现直接给数组，两种都认）。
+   */
+  async listModels(req: ProviderRequest) {
+    try {
+      const res = await fetch(resolveApiUrl(req.settings.baseURL, 'models'), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${req.apiKey}` },
+        signal: req.signal
+      })
+      if (!res.ok) await throwHttpError(res)
+      const body = (await res.json()) as unknown
+      const list = Array.isArray(body)
+        ? body
+        : body && typeof body === 'object' && Array.isArray((body as { data?: unknown }).data)
+          ? ((body as { data: unknown[] }).data as unknown[])
+          : []
+      const models = list
+        .map((m) =>
+          typeof m === 'string'
+            ? m
+            : m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string'
+              ? (m as { id: string }).id
+              : ''
+        )
+        .filter((s) => s.length > 0)
+      if (models.length === 0) {
+        return { ok: false, message: '这个端点没有返回任何模型（可能它不提供模型列表接口）', models: [] }
+      }
+      return { ok: true, message: `拉到 ${models.length} 个模型`, models }
+    } catch (err) {
+      if (isAbortError(err)) {
+        return { ok: false, message: '拉取模型列表超时：检查 baseURL 是否可达', models: [] }
+      }
+      return { ok: false, message: err instanceof Error ? err.message : String(err), models: [] }
+    }
+  }
 }

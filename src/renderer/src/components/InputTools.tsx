@@ -113,7 +113,7 @@ export function ModelSwitcher(): JSX.Element {
                 key={p.id}
                 className={`model-item ${p.id === models.activeId ? 'active' : ''}`}
                 onClick={() => void useProfile(p.id)}
-                title={p.model}
+                title={p.models.map((m) => m.model).join('、')}
               >
                 {p.name}
                 <span className="model-item-src">{p.source === 'deepseek' ? '深度求索' : '自定义'}</span>

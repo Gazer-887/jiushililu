@@ -215,6 +215,27 @@ const FAKE_PROFILE_BASE = {
   updatedAt: Date.now()
 }
 
+/**
+ * 一条假端点（plan7 F5.1）：**端点 + 模型目录** —— 一把 Key 能调好几个模型。
+ * 写成函数是为了让"目录里三条模型"这件事只描述一次（三份复制必然漂移）。
+ */
+function fakeEndpoint(id, name, firstModel, source, hasApiKey) {
+  return {
+    ...FAKE_PROFILE_BASE,
+    id,
+    name,
+    source,
+    hasApiKey,
+    apiKeyMasked: hasApiKey ? 'sk-…abcd' : '',
+    models: [
+      { id: `${id}-e1`, model: firstModel },
+      { id: `${id}-e2`, model: `${firstModel}-mini`, name: '小号' },
+      { id: `${id}-e3`, model: `${firstModel}-vision` }
+    ],
+    activeModelId: `${id}-e1`
+  }
+}
+
 const settingsView = {
   providerType: 'openai-compatible',
   baseURL: 'https://api.deepseek.com',
@@ -334,10 +355,20 @@ const STUBS = {
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   'models:list': () => ({
     profiles: [
-      { ...FAKE_PROFILE_BASE, id: 'm1', name: 'DeepSeek-V4 Flash', model: 'deepseek-v4-flash', source: 'deepseek', hasApiKey: true, apiKeyMasked: 'sk-…abcd' },
-      { ...FAKE_PROFILE_BASE, id: 'm2', name: 'agnes-2.5-flash', model: 'agnes-2.5-flash', source: 'custom', hasApiKey: false, apiKeyMasked: '' },
-      { ...FAKE_PROFILE_BASE, id: 'm3', name: 'deepseek-flash', model: 'deepseek-flash', source: 'custom', hasApiKey: false, apiKeyMasked: '' }
+      fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true),
+      fakeEndpoint('m2', 'agnes-2.5-flash', 'agnes-2.5-flash', 'custom', false),
+      fakeEndpoint('m3', 'deepseek-flash', 'deepseek-flash', 'custom', false)
     ],
+    activeId: 'm1',
+    filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
+  }),
+  'models:available': () => ({
+    ok: true,
+    message: '拉到 4 个模型',
+    models: ['agnes-image-2.5-flash', 'agnes-video-2.5-flash', 'agnes-3.0-flash', 'agnes-3.0-pro']
+  }),
+  'models:set-entry': () => ({
+    profiles: [fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true)],
     activeId: 'm1',
     filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
   }),
@@ -724,6 +755,8 @@ app.whenReady().then(async () => {
   })
 
   // CSP 违规捕获（plan8 R3）：必须在 loadFile **之前**挂监听，否则漏掉加载期错误
+  /** 模型目录探针的结果（settings 段落里采集，断言区统一判） */
+  let modelCatalog = null
   const cspViolations = []
   win.webContents.on('console-message', (...a) => {
     // 兼容新旧签名：Electron 33 是 (event, level, message, ...)，35+ 是 (event, details)
@@ -1010,6 +1043,40 @@ app.whenReady().then(async () => {
         })()
       `)
       console.log('MODELS=' + JSON.stringify(modelPage))
+
+      // ── 模型目录编辑器（F5.1）：点「编辑」→ 一行一个模型 + 每个模型可展开高级设置 ──
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const btn = Array.from(document.querySelectorAll('.model-row .model-act'))
+            .find((b) => (b.getAttribute('title') || '').includes('编辑'));
+          if (btn) btn.click();
+          return !!btn;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 700))
+      const catalog = await win.webContents.executeJavaScript(`
+        (() => {
+          const rows = Array.from(document.querySelectorAll('.mc-row'));
+          return {
+            open: !!document.querySelector('.mc'),
+            rows: rows.length,
+            ids: Array.from(document.querySelectorAll('.mc-model')).map((i) => i.value),
+            hasAdd: !!Array.from(document.querySelectorAll('.mc-foot button')).find((b) => (b.textContent || '').includes('添加模型')),
+            hasFetch: !!Array.from(document.querySelectorAll('.mc-link')).find((b) => (b.textContent || '').includes('获取可用模型')),
+            hasRestore: !!Array.from(document.querySelectorAll('.mc-link')).find((b) => (b.textContent || '').includes('恢复默认模型')),
+            advBefore: !!document.querySelector('.mc-adv')
+          };
+        })()
+      `)
+      await win.webContents.executeJavaScript(`
+        (() => { const b = document.querySelector('.mc-row .mc-icon'); if (b) b.click(); return !!b })()
+      `)
+      await new Promise((r) => setTimeout(r, 500))
+      const adv = await win.webContents.executeJavaScript(`
+        (() => ({ panel: !!document.querySelector('.mc-adv'), fields: document.querySelectorAll('.mc-adv input, .mc-adv select').length }))()
+      `)
+      console.log('MODEL_CATALOG=' + JSON.stringify({ ...catalog, adv }))
+      modelCatalog = { ...catalog, adv }
     }
     const png = await win.webContents.capturePage()
     writeFileSync(join(SHOTS, 'verify-settings-' + slug + '.png'), png.toPNG())
@@ -3416,6 +3483,18 @@ app.whenReady().then(async () => {
     concurrencyResult.runningAfterADone)
   checkTrue('④ **后台那条（A）跑完真的落了盘，且落的是它自己**（P0-1：以前只存"当前显示的那条"）',
     concurrencyResult.savedAOnly.includes('c1'), concurrencyResult.savedAOnly)
+  // —— plan7 F5.1：模型目录（一把 Key 能调多个模型 + 每个模型的高级设置）——
+  checkTrue('点「编辑」→ 出现**模型目录编辑器**（这是 F5.1 的核心形态）',
+    modelCatalog?.open === true, modelCatalog)
+  checkTrue('目录里**一行一个模型**（≥3 条，且模型 ID 都读出来了）',
+    (modelCatalog?.rows ?? 0) >= 3 && (modelCatalog?.ids ?? []).every((s) => typeof s === 'string' && s.length > 0),
+    modelCatalog)
+  checkTrue('三个动作都在：添加模型 / 获取可用模型 / 恢复默认模型',
+    modelCatalog?.hasAdd === true && modelCatalog?.hasFetch === true && modelCatalog?.hasRestore === true,
+    modelCatalog)
+  checkTrue('**每个模型能展开自己的高级设置**（展开前没有面板 → 展开后有，且字段不止一个）',
+    modelCatalog?.advBefore === false && modelCatalog?.adv?.panel === true && (modelCatalog?.adv?.fields ?? 0) >= 5,
+    modelCatalog?.adv)
   checkTrue('切回 A → **A 的字在它自己那条里**（存档/恢复生效，不是靠重新拉盘掩盖）',
     concurrencyResult.aHasOwnText === true, { aHasOwnText: concurrencyResult.aHasOwnText })
 

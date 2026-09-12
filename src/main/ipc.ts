@@ -33,14 +33,16 @@ import { getPermissionPreset, setPermissionPreset } from './store/settings'
 // 下面这几个名字语义没变（内核/界面永远只看见"当前这一个模型"），只是真源搬到了 store/models
 import {
   deleteProfileById,
-  getActiveProfile,
+  getActiveEntry,
   getDecryptedApiKey,
   getSettingsView,
   hasApiKey,
   listProfiles,
   modelsFilePath,
   profileForTest,
-  saveProfile,
+  listAvailableModels,
+  saveEndpoint,
+  setActiveEntry,
   saveSettings,
   setActiveProfile,
   setModel
@@ -48,7 +50,6 @@ import {
 import { getProfileKey, hasProfileKey } from './store/settings'
 import { maskKey } from './store/mask'
 import type { ModelProfileView, ModelsView, ModelSaveInput } from '@shared/models'
-import type { ModelSettings } from '@shared/ipc'
 // createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
@@ -59,6 +60,7 @@ import {
   chatSendInputSchema,
   conversationIdSchema,
   incomingMessagesSchema,
+  modelEntryPickSchema,
   modelSaveSchema,
   settingsSchema,
   storedMessagesSchema
@@ -297,15 +299,23 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.modelsSave, (_e, raw: unknown): ModelProfileView => {
     const input = friendlyParse(modelSaveSchema, raw) as ModelSaveInput
-    const saved = saveProfile({
-      ...(input.id ? { id: input.id } : {}),
-      settings: input.settings as unknown as ModelSettings,
-      name: input.name,
-      apiKey: input.apiKey
-    })
+    const saved = saveEndpoint(input)
     const view = modelsView().profiles.find((p) => p.id === saved.id)
-    if (!view) throw new Error('保存后没能读回这个模型（存储异常）')
+    if (!view) throw new Error('保存后没能读回这个端点（存储异常）')
     return view
+  })
+
+  // 「获取可用模型」（F5.1）：拉厂商的模型列表，失败给人话
+  ipcMain.handle(IPC.modelsAvailable, async (_e, raw: unknown) => {
+    const id = friendlyParse(conversationIdSchema, raw)
+    return listAvailableModels(id)
+  })
+
+  // 切端点内的当前模型（模型目录里「用」那个动作）
+  ipcMain.handle(IPC.modelsSetEntry, (_e, raw: unknown): ModelsView => {
+    const input = friendlyParse(modelEntryPickSchema, raw)
+    setActiveEntry(input.profileId, input.entryId)
+    return modelsView()
   })
 
   ipcMain.handle(IPC.modelsDelete, (_e, raw: unknown) => {
@@ -582,10 +592,16 @@ export function registerIpcHandlers(deps: {
     if (input.workspace !== current && !knownWorkspaces().includes(input.workspace)) {
       throw new Error(`工作区未被授权：${input.workspace}`)
     }
-    // **绑定当前模型档案**（plan7 F5）：`model` 记名字（给人看、老数据只有它），
-    // `modelProfileId` 才是"用哪条连接 + 哪把 Key"。渲染端不用关心 —— 它此刻用的就是当前档案。
-    const active = getActiveProfile()
-    return createConversation({ ...input, ...(active ? { model: active.model, modelProfileId: active.id } : {}) })
+    // **绑定"当前端点的当前模型"**（plan7 F5.1）：`model` 记名字（给人看、老数据只有它），
+    // `modelProfileId` 记端点（用哪条连接 + 哪把 Key），`modelEntryId` 记目录里的哪一条。
+    // 渲染端不用关心 —— 它此刻用的就是当前那一对。
+    const active = getActiveEntry()
+    return createConversation({
+      ...input,
+      ...(active
+        ? { model: active.entry.model, modelProfileId: active.profile.id, modelEntryId: active.entry.id }
+        : {})
+    })
   })
 
   ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {

@@ -3203,6 +3203,170 @@ label.radio {
   color: var(--muted);
 }
 
+/* ── 模型目录编辑器（plan7 F5.1）────────────────────────────────────────
+   表单里那一块：标题 + 两个动作 + 一行一个模型的 [ID][显示名][>][🗑] + [添加模型]。
+   展开的 `>` 里是**只影响这个模型**的高级设置。 */
+.mc {
+  margin-top: var(--sp-12);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-12);
+}
+
+.mc-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+}
+
+.mc-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.mc-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-12);
+  flex-shrink: 0;
+}
+
+.mc-link {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.mc-link:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.mc-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-top: var(--sp-8);
+  background: var(--panel);
+}
+
+.mc-row.on {
+  border-color: var(--accent-border);
+}
+
+.mc-row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+}
+
+.mc-model {
+  flex: 1;
+  min-width: 0;
+}
+
+.mc-name {
+  width: 30%;
+  min-width: 0;
+}
+
+.mc-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.mc-icon:hover {
+  color: var(--text);
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.mc-del:hover {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.mc-adv {
+  border-top: 1px dashed var(--border);
+  padding: var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.mc-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  margin-top: var(--sp-8);
+}
+
+.mc-foot-label {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.mc-import {
+  margin-top: var(--sp-8);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  border-radius: var(--radius-md);
+  padding: var(--sp-8);
+}
+
+.mc-import-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--text);
+  margin-bottom: var(--sp-6);
+}
+
+.mc-import-head button {
+  margin-left: auto;
+}
+
+.mc-import-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.mc-chip {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-6);
+  cursor: pointer;
+}
+
+.mc-chip:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
 /* 「正在生成」标记（plan11）：并发时哪几条会话在跑，必须一眼看得出 ——   否则用户切走之后会以为那条停了。用点 + 小字，不抢标题的地方。 */
 .conv-running {
   flex-shrink: 0;

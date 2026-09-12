@@ -1,31 +1,16 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type {
   LogsInfo,
-  ModelSettings,
   PermissionPreset,
   ProviderType,
-  ReasoningEffort,
   SettingsSaveInput,
   WorkspaceInfo
 } from '@shared/ipc'
-import type { ModelProfileView, ModelsView } from '@shared/models'
+import type { ModelEntry, ModelProfileView, ModelsView } from '@shared/models'
+import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import { useAppStore } from '../store'
 import { THEMES } from '@shared/splitter'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
-
-// 快捷档位（对标 Trae 模型面板）：点一下直接填值
-const CONTEXT_PRESETS: Array<[string, number]> = [
-  ['128k', 131072],
-  ['256k', 262144],
-  ['512k', 524288],
-  ['1M', 1048576]
-]
-const OUTPUT_PRESETS: Array<[string, number]> = [
-  ['4k', 4096],
-  ['16k', 16384],
-  ['32k', 32768],
-  ['128k', 131072]
-]
 
 /*
  * 设置分区导航（plan8 R7 形态改造，2026-09-12 用户意见）：
@@ -166,7 +151,6 @@ export default function SettingsView() {
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
   /** 设置分区：默认落在「通用设置」（最通用的一项在前，与 DSH 一致） */
   const [section, setSection] = useState<SectionId>('general')
   /** 通用设置：工作区与访问权限档 —— 都存在主进程，与输入框工具栏是同一份数据 */
@@ -182,6 +166,8 @@ export default function SettingsView() {
   const [editingModel, setEditingModel] = useState<{ id?: string } | null>(null)
   /** 编辑中的显示名（与"模型 ID"是两件事：前者给人看，后者给厂商看） */
   const [draftName, setDraftName] = useState('')
+  /** 编辑中的**模型目录**（F5.1）：一行一个模型，各自带可选的高级设置 */
+  const [draftModels, setDraftModels] = useState<ModelEntry[]>([])
   /** 哪一条在测连接（按钮显示"测试中"） */
   const [modelBusy, setModelBusy] = useState<string | null>(null)
   const [modelNotice, setModelNotice] = useState<{ ok: boolean; text: string } | null>(null)
@@ -257,11 +243,6 @@ export default function SettingsView() {
     setDraft((d) => (d ? { ...d, [key]: value } : d))
   }
 
-  /** 必填数字：空串按 0 处理（由 min 校验兜底） */
-  const num = (v: string): number => (v === '' ? 0 : Number(v))
-  /** 可留空数字：空串 = null = 不发送该参数，跟随厂商默认 */
-  const nullableNum = (v: string): number | null => (v.trim() === '' ? null : Number(v))
-
   const reset = (): void => {
     if (!settings) return
     setDraft({ ...settings, apiKey: '' })
@@ -285,12 +266,17 @@ export default function SettingsView() {
         const saved = await window.api.saveModel({
           ...(editingModel.id ? { id: editingModel.id } : {}),
           name: draftName,
-          settings: draft as ModelSettings,
+          providerType: draft.providerType,
+          baseURL: draft.baseURL,
+          timeoutMs: draft.timeoutMs,
+          stream: draft.stream,
+          models: draftModels,
           apiKey
         })
         await refreshModels()
         await loadSettings()
         setDraftName(saved.name)
+        setDraftModels(saved.models)
         setEditingModel({ id: saved.id })
         setApiKey('')
         setNotice({ ok: true, text: apiKey ? '已保存（Key 已加密入库）' : '已保存' })
@@ -344,30 +330,40 @@ export default function SettingsView() {
   //   ② **至少要留一个** —— 护栏在主进程，这里只把它的理由原样显示
   //   ③ 每次改动都 `refreshModels()` 重新拉真值，而不是在本地猜一份（列表就是真值）
 
-  /** 新增：把表单清空成"一个像是要给新模型填的模板"（沿用当前设置做默认，少填几栏） */
+  /** 新增端点：连接信息沿用当前设置当模板；**模型目录从空的一条起步** */
   const startCreate = (): void => {
     if (!settings) return
-    setDraft({ ...settings, model: '', apiKey: '' })
+    setDraft({ ...settings, apiKey: '' })
+    setDraftName('')
+    setDraftModels([{ id: `m-${Date.now().toString(36)}`, model: '' }])
     setApiKey('')
     setNotice(null)
     setModelNotice(null)
     setEditingModel({})
   }
 
+  /** 编辑端点：连接信息进表单，**整份模型目录进编辑器**（一行一个模型，各自带高级设置） */
   const startEdit = (p: ModelProfileView): void => {
-    const { id, name, hasApiKey, apiKeyMasked, source, createdAt, updatedAt, ...rest } = p
-    void id
-    void hasApiKey
-    void apiKeyMasked
-    void source
-    void createdAt
-    void updatedAt
-    setDraft({ ...(rest as SettingsSaveInput), apiKey: '' })
-    setDraftName(name)
+    // 表单只负责**连接级**四项（协议 / 地址 / 超时 / 流式）——
+    // 采样、输出上限、上下文窗口那些"模型级"参数归目录里每个模型自己的高级设置（F5.1）
+    setDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            providerType: p.providerType,
+            baseURL: p.baseURL,
+            timeoutMs: p.timeoutMs,
+            stream: p.stream,
+            apiKey: ''
+          }
+        : prev
+    )
+    setDraftName(p.name)
+    setDraftModels(p.models.map((m) => ({ ...m, ...(m.settings ? { settings: { ...m.settings } } : {}) })))
     setApiKey('')
     setNotice(null)
     setModelNotice(null)
-    setEditingModel({ id })
+    setEditingModel({ id: p.id })
   }
 
   const cancelEdit = (): void => {
@@ -575,15 +571,18 @@ export default function SettingsView() {
                     onChange={(e) => update('baseURL', e.target.value)}
                   />
                 </label>
-
-                <label>
-                  模型 ID（要与厂商菜单一字不差）
-                  <input
-                    value={draft.model}
-                    placeholder="如 deepseek-v4-flash-vision-exp"
-                    onChange={(e) => update('model', e.target.value)}
-                  />
-                </label>
+                {/* **模型目录**（plan7 F5.1）：一把 Key 能调的模型都放这儿，
+                    每个模型还能各自展开高级设置 —— 形态照用户给的那张配置页截图 */}
+                <ModelCatalogEditor
+                  models={draftModels}
+                  onChange={setDraftModels}
+                  onFetch={async () => {
+                    if (!editingModel?.id) {
+                      return { ok: false, message: '先保存这个端点（填好地址与 Key），再来拉取模型列表', models: [] }
+                    }
+                    return window.api.listAvailableModels(editingModel.id)
+                  }}
+                />
 
                 <label>
                   协议类型
@@ -608,167 +607,6 @@ export default function SettingsView() {
               />
             </label>
 
-            <button className="advanced-toggle" onClick={() => setAdvancedOpen((v) => !v)}>
-              {advancedOpen ? '▾' : '▸'} 高级配置
-            </button>
-
-            {advancedOpen && (
-              <div className="advanced">
-                <div className="field-label">上下文窗口（Token）· 输入</div>
-                <div className="with-presets">
-                  <input
-                    type="number"
-                    min="1024"
-                    max="10000000"
-                    step="1024"
-                    value={draft.contextWindow}
-                    onChange={(e) => update('contextWindow', num(e.target.value))}
-                  />
-                  <span className="presets">
-                    {CONTEXT_PRESETS.map(([label, value]) => (
-                      <a
-                        key={label}
-                        className="preset-link"
-                        onClick={() => update('contextWindow', value)}
-                      >
-                        {label}
-                      </a>
-                    ))}
-                  </span>
-                </div>
-                <p className="hint">模型一次能读进多少 —— 用于历史裁剪与成本估算。</p>
-
-                <div className="field-label">输出上限（Token）· 单次回答</div>
-                <div className="with-presets">
-                  <input
-                    type="number"
-                    min="1"
-                    max="1000000"
-                    value={draft.maxTokens}
-                    onChange={(e) => update('maxTokens', num(e.target.value))}
-                  />
-                  <span className="presets">
-                    {OUTPUT_PRESETS.map(([label, value]) => (
-                      <a
-                        key={label}
-                        className="preset-link"
-                        onClick={() => update('maxTokens', value)}
-                      >
-                        {label}
-                      </a>
-                    ))}
-                  </span>
-                </div>
-                <p className="hint">按厂商文档填（DeepSeek V4 上限 384000）。</p>
-
-                <label>
-                  工具调用轮数（Agent 主循环上限，防死循环烧钱）
-                  <input
-                    type="number"
-                    min="1"
-                    max="10000"
-                    value={draft.maxToolRounds}
-                    onChange={(e) => update('maxToolRounds', num(e.target.value))}
-                  />
-                </label>
-
-                <div className="field-label">支持图片输入</div>
-                <div className="radio-row">
-                  <label className="radio">
-                    <input
-                      type="radio"
-                      name="supportsImages"
-                      checked={draft.supportsImages}
-                      onChange={() => update('supportsImages', true)}
-                    />
-                    支持
-                  </label>
-                  <label className="radio">
-                    <input
-                      type="radio"
-                      name="supportsImages"
-                      checked={!draft.supportsImages}
-                      onChange={() => update('supportsImages', false)}
-                    />
-                    不支持
-                  </label>
-                  <span className="hint inline-hint">
-                    多模态模型才勾（如 vision-exp），纯文本模型别勾
-                  </span>
-                </div>
-
-                <label>
-                  思考强度（DeepSeek low/high/max，OpenAI low/medium/high，Anthropic 折算为思考预算）
-                  <select
-                    value={draft.reasoningEffort}
-                    onChange={(e) => update('reasoningEffort', e.target.value as ReasoningEffort)}
-                  >
-                    <option value="default">跟随模型默认配置</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="max">max</option>
-                  </select>
-                </label>
-
-                <div className="field-label">采样参数（留空使用最佳配置，跟随厂商默认）</div>
-                <label>
-                  Temperature（0 ~ 2，越高越发散）
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="2"
-                    value={draft.temperature ?? ''}
-                    placeholder="留空使用最佳配置"
-                    onChange={(e) => update('temperature', nullableNum(e.target.value))}
-                  />
-                </label>
-                <label>
-                  Top P（0 ~ 1，只在累计概率前 P 的词里挑）
-                  <input
-                    type="number"
-                    step="0.05"
-                    min="0"
-                    max="1"
-                    value={draft.topP ?? ''}
-                    placeholder="留空使用最佳配置"
-                    onChange={(e) => update('topP', nullableNum(e.target.value))}
-                  />
-                </label>
-                <label>
-                  Top K（1 ~ 200，只在候选前 K 个词里挑）
-                  <input
-                    type="number"
-                    min="1"
-                    max="200"
-                    value={draft.topK ?? ''}
-                    placeholder="留空使用最佳配置"
-                    onChange={(e) => update('topK', nullableNum(e.target.value))}
-                  />
-                </label>
-
-                <label>
-                  超时（毫秒）
-                  <input
-                    type="number"
-                    min="1000"
-                    step="1000"
-                    value={draft.timeoutMs}
-                    onChange={(e) => update('timeoutMs', num(e.target.value))}
-                  />
-                </label>
-
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={draft.stream}
-                    onChange={(e) => update('stream', e.target.checked)}
-                  />
-                  流式输出（推荐开启）
-                </label>
-              </div>
-            )}
 
             {/* 这句承重（会花钱，得先说）—— 只把主语去掉，不删 */}
             <p className="hint">会发起一次真实请求，消耗少量 Token。</p>

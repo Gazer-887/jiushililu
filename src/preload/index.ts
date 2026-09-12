@@ -52,6 +52,9 @@ const api: ApiBridge = {
   deleteModel: (id: string) => ipcRenderer.invoke(IPC.modelsDelete, id),
   setActiveModel: (id: string) => ipcRenderer.invoke(IPC.modelsSetActive, id),
   testModel: (id: string) => ipcRenderer.invoke(IPC.modelsTest, id),
+  listAvailableModels: (id: string) => ipcRenderer.invoke(IPC.modelsAvailable, id),
+  setActiveModelEntry: (profileId: string, entryId: string) =>
+    ipcRenderer.invoke(IPC.modelsSetEntry, { profileId, entryId }),
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
   pickWorkspace: () => ipcRenderer.invoke(IPC.workspacePick),
   setKnownWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceSetKnown, path),
