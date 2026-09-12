@@ -1,6 +1,7 @@
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
 import { toolCallDetail } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
+import { createLogger } from '../log'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { trimMessages, type TrimOptions } from './context'
 
@@ -79,6 +80,9 @@ function summarize(text: string, limit = 120): string {
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat
 }
 
+/** 主循环的日志器（§七④：像"前缀缓存失效"这类**值得但必须知情**的代价要留痕） */
+const log = createLogger('agent-loop')
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const maxRounds = Math.max(1, opts.maxRounds ?? 12)
   const toolMap = new Map(opts.tools.map((t) => [t.schema.name, t]))
@@ -112,7 +116,24 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     // 每轮调用模型前按需裁剪（只有给了 contextWindow 才启用）
     const trimOpts: TrimOptions | null = opts.contextWindow ? { contextWindow: opts.contextWindow } : null
-    const sent = trimOpts ? trimMessages(messages, trimOpts).messages : messages
+    let sent = messages
+    if (trimOpts) {
+      const trim = trimMessages(messages, trimOpts)
+      sent = trim.messages
+      /**
+       * ⚠️ **前缀稳定的已知破坏点**（plan8 R9.1 §七④）。
+       *
+       * 折叠会在**中间**插一条「[历史摘要]」，而前缀缓存要求"开头一模一样" ——
+       * 从这条摘要往后，**缓存全部失效**（本轮输入 token 会明显偏高）。
+       *
+       * 这是**值得的代价**：不折叠就会撞上下文上限，厂商直接回"超出上下文"、**整轮作废**。
+       * 但它必须是**知情的代价** —— 所以在这里留痕。将来做 §七⑤ 阈值校准时，
+       * 这一行日志正是"为什么这轮 token 突然跳高"的答案。
+       */
+      if (trim.trimmed) {
+        log.info('历史已折叠：前缀缓存将从摘要处失效', { 折叠条数: trim.droppedCount, 轮次: rounds })
+      }
+    }
 
     const res = await opts.chat(sent, emitText)
     if (res.text) lastText = res.text

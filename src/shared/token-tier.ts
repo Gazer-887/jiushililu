@@ -29,6 +29,8 @@
  * 调用点一行都不用改 —— 这也是为什么 `resolvePolicy` 是唯一的出口。
  */
 
+import type { ReasoningEffort } from './ipc'
+
 /** 四档（顺序即设置页的显示顺序：从最不省到最省） */
 export type TokenSaverTier = 'rich' | 'ultimate' | 'balanced' | 'light'
 
@@ -54,6 +56,25 @@ export interface TokenPolicy {
   maxTokens: number
   /** `read_file` 没显式给 `limit` 时默认读多少行 */
   readLines: number
+  /**
+   * **思考强度覆盖**（§七③）。
+   *
+   * `null` = **不动用户档案里的设置** —— 这是默认，也是保守方向：
+   * 用户在每个模型档案里精心配的 `reasoningEffort` 是他自己的判断，全局档位不该无端改它。
+   * 只有轻量档会把它压到 `'low'`（那一档用户已经明确说了"允许质量略降"）。
+   *
+   * 为什么这条特别值钱：DSH 面板实测**输出里 52% 是推理**（输出 3.08M / 推理 1.60M），
+   * 而思考链是按输出 token 计费的 —— 它是整套省 token 里最大的单点杠杆。
+   */
+  reasoningEffortOverride: ReasoningEffort | null
+  /**
+   * **输出纪律提示**的强度（§七③）：0 = 不加、1 = 标准（先结论 / 不复述）、2 = 再加限长。
+   *
+   * 为什么这也算"省"：输出的钱花在**字数**上，而模型的习惯是"把想过的再说一遍"。
+   * 但这些要求必须**明说** —— 轻量档掉质量只允许来自"更常压缩、给更少上下文"，
+   * **不许来自骗模型**（比如偷偷改掉它的工具输出却说是全文）。
+   */
+  outputDiscipline: 0 | 1 | 2
 }
 
 /**
@@ -70,7 +91,9 @@ const POLICIES: Record<TokenSaverTier, TokenPolicy> = {
     minBytes: Number.MAX_SAFE_INTEGER,
     keepRatioMax: 1,
     maxTokens: Number.MAX_SAFE_INTEGER,
-    readLines: 2000
+    readLines: 2000,
+    reasoningEffortOverride: null,
+    outputDiscipline: 0
   },
   ultimate: {
     tier: 'ultimate',
@@ -78,7 +101,9 @@ const POLICIES: Record<TokenSaverTier, TokenPolicy> = {
     minBytes: 6000,
     keepRatioMax: 0.85,
     maxTokens: 16000,
-    readLines: 800
+    readLines: 800,
+    reasoningEffortOverride: null,
+    outputDiscipline: 0
   },
   balanced: {
     tier: 'balanced',
@@ -86,7 +111,9 @@ const POLICIES: Record<TokenSaverTier, TokenPolicy> = {
     minBytes: 1400,
     keepRatioMax: 0.72,
     maxTokens: 8000,
-    readLines: 200
+    readLines: 200,
+    reasoningEffortOverride: null,
+    outputDiscipline: 1
   },
   light: {
     tier: 'light',
@@ -94,7 +121,9 @@ const POLICIES: Record<TokenSaverTier, TokenPolicy> = {
     minBytes: 600,
     keepRatioMax: 0.5,
     maxTokens: 4000,
-    readLines: 100
+    readLines: 100,
+    reasoningEffortOverride: 'low',
+    outputDiscipline: 2
   }
 }
 
@@ -121,14 +150,68 @@ export interface TokenTierInfo {
 
 /** 设置页的档位清单（顺序 = 从"最不省"到"最省"） */
 export const TOKEN_TIER_LIST: readonly TokenTierInfo[] = [
-  { tier: 'rich', label: '土豪', note: '不做任何省 token 的配置：工具输出原样进上下文（最贵，但模型看到的最全）' },
-  { tier: 'ultimate', label: '极致', note: '只做零代价的省：塞不下时才压，尽量少动' },
-  { tier: 'balanced', label: '平衡', note: '兼顾模型能力与节省（默认）' },
-  { tier: 'light', label: '轻量', note: '最省：更常压缩、给更少上下文；允许质量略降，但不骗模型' }
+  {
+    tier: 'rich',
+    label: '土豪',
+    note: '不做任何省 token 的配置：工具输出原样进上下文，也不加输出要求（最贵，但模型看到的最全、最放得开）'
+  },
+  {
+    tier: 'ultimate',
+    label: '极致',
+    note: '只做零代价的省：塞不下时才压，尽量少动；不加输出纪律'
+  },
+  {
+    tier: 'balanced',
+    label: '平衡',
+    note: '兼顾模型能力与节省（默认）：压得克制，并要求回答先给结论、不复述工具原文'
+  },
+  {
+    tier: 'light',
+    label: '轻量',
+    note: '最省：更常压缩、给更少上下文，思考强度降到低，回答要求更简短；允许质量略降，但不骗模型'
+  }
 ]
 
 /** 档位的中文名（没认出来就报"平衡"—— 跟 `resolvePolicy` 的回落保持一致） */
 export function tierLabel(tier: unknown): string {
   const hit = TOKEN_TIER_LIST.find((t) => t.tier === tier)
   return hit ? hit.label : '平衡'
+}
+
+/**
+ * 按档位给出**输出纪律提示**（§七③）；`null` = 这一档不加。
+ *
+ * ## 为什么这几条能省 token
+ *
+ * 输出的钱花在**字数**上，而模型的默认习惯里有三块纯浪费：
+ * ① 把推理过程当正文再说一遍（它当然"想过"，但用户要的是结论）；
+ * ② 把工具返回的原文大段复述（那段本来就已经在上下文里了）；
+ * ③ 把用户的问题重述一遍再回答。
+ *
+ * 这三条**不损害正确性** —— 少说的是冗余，不是依据。所以它归在"平衡"档而不是"轻量"档。
+ *
+ * ## 两条自我约束
+ *
+ * - **明说，不藏着**：这是**对模型的正当要求**，不是偷偷改数据。
+ *   轻量档掉质量只允许来自"更常压缩、给更少上下文"，**不许来自骗模型**。
+ * - **静态文本**：同一档位下每次拼出来完全一样（§七④ 前缀稳定）。
+ *   换档会让前缀缓存失效一次 —— 但换档是低频动作，这个代价可以接受；
+ *   **绝不允许**把时间戳 / 轮数 / 会话 id 这类每轮都变的东西塞进来。
+ */
+export function outputDisciplinePrompt(level: 0 | 1 | 2): string | null {
+  if (level <= 0) return null
+  const lines = [
+    '**输出纪律（省 token，但不省准确性）**：',
+    '1. **先给结论，再给必要依据。** 不要把推理过程当正文复述一遍 ——',
+    '   你想过什么是你的事，用户要的是答案。',
+    '2. **不要复述工具返回的原文。** 要引用就只引关键那几行，其余写"详见工具输出"。',
+    '3. **不要复述用户的问题。** 直接回答，不要先"你问的是……"再答。'
+  ]
+  if (level >= 2) {
+    lines.push(
+      '4. **篇幅克制**：常规回答控制在 400 字以内（代码、清单、必要引用除外）；',
+      '   能一句话说清就别写三段。'
+    )
+  }
+  return lines.join('\n')
 }

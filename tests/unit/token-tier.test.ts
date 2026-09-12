@@ -4,6 +4,7 @@ import {
   DEFAULT_TOKEN_TIER,
   TOKEN_TIER_LIST,
   isTokenSaverTier,
+  outputDisciplinePrompt,
   resolvePolicy,
   tierLabel,
   type TokenSaverTier
@@ -237,5 +238,85 @@ describe('接线守卫：档位真的接进了主循环与组合根', () => {
   it('`read_file` 的默认行数按档位走（工具工厂真的收下了 policy）', () => {
     expect(runner).toContain('createFileTools(writer, hooks.policy)')
     expect(fileTools).toContain('policy?.readLines')
+  })
+})
+
+/**
+ * 输出侧（plan8 R9.1 §七③）。
+ *
+ * 为什么这一件值钱：DSH 面板实测**输出里 52% 是推理**（输出 3.08M / 推理 1.60M），
+ * 而思考链按输出 token 计费 —— 它是整套省 token 里最大的单点杠杆。
+ */
+describe('思考强度：只准"最省那一档"动它', () => {
+  it('**只有轻量档**覆盖用户的思考强度，其余三档一律 `null` = 不动', () => {
+    // 这条守的是一个态度：用户在每个模型档案里配的 reasoningEffort 是他自己的判断，
+    // **全局档位不该无端改它**。轻量档可以，是因为用户选它时已经说了"允许质量略降"。
+    expect(resolvePolicy('light').reasoningEffortOverride).toBe('low')
+    for (const tier of ['rich', 'ultimate', 'balanced'] as const) {
+      expect(resolvePolicy(tier).reasoningEffortOverride, `${tier} 不该覆盖用户设置`).toBeNull()
+    }
+  })
+})
+
+describe('输出纪律提示', () => {
+  it('档位取值：土豪/极致**不加**（让模型充分展开），平衡加标准，轻量再加限长', () => {
+    expect(resolvePolicy('rich').outputDiscipline).toBe(0)
+    expect(resolvePolicy('ultimate').outputDiscipline).toBe(0)
+    expect(resolvePolicy('balanced').outputDiscipline).toBe(1)
+    expect(resolvePolicy('light').outputDiscipline).toBe(2)
+  })
+
+  it('0 档返回 `null`（不加就不加，**不塞一段空话**进系统提示）', () => {
+    expect(outputDisciplinePrompt(0)).toBeNull()
+  })
+
+  it('1 档三条都在：先结论 / 不复述工具原文 / 不复述问题', () => {
+    const p = outputDisciplinePrompt(1)
+    expect(p).toContain('先给结论')
+    expect(p).toContain('不要复述工具返回的原文')
+    expect(p).toContain('不要复述用户的问题')
+    expect(p).not.toContain('400 字')
+  })
+
+  it('2 档再加篇幅克制 —— 而且它是**明说的要求**，不是偷偷改数据', () => {
+    const p = outputDisciplinePrompt(2)
+    expect(p).toContain('400 字')
+    expect(p).toContain('先给结论') // 标准三条仍在，不是替换
+  })
+
+  it('提示里**不许出现会变的东西**（日期 / 时间 / 会话 id）—— §七④ 前缀稳定的前提', () => {
+    // 同一档位下这段文本必须字节级稳定，否则每轮都会让前缀缓存失效（换档失效一次可以接受，每轮失效不行）
+    for (const level of [1, 2] as const) {
+      const p = outputDisciplinePrompt(level) ?? ''
+      expect(p).not.toMatch(/\d{4}-\d{2}-\d{2}/)
+      expect(p).not.toMatch(/\d{2}:\d{2}/)
+      expect(p).not.toMatch(/conversationId|runId|session/i)
+    }
+  })
+})
+
+/**
+ * **接线守卫（输出侧）**：与上面同一个道理 —— 纯函数全绿，调用点没接上照样一点反应都没有。
+ */
+describe('接线守卫：输出侧真的接进了 runner 与子代理', () => {
+  const runner = readFileSync('src/main/agent/runner.ts', 'utf8')
+  const scheduler = readFileSync('src/main/agent/scheduler.ts', 'utf8')
+
+  it('思考强度的覆盖**真的用在了生效设置上**（不是解析出来摆着）', () => {
+    expect(runner).toContain('policy.reasoningEffortOverride')
+    expect(runner).toContain('reasoningEffort: policy.reasoningEffortOverride')
+  })
+
+  it('输出纪律**真的拼进了系统提示**', () => {
+    expect(runner).toContain('outputDisciplinePrompt(policy.outputDiscipline)')
+  })
+
+  it('子代理吃同一份纪律（`systemSuffix` 一路传到子代理的系统提示里）', () => {
+    expect(runner).toContain('systemSuffix: discipline')
+    expect(scheduler).toContain('opts.systemSuffix')
+  })
+
+  it('子代理的模型参数走 `effective`（档位对思考强度的覆盖必须对子代理同样生效）', () => {
+    expect(runner).toContain('const model = d.model ? { ...effective, model: d.model } : effective')
   })
 })

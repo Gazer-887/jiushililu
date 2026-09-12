@@ -45,8 +45,10 @@ export interface SubagentRunOptions {
   runId?: string
   /** 运行事件（开始 / 结束 / 失败）—— 界面据此显示进度 */
   onJobEvent?: (evt: SubagentJobEvent) => void
-  /** 省 token 档位（plan8 R9.1 §七②）的开关取值；**与主代理同一份**（由 runner 透传） */
+  /** 省 token 档位（plan8 R9.1 §七②③）的开关取值；**与主代理同一份**（由 runner 透传） */
   policy?: TokenPolicy
+  /** 输出纪律提示（§七③）：拼在子代理系统提示末尾；**与主代理同档**（不给就不加） */
+  systemSuffix?: string
 }
 
 /** 事件里任务书与结果摘要的截断长度（界面只显示一行） */
@@ -77,7 +79,10 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
       })
       try {
         const loop = await runAgentLoop({
-          systemPrompt: `你是子代理「${def.name}」。${def.description}\n\n${def.systemPrompt}`,
+          systemPrompt:
+            `你是子代理「${def.name}」。${def.description}\n\n${def.systemPrompt}` +
+            // 输出纪律（§七③）：与主代理同一份 —— 子代理的输出同样计费，纪律不该只约束一半
+            (opts.systemSuffix ? `\n\n${opts.systemSuffix}` : ''),
           history: [{ role: 'user', content: jobTask }],
           tools: opts.tools,
           maxRounds: opts.maxRoundsPerAgent,
