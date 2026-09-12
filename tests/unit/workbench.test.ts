@@ -17,6 +17,7 @@ import {
   closeTab,
   dropTargetIndex,
   emptyLayout,
+  evenWidths,
   findTab,
   movePane,
   moveTab,
@@ -355,11 +356,30 @@ describe('allocate（宽度分配 —— 三级收缩）', () => {
     })
   })
 
-  it('期望宽过大时**前面让出**，保证末栏不被压穿', () => {
+  it('期望宽过大时**前面让出**，保证末栏不被压穿**绝对下限**', () => {
     const r = allocate({ desired: [900], mins: [], count: 2, available: 600 })
     const budget = 600 - PANE_GAP
     expect(r.widths.reduce((a, b) => a + b, 0)).toBe(budget)
-    expect(r.widths[1]).toBeGreaterThanOrEqual(PANE_MIN)
+    // 末栏可以让到**绝对**下限（120）——它的 `min`(200) 是软目标，不是硬约束
+    expect(r.widths[1]).toBeGreaterThanOrEqual(PANE_ABS_MIN)
+  })
+
+  it('**宽工作台**下拖出来的宽度不会被缩回（真机验收抓到的回归，必留）', () => {
+    // 用户机器实测：工作台 515px、两栏。
+    // 原来第②步坚持把末栏喂到它的 min(200)，于是第一栏被死锁在 515−200=315 ——
+    // **往右拖没反应、往左拖有用**。这条专门盯那一档（窄工作台那档恰好不冲突，验不出它）。
+    const dragged = 360
+    const r = allocate({ desired: [dragged], mins: [200, 200], count: 2, available: 515 })
+    expect(r.widths[0]).toBe(dragged)
+    expect(r.widths[1]).toBe(515 - PANE_GAP - dragged)
+  })
+
+  it('与 clampPaneWidth 的**上限一致**（同一个约束只许有一处定义）', () => {
+    const available = 515
+    const hi = clampPaneWidth({ desired: [], mins: [200, 200], count: 2, available, index: 0, width: 9999 })
+    const r = allocate({ desired: [hi], mins: [200, 200], count: 2, available })
+    // 拖到上限时，allocate 必须**原样接受**，不许缩回
+    expect(r.widths[0]).toBe(hi)
   })
 
   it('三栏预算充裕：各拿期望，末栏补满', () => {
@@ -444,11 +464,20 @@ describe('clampPaneWidth（拖拽调宽）', () => {
     expect(r.widths).toEqual([235, 359 - PANE_GAP - 235])
   })
 
-  it('新开两栏时默认近乎均分（而不是第一栏顶满、第二栏挨挤）', () => {
-    const r = allocate({ desired: [320], mins: [], count: 2, available: 359 })
-    const budget = 359 - PANE_GAP
-    expect(r.widths.reduce((a, b) => a + b, 0)).toBe(budget)
+  it('evenWidths 给出与容器相称的**均分**默认（不是拍一个固定像素值）', () => {
+    // 515px 开两栏：均分 ≈ 256/255，而不是"第一栏 320、末栏 195"那种一宽一窄
+    const sizes = evenWidths(2, 515)
+    const r = allocate({ desired: sizes.paneWidths, mins: [200, 200], count: 2, available: 515 })
     expect(Math.abs(r.widths[0] - r.widths[1])).toBeLessThanOrEqual(2)
+  })
+
+  it('容器窄到不允许均分时**承认它**、各自保底（不再假装能均分）', () => {
+    // 359px 装两栏：各 200 都放不下（400 > 355）→ 落成 [200,155]。
+    // 关键是总和恰好等于预算、且谁都不低于绝对下限
+    const sizes = evenWidths(2, 359)
+    const r = allocate({ desired: sizes.paneWidths, mins: [200, 200], count: 2, available: 359 })
+    expect(r.widths.reduce((a, b) => a + b, 0)).toBe(359 - PANE_GAP)
+    expect(r.widths.every((w) => w >= PANE_ABS_MIN)).toBe(true)
   })
 
   it('不会小于该栏自己的 min', () => {

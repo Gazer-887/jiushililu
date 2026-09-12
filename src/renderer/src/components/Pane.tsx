@@ -1,4 +1,4 @@
-import { useState, type DragEvent as ReactDragEvent } from 'react'
+import { useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
 import type { BuiltinType, Pane as PaneModel, PaneTab } from '@shared/workbench'
 import { useAppStore } from '../store'
 import BrowserPanel from './BrowserPanel'
@@ -86,11 +86,35 @@ export default function Pane({
   onDragEnd
 }: PaneProps): JSX.Element {
   const [menu, setMenu] = useState(false)
+  /**
+   * 页签右键菜单（plan9 形态修订）：**多栏的唯一入口**。
+   *
+   * 真机验收后定的：多窗格不再是默认形态（"不方便看"），
+   * 改成"右键页签才出现"的扩展功能 —— 所以原来那条常驻的「＋ 新建一栏」随
+   * 工作台标题栏一起去掉了，避免误开出一堆栏。
+   */
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null)
   const wbOpenTab = useAppStore((s) => s.wbOpenTab)
   const wbCloseTab = useAppStore((s) => s.wbCloseTab)
   const wbActivateTab = useAppStore((s) => s.wbActivateTab)
   const wbToggleCollapse = useAppStore((s) => s.wbToggleCollapse)
   const wbRemovePane = useAppStore((s) => s.wbRemovePane)
+  const wbSplitRight = useAppStore((s) => s.wbSplitRight)
+
+  // 点空白 / Esc 关掉右键菜单（与资源管理器右键菜单同一套习惯）
+  useEffect(() => {
+    if (!tabMenu) return
+    const close = (): void => setTabMenu(null)
+    const onEsc = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setTabMenu(null)
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [tabMenu])
 
   const active = pane.tabs[Math.min(pane.active, pane.tabs.length - 1)]
 
@@ -143,7 +167,14 @@ export default function Pane({
                 否则窄栏时页签条横向滚动会把 ＋ 一起滚走，用户再也点不到"在本栏开面板" */}
             <div className="pane-tabs-scroll">
               {pane.tabs.map((t, i) => (
-                <span key={t.id} className={`pane-tab ${t === active ? 'on' : ''}`}>
+                <span
+                  key={t.id}
+                  className={`pane-tab ${t === active ? 'on' : ''}`}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setTabMenu({ x: e.clientX, y: e.clientY, tabId: t.id })
+                  }}
+                >
                   <button
                     className="pane-tab-name"
                     title={t.title}
@@ -176,6 +207,34 @@ export default function Pane({
       {menu && (
         <div className="pane-menu">
           <PaneChooser onPick={pick} />
+        </div>
+      )}
+
+      {tabMenu && (
+        <div
+          className="wb-menu"
+          style={{ left: tabMenu.x, top: tabMenu.y }}
+          // 别让"点空白关闭"的 document 监听在 click 之前先把菜单关掉
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            className="wb-pick"
+            onClick={() => {
+              wbSplitRight(pane.id, tabMenu.tabId)
+              setTabMenu(null)
+            }}
+          >
+            在右侧分栏
+          </button>
+          <button
+            className="wb-pick"
+            onClick={() => {
+              wbCloseTab(pane.id, tabMenu.tabId)
+              setTabMenu(null)
+            }}
+          >
+            关闭标签页
+          </button>
         </div>
       )}
     </section>

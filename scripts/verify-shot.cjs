@@ -709,7 +709,7 @@ app.whenReady().then(async () => {
       (() => {
         // 空工作台直接就是选择器；有栏了就点栏内 ＋
         if (document.querySelector('.wb-pick')) return 'chooser-visible';
-        const add = document.querySelector('.pane-add') || document.querySelector('.wb-add');
+        const add = document.querySelector('.pane-add');
         if (add) add.click();
         return add ? 'menu-opened' : 'no-add';
       })()
@@ -1527,7 +1527,12 @@ app.whenReady().then(async () => {
         // 关键：栏宽之和 + 间隙 必须**正好等于**行可用宽
         // —— 这是"PANE_GAP 没算漏、也没被 overflow:hidden 悄悄裁掉"的证据
         exact: sprawl === rowW,
-        hasAdd: !!document.querySelector('.wb-add')
+        // 工作台标题栏已按验收反馈去掉：开面板的 ＋ 在**页签条**上，收起交给顶栏开关
+        hasAdd: !!document.querySelector('.pane-add'),
+        headerGone:
+          !document.querySelector('.dock-head') &&
+          !document.querySelector('.wb-add') &&
+          !document.querySelector('.dock-close')
       };
     })()
   `)
@@ -1580,25 +1585,31 @@ app.whenReady().then(async () => {
   `)
   console.log('WB_UNFOLDED=' + JSON.stringify(wbUnfolded))
 
-  // —— 开新的一栏：证明「多栏」真的成立（plan9 W3 的核心诉求）——
-  // 先记下当前栏数：W6 之后"点文件"本身就会开栏，所以这里**不能硬编码 2**，
-  // 只能断言"点 ＋ 之后栏数 +1"（否则这条断言会被上游的改动悄悄弄假）
-  const panesBeforeAdd = await win.webContents.executeJavaScript(`
-    (() => document.querySelectorAll('.pane').length)()
+  // —— 分栏：**右键页签**（plan9 形态修订后，多栏不再是默认形态，而是这里长出来的扩展功能；
+  //     原来那条常驻的「＋ 新建一栏」已随工作台标题栏一起去掉）——
+  const beforeSplit = await win.webContents.executeJavaScript(`
+    (() => ({
+      panes: document.querySelectorAll('.pane').length,
+      tabs: document.querySelectorAll('.pane-tab').length
+    }))()
   `)
-  await win.webContents.executeJavaScript(`
+  const splitOpened = await win.webContents.executeJavaScript(`
     (() => {
-      const add = document.querySelector('.wb-add');
-      if (add) add.click();
-      return !!add;
+      const tab = document.querySelector('.pane-tab');
+      if (!tab) return false;
+      const r = tab.getBoundingClientRect();
+      tab.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true,
+        clientX: Math.round(r.left + 5), clientY: Math.round(r.top + 5)
+      }));
+      return true;
     })()
   `)
-  await new Promise((r) => setTimeout(r, 550))
+  await new Promise((r) => setTimeout(r, 450))
   const openedSecond = await win.webContents.executeJavaScript(`
     (() => {
-      // 新栏是空的 → 它自己就显示开窗选择器（.wb-pick），直接点即可
       const b = Array.from(document.querySelectorAll('.wb-pick'))
-        .find((x) => x.textContent.trim() === '资源管理器');
+        .find((x) => x.textContent.trim() === '在右侧分栏');
       if (b) b.click();
       return !!b;
     })()
@@ -1632,6 +1643,8 @@ app.whenReady().then(async () => {
         lastHasExplorer: !!panes[panes.length - 1] && !!panes[panes.length - 1].querySelector('.ex-panel'),
         firstTabs: panes[0] ? panes[0].querySelectorAll('.pane-tab').length : 0,
         lastTabs: panes[panes.length - 1] ? panes[panes.length - 1].querySelectorAll('.pane-tab').length : 0,
+        // 全工作台页签总数 —— 用来验「分栏是**挪**不是复制」
+        allTabs: document.querySelectorAll('.pane-tab').length,
         // 窄栏时 ＋ 会不会被页签条"滚走" —— 真渲染截图抓出来的问题，
         // 数字全绿也看不出来：必须量它**是否落在栏的边界内**
         addInsidePane: panes.map((p) => {
@@ -1813,7 +1826,12 @@ app.whenReady().then(async () => {
     wbGeom.paneCount >= 1 && wbGeom.tabs.length >= 1,
     { paneCount: wbGeom.paneCount, tabs: wbGeom.tabs }
   )
-  checkTrue('＋ 开窗入口在位（六页签条已被它取代）', wbGeom.hasAdd === true)
+  checkTrue('开面板的 ＋ 在**栏内页签条**上', wbGeom.hasAdd === true)
+  checkTrue(
+    '工作台标题栏已去掉（用户验收：「那一栏也是多余的」）',
+    wbGeom.headerGone === true,
+    { dockHead: !!wbGeom.dockHead }
+  )
   checkTrue(
     '折叠后标题栏与页签条隐藏、内容区还在',
     wbFolded.hasHead === false && wbFolded.hasTabs === false && wbFolded.hasBody === true,
@@ -1849,24 +1867,24 @@ app.whenReady().then(async () => {
     exMdPreview
   )
 
-  // —— plan9 W3：多栏（＋ 新建一栏）——
-  checkTrue('「＋」能新建一栏', openedSecond === true, openedSecond)
-  check('点 ＋ 之后栏数 **+1**（多栏成立，不是单栏换页签）', wbTwo.paneCount, panesBeforeAdd + 1)
+  // —— plan9 形态修订：分栏改由**右键页签**触发 ——
+  checkTrue(
+    '**右键页签**能分栏（多栏的唯一入口，不再是默认形态）',
+    splitOpened !== false && openedSecond === true,
+    { openedSecond }
+  )
+  check('右键分栏后栏数 **+1**', wbTwo.paneCount, beforeSplit.panes + 1)
+  checkTrue(
+    '分栏是**挪**不是复制（全工作台页签总数不变）',
+    wbTwo.allTabs === beforeSplit.tabs,
+    { before: beforeSplit.tabs, after: wbTwo.allTabs }
+  )
   checkTrue(
     '各栏宽度 + 间隙满足「**放得下就正好、放不下就溢出**」这条不变量',
     wbTwo.overflow === true ? wbTwo.sprawl >= wbTwo.rowW : wbTwo.sprawl === wbTwo.rowW,
     { widths: wbTwo.widths, sprawl: wbTwo.sprawl, rowW: wbTwo.rowW, overflow: wbTwo.overflow }
   )
-  checkTrue(
-    '新栏里是刚选的面板，且各栏内容**互相独立**',
-    wbTwo.lastHasExplorer === true && wbTwo.firstHasExplorer === false && wbTwo.firstTabs >= 1,
-    {
-      firstTabs: wbTwo.firstTabs,
-      lastTabs: wbTwo.lastTabs,
-      firstIsExplorer: wbTwo.firstHasExplorer,
-      lastIsExplorer: wbTwo.lastHasExplorer
-    }
-  )
+  checkTrue('原栏仍在（分栏不把源栏清空）', wbTwo.firstTabs >= 1, wbTwo.firstTabs)
   checkTrue(
     '窄栏里 ＋ 仍在栏内可见（没被页签条横向滚动带走）',
     Array.isArray(wbTwo.addInsidePane) && wbTwo.addInsidePane.every((v) => v === true),

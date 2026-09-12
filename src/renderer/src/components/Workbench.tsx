@@ -111,9 +111,8 @@ export default function Workbench(): JSX.Element | null {
   const sizes = useAppStore((s) => s.workbenchSizes)
   const setWorkbench = useAppStore((s) => s.setWorkbench)
   const persistWorkbench = useAppStore((s) => s.persistWorkbench)
-  const wbAddPane = useAppStore((s) => s.wbAddPane)
   const wbOpenTab = useAppStore((s) => s.wbOpenTab)
-  const toggleDock = useAppStore((s) => s.toggleDock)
+  const setWbRowWidth = useAppStore((s) => s.setWbRowWidth)
 
   // 换位拖拽态：进组件 state，**不学**参照实现的模块级变量
   //（中途重渲染会让模块级变量残留，见 plan9 §W0-B5）
@@ -129,7 +128,11 @@ export default function Workbench(): JSX.Element | null {
   useEffect(() => {
     const el = rowRef.current
     if (!el) return
-    const sync = (): void => setRowWidth(el.getBoundingClientRect().width)
+    const sync = (): void => {
+      const w = el.getBoundingClientRect().width
+      setRowWidth(w)
+      setWbRowWidth(w) // 回报给 store：栏数变化时要靠它算"与容器相称的均分默认"
+    }
     sync()
     const ro = new ResizeObserver(sync)
     ro.observe(el)
@@ -180,16 +183,6 @@ export default function Workbench(): JSX.Element | null {
 
   return (
     <aside className="dock open" style={{ width: dockWidth }}>
-      <div className="dock-head">
-        <span className="wb-title">工作台</span>
-        <button className="wb-add" title="新建一栏" onClick={wbAddPane}>
-          ＋
-        </button>
-        <button className="dock-close" title="收起工作台" onClick={toggleDock}>
-          ✕
-        </button>
-      </div>
-
       <div ref={rowRef} className={`wb-row ${fit.overflow ? 'wb-overflow' : ''}`}>
         {count === 0 ? (
           // 空工作台：默认布局就是空的（与"工作台默认收起"一致），

@@ -22,6 +22,8 @@ import {
   closeTab,
   emptyLayout,
   emptySizes,
+  evenWidths,
+  moveTab,
   normalizeSizes,
   openInFilePane,
   openTab,
@@ -83,6 +85,21 @@ interface AppState {
   // 全部只是"纯函数 + 内存 + 落盘"的胶水；模型运算一律在 src/shared/workbench.ts
   wbOpenTab: (paneId: string | null, content: PaneContent) => void
   /**
+   * 工作台区**实测可用宽**（渲染端用 ResizeObserver 回报）。
+   *
+   * 为什么存它：栏数变化时要用「**与容器相称的均分**」当默认值，
+   * 而不是拍一个固定像素（`PANE_DEFAULT` 是常数，515px 里开两栏会变成一宽一窄）。
+   */
+  wbRowWidth: number
+  setWbRowWidth: (w: number) => void
+  /**
+   * 把某个页签挪到**右侧新一栏**（右键页签 → 分栏）。
+   *
+   * 真机验收后形态改了：**多栏不再是默认形态**，而是"右键页签才出现"的扩展功能 ——
+   * 所以这是新建一栏的**唯一入口**（原来那条常驻的 ＋ 已随工作台标题栏一起去掉）。
+   */
+  wbSplitRight: (paneId: string, tabId: string) => void
+  /**
    * 打开文件到「预览栏」（plan9 W6）。
    *
    * 收 `path` 而不是 `PaneContent`，是因为**调用方是文件树**，它手上只有路径；
@@ -92,7 +109,6 @@ interface AppState {
   wbOpenFile: (path: string, mode?: FileMode) => void
   wbCloseTab: (paneId: string, tabId: string) => void
   wbActivateTab: (paneId: string, index: number) => void
-  wbAddPane: () => void
   wbRemovePane: (paneId: string) => void
   wbToggleCollapse: (paneId: string) => void
 
@@ -236,9 +252,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setWorkbench: (layout, sizes) =>
     set((s) => ({
       workbench: layout,
-      // 栏数变了就顺手把栏宽数组对齐 —— 长度恒等于 panes−1 是这条数据的不变量，
-      // 交给调用方每次记得对齐太容易漏（漏了下一次读盘就会整组回默认）
-      workbenchSizes: sizes ?? normalizeSizes(s.workbenchSizes, layout.panes.length)
+      workbenchSizes:
+        sizes ??
+        // 栏数**没变**：只把宽度数组的长度对齐（拖宽、切页签都走这条，宽度原样保留）
+        (layout.panes.length === s.workbench.panes.length
+          ? normalizeSizes(s.workbenchSizes, layout.panes.length)
+          : // 栏数**变了**（分栏/关栏/开窗）：用「与容器相称的均分」当默认。
+            // 原来是给每栏拍 PANE_DEFAULT(320)，在 515px 里开两栏会得到一宽一窄；
+            // 均分才像"分栏"，而不是像"随手拖了一下"
+            evenWidths(layout.panes.length, s.wbRowWidth))
     })),
   persistWorkbench: async () => {
     const { workbench, workbenchSizes } = get()
@@ -258,6 +280,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().setWorkbench(openTab(get().workbench, paneId, content))
     void get().persistWorkbench()
   },
+  wbRowWidth: 360,
+  setWbRowWidth: (w) => set({ wbRowWidth: Number.isFinite(w) ? w : 0 }),
+  wbSplitRight: (paneId, tabId) => {
+    const cur = get().workbench
+    const at = cur.panes.findIndex((p) => p.id === paneId)
+    if (at < 0) return
+    const added = addPane(cur, null, at + 1)
+    if (added === cur) return // 到栏数上限：原样不动，界面该给提示
+    const newPane = added.panes[at + 1]
+    const next = moveTab(added, paneId, tabId, newPane.id)
+    // 栏数变了 → setWorkbench 会自动给"与容器相称的均分"（不必在这里算宽度）
+    get().setWorkbench(next)
+    void get().persistWorkbench()
+  },
   wbOpenFile: (path, mode = 'preview') => {
     set({ dockOpen: true })
     get().setWorkbench(openInFilePane(get().workbench, path, mode))
@@ -270,11 +306,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   wbActivateTab: (paneId, index) => {
     get().setWorkbench(activateTab(get().workbench, paneId, index))
     get().persistWorkbenchSoon() // 切页签是高频动作 → 合并落盘
-  },
-  wbAddPane: () => {
-    set({ dockOpen: true })
-    get().setWorkbench(addPane(get().workbench, null))
-    void get().persistWorkbench()
   },
   wbRemovePane: (paneId) => {
     get().setWorkbench(removePane(get().workbench, paneId))

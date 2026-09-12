@@ -507,14 +507,15 @@ export function allocate(input: AllocateInput): AllocateResult {
   for (let i = 0; i < count - 1; i++) head.push(Math.max(pick(input.desired, i, PANE_DEFAULT), mins[i]))
   let last = budget - head.reduce((a, b) => a + b, 0)
 
-  // ② 末栏被压到低于自己的 min → 前面按余量等比让出。
+  // ② 末栏被压到低于**绝对下限**时 → 前面按余量等比让出。
   //
-  // ⚠️ **只在"让得出来"时才让**（plan9 W5 修）：如果前面各栏已经到自己的 min、
-  //    仍然凑不出末栏的 min，那说明这个预算本就不可满足 —— 此时**不许**把前面强行压到 min，
-  //    否则会出现"用户怎么拖都没反应"：拖出来的宽度被这里一步步缩回 min。
-  //    让末栏吃下不足的部分（它会低于 min），交给 ③ 的三级收缩做最终裁决。
-  if (last < mins[count - 1] && count > 1) {
-    const target = budget - mins[count - 1]
+  // ⚠️ 这里用的是 `PANE_ABS_MIN`，不是末栏自己的 `min`（真机验收抓到的 bug）：
+  //    若坚持把末栏喂到它的 `min`，第②步就会把被拖的那一栏**缩回去** ——
+  //    而 `clampPaneWidth` 允许推到 `预算 − PANE_ABS_MIN`，两个函数对"上限"的看法不一致，
+  //    表现就是"**往右拖没反应、往左拖有用**"（用户真机截图里就是这个）。
+  //    同一个约束只许有一处定义 —— 这里是它唯一的定义处，`clampPaneWidth` 与它对齐。
+  if (last < PANE_ABS_MIN && count > 1) {
+    const target = budget - PANE_ABS_MIN
     const headFloor = mins.slice(0, -1).reduce((a, b) => a + b, 0)
     if (headFloor < target) {
       const shrunk = shrinkTo(head, mins.slice(0, -1), target)
@@ -567,6 +568,23 @@ export function normalizeSizes(sizes: WorkbenchSizes, paneCount: number): Workbe
   const paneWidths: number[] = []
   for (let i = 0; i < want; i++) paneWidths.push(pick(src, i, PANE_DEFAULT))
   return { paneWidths }
+}
+
+/**
+ * 「均分」的期望宽 —— 栏数变化时用它当默认值，而不是给每栏拍一个固定像素。
+ *
+ * 为什么需要：`PANE_DEFAULT`(320) 是个**与容器无关**的常数，
+ * 在 515px 工作台里开两栏会得到 [320,195]（一宽一窄、看着像随手拍的）；
+ * 均分则得到 [256,255]。
+ *
+ * @param available 工作台区的**可用宽**（渲染端实测，已扣掉外框）
+ */
+export function evenWidths(count: number, available: number): WorkbenchSizes {
+  const n = Math.max(0, Math.trunc(count))
+  if (n < 2) return { paneWidths: [] }
+  const avail = Number.isFinite(available) ? available : 0
+  const each = Math.max(PANE_ABS_MIN, Math.round((avail - (n - 1) * PANE_GAP) / n))
+  return { paneWidths: new Array(n - 1).fill(each) }
 }
 
 /**

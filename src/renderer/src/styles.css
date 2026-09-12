@@ -1409,48 +1409,15 @@ label.radio {
   overflow: hidden;
 }
 
-.dock-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-6);
-  padding: var(--sp-6) var(--sp-8);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
 /* ── 工作台：多栏（plan9 W3）────────────────────────────────────────
    命名保留 `.dock` / `.dock-body`：验证脚本按它们量宽度与滚动。
    栏与栏之间的缝必须等于 workbench.ts 的 PANE_GAP（分配时已经算进去了），
    所以这里用内联宽度（Workbench.tsx 写死 GAP_PX），不在 CSS 里另写一份。 */
 
-.dock-head {
-  flex-shrink: 0;
-}
+/* 注：工作台标题栏（`.dock-head` / `.wb-title` / `.wb-add` / `.dock-close`）在 plan9 形态修订后
+   整条去掉 —— 用户真机验收：「工作台那一栏也是多余的」。
+   ＋ 本来就在栏内的页签条上，收起工作台交给顶栏开关，所以这四组样式全部删除。 */
 
-.wb-title {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-sm);
-  color: var(--muted);
-}
-
-.wb-add {
-  background: transparent;
-  border: 0;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: var(--fs-sm);
-  padding: var(--sp-2) var(--sp-6);
-  border-radius: var(--radius-md);
-}
-
-.wb-add:hover {
-  background: var(--bg);
-  color: var(--text);
-}
-
-/* 各栏横排；整体宽度 = 外层分隔条给的 dockWidth */
 .wb-row {
   flex: 1;
   min-height: 0;
@@ -1659,6 +1626,20 @@ label.radio {
   gap: var(--sp-4);
 }
 
+/* 右键页签弹出的菜单（plan9 形态修订后，「分栏」是这里长出来的扩展功能） */
+.wb-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+}
+
 .wb-pick {
   text-align: left;
   font-family: inherit;
@@ -1754,22 +1735,6 @@ label.radio {
 .fp-size {
   font-size: var(--fs-xs);
   color: var(--muted);
-}
-
-.dock-close {
-  background: transparent;
-  border: 0;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: var(--fs-sm);
-  padding: var(--sp-2) var(--sp-6);
-  border-radius: var(--radius-md);
-  flex-shrink: 0;
-}
-
-.dock-close:hover {
-  background: var(--bg);
-  color: var(--text);
 }
 
 .dock-body {
