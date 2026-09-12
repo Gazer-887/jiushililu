@@ -369,3 +369,45 @@ describe('通知措辞：让模型信得过保留区', () => {
     expect(head).not.toMatch(/请重新执行|请重跑/)
   })
 })
+
+/**
+ * 续读处方：**别再按"输出形态"分流**（2026-09-13 实测证明有害，已回滚）。
+ *
+ * 当时假设："输出已带报错特征时干脆不给处方，少给一个再跑的由头"。
+ * 同一 harness、同一任务各跑 5 次的结果：
+ *
+ * | 版本 | 工具调用次数 | 中位 |
+ * |---|---|---:|
+ * | 通用处方 | 3, 3, 6, 4, 10 | **4** |
+ * | 形态分流 | 7, 16, 13, 9, 6 | **9** |
+ *
+ * **两组完全不相交** → 不是噪声，是退化。
+ * 这条断言守的就是"**别再来一次**"：含报错特征的输出，用的仍然是**通用处方**。
+ */
+describe('续读处方：不许按形态分流（实测结论的守卫）', () => {
+  const withError = [
+    ...Array.from({ length: 3000 }, (_, i) => `[info] 第 ${i} 行填充内容`),
+    '✕ 3) 端口占用检查',
+    '   Expected 3000, received 8080',
+    'exit code 1'
+  ].join('\n')
+  const plain = Array.from({ length: 3000 }, (_, i) => `[info] 第 ${i} 行填充内容`).join('\n')
+
+  it('含报错特征时，用的**仍然是通用处方**（不是"别重取"那种分流说法）', () => {
+    const first = windowToolOutput(withError, { toolName: 'run_command' }).text.split('\n')[0] ?? ''
+    expect(first).toContain('只有确认你要的东西**在中段被省略的过程输出里**时')
+    expect(first).not.toContain('结论就在上面保留的原文里')
+  })
+
+  it('不含报错特征时，处方与上面**是同一套**（不给形态分流的变体）', () => {
+    const first = windowToolOutput(plain, { toolName: 'run_command' }).text.split('\n')[0] ?? ''
+    expect(first).toContain('只有确认你要的东西**在中段被省略的过程输出里**时')
+  })
+
+  it('调用方显式给的 `retrievalHint` 仍然优先', () => {
+    const first =
+      windowToolOutput(withError, { toolName: 'run_command', retrievalHint: '（调用方自定）' })
+        .text.split('\n')[0] ?? ''
+    expect(first).toContain('（调用方自定）')
+  })
+})
