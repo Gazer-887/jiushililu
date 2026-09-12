@@ -42,7 +42,7 @@ import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
-import { chatMessagesSchema, settingsSchema } from './schemas'
+import { chatMessagesSchema, incomingMessagesSchema, settingsSchema, storedMessagesSchema } from './schemas'
 import {
   BUILTIN_TYPES,
   DIRTY_MAX_LEN,
@@ -124,6 +124,7 @@ import {
   renameConversation,
   saveConversation
 } from './store/conversations'
+import { normalizeHistory } from './store/conversations-core'
 
 // 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。
 // schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
@@ -439,8 +440,24 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {
-    const input = z.object({ id: z.string().min(1).max(64), messages: chatMessagesSchema }).parse(raw)
-    return saveConversation(input.id, input.messages as ChatMessage[])
+    // **先松收下 → 规整 → 再严格校验**，三步各司其职：
+    //   ① 松：流式占位（content 为空）是**合法中间状态**，先收得下来；
+    //   ② 规整：把没内容的消息丢掉（`normalizeHistory` 的注释里写了这条渠道的真实代价）；
+    //   ③ 严：真正落盘前照旧严格把关。
+    // 以前是"直接严格 parse"，于是"流式没吐字就切会话/点停止/关窗口"这几条路
+    // **保存必然被拒**，而调用方是 `void persistActive()` —— 静默、丢数据、无从解释。
+    const input = z
+      .object({ id: z.string().min(1).max(64), messages: incomingMessagesSchema })
+      .parse(raw)
+    const messages = normalizeHistory(input.messages as ChatMessage[])
+    const parsed = storedMessagesSchema.safeParse(messages)
+    if (!parsed.success) {
+      // 这条通道以前**静默**拒（不写日志、界面上也没有），失败理由必须留痕
+      const reason = parsed.error.issues[0]?.message ?? '参数不合法'
+      log.error('会话保存被拒', { id: input.id, count: messages.length, reason })
+      throw new Error(`会话没能存进磁盘：${reason}`)
+    }
+    return saveConversation(input.id, parsed.data as ChatMessage[])
   })
 
   ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {

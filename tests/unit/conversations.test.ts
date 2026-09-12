@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { deriveTitle, groupByWorkspace, workspaceLabel } from '@main/store/conversations-core'
-import type { ConversationMeta } from '@shared/ipc'
+import {
+  deriveTitle,
+  groupByWorkspace,
+  normalizeHistory,
+  workspaceLabel
+} from '@main/store/conversations-core'
+import type { ChatMessage, ConversationMeta } from '@shared/ipc'
 
 function meta(over: Partial<ConversationMeta> & { id: string }): ConversationMeta {
   return {
@@ -66,5 +71,39 @@ describe('groupByWorkspace（按工作区分组）', () => {
 
   it('空列表返回空数组', () => {
     expect(groupByWorkspace([])).toEqual([])
+  })
+})
+
+describe('normalizeHistory（存盘前的消息规整）', () => {
+  const u = (content: string): ChatMessage => ({ role: 'user', content })
+  const a = (content: string): ChatMessage => ({ role: 'assistant', content })
+
+  // 这一组钉的是一条**真实的数据丢失渠道**：
+  // 渲染端按下发送时会立刻塞一条 `{role:'assistant', content:''}` 的占位（流式往上长），
+  // 而落盘校验要求 content ≥1 字符 —— 于是"流式没吐字就切会话 / 点停止 / 关窗口"
+  // 保存必然被拒；调用方又是 `void persistActive()`，界面上一个字都没有。
+  it('丢掉末尾的"流式占位"（这条以前会让整次保存被拒）', () => {
+    const out = normalizeHistory([u('你好'), a('你好，'), a('')])
+    expect(out).toHaveLength(2)
+    expect(out[1]!.content).toBe('你好，')
+  })
+
+  it('中间的空消息也丢掉（空 content 本来就违反契约）', () => {
+    const out = normalizeHistory([u('一'), a(''), u('二')])
+    expect(out.map((m) => m.content)).toEqual(['一', '二'])
+  })
+
+  it('纯空白也算空（发模型那条路早就用 trim 判了，两边口径必须一致）', () => {
+    expect(normalizeHistory([u('一'), a('   \n  ')])).toHaveLength(1)
+  })
+
+  it('全是空 → 空数组（调用方据此跳过保存，而不是报错）', () => {
+    expect(normalizeHistory([a('')])).toEqual([])
+    expect(normalizeHistory([])).toEqual([])
+  })
+
+  it('正常消息**原样保留、顺序不变**（规整不许动有效数据）', () => {
+    const list = [u('一'), a('二'), u('三'), a('四')]
+    expect(normalizeHistory(list)).toEqual(list)
   })
 })

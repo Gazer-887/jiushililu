@@ -142,6 +142,13 @@ interface AppState {
   messages: ChatMessage[]
   streaming: boolean
   streamError: string | null
+  /**
+   * **落盘失败**提示（与 `streamError` 分开）。
+   *
+   * 为什么要单独一格：这类失败最容易发生在"切会话 / 点停止 / 关窗口"那一刻，
+   * 而切会话会把 `streamError` 清掉 —— 提示一转身就没了，等于没提示。
+   */
+  saveError: string | null
   /** 工具执行活动（D-032：界面显示"正在读 xx / 完成 / 失败"）——仅当前轮 */
   toolEvents: ToolEvent[]
   /**
@@ -406,18 +413,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   persistActive: async () => {
     const { activeId, messages, conversations } = get()
     if (!activeId || messages.length === 0) return
-    const updated = await window.api.saveConversation(activeId, messages)
-    if (updated) {
-      // 就地更新列表项（避免整表重拉），标题可能已被自动补上
-      const next = conversations.map((c) => (c.id === activeId ? updated : c))
-      if (!next.some((c) => c.id === activeId)) next.push(updated)
-      set({ conversations: next })
+    try {
+      const updated = await window.api.saveConversation(activeId, messages)
+      if (updated) {
+        // 就地更新列表项（避免整表重拉），标题可能已被自动补上
+        const next = conversations.map((c) => (c.id === activeId ? updated : c))
+        if (!next.some((c) => c.id === activeId)) next.push(updated)
+        set({ conversations: next })
+      }
+      if (get().saveError) set({ saveError: null })
+    } catch (err) {
+      // **保存失败必须让用户看见**。以前这里是裸 `await`：调用点又写的 `void persistActive()`，
+      // 于是失败 = 界面没反应 + 日志没痕迹 + 用户以为在存而实际一个字都没落盘。
+      // 单独用一个 `saveError` 而不是复用 `streamError`：切会话时后者会被清掉，
+      // 而这条提示恰恰发生在"切会话"那一刻，不能一转身就没了。
+      set({
+        saveError: `这段对话没能存进磁盘：${err instanceof Error ? err.message : String(err)}`
+      })
     }
   },
 
   messages: [],
   streaming: false,
   streamError: null,
+  saveError: null,
   toolEvents: [],
   todos: [],
   subagents: [],

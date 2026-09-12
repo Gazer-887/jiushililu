@@ -23,6 +23,7 @@ export default function ChatView() {
   const messages = useAppStore((s) => s.messages)
   const streaming = useAppStore((s) => s.streaming)
   const streamError = useAppStore((s) => s.streamError)
+  const saveError = useAppStore((s) => s.saveError)
   const toolEvents = useAppStore((s) => s.toolEvents)
   const reasoning = useAppStore((s) => s.reasoning)
   const sendMessage = useAppStore((s) => s.sendMessage)
@@ -62,7 +63,7 @@ export default function ChatView() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamError, toolEvents])
+  }, [messages, streamError, saveError, toolEvents])
 
   const tokens = useMemo(() => usedTokens(messages), [messages])
 
@@ -171,6 +172,9 @@ export default function ChatView() {
         {messages.length === 0 && processBlock}
 
         {streamError && <div className="chat-error">{streamError}</div>}
+        {/* 落盘失败独立一条：切会话 / 点停止 / 关窗口那一刻最常发生，不能被 streamError 的清空带走
+            （样式复用 .chat-error，不新增类 —— 免得又多一处"JSX 里有、样式表里没有"的死类） */}
+        {saveError && <div className="chat-error">{saveError}</div>}
         <div ref={bottomRef} />
       </div>
 

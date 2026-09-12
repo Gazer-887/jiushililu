@@ -36,12 +36,51 @@ export const settingsSchema = z.object({
   apiKey: z.string().max(400).optional()
 })
 
-export const chatMessagesSchema = z
-  .array(
-    z.object({
-      role: z.enum(['system', 'user', 'assistant']),
-      content: z.string().min(1).max(200000)
-    })
-  )
-  .min(1)
-  .max(200)
+/** 单条消息（两条通道共用同一形状） */
+const messageSchema = z.object({
+  role: z.enum(['system', 'user', 'assistant']),
+  content: z.string().min(1).max(200000)
+})
+
+/**
+ * **发给模型**的消息数组（`chat:send`）。
+ * 上限 200 是"一次请求别把上下文撑爆"的约束。
+ */
+export const chatMessagesSchema = z.array(messageSchema).min(1).max(200)
+
+/** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */
+export const MAX_STORED_CHARS = 2_000_000
+
+/**
+ * **从渲染进程进来的**消息数组（还没规整）—— 刻意比落盘要求**松一档**：
+ * `content` 允许为空，因为"流式占位"是合法中间状态。
+ * 顺序是：**先松收下 → 规整 → 再上严格校验**（见 `storedMessagesSchema`）。
+ */
+export const incomingMessagesSchema = z.array(
+  z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().max(200000) })
+)
+
+/**
+ * **落盘**的消息数组（`conv:save`）—— 与 `chatMessagesSchema` **刻意不共用上限**。
+ *
+ * 两个约束根本不是一件事：一个是"一次请求发多少"，一个是"一条会话能有多长"。
+ * 共用 200 的后果是**超过 200 条消息之后保存永久失败**（而且静默）——
+ * 等于给用户设了一道看不见的会话寿命上限。所以：
+ *   · 条数放宽到 2000（正常用户碰不到）
+ *   · 真正防"把 IPC 撑爆"的是**总字数**，条数只是顺手的一道闸
+ *   · **允许空数组** —— 一条还没说过话的会话是合法的
+ *   · 空 `content` 仍然拒绝：规整（`normalizeHistory`）该在前面把它挡掉，
+ *     走到这里还有空的，就是程序错了，不该被静默吞掉
+ */
+export const storedMessagesSchema = z
+  .array(messageSchema)
+  .max(2000)
+  .superRefine((list, ctx) => {
+    const total = list.reduce((n, m) => n + m.content.length, 0)
+    if (total > MAX_STORED_CHARS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `会话太长（${total} 字，上限 ${MAX_STORED_CHARS} 字），整条存不下`
+      })
+    }
+  })
