@@ -355,6 +355,63 @@ export function openTab(
  * **关掉本栏最后一个页签 → 该栏变"未指派"（显示 ＋ 选择器），但不删栏** ——
  * 删栏是另一个动作（`removePane`）。这两件事分开，用户才不会"关个标签栏就没了"。
  */
+/** 就地改某个**文件页签**的 content（找不到 / 不是文件页签 → 原样返回） */
+function mapFileTab(
+  layout: WorkbenchLayout,
+  paneId: string,
+  tabId: string,
+  fn: (c: Extract<PaneContent, { kind: 'file' }>) => PaneContent
+): WorkbenchLayout {
+  return withPanes(
+    layout,
+    layout.panes.map((p) =>
+      p.id !== paneId
+        ? p
+        : {
+            ...p,
+            tabs: p.tabs.map((t) =>
+              t.id === tabId && t.content.kind === 'file' ? { ...t, content: fn(t.content) } : t
+            )
+          }
+    )
+  )
+}
+
+/**
+ * 切「预览 / 编辑」。**草稿不动** —— 切回预览再切回来，没保存的内容还在。
+ *
+ * 为什么草稿要住在这一层（而不是组件里）：切换页签会让编辑组件**卸载**，
+ * 组件里存的东西当场没了。而 `PaneContent.file.dirty` 会随布局持久化 ——
+ * 不光切页签不丢，连重启都还在。
+ */
+export function setFileTabMode(
+  layout: WorkbenchLayout,
+  paneId: string,
+  tabId: string,
+  mode: FileMode
+): WorkbenchLayout {
+  return mapFileTab(layout, paneId, tabId, (c) => ({ ...c, mode }))
+}
+
+/**
+ * 存 / 清草稿。`undefined` = **清掉**（表示"没改"或"已保存"）。
+ *
+ * 注意清的时候要把 `dirty` 这个键**整个去掉**，而不是留一个 `undefined` ——
+ * 否则它会被序列化进 ui-prefs，读回来时 sanitize 又得再剥一遍（两处规则迟早分叉）。
+ */
+export function setFileTabDirty(
+  layout: WorkbenchLayout,
+  paneId: string,
+  tabId: string,
+  dirty: string | undefined
+): WorkbenchLayout {
+  return mapFileTab(layout, paneId, tabId, (c) =>
+    dirty === undefined
+      ? { kind: 'file', path: c.path, mode: c.mode }
+      : { kind: 'file', path: c.path, mode: c.mode, dirty }
+  )
+}
+
 export function closeTab(layout: WorkbenchLayout, paneId: string, tabId: string): WorkbenchLayout {
   return withPanes(
     layout,

@@ -28,6 +28,8 @@ import {
   openInFilePane,
   openTab,
   removePane,
+  setFileTabDirty,
+  setFileTabMode,
   toggleCollapse,
   type FileMode,
   type PaneContent,
@@ -111,6 +113,10 @@ interface AppState {
   wbActivateTab: (paneId: string, index: number) => void
   wbRemovePane: (paneId: string) => void
   wbToggleCollapse: (paneId: string) => void
+  /** 切文件页签的「预览 / 编辑」（plan7 批 A3 范围②） */
+  wbSetFileMode: (paneId: string, tabId: string, mode: FileMode) => void
+  /** 存 / 清草稿（`undefined` = 清掉）；草稿住布局里，所以切页签、重启都还在 */
+  wbSetFileDirty: (paneId: string, tabId: string, dirty: string | undefined) => void
 
   // ── 抽屉侧栏（面板显隐）───────────
   /** 左侧栏（会话记录 / 设置）是否展开 */
@@ -339,6 +345,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   wbToggleCollapse: (paneId) => {
     get().setWorkbench(toggleCollapse(get().workbench, paneId))
     void get().persistWorkbench()
+  },
+  /** 切「预览 / 编辑」（草稿不动） */
+  wbSetFileMode: (paneId, tabId, mode) => {
+    get().setWorkbench(setFileTabMode(get().workbench, paneId, tabId, mode))
+    get().persistWorkbenchSoon()
+  },
+  /** 存 / 清草稿：打字时高频触发 → **必须走防抖**，否则每个键都写一次盘 */
+  wbSetFileDirty: (paneId, tabId, dirty) => {
+    get().setWorkbench(setFileTabDirty(get().workbench, paneId, tabId, dirty))
+    get().persistWorkbenchSoon()
   },
 
   sidebarOpen: true,

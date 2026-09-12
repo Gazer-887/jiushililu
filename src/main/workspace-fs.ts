@@ -109,6 +109,8 @@ export async function readWorkspaceFile(workspaceRoot: string, rel: string): Pro
       rel,
       content: slice.toString('utf8'),
       size: st.size,
+      // 冲突基线：编辑保存时带回来比对（见 FsReadResult.mtimeMs 的注释）
+      mtimeMs: st.mtimeMs,
       ...(truncated ? { truncated: true } : {})
     }
   } catch (err) {

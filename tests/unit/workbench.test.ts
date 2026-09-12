@@ -30,6 +30,8 @@ import {
   sanitizeLayout,
   sanitizeSizes,
   sameContent,
+  setFileTabDirty,
+  setFileTabMode,
   titleForContent,
   toggleCollapse,
   type BuiltinType,
@@ -690,5 +692,72 @@ describe('activateTab', () => {
   it('空栏（未指派）不会把 active 设成 -1', () => {
     const l = addPane(emptyLayout(), null)
     expect(activateTab(l, l.panes[0].id, 0).panes[0].active).toBe(0)
+  })
+})
+
+describe('Markdown 轻编辑：页签的 mode 与草稿（plan7 批 A3 范围②）', () => {
+  /** 开一栏、放一个文件页签，返回 { layout, paneId, tabId } */
+  function withFileTab(): { layout: WorkbenchLayout; paneId: string; tabId: string } {
+    const layout = openInFilePane(emptyLayout(), 'notes.md', 'preview')
+    const pane = layout.panes[0]!
+    return { layout, paneId: pane.id, tabId: pane.tabs[0]!.id }
+  }
+  const fileOf = (layout: WorkbenchLayout): { mode: string; dirty?: string } => {
+    const c = layout.panes[0]!.tabs[0]!.content
+    if (c.kind !== 'file') throw new Error('不是文件页签')
+    return c
+  }
+
+  it('切到编辑：mode 变了，**其余字段不动**', () => {
+    const { layout, paneId, tabId } = withFileTab()
+    const next = setFileTabMode(layout, paneId, tabId, 'edit')
+    expect(fileOf(next).mode).toBe('edit')
+    expect(fileOf(next).dirty).toBeUndefined()
+  })
+
+  it('**切模式不清草稿**（切回预览再切回来，没保存的字还在）', () => {
+    const { layout, paneId, tabId } = withFileTab()
+    const withDraft = setFileTabDirty(layout, paneId, tabId, '改了半句')
+    const edit = setFileTabMode(withDraft, paneId, tabId, 'edit')
+    const back = setFileTabMode(edit, paneId, tabId, 'preview')
+    expect(fileOf(back).dirty).toBe('改了半句')
+  })
+
+  it('存草稿 / 清草稿：清的时候**把键整个去掉**（不是留一个 undefined）', () => {
+    const { layout, paneId, tabId } = withFileTab()
+    const dirty = setFileTabDirty(layout, paneId, tabId, 'x')
+    expect(fileOf(dirty).dirty).toBe('x')
+    const clean = setFileTabDirty(dirty, paneId, tabId, undefined)
+    // 关键：`dirty` 这个键必须**不存在**，否则会被序列化进 ui-prefs、读回来还要再剥一遍
+    expect(Object.prototype.hasOwnProperty.call(fileOf(clean), 'dirty')).toBe(false)
+  })
+
+  it('路径 / mode 之外的东西不许被这两个函数碰坏', () => {
+    const { layout, paneId, tabId } = withFileTab()
+    const edit = setFileTabMode(setFileTabDirty(layout, paneId, tabId, 'd'), paneId, tabId, 'edit')
+    expect(fileOf(edit)).toEqual({ kind: 'file', path: 'notes.md', mode: 'edit', dirty: 'd' })
+  })
+
+  it('找不到页签 / 不是文件页签 → **原样返回**（不抛、不误伤别的栏）', () => {
+    const { layout, paneId, tabId } = withFileTab()
+    expect(setFileTabMode(layout, paneId, 'nope', 'edit')).toEqual(layout)
+    expect(setFileTabMode(layout, 'nope', tabId, 'edit')).toEqual(layout)
+    const builtin = openTab(emptyLayout(), layout.panes[0]!.id, { kind: 'builtin', type: 'tasks' })
+    const bid = builtin.panes[0]!.tabs[0]!.id
+    expect(setFileTabDirty(builtin, builtin.panes[0]!.id, bid, 'x')).toEqual(builtin)
+  })
+
+  it('草稿随布局**活得过序列化**（sanitize 之后还在 —— 切页签重启都不丢就靠这条）', () => {
+    const { layout, paneId, tabId } = withFileTab()
+    const withDraft = setFileTabDirty(layout, paneId, tabId, '还没保存的内容')
+    const restored = sanitizeLayout(JSON.parse(JSON.stringify(withDraft)))
+    expect(fileOf(restored).dirty).toBe('还没保存的内容')
+  })
+
+  it('草稿超长会被 sanitize **截断**（不让人把 ui-prefs 撑爆）', () => {
+    const { layout, paneId, tabId } = withFileTab()
+    const huge = setFileTabDirty(layout, paneId, tabId, 'x'.repeat(DIRTY_MAX_LEN + 500))
+    const restored = sanitizeLayout(JSON.parse(JSON.stringify(huge)))
+    expect(fileOf(restored).dirty!.length).toBe(DIRTY_MAX_LEN)
   })
 })

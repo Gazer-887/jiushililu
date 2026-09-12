@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
-import type { BuiltinType, Pane as PaneModel, PaneTab } from '@shared/workbench'
+import type { BuiltinType, FileMode, Pane as PaneModel, PaneTab } from '@shared/workbench'
 import { useAppStore } from '../store'
 import BrowserPanel from './BrowserPanel'
 import ChangesPanel from './ChangesPanel'
@@ -50,11 +50,25 @@ function builtinBody(type: BuiltinType): JSX.Element {
   }
 }
 
-function tabBody(tab: PaneTab): JSX.Element {
+function tabBody(
+  tab: PaneTab,
+  fileProps: {
+    onModeChange: (mode: FileMode) => void
+    onDirtyChange: (dirty: string | undefined) => void
+  }
+): JSX.Element {
   const c = tab.content
   if (c.kind === 'builtin') return builtinBody(c.type)
   // 文件页签：路径是**工作区相对路径**（与 ipc 的 readWorkspaceFile(rel) 同一口径）
-  return <FilePreviewPane rel={c.path} mode={c.mode} />
+  return (
+    <FilePreviewPane
+      rel={c.path}
+      mode={c.mode}
+      {...(c.dirty !== undefined ? { dirty: c.dirty } : {})}
+      onModeChange={fileProps.onModeChange}
+      onDirtyChange={fileProps.onDirtyChange}
+    />
+  )
 }
 
 /** 浏览器面板要贴边（原生视图铺满），其余面板留内边距 */
@@ -100,6 +114,22 @@ export default function Pane({
   const wbToggleCollapse = useAppStore((s) => s.wbToggleCollapse)
   const wbRemovePane = useAppStore((s) => s.wbRemovePane)
   const wbSplitRight = useAppStore((s) => s.wbSplitRight)
+  const wbSetFileMode = useAppStore((s) => s.wbSetFileMode)
+  const wbSetFileDirty = useAppStore((s) => s.wbSetFileDirty)
+
+  /**
+   * 关页签前拦一道：**有没保存的草稿时不许静默丢**（plan7 批 A3 边界①）。
+   * 拦的不是"关不掉"，而是"关之前问一句"——两个按钮都摆在眼前。
+   */
+  const [pendingClose, setPendingClose] = useState<string | null>(null)
+  const requestClose = (tabId: string): void => {
+    const t = pane.tabs.find((x) => x.id === tabId)
+    if (t?.content.kind === 'file' && t.content.dirty !== undefined) {
+      setPendingClose(tabId)
+      return
+    }
+    wbCloseTab(pane.id, tabId)
+  }
 
   // 点空白 / Esc 关掉右键菜单（与资源管理器右键菜单同一套习惯）
   useEffect(() => {
@@ -182,7 +212,13 @@ export default function Pane({
                   >
                     {t.title}
                   </button>
-                  <button className="pane-tab-x" title="关闭标签页" onClick={() => wbCloseTab(pane.id, t.id)}>
+                  {/* 脏标记：**页签上可见**，不然开着好几个页签时不知道脏的是哪个 */}
+                  {t.content.kind === 'file' && t.content.dirty !== undefined && (
+                    <span className="pane-tab-dirty" title="有没保存的修改">
+                      ●
+                    </span>
+                  )}
+                  <button className="pane-tab-x" title="关闭标签页" onClick={() => requestClose(t.id)}>
                     ✕
                   </button>
                 </span>
@@ -195,9 +231,32 @@ export default function Pane({
         </>
       )}
 
+      {/* 关页签的守卫：有草稿时摆在这儿问一句，而不是静默丢掉 */}
+      {pendingClose && (
+        <div className="pane-guard">
+          <span className="pg-text">这个文件有没保存的修改</span>
+          <button className="pg-btn" onClick={() => setPendingClose(null)}>
+            取消
+          </button>
+          <button
+            className="pg-btn"
+            onClick={() => {
+              wbSetFileDirty(pane.id, pendingClose, undefined) // 先清草稿，免得它跟着页签留在盘上
+              wbCloseTab(pane.id, pendingClose)
+              setPendingClose(null)
+            }}
+          >
+            放弃修改并关闭
+          </button>
+        </div>
+      )}
+
       <div className={`dock-body ${isFlush(active) ? 'dock-body-flush' : ''}`}>
         {active ? (
-          tabBody(active)
+          tabBody(active, {
+            onModeChange: (m) => wbSetFileMode(pane.id, active.id, m),
+            onDirtyChange: (d) => wbSetFileDirty(pane.id, active.id, d)
+          })
         ) : (
           // 本栏空着（关掉了最后一个页签）→ 就地给选择器，而不是把栏一起收掉
           <PaneChooser onPick={pick} />

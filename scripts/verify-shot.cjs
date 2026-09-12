@@ -219,6 +219,9 @@ const attachPathCalls = []
 const convRollbackCalls = []
 const convUndoCalls = []
 
+/** Markdown 轻编辑：fs:write 收到的载荷（要验"冲突基线有没有带上来"） */
+const fsWritePayloads = []
+
 /** 后台任务样例：覆盖 running（带终止按钮）与 done（带退出码）两种渲染 */
 const FAKE_BG_TASKS = [
   {
@@ -468,7 +471,9 @@ const STUBS = {
         ok: true,
         rel,
         content: '# 九十里路\n\n- 第一点\n- 第二点\n\n**加粗** 与 `行内代码`\n',
-        size: 60
+        size: 60,
+        // 编辑要用它当**冲突基线**：保存时带回去，主进程比对 mtime
+        mtimeMs: 111111
       }
     }
     return {
@@ -483,7 +488,9 @@ const STUBS = {
   // 真实落盘与边界由 tests/unit/workspace-write.test.ts 覆盖，这里验的是界面接线。
   'fs:write': (payload) => {
     fsOpLog.push(`write:${payload.rel}`)
-    return { ok: true, message: `已写入 ${payload.rel}（0 字节）` }
+    // plan7 批 A3 范围②：记下**冲突基线**有没有一起带上来（编辑保存必须带）
+    fsWritePayloads.push(payload)
+    return { ok: true, message: `已写入 ${payload.rel}（0 字节）`, mtimeMs: 222222 }
   },
   'fs:mkdir': (payload) => {
     fsOpLog.push(`mkdir:${payload.rel}`)
@@ -2596,6 +2603,145 @@ app.whenReady().then(async () => {
     })()
   `)
   await new Promise((r) => setTimeout(r, 300))
+  // —— Markdown 轻编辑（plan7 批 A3 范围②）：三条边界各验一条 ——
+  //
+  // 用真鼠标（理由同上面 ④）：`el.click()` 只发 click、不发 mousedown，
+  // 会把"mousedown 把元素干掉"这类真故障整条绕过去。
+  //
+  // ⚠️ 这一段跑在很后面，而前面几段探针动过工作台布局（分栏/关栏/换位）——
+  //    所以**先自愈地把「资源管理器」栏找回来**，否则 clickFile 点不到东西，
+  //    而失败理由会伪装成"编辑功能坏了"（"前置状态不对"和"功能坏了"长得一样，老坑）。
+  const ensureExplorerRow = async (name) => {
+    for (let i = 0; i < 8; i += 1) {
+      const has = await win.webContents.executeJavaScript(
+        "(() => !!Array.from(document.querySelectorAll('.ex-row')).find((b) => (b.textContent || '').includes('" +
+          name +
+          "')))()"
+      )
+      if (has) return true
+      // ① 有 ＋ 就点 ＋；没有（连栏都没了）就点顶栏的工作台开关
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const add = document.querySelector('.pane-add');
+          if (add) { add.click(); return true; }
+          const toggle = Array.from(document.querySelectorAll('button')).find((b) => (b.title || '').includes('工作台'));
+          if (toggle) { toggle.click(); return true; }
+          return false;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 450))
+      // ② 菜单/选择器里挑「资源管理器」
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const pick = Array.from(document.querySelectorAll('.wb-pick'))
+            .find((b) => (b.textContent || '').includes('资源管理器'));
+          if (pick) pick.click();
+          return !!pick;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 450))
+    }
+    return false
+  }
+  const explorerReady = await ensureExplorerRow('README.md')
+  await clickFile('README.md')
+  await new Promise((r) => setTimeout(r, 800))
+
+  const editPre = await win.webContents.executeJavaScript(`
+    (() => ({
+      explorerReady: ${JSON.stringify(explorerReady)},
+      hasPane: !!document.querySelector('.fp'),
+      hasModeBtn: !!Array.from(document.querySelectorAll('.fp-mode')).find((b) => (b.textContent || '').includes('编辑')),
+      hasTextarea: !!document.querySelector('.fp-textarea')
+    }))()
+  `)
+  console.log('EDIT_PRE=' + JSON.stringify(editPre))
+
+  // 点「编辑」→ 出现 textarea
+  const modePos = await centerOf('.fp-mode')
+  if (rbInputReady && modePos) await realClick(modePos.x, modePos.y, 'left')
+  await new Promise((r) => setTimeout(r, 500))
+  const editOn = await win.webContents.executeJavaScript(`
+    (() => ({ hasTextarea: !!document.querySelector('.fp-textarea') }))()
+  `)
+  console.log('EDIT_ON=' + JSON.stringify(editOn))
+
+  // 打字（用真键盘：合成的 input 事件测不出"受控组件会不会把字吞掉"）
+  const taPos = await centerOf('.fp-textarea')
+  if (rbInputReady && taPos) {
+    await realClick(taPos.x, taPos.y, 'left')
+    for (const ch of ['改', '了']) {
+      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', text: ch })
+      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp' })
+    }
+  }
+  await new Promise((r) => setTimeout(r, 600))
+  const dirtyState = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasDirtyBadge: !!document.querySelector('.fp-dirty'),
+      hasTabDot: !!document.querySelector('.pane-tab-dirty'),
+      text: (document.querySelector('.fp-textarea')?.value ?? '').slice(0, 12)
+    }))()
+  `)
+  console.log('EDIT_DIRTY=' + JSON.stringify(dirtyState))
+
+  // 保存（真点保存按钮）
+  fsWritePayloads.length = 0
+  const savePos = await centerOf('.fp-edit-bar .fp-btn')
+  if (rbInputReady && savePos) await realClick(savePos.x, savePos.y, 'left')
+  await new Promise((r) => setTimeout(r, 800))
+  const savedState = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasDirtyBadge: !!document.querySelector('.fp-dirty'),
+      hasTabDot: !!document.querySelector('.pane-tab-dirty'),
+      msg: (document.querySelector('.fp-msg')?.textContent ?? '').trim()
+    }))()
+  `)
+  console.log('EDIT_SAVED=' + JSON.stringify({ writes: fsWritePayloads, ...savedState }))
+
+  // 边界①：改了没存 → 点页签 ✕ **不许直接关掉**
+  if (rbInputReady && taPos) {
+    await realClick(taPos.x, taPos.y, 'left')
+    for (const ch of ['未', '存']) {
+      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', text: ch })
+      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp' })
+    }
+  }
+  await new Promise((r) => setTimeout(r, 500))
+  // 打字之后**先确认真的脏了** —— 否则下面"守卫没出现"就分不清是守卫坏了还是根本没脏
+  const dirtyAgain = await win.webContents.executeJavaScript(`
+    (() => ({ hasDirtyBadge: !!document.querySelector('.fp-dirty') }))()
+  `)
+  // ⚠️ 必须点**这个文件那个页签**的 ✕：`centerOf('.pane-tab-x')` 拿到的是 DOM 里第一个，
+  //    而前面几段探针开过别的页签 —— 点错会关掉别的栏，然后失败理由伪装成"守卫没生效"
+  const xPos = await win.webContents.executeJavaScript(
+    "(() => { const tab = Array.from(document.querySelectorAll('.pane-tab')).find((t) => (t.textContent || '').includes('README.md')); if (!tab) return null; const el = tab.querySelector('.pane-tab-x'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } })()"
+  )
+  if (rbInputReady && xPos) await realClick(xPos.x, xPos.y, 'left')
+  await new Promise((r) => setTimeout(r, 500))
+  const guardState = await win.webContents.executeJavaScript(`
+    (() => ({
+      guard: (document.querySelector('.pane-guard .pg-text')?.textContent ?? '').trim(),
+      stillOpen: !!document.querySelector('.fp-textarea'),
+      buttons: Array.from(document.querySelectorAll('.pane-guard .pg-btn')).map((b) => (b.textContent || '').trim())
+    }))()
+  `)
+  console.log('EDIT_GUARD=' + JSON.stringify({ dirtyAgain: dirtyAgain.hasDirtyBadge, clickedX: !!xPos, ...guardState }))
+
+  // 收尾：按「放弃修改并关闭」
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.pane-guard .pg-btn')).find((x) => (x.textContent || '').includes('放弃'));
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const closed = await win.webContents.executeJavaScript(`
+    (() => ({ hasTextarea: !!document.querySelector('.fp-textarea') }))()
+  `)
+  console.log('EDIT_CLOSED=' + JSON.stringify(closed))
+
   if (rbInputReady) {
     try {
       dbg.detach()
@@ -2633,6 +2779,24 @@ app.whenReady().then(async () => {
     cfText.text.includes('仅回滚对话消息'), cfText.text.slice(0, 120))
   checkTrue('确认框**不含**文件回滚的措辞（分得清）',
     !/文件已还原|已还原文件|回滚文件/.test(cfText.text), cfText.text.slice(0, 160))
+
+  // —— Markdown 轻编辑（plan7 批 A3 范围②）——
+  checkTrue('前置：文件开在预览栏里，且有「编辑」入口', editPre.hasPane === true && editPre.hasModeBtn === true, editPre)
+  checkTrue('点「编辑」→ 出现编辑区', editOn.hasTextarea === true, editOn)
+  checkTrue('打字后**页面上看得见"未保存"**（头部标记 + 页签脏点，两处都要有）',
+    dirtyState.hasDirtyBadge === true && dirtyState.hasTabDot === true && dirtyState.text.length > 0, dirtyState)
+  checkTrue('点「保存」→ 真的写了盘（不是只改了个提示）', fsWritePayloads.length === 1, fsWritePayloads)
+  check('保存时**带上了冲突基线**（mtime；不带就等于"盲写"）',
+    fsWritePayloads[0]?.expectedMtimeMs, 111111)
+  checkTrue('保存后**脏标记收回去**（两处都收）',
+    savedState.hasDirtyBadge === false && savedState.hasTabDot === false, savedState)
+  // 边界①：脏标记守卫 —— 这条是 plan7 验收里写死的那句"改了没存就关页签 → 有提示"
+  checkTrue('**改了没存就关页签 → 被拦下来问一句**（不静默丢）',
+    guardState.guard.includes('没保存'), guardState)
+  checkTrue('拦下来时**页签还在**（只是问了句，没有关掉）', guardState.stillOpen === true, guardState)
+  checkTrue('守卫条给的是两个明确选择（取消 / 放弃修改并关闭）',
+    guardState.buttons.length === 2 && guardState.buttons.some((b) => b.includes('取消')), guardState.buttons)
+  checkTrue('选「放弃修改并关闭」→ 页签真的关掉了', closed.hasTextarea === false, closed)
 
   reportAndExit()
 })

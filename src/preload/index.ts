@@ -90,7 +90,12 @@ const api: ApiBridge = {
   readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel),
   readWorkspaceBinary: (rel) => ipcRenderer.invoke(IPC.fsReadBinary, rel),
   // ── 工作区写操作（plan7 批 A2）：全部走统一写入服务（留检查点、可回滚）──
-  writeWorkspaceFile: (rel, content) => ipcRenderer.invoke(IPC.fsWrite, { rel, content }),
+  writeWorkspaceFile: (rel, content, expectedMtimeMs) =>
+    ipcRenderer.invoke(IPC.fsWrite, {
+      rel,
+      content,
+      ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs })
+    }),
   createWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsMkdir, { rel }),
   renameWorkspacePath: (rel, nextRel) => ipcRenderer.invoke(IPC.fsRename, { rel, nextRel }),
   deleteWorkspacePath: (rel) => ipcRenderer.invoke(IPC.fsDelete, { rel }),

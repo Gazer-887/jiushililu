@@ -1640,6 +1640,138 @@ label.radio {
   box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
 }
 
+/* ── Markdown 轻编辑（plan7 批 A3 范围②）────────────────────────
+   一条设计原则：**编辑是"够改就行"**，不是通用编辑器 —— 语法高亮/多光标/大文件
+   都留给批 B 的 Monaco。所以这里只有一个 textarea，力气花在三条边界上。 */
+.fp-mode {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-6);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.fp-mode:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+/* 「未保存」标记：不管在预览还是编辑态都显示 —— 页签上有草稿时也看得到 */
+.fp-dirty {
+  font-size: var(--fs-xs);
+  color: var(--warn-fg, var(--warn-deep));
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-2);
+  flex-shrink: 0;
+}
+
+.fp-edit-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.fp-btn {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-8);
+  cursor: pointer;
+}
+
+.fp-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.fp-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fp-hint,
+.fp-msg {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* 冲突提示（边界②）：走警示色 —— 这是"你的修改没写下去"这件事 */
+.fp-warn {
+  font-size: var(--fs-xs);
+  color: var(--warn-fg, var(--warn-deep));
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-4);
+}
+
+.fp-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  padding: var(--sp-8);
+  border: 0;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+/* 关页签的守卫条（边界①）：有草稿时问一句，不静默丢 */
+.pane-guard {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-6) var(--sp-8);
+  background: var(--warn-soft);
+  border-bottom: 1px solid var(--warn-border);
+  font-size: var(--fs-sm);
+}
+
+.pg-text {
+  flex: 1;
+  color: var(--warn-fg, var(--warn-deep));
+}
+
+.pg-btn {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-6);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pg-btn:hover {
+  background: var(--bg);
+  border-color: var(--accent-border);
+}
+
+/* 页签上的脏点：开着好几个页签时，一眼看出脏的是哪个 */
+.pane-tab-dirty {
+  font-size: var(--fs-xs);
+  color: var(--warn-fg, var(--warn-deep));
+  flex-shrink: 0;
+}
+
 /* ── 会话回滚提示条（plan10 B 批 · ④）──────────────────────────
    回滚之后必须**再声明一次作用域**（用户会担心"文件是不是也退了"），
    并给一个撤销入口 —— 回滚只移游标不删数据，撤销是零成本的。 */

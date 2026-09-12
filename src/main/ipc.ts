@@ -104,6 +104,7 @@ import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } fr
 import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
+import { statSync } from 'node:fs'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
 import { readGitInfo } from './store/git-info'
 import {
@@ -740,7 +741,12 @@ export function registerIpcHandlers(deps: {
   //   ③ 删除走 shell.trashItem（回收站），不是硬删
   const fsWriteInput = z.object({
     rel: z.string().min(1).max(1024),
-    content: z.string().max(5_000_000)
+    content: z.string().max(5_000_000),
+    /**
+     * 冲突基线（编辑时带上；文件树的新建/重命名那条**不带**，因为本来就没有"打开"这一步）。
+     * 带了就比对 mtime：对不上**不写盘**，回 `conflict: true` 让用户选 —— 不做静默覆盖。
+     */
+    expectedMtimeMs: z.number().nonnegative().optional()
   })
   const fsRelInput = z.object({ rel: z.string().min(1).max(1024) })
   const fsRenameInput = z.object({
@@ -775,10 +781,52 @@ export function registerIpcHandlers(deps: {
     }
   }
 
-  ipcMain.handle(IPC.fsWrite, (_e, raw: unknown): Promise<FsOpResult> => {
+  ipcMain.handle(IPC.fsWrite, async (_e, raw: unknown): Promise<FsOpResult> => {
     const p = fsWriteInput.safeParse(raw)
-    if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
-    return runFsOp('界面 · 写文件', (w) => w.write(p.data.rel, p.data.content))
+    if (!p.success) return { ok: false, message: '入参不合法' }
+    const workspaceRoot = deps.agent.getWorkspaceRoot()
+
+    // **边界②：外部冲突**（plan7 批 A3）——
+    // 文件可能在"打开之后、保存之前"被改过（Agent 或别的程序）。
+    // 这时**不许静默覆盖**：把冲突如实回给界面，由用户选"覆盖 / 重新载入"。
+    // 拿不到 mtime（文件刚被删）也当作冲突 —— 那种情况更不该闷头写下去。
+    if (p.data.expectedMtimeMs !== undefined) {
+      const abs = resolveInsideWorkspace(workspaceRoot, p.data.rel)
+      if (!abs) return { ok: false, message: `路径「${p.data.rel}」越出工作区边界，已拒绝` }
+      let currentMtime: number | null = null
+      try {
+        currentMtime = statSync(abs).mtimeMs
+      } catch {
+        currentMtime = null
+      }
+      if (currentMtime === null || Math.abs(currentMtime - p.data.expectedMtimeMs) > 1) {
+        log.info('保存被拦下：文件在打开之后被改过', {
+          rel: p.data.rel,
+          expected: p.data.expectedMtimeMs,
+          current: currentMtime
+        })
+        return {
+          ok: false,
+          conflict: true,
+          message: currentMtime === null ? '这个文件已经不在了（可能被删或改名）' : '文件在打开之后被改过',
+          ...(currentMtime !== null ? { mtimeMs: currentMtime } : {})
+        }
+      }
+    }
+
+    const res = await runFsOp('界面 · 写文件', (w) => w.write(p.data.rel, p.data.content))
+    if (!res.ok) return res
+    // 写成功 → 回新的 mtime 当基线（编辑器据此继续编辑不会立刻自撞"冲突"）
+    const abs = resolveInsideWorkspace(workspaceRoot, p.data.rel)
+    let mtimeMs: number | undefined
+    if (abs) {
+      try {
+        mtimeMs = statSync(abs).mtimeMs
+      } catch {
+        mtimeMs = undefined
+      }
+    }
+    return { ...res, ...(mtimeMs !== undefined ? { mtimeMs } : {}) }
   })
 
   ipcMain.handle(IPC.fsMkdir, (_e, raw: unknown): Promise<FsOpResult> => {

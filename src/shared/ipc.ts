@@ -309,6 +309,13 @@ export type { FsEntry, FsBinaryResult, FsListResult, FsReadResult } from './fs-t
 export interface FsOpResult {
   ok: boolean
   message: string
+  /**
+   * **外部冲突**（plan7 批 A3 范围② 的边界②）：文件在"打开之后、保存之前"被改过。
+   * 这时**不写盘**，让用户选（覆盖 / 重新载入）—— 不做静默覆盖。
+   */
+  conflict?: boolean
+  /** 写成功后的新 mtime（毫秒）：编辑器拿它当新的冲突基线 */
+  mtimeMs?: number
 }
 
 /** 待办清单（plan7 批 D 提前落地）—— 定义见 @shared/todo */
@@ -472,7 +479,7 @@ export interface ApiBridge {
   readWorkspaceBinary(rel: string): Promise<FsBinaryResult>
   // ── 工作区写操作（plan7 批 A2）──
   // 全部经**统一写入服务**：留检查点快照 → 操作同样出现在「文件变更记录」里、同样退得回
-  writeWorkspaceFile(rel: string, content: string): Promise<FsOpResult>
+  writeWorkspaceFile(rel: string, content: string, expectedMtimeMs?: number): Promise<FsOpResult>
   createWorkspaceDir(rel: string): Promise<FsOpResult>
   renameWorkspacePath(rel: string, nextRel: string): Promise<FsOpResult>
   /** 删除到**回收站**（不是硬删 —— 误删还能自己捞回来） */

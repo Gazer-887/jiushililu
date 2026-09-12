@@ -2,18 +2,35 @@ import { useEffect, useState } from 'react'
 import { formatSize, imageMimeOf, isTextPreviewable } from '@shared/fs-tree'
 import MessageMarkdown from './MessageMarkdown'
 
-// 文件预览（plan9 W3 从 ExplorerPanel 抽出；plan7 批 A3 扩展了**二进制**这条路）。
+// 文件预览 + **Markdown 轻编辑**（plan9 W3 抽出；plan7 批 A3 范围②）
 //
-// 改造后文件可以开在**自己的栏**里（右侧独立成栏），所以预览逻辑抽成组件，
-// 资源管理器与工作台栏两处共用同一份。
+// 编辑器故意**不是 Monaco**：这一批要的是"够改就行"，通用代码编辑器是批 B 的事
+//（语法高亮 / 多光标 / 大文件 / Diff 都在那边）。这里就是一个 textarea + 保存。
 //
-// 本批只读：编辑（Markdown 轻编辑）是批 A3 的第二块，`mode` 字段已在模型里预留。
+// ## 三条边界（计划里写死的，不写清就会出"丢数据"这类事）
+//
+//   ① **脏标记**：改了没存 → 页签上打点、关页签时**拦住问一句**（不静默丢）。
+//      草稿住在布局的 `tab.content.dirty` 里（不是组件 state）——
+//      切换页签会让本组件**卸载**，存组件里当场就没；存布局里则连**重启都还在**。
+//   ② **外部冲突**：文件可能被 Agent 或别的程序改过 → 保存前比对 mtime，
+//      不一致**不写盘**，给"覆盖 / 重新载入"两个选择，**不做静默覆盖**。
+//   ③ **大文件**：超过预览上限（256KB）的文件**不给编辑** ——
+//      因为读都只读了前一段，保存回去会把没读到的部分**整个冲掉**。
+//
+// ## 保存为什么走 `writeWorkspaceFile`
+//
+// 那是**统一写入服务**：界面与 Agent 走同一条路 → 自动进检查点 →
+// 「文件变更记录」里看得见、退得回（plan7 批 A2 立的地基，这里只是它的消费者）。
 
 interface Props {
   /** 工作区相对路径 */
   rel: string
-  /** 预览 / 编辑 —— 编辑（批 A3 第二块）尚未接入，这里先只做预览 */
+  /** 预览 / 编辑 */
   mode?: 'preview' | 'edit'
+  /** 未保存的草稿（来自布局；有它才算"脏"） */
+  dirty?: string
+  onModeChange?: (mode: 'preview' | 'edit') => void
+  onDirtyChange?: (dirty: string | undefined) => void
 }
 
 /**
@@ -24,7 +41,7 @@ interface Props {
  */
 type View =
   | { kind: 'loading' }
-  | { kind: 'text'; content: string; truncated: boolean }
+  | { kind: 'text'; content: string; truncated: boolean; mtimeMs?: number }
   | { kind: 'image'; dataUrl: string }
   | { kind: 'binary'; hexHead: string }
   | { kind: 'tooLarge'; size: number }
@@ -37,12 +54,25 @@ const baseName = (rel: string): string => {
   return parts.length > 0 ? parts[parts.length - 1] : rel
 }
 
-export default function FilePreviewPane({ rel, mode = 'preview' }: Props): JSX.Element {
+export default function FilePreviewPane({
+  rel,
+  mode = 'preview',
+  dirty,
+  onModeChange,
+  onDirtyChange
+}: Props): JSX.Element {
   const [view, setView] = useState<View>({ kind: 'loading' })
+  /** 编辑器里的文本（进入编辑 / 载入文件时用 `dirty ?? 磁盘内容` 初始化） */
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  const [conflict, setConflict] = useState(false)
 
   useEffect(() => {
     let alive = true
     setView({ kind: 'loading' })
+    setSaveMsg(null)
+    setConflict(false)
 
     const name = baseName(rel)
 
@@ -68,7 +98,14 @@ export default function FilePreviewPane({ rel, mode = 'preview' }: Props): JSX.E
           // 失效路径**不为空**：文件被删/换了工作区时，页签仍在、只是显错
           return setView({ kind: 'error', message: res.error ?? '读取失败' })
         }
-        setView({ kind: 'text', content: res.content, truncated: res.truncated === true })
+        setView({
+          kind: 'text',
+          content: res.content,
+          truncated: res.truncated === true,
+          ...(res.mtimeMs !== undefined ? { mtimeMs: res.mtimeMs } : {})
+        })
+        // 草稿优先：切回这个页签时，没保存的内容要还在
+        setDraft(dirty ?? res.content)
       })
       return () => {
         alive = false
@@ -85,7 +122,68 @@ export default function FilePreviewPane({ rel, mode = 'preview' }: Props): JSX.E
     return () => {
       alive = false
     }
+    // `dirty` 刻意**不进依赖**：它每次按键都变，进依赖会把文件重读一遍、
+    // 顺带把刚打的字冲掉。切回页签时草稿由组件重新挂载时读取，够用。
   }, [rel])
+
+  /** 能编辑的前提：是文本，**且没被截断**（边界③ —— 截断的文件保存回去会冲掉后半段） */
+  const canEdit = view.kind === 'text' && !view.truncated
+  const editing = mode === 'edit' && canEdit
+
+  const reload = async (): Promise<void> => {
+    const res = await window.api.readWorkspaceFile(rel)
+    if (!res.ok) return setView({ kind: 'error', message: res.error ?? '读取失败' })
+    setView({
+      kind: 'text',
+      content: res.content,
+      truncated: res.truncated === true,
+      ...(res.mtimeMs !== undefined ? { mtimeMs: res.mtimeMs } : {})
+    })
+    setDraft(res.content)
+    setConflict(false)
+    setSaveMsg('已按磁盘上的内容重新载入')
+    onDirtyChange?.(undefined)
+  }
+
+  /**
+   * 保存。
+   * `force = true` 走"覆盖"：**不带** mtime 基线，主进程就不做冲突检查（用户明确选了覆盖）。
+   */
+  const save = async (force = false): Promise<void> => {
+    if (view.kind !== 'text' || saving) return
+    setSaving(true)
+    setSaveMsg(null)
+    try {
+      const res = await window.api.writeWorkspaceFile(
+        rel,
+        draft,
+        force ? undefined : view.mtimeMs
+      )
+      if (!res.ok) {
+        if (res.conflict) {
+          // **不静默覆盖**：把选择权交回用户（边界②）
+          setConflict(true)
+          return
+        }
+        setSaveMsg(res.message)
+        return
+      }
+      setConflict(false)
+      setSaveMsg('已保存')
+      // 基线跟着更新，否则下一次保存会自己撞上"文件被改过"（就是自己刚写的）
+      setView((v) => (v.kind === 'text' ? { ...v, content: draft, mtimeMs: res.mtimeMs } : v))
+      onDirtyChange?.(undefined)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const onEdit = (next: string): void => {
+    setDraft(next)
+    // 草稿写回布局（父组件防抖落盘）；与磁盘一致时算"不脏"
+    const disk = view.kind === 'text' ? view.content : ''
+    onDirtyChange?.(next === disk ? undefined : next)
+  }
 
   return (
     <div className="fp">
@@ -93,7 +191,16 @@ export default function FilePreviewPane({ rel, mode = 'preview' }: Props): JSX.E
         <span className="fp-name" title={rel}>
           {baseName(rel)}
         </span>
-        {mode === 'edit' && <span className="fp-badge">编辑（批 A3 接入中）</span>}
+        {dirty !== undefined && <span className="fp-dirty">未保存</span>}
+        {canEdit && (
+          <button
+            className="fp-mode"
+            title={editing ? '切回预览（草稿会留着）' : '编辑这个文件'}
+            onClick={() => onModeChange?.(editing ? 'preview' : 'edit')}
+          >
+            {editing ? '预览' : '编辑'}
+          </button>
+        )}
       </div>
 
       {view.kind === 'error' && <div className="ex-msg ex-err">{view.message}</div>}
@@ -107,15 +214,58 @@ export default function FilePreviewPane({ rel, mode = 'preview' }: Props): JSX.E
 
       {view.kind === 'text' && (
         <>
-          {view.truncated && <div className="ex-msg">文件较大，仅显示前 256 KB</div>}
-          {isMarkdown(rel) ? (
-            <div className="fp-md">
-              <MessageMarkdown content={view.content} />
+          {view.truncated && (
+            <div className="ex-msg">
+              文件较大，仅显示前 256 KB —— 因此这个文件不提供编辑：
+              保存回去会把没读到的部分冲掉。
             </div>
-          ) : (
-            <pre className="fp-pre">{view.content}</pre>
           )}
-          <div className="fp-size">{formatSize(view.content.length)}</div>
+          {editing ? (
+            <>
+              <div className="fp-edit-bar">
+                <button className="fp-btn" disabled={saving} onClick={() => void save()}>
+                  保存
+                </button>
+                <span className="fp-hint">Ctrl+S</span>
+                {conflict ? (
+                  <>
+                    <span className="fp-warn">文件在打开之后被改过</span>
+                    <button className="fp-btn" onClick={() => void save(true)}>
+                      覆盖
+                    </button>
+                    <button className="fp-btn" onClick={() => void reload()}>
+                      重新载入
+                    </button>
+                  </>
+                ) : (
+                  saveMsg && <span className="fp-msg">{saveMsg}</span>
+                )}
+              </div>
+              <textarea
+                className="fp-textarea"
+                spellCheck={false}
+                value={draft}
+                onChange={(e) => onEdit(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                    e.preventDefault()
+                    void save()
+                  }
+                }}
+              />
+            </>
+          ) : (
+            <>
+              {isMarkdown(rel) ? (
+                <div className="fp-md">
+                  <MessageMarkdown content={draft || view.content} />
+                </div>
+              ) : (
+                <pre className="fp-pre">{draft || view.content}</pre>
+              )}
+              <div className="fp-size">{formatSize((draft || view.content).length)}</div>
+            </>
+          )}
         </>
       )}
 
