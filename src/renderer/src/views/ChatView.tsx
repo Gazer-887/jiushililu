@@ -30,17 +30,34 @@ export default function ChatView() {
   /** 消息右键菜单（回到这条之前）；null = 关着 */
   const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null)
 
+  /**
+   * 消息右键菜单的容器。**必须用它判"点在不在菜单里"** —— 见下面 effect 的注释。
+   */
+  const menuRef = useRef<HTMLDivElement>(null)
+
   // 点空白 / Esc 关菜单（与资源管理器、工作台页签同一套习惯，不另铺一层遮罩）
   useEffect(() => {
     if (!menu) return
-    const close = (): void => setMenu(null)
+    const onDown = (e: MouseEvent): void => {
+      // ⚠️ **必须判"点在不在菜单里"**：document 上的 `mousedown` 早于 `click`，
+      //    无条件关菜单会把按钮**在 mousedown 那一刻就卸载掉** —— 而 `click` 要求
+      //    mousedown 与 mouseup 落在**同一个元素**上，于是 click 永远不会发生，
+      //    菜单看着好好的、点下去什么也不发生。
+      //    （这就是 0.13.6 用户报的"回滚失败"：请求压根没发出去，主进程日志里一条都没有。）
+      //
+      // ⚠️ 而这个 bug **合成 click 测不出来**：`el.click()` 只派发 click、不发 mousedown，
+      //    正好绕过整条竞态 —— 与拖拽那次"合成事件天生为绿"是同一个病。
+      //    所以 verify-shot 里的菜单交互已改成**真鼠标**（CDP mousePressed/mouseReleased）。
+      if (menuRef.current?.contains(e.target as Node)) return
+      setMenu(null)
+    }
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') setMenu(null)
     }
-    document.addEventListener('mousedown', close)
+    document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
     return () => {
-      document.removeEventListener('mousedown', close)
+      document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
   }, [menu])
@@ -223,7 +240,7 @@ export default function ChatView() {
       {/* 消息右键菜单：一条命令，放在消息旁边而不是统一塞进某个面板里。
           样式复用工作台那份（`.wb-menu` + `.wb-pick`），不另造一套。 */}
       {menu && (
-        <div className="wb-menu" style={{ left: menu.x, top: menu.y }}>
+        <div className="wb-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
           <button
             className="wb-pick"
             onClick={() => {

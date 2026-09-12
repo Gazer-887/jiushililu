@@ -207,29 +207,40 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
      *
      * ⚠️ 有了游标之后，这里要**对账**而不是"照单全收"：渲染端交上来的是一份
      * "我希望看到的历史"，而磁盘上还躺着可能更长的**完整日志**（含被回滚掉的尾巴）。
-     * 四种情形：
-     *   ① 变长 / 等长，且是前缀（末条允许不同 —— 流式原地生长）→ **追加/原地更新**，
-     *      并把尾巴**丢掉**（用户已经往下说了，那条分支作废）
-     *   ② 变短，且仍是前缀 → **回滚**：尾巴留着（可撤销）
-     *   ③ 认不出前缀（将来的编辑功能等）→ **整份重写**（安全优先，不猜）
-     *   ④ 内容没变 → 什么都不用改（但仍会写一遍索引，保持"索引跟着正文"）
+     * 四种情形（`v` = 可见部分，`t` = 被回滚掉的尾巴，`m` = 渲染端交上来的）：
+     *   ① `m` **比 v 长**且 v 是它的前缀 → **真的有新消息**：日志 = `m`，`t` **作废**
+     *      （用户已经往下说了，那条分支不再可能被撤销）
+     *   ② `m` 与 `v` **等长**且 v 是它的前缀 → **原地更新 / 原样回传**：
+     *      日志 = `m + t`，游标不动 —— **尾巴必须留着**，撤销还得靠它
+     *   ③ `m` **比 v 短**且 m 是 v 的前缀 → **回滚**：日志**原样不动**，只移游标
+     *   ④ 认不出前缀（将来的编辑功能等）→ **整份重写**（安全优先，不猜）
+     *
+     * 🐞 **情形 ② 是 0.13.6 的一个真 bug 的修复处**：原先 ① 的条件写的是
+     * `m.length >= v.length`（把"等长"也划进去了），于是**回滚之后只要发生一次保存**
+     * （切会话 / 点停止 / 关窗口都会触发），`m` 就等于 v、走 ①，日志被写成 `m` ——
+     * **尾巴当场被抹掉，"撤销"从此静默失效**。
+     * 症状极难查：回滚看着是成功的，只有点撤销时才"什么都没发生"。
      */
     saveConversation(id, messages) {
       const current = backend.readMeta()[id]
       if (!current) return null
       const log = backend.readMessages(id)
       const visible = visibleOf(current, log)
+      const tail = log.slice(visible.length)
 
       let nextLog: ChatMessage[]
       let cursor: number
-      if (messages.length >= visible.length && isPrefixWithMutableTail(visible, messages)) {
-        nextLog = messages // ① 追加 / 原地更新：尾巴作废
+      if (messages.length > visible.length && isPrefixWithMutableTail(visible, messages)) {
+        nextLog = messages // ① 有新消息：尾巴作废
+        cursor = messages.length
+      } else if (messages.length === visible.length && isPrefixWithMutableTail(visible, messages)) {
+        nextLog = [...messages, ...tail] // ② 原地更新 / 原样：**尾巴留着**
         cursor = messages.length
       } else if (messages.length < visible.length && isPrefixWithMutableTail(messages, visible)) {
-        nextLog = log // ② 回滚：**不裁数据**，只移游标
+        nextLog = log // ③ 回滚：不裁数据，只移游标
         cursor = messages.length
       } else {
-        nextLog = messages // ③ 整份重写
+        nextLog = messages // ④ 整份重写
         cursor = messages.length
       }
 

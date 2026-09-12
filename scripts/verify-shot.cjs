@@ -2456,10 +2456,49 @@ app.whenReady().then(async () => {
 
   // —— ④ 会话回滚（plan10 B 批）：右键一条消息 → 回到这条之前 → 可撤销 ——
   //
-  // 说明：这里的**右键与点击用合成事件**是够的 —— 浏览器不对 `contextmenu`
-  // 与 `click` 做"能不能触发"的门控（与拖拽不同，拖拽必须真手势，见上面 ③ 的注释）。
-  // 这一段的重点是**载荷与状态**：回滚调用带没带对下标、回滚后界面换没换成权威正文、
-  // 撤销能不能把条数换回来、以及**确认框的文案与"文件回滚"分不分得清**。
+  // ⚠️⚠️ **这里必须用真鼠标**（CDP mousePressed/mouseReleased），不能用 `el.click()`。
+  //    0.13.6 就是这么漏掉一个真 bug 的：菜单容器上挂着 document 的 `mousedown` 关闭监听，
+  //    而 `mousedown` **早于** `click` —— 于是按钮在 mousedown 那一刻就被卸载，
+  //    `click` 永远不会触发（它要求按下与松开落在同一个元素上）。
+  //    用户点下去什么也不发生；而 `el.click()` **只派发 click、不发 mousedown**，
+  //    正好绕过整条竞态 → 断言全绿。
+  //    **合成事件天生为绿**，这是本项目第二次栽在同一个坑里（第一次是拖拽）。
+  let rbInputReady = false
+  try {
+    dbg.attach('1.3')
+    rbInputReady = true
+  } catch (err) {
+    console.log('RB_INPUT_UNAVAILABLE=' + (err && err.message ? err.message : String(err)))
+  }
+
+  const centerOf = (sel) =>
+    win.webContents.executeJavaScript(
+      "(() => { const el = document.querySelector('" +
+        sel +
+        "'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } })()"
+    )
+
+  /** 真鼠标点一下 */
+  const realClick = async (x, y, button) => {
+    const buttons = button === 'right' ? 2 : 1
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x,
+      y,
+      button,
+      buttons,
+      clickCount: 1
+    })
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x,
+      y,
+      button,
+      buttons: 0,
+      clickCount: 1
+    })
+  }
+
   await win.webContents.executeJavaScript(`
     (() => {
       const item = Array.from(document.querySelectorAll('.conv-item'))
@@ -2478,20 +2517,14 @@ app.whenReady().then(async () => {
   `)
   console.log('RB_PRECONDITION=' + JSON.stringify(rbPre))
 
-  // 右键第一条消息 → 菜单
-  const rbMenu = await win.webContents.executeJavaScript(`
-    (() => {
-      const first = document.querySelector('.msg');
-      if (!first) return { ok: false, reason: 'no-msg' };
-      const r = first.getBoundingClientRect();
-      first.dispatchEvent(new MouseEvent('contextmenu', {
-        bubbles: true, cancelable: true,
-        clientX: Math.round(r.left + 20), clientY: Math.round(r.top + 10)
-      }));
-      return { ok: true };
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 300))
+  // 真右键第一条消息 → 菜单
+  const msgPos = await centerOf('.msg')
+  let rbMenu = { ok: false, reason: 'no-msg-or-no-input' }
+  if (rbInputReady && msgPos) {
+    await realClick(msgPos.x, msgPos.y, 'right')
+    await new Promise((r) => setTimeout(r, 400))
+    rbMenu = { ok: true, via: 'real-right-click' }
+  }
   const rbMenuState = await win.webContents.executeJavaScript(`
     (() => {
       const item = Array.from(document.querySelectorAll('.wb-menu button'))
@@ -2501,15 +2534,13 @@ app.whenReady().then(async () => {
   `)
   console.log('RB_MENU=' + JSON.stringify({ ...rbMenu, ...rbMenuState }))
 
-  // 点它 → 回滚
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const item = Array.from(document.querySelectorAll('.wb-menu button'))
-        .find((b) => (b.textContent || '').includes('回到这条之前'));
-      if (item) item.click();
-      return !!item;
-    })()
-  `)
+  // **真左键**点菜单项 → 回滚（这一下如果退化成 el.click() 就再也测不出那个 bug 了）
+  const itemPos = await centerOf('.wb-menu button')
+  let rbClicked = { ok: false, reason: 'no-menu-item-or-no-input' }
+  if (rbInputReady && itemPos) {
+    await realClick(itemPos.x, itemPos.y, 'left')
+    rbClicked = { ok: true }
+  }
   await new Promise((r) => setTimeout(r, 900))
   const rbAfter = await win.webContents.executeJavaScript(`
     (() => ({
@@ -2520,9 +2551,9 @@ app.whenReady().then(async () => {
       menuClosed: !document.querySelector('.wb-menu')
     }))()
   `)
-  console.log('RB_AFTER=' + JSON.stringify({ calls: convRollbackCalls, ...rbAfter }))
+  console.log('RB_AFTER=' + JSON.stringify({ calls: convRollbackCalls, clicked: rbClicked, ...rbAfter }))
 
-  // 撤销 → 条数换回来
+  // 撤销 → 条数换回来（这一下用合成 click 就够了：撤销按钮没有"mousedown 把自己卸载"的问题）
   await win.webContents.executeJavaScript(`
     (() => {
       const b = Array.from(document.querySelectorAll('.rb-btn')).find((x) => (x.textContent || '').includes('撤销'));
@@ -2565,14 +2596,23 @@ app.whenReady().then(async () => {
     })()
   `)
   await new Promise((r) => setTimeout(r, 300))
+  if (rbInputReady) {
+    try {
+      dbg.detach()
+    } catch {
+      // 已断开就算了
+    }
+  }
 
   // —— ④ 会话回滚的断言（紧跟探针，避免暂时性死区）——
   checkTrue('前置状态：会话页开着、里面有消息（否则下面几条失败说明不了任何事）',
     rbPre.hasChat === true && rbPre.msgs >= 2, rbPre)
   checkTrue('**右键消息**能开出菜单，且里面有「回到这条之前」',
     rbMenu.ok === true && rbMenuState.hasItem === true, { ...rbMenu, ...rbMenuState })
-  checkTrue('点了之后**真的把回滚发下去了**（不是只画了个菜单）',
-    convRollbackCalls.length === 1, convRollbackCalls)
+  checkTrue('真鼠标通道可用（否则上面那条只是合成事件，测不出"点下去没反应"）',
+    rbInputReady === true, { rbInputReady })
+  checkTrue('**真鼠标点**菜单项 → 回滚请求真的发出去了（这一下就是 0.13.6 漏掉的那个 bug）',
+    rbClicked.ok === true && convRollbackCalls.length === 1, { clicked: rbClicked, calls: convRollbackCalls })
   check('回滚载荷带的是**被右键那条的下标**（右键第一条 → 0）',
     convRollbackCalls[0]?.toIndex, 0)
   checkTrue('回滚后**消息变少了** —— 界面换成了主进程给的权威正文',

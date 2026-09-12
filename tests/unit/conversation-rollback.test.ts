@@ -198,6 +198,34 @@ describe('回滚之后继续说话：**尾巴何时作废**（唯一会真丢东
     expect(repo.undoRollback('c')!.messages).toHaveLength(8) // 撤得回来
   })
 
+  it('🐞 **回滚之后哪怕发生一次"原样保存"，尾巴也必须还在**（0.13.6 的真 bug）', () => {
+    // 症状：回滚看着是成功的，点「撤销」却什么都没发生。
+    // 根因：四种对账情形里"等长"被划进了"追加"那一档，于是回滚后**任何一次保存**
+    //（切会话 / 点停止 / 关窗口都会触发）都会把日志写成可见的那份 —— **尾巴当场被抹掉**。
+    const m = memBackend(metaOf(), eightTurns)
+    const repo = createConversationsRepo(m.backend)
+    repo.rollbackConversation('c', 4)
+    const visible = repo.getConversation('c')!.messages
+
+    // 原样保存一次（这正是切会话/关窗口时会发生的事）
+    repo.saveConversation('c', visible)
+
+    expect(m.log()).toHaveLength(8) // ← 尾巴还在（修之前这里是 4）
+    expect(repo.undoRollback('c')!.messages).toEqual(eightTurns) // 撤销仍然有效
+  })
+
+  it('原地更新时尾巴也留着（流式生长 ≠ 新分支）', () => {
+    const m = memBackend(metaOf(), eightTurns)
+    const repo = createConversationsRepo(m.backend)
+    repo.rollbackConversation('c', 6) // 尾巴 = 最后 2 条
+    const visible = repo.getConversation('c')!.messages
+    repo.saveConversation('c', [...visible.slice(0, -1), a('末条被改写了')])
+
+    expect(m.log()).toHaveLength(8) // 尾巴没被动
+    expect(m.log()[5]!.content).toBe('末条被改写了') // 可见部分被更新了
+    expect(repo.undoRollback('c')!.messages).toHaveLength(8)
+  })
+
   it('认不出前缀（将来的编辑功能等）→ **整份重写**，不猜', () => {
     const m = memBackend(metaOf(), eightTurns)
     const repo = createConversationsRepo(m.backend)
