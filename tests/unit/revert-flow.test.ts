@@ -24,7 +24,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCheckpointStore, type CheckpointStore } from '@main/store/checkpoints'
 import { createWorkspaceWriter } from '@main/workspace-write'
@@ -385,15 +385,22 @@ describe('逐处退回 · 被拦下的情形：**文件一个字都不许被碰*
   })
 })
 
-describe('samePath —— 工作区判据（Windows 大小写不敏感）', () => {
-  it('同一个路径的不同写法算同一个', () => {
-    expect(samePath('D:\\a\\b', 'D:\\a\\b\\')).toBe(true)
+describe('samePath —— 工作区判据（路径等价性）', () => {
+  // ⚠️ **别用 `'D:\\a\\b'` 这种硬编码 Windows 路径写断言**（CI 教我的一课）：
+  //    在 Linux 上 `\\` **不是**路径分隔符、只是普通字符，于是 `'D:\a\b\'` 与 `'D:\a\b'`
+  //    真的是两个不同的路径 —— 本地（Windows）全绿、CI（ubuntu）红一条。
+  //    要验"尾部分隔符不算区别"就用**本平台真实的分隔符**去构造。
+  const base = join(tmpdir(), 'jsl-same-path')
+
+  it('同一个路径的不同写法算同一个（尾部分隔符不算区别）', () => {
+    expect(samePath(base, base + sep)).toBe(true)
   })
+
   it('不同路径不算同一个', () => {
-    expect(samePath('D:\\a\\b', 'D:\\a\\c')).toBe(false)
+    expect(samePath(base, join(tmpdir(), 'jsl-other-path'))).toBe(false)
   })
-  it('Windows 上大小写不同也算同一个（盘符与目录名都不敏感）', () => {
-    const expected = process.platform === 'win32'
-    expect(samePath('D:\\A\\B', 'd:\\a\\b')).toBe(expected)
+
+  it('Windows 上大小写不同也算同一个；POSIX 上不算（大小写敏感）', () => {
+    expect(samePath(base, base.toUpperCase())).toBe(process.platform === 'win32')
   })
 })
