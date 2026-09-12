@@ -196,6 +196,11 @@ export interface ConversationMeta {
    * 缺字段 = 老数据 / 还没跑过：界面据此显示"暂无"，**不补 0**。
    */
   usage?: TokenUsage
+  /**
+   * 这条会话累计**省下**的估算 token（plan8 R9.1 工具输出窗口化）。
+   * 与 `usage` 分开存：它不是厂商账，是"我们替你做掉的量"，混着算等于两笔账糊在一起。
+   */
+  avoidedTokens?: number
 }
 
 export interface Conversation extends ConversationMeta {
@@ -405,6 +410,13 @@ export type { BackgroundTask } from './background'
  */
 export interface ChatDonePayload {
   usage: TokenUsage | null
+  /**
+   * 本轮**工具输出窗口化省下的估算 token**（plan8 R9.1）。
+   *
+   * 为什么与 `usage` 并列而不是加进它：一个是**厂商真值**、一个是**本地估算**，
+   * 混在一起用户就分不清哪个数字能信。它**不参与**会话用量账本的加减。
+   */
+  avoided?: number
 }
 
 export interface StreamEnvelope<T> {
@@ -525,8 +537,12 @@ export interface ApiBridge {
   saveConversation(
     id: string,
     messages: ChatMessage[],
-    /** 用量账本（plan8 R9）：给了就更新，不给就保持盘上原值 */
-    usage?: TokenUsage
+    /**
+     * 会话统计（plan8 R9 / R9.1）：**给了才更新，不给就保持盘上原值**。
+     * 用一个对象而不是并列参数：这类"账"以后还会加（压缩次数、回滚次数…），
+     * 每加一项就改一次签名会波及所有调用点。
+     */
+    stats?: { usage?: TokenUsage; avoidedTokens?: number }
   ): Promise<ConversationMeta | null>
   renameConversation(id: string, title: string): Promise<ConversationMeta | null>
   deleteConversation(id: string): Promise<void>

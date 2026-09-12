@@ -60,12 +60,106 @@ describe('file-tools（文件读写工具）', () => {
   const write = tools[1]!
   const read = tools[0]!
 
-  it('write_file 写入后 read_file 能读回', async () => {
+  it('write_file 写入后 read_file 能读回（**带行号前缀** —— 定位用，不属于文件内容）', async () => {
     const msg = await write.execute({ path: 'notes/hello.txt', content: '你好，九十里路' })
     expect(msg).toContain('已写入')
     const content = await read.execute({ path: 'notes/hello.txt' })
-    expect(content).toBe('你好，九十里路')
-    expect(readFileSync(join(dir, 'notes', 'hello.txt'), 'utf8')).toBe('你好，九十里路')
+    expect(content).toContain('1|你好，九十里路')
+    expect(content).toContain('文件共 1 行')
+    expect(readFileSync(join(dir, 'notes/hello.txt'), 'utf8')).toBe('你好，九十里路')
+  })
+
+  // ── plan8 R9.1：`read_file` 是"可寻址的窗口读取"，不是"全文倾倒" ──
+  //
+  // 为什么这几条必须存在：改之前的上限是 **1MB ≈ 262k token**（实测），
+  // 也就是说"读一个文件就能吃掉大半个上下文窗口"，而且模型**不知道自己看全了没有**。
+  // 这几条钉住的正是那三件事：窗口大小、行号可寻址、"被截了要说出来"。
+  it('长文件默认只给前 200 行，且**末尾如实说明还有多少行、下一段怎么取**', async () => {
+    const lines = Array.from({ length: 500 }, (_, i) => `第 ${i + 1} 行的内容`)
+    await write.execute({ path: 'long.txt', content: lines.join('\n') })
+    const out = await read.execute({ path: 'long.txt' })
+
+    expect(out.split('\n').filter((l) => /^\d+\|/.test(l))).toHaveLength(200)
+    expect(out).toContain('200|第 200 行的内容')
+    expect(out).not.toContain('201|')
+    // 这三条是"告知"的全部要点：总数、给到哪、怎么继续
+    expect(out).toContain('文件共 500 行')
+    expect(out).toContain('第 1–200 行')
+    expect(out).toContain('后面还有 300 行')
+    expect(out).toContain('offset=201')
+  })
+
+  it('offset 取中段：**行号是文件的真行号**（不是从 1 重新数）', async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `L${i + 1}`)
+    await write.execute({ path: 'mid.txt', content: lines.join('\n') })
+    const out = await read.execute({ path: 'mid.txt', offset: 101, limit: 3 })
+    expect(out).toContain('101|L101')
+    expect(out).toContain('103|L103')
+    expect(out).not.toContain('100|L100')
+    expect(out).toContain('offset=104')
+  })
+
+  it('limit 有**硬顶**（模型说"给我十万行"也不行）', async () => {
+    await write.execute({ path: 'big.txt', content: Array.from({ length: 3000 }, (_, i) => `r${i}`).join('\n') })
+    const out = await read.execute({ path: 'big.txt', limit: 99999 })
+    expect(out.split('\n').filter((l) => /^\d+\|/.test(l))).toHaveLength(2000)
+  })
+
+  it('offset 超出文件范围 → 明确错误 + 告诉它末尾该用哪个 offset（而不是给空字符串）', async () => {
+    await write.execute({ path: 'short.txt', content: 'a\nb\nc' })
+    const out = await read.execute({ path: 'short.txt', offset: 99 })
+    expect(out).toContain('错误')
+    expect(out).toContain('共 3 行')
+    expect(out).toContain('offset=1')
+  })
+
+  it('**单行超长要掐断**（压缩过的 JS 一行几万字符，"限制行数"根本挡不住它）', async () => {
+    const huge = 'x'.repeat(5000)
+    await write.execute({ path: 'min.js', content: `${huge}\n结束行` })
+    const out = await read.execute({ path: 'min.js' })
+    expect(out).toContain('本行共 5000 字符，已掐断')
+    expect(out).toContain('2|结束行')
+    expect(out.length).toBeLessThan(3000)
+  })
+
+  it('**单次读取有绝对预算**（2000 行 × 2000 字符的极端输入不许一次灌进上下文）', async () => {
+    // 极端形状：每行 1500 个汉字（不到单行掐断线 2000，所以不会被掐）
+    const line = '汉'.repeat(1500)
+    await write.execute({ path: 'huge.txt', content: Array.from({ length: 60 }, () => line).join('\n') })
+    const out = await read.execute({ path: 'huge.txt', limit: 2000 })
+    // 原文 ≈ 60 × 1500 = 9 万汉字 ≈ 9 万 token；单次读取必须收在预算内
+    expect(out).toContain('已达单次上限')
+    expect(out).toContain('继续读用 offset=')
+    const bodyTokens = out.split('\n').reduce((n, l) => n + l.length, 0)
+    expect(bodyTokens).toBeLessThan(20_000) // 字符数口径的粗上界（真实估算见 file-tools 的预算）
+  })
+
+  it('二进制文件（含 NUL）直接说清楚，别灌一屏替换字符进上下文', async () => {
+    writeFileSync(join(dir, 'bin.dat'), Buffer.from([0x89, 0x50, 0x00, 0x4e, 0x47]))
+    const out = await read.execute({ path: 'bin.dat' })
+    expect(out).toContain('二进制')
+  })
+
+  it('脏参数（字符串 / 0 / 负数 / 空对象 / null）**回落到默认值**，不炸也不报错', async () => {
+    await write.execute({ path: 'clean.txt', content: 'a\nb\nc\nd' })
+    // 语义定死在这里：模型给的垃圾参数**不是错误**（它多半只是想"从头读"），
+    // 归一成"从第 1 行、默认行数"最省事；真报错只会让它再花一轮来纠正自己。
+    for (const bad of ['abc', 0, -5, {}, null, undefined]) {
+      const out = await read.execute({ path: 'clean.txt', offset: bad })
+      expect(out).toContain('1|a')
+    }
+    // 小数向下取整（2.7 → 从第 2 行起）；limit 同理
+    const out2 = await read.execute({ path: 'clean.txt', offset: 2.7, limit: 2.5 })
+    expect(out2).toContain('2|b')
+    expect(out2).toContain('3|c')
+    expect(out2).not.toContain('4|d')
+  })
+
+  it('空文件：不报错、也不编造内容（行号一个都不给）', async () => {
+    await write.execute({ path: 'empty.txt', content: '' })
+    const out = await read.execute({ path: 'empty.txt' })
+    expect(out).toContain('文件共 1 行')
+    expect(out).not.toMatch(/\d+\|\S/)
   })
 
   it('写入越界路径被拒绝', async () => {

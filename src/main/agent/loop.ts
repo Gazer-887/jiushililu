@@ -1,10 +1,25 @@
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
 import { toolCallDetail } from '@shared/tool-detail'
+import { windowToolOutput } from '@shared/tool-window'
 import { trimMessages, type TrimOptions } from './context'
 
 // Agent 主循环（plan6 → P1；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，
 // 直到模型给出最终答案或预算耗尽。
 // 缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停；contextWindow 控上下文裁剪。
+//
+// plan8 R9.1：工具结果在**回灌那一处**过一道窗口化 —— 这里是**唯一**的入口，
+// 所以也是唯一需要挂的地方（挂两处迟早会漏一处，这是本项目踩过的老坑）。
+
+/**
+ * **自己管好输出的工具**：不给窗口化再加工。
+ *
+ * - `read_file` 已经按行窗口给了、末尾如实告知了 —— 再压一次等于二次伤害
+ *   （把"第 1–200 行"再砍成"头 60 尾 40"，而模型明确要的就是那 200 行）。
+ * - 前辈实现里也有同款豁免（"read 工具输出永不处理"），不是我们独有。
+ *
+ * 判据写在**工具名**上而不是"看输出像不像"，因为"像不像"迟早会判错。
+ */
+const SELF_MANAGED_TOOLS = new Set(['read_file'])
 
 export interface AgentLoopOptions {
   systemPrompt: string
@@ -24,6 +39,13 @@ export interface AgentLoopOptions {
   onText?: (delta: string) => void
   /** 工具执行生命周期（界面显示"正在读 xx / 完成 / 失败"） */
   onToolEvent?: (evt: ToolEvent) => void
+  /**
+   * 工具输出被窗口化时回调（plan8 R9.1）。
+   *
+   * 存在的理由：压缩**不许静默**。界面那条痕是内存态、会随重挂载丢，
+   * 所以还得有一条能事后追的（主进程日志由调用方接上）。
+   */
+  onToolWindowed?: (info: { name: string; beforeTokens: number; afterTokens: number; reason: string }) => void
 }
 
 function parseArgs(raw: string): Record<string, unknown> {
@@ -54,10 +76,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
   let lastText = ''
   let rounds = 0
+  /** 这一轮靠窗口化省下的估算 token（plan8 R9.1 记账用） */
+  let avoidedTokens = 0
 
   for (;;) {
     if (rounds >= maxRounds) {
-      return { output: lastText, rounds, stopReason: 'max-rounds' }
+      return { output: lastText, rounds, stopReason: 'max-rounds', avoidedTokens }
     }
     rounds++
 
@@ -70,7 +94,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     // 没有工具调用 = 模型认为任务完成，文本即最终交付
     if (res.toolCalls.length === 0) {
-      return { output: res.text ?? '', rounds, stopReason: 'completed' }
+      return { output: res.text ?? '', rounds, stopReason: 'completed', avoidedTokens }
     }
 
     // 回灌 assistant（含 tool_calls），再逐个执行并把结果以 tool 角色回灌
@@ -106,12 +130,35 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         }
       }
 
+      // 窗口化（plan8 R9.1）：输出去大时留头尾 + 中段按行号采样 + 报错现场保护，
+      // 双门控不过就**原样放行**（`windowToolOutput` 自己保证"不压也不亏"）。
+      let saved = 0
+      if (!SELF_MANAGED_TOOLS.has(tc.name)) {
+        const w = windowToolOutput(output, { toolName: tc.name })
+        // **静默是禁止的**：每一次成形都要留下痕迹（界面 + 主进程日志两处）。
+        // 只在"确实够大、值得一记"时报（`small` = 这条输出压根没进入判断，报它等于刷日志）
+        if (w.reason !== 'small') {
+          opts.onToolWindowed?.({
+            name: tc.name,
+            beforeTokens: w.beforeTokens,
+            afterTokens: w.afterTokens,
+            reason: w.reason
+          })
+        }
+        if (w.compressed) {
+          saved = w.beforeTokens - w.afterTokens
+          avoidedTokens += saved
+          output = w.text
+        }
+      }
+
       const failed = output.startsWith('错误')
       opts.onToolEvent?.({
         id: tc.id,
         name: tc.name,
         phase: failed ? 'error' : 'end',
-        summary: summarize(output)
+        summary: summarize(output),
+        ...(saved > 0 ? { savedTokens: saved } : {})
       })
 
       // 注入边界标记：工具产出（文件内容/网页/命令输出）一律是**数据**，不是指令

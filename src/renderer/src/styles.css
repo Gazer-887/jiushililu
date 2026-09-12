@@ -2650,6 +2650,17 @@ label.radio {
   margin-left: var(--sp-2);
 }
 
+/* "省下的量"（plan8 R9.1）：它是**估算**、不是厂商账，所以颜色比真值轻一档 ——
+   两者绝不能长得一样（用户会把它当成账单上的一部分） */
+.usage-saved {
+  margin-left: var(--sp-2);
+  padding: 0 var(--sp-2);
+  border-radius: 6px;
+  background: var(--bg-soft, transparent);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
 /* 圆形发送键 */
 .send-btn {
   display: flex;

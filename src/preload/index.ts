@@ -71,8 +71,8 @@ const api: ApiBridge = {
   listConversations: () => ipcRenderer.invoke(IPC.convList),
   getConversation: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
   createConversation: (input: ConversationCreateInput) => ipcRenderer.invoke(IPC.convCreate, input),
-  saveConversation: (id: string, messages: ChatMessage[], usage?: TokenUsage) =>
-    ipcRenderer.invoke(IPC.convSave, usage ? { id, messages, usage } : { id, messages }),
+  saveConversation: (id: string, messages: ChatMessage[], stats?: { usage?: TokenUsage; avoidedTokens?: number }) =>
+    ipcRenderer.invoke(IPC.convSave, stats ? { id, messages, ...stats } : { id, messages }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
   deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
   rollbackConversation: (id: string, toIndex: number) =>

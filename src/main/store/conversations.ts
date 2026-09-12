@@ -79,9 +79,9 @@ export function createConversation(input: Parameters<ConversationsRepo['createCo
 export function saveConversation(
   id: string,
   messages: Parameters<ConversationsRepo['saveConversation']>[1],
-  usage?: Parameters<ConversationsRepo['saveConversation']>[2]
+  stats?: Parameters<ConversationsRepo['saveConversation']>[2]
 ) {
-  return repo().saveConversation(id, messages, usage)
+  return repo().saveConversation(id, messages, stats)
 }
 
 export function renameConversation(id: string, title: string) {

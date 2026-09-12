@@ -59,11 +59,14 @@ export function UsageChip(): JSX.Element | null {
   // 没会话、或这条还没拿到过真实用量 → 整块不渲染（工具栏不为"暂无"占位）
   if (!record) return null
 
-  const { total, last } = record
+  const { total, last, avoided } = record
   const tip = [
     `本会话累计（厂商真实值）：${totalTokens(total)} tokens`,
     `输入 ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}`,
-    last ? `最近一轮：${totalTokens(last)} tokens` : ''
+    last ? `最近一轮：${totalTokens(last)} tokens` : '',
+    // ⚠️ 这一行必须**说清是估算**：它和上面那个"厂商真实值"不是一个来源，
+    // 混着说不清，用户就没法判断哪个数字能信。
+    avoided > 0 ? `工具输出成形省下（本地估算）：约 ${formatTokens(avoided)} tokens` : ''
   ]
     .filter(Boolean)
     .join('\n')
@@ -73,6 +76,7 @@ export function UsageChip(): JSX.Element | null {
       <span className="usage-total">{formatTokens(totalTokens(total))}</span>
       <span className="usage-unit">tok</span>
       {last && <span className="usage-last">+{formatTokens(totalTokens(last))}</span>}
+      {avoided > 0 && <span className="usage-saved">省 {formatTokens(avoided)}</span>}
     </span>
   )
 }

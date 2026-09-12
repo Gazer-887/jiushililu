@@ -211,6 +211,14 @@ export interface RunAgentArgs {
   onTodos?: (todos: TodoItem[]) => void
   /** 子代理运行事件（右栏「任务」页签显示"谁在跑、跑了几轮、结果如何"） */
   onSubagentEvent?: (evt: SubagentJobEvent) => void
+  /**
+   * 工具输出被**窗口化**时回调（plan8 R9.1）。
+   *
+   * 为什么要有这条痕：工具事件是**渲染进程内存态**、每轮清空、切页签重挂载即丢 ——
+   * 只靠界面显示"已压缩 xx%"，等于"用户当时没看见就永远查不到"。
+   * 主进程日志（`log.ts`，带轮转）才是能事后追的地方。
+   */
+  onToolWindowed?: (info: { name: string; beforeTokens: number; afterTokens: number; reason: string }) => void
   /** 外部取消信号（用户点"停止"）；不给则用超时信号 */
   signal?: AbortSignal
 }
@@ -271,10 +279,12 @@ export async function runAgent(
       })
       const parts = results.map((r) =>
         r.ok
-          ? `【${r.name}】完成（${r.rounds} 轮）\n${r.output.slice(0, 6000)}`
+          ? // plan8 R9.1：不再在这里 `slice(0, 6000)`。子代理的报告经常"结论在最后"，
+            // 砍前 6000 字符等于把它的结论扔掉；原样交回，由 `loop.ts` 那处统一收形。
+            `【${r.name}】完成（${r.rounds} 轮）\n${r.output}`
           : `【${r.name}】失败：${r.error ?? '未知原因'}`
       )
-      return parts.join('\n\n---\n\n').slice(0, 20000)
+      return parts.join('\n\n---\n\n')
     }
   }
 
@@ -390,7 +400,8 @@ export async function runAgent(
       contextWindow: args.settings.contextWindow || 65536,
       chat,
       ...(args.onText ? { onText: args.onText } : {}),
-      ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {})
+      ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {}),
+      ...(args.onToolWindowed ? { onToolWindowed: args.onToolWindowed } : {})
     })
   } finally {
     // 无论正常结束、抛异常还是被中止，都要收尾 ——

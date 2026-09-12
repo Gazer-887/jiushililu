@@ -48,8 +48,11 @@ export interface ChatEmitter {
   /**
    * 收尾，**带上本轮真实用量**（plan8 R9）—— 界面据此显示"这轮花了多少"。
    * `null` = 厂商没报（界面显示占用估算，不假装知道精确值）。
+   *
+   * `avoided`（plan8 R9.1）= 本轮工具输出窗口化**省下的估算 token**（没省就是 0）。
+   * 它跟 `usage` 是两笔账（本地估算 vs 厂商真值），所以**分开传**，界面也分开显示。
    */
-  done(usage: TokenUsage | null): void
+  done(usage: TokenUsage | null, avoided?: number): void
   error(message: string): void
   /** 危险操作确认（也带会话身份 —— 用户要知道是**哪条会话**在问） */
   confirm(req: ToolConfirmRequest): void
@@ -78,7 +81,7 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     todos: (todos) => send(IPC.todoChanged, todos),
     subagents: (list) => send(IPC.subagentChanged, list),
     checkpoint: (runId) => send(IPC.checkpointChanged, runId),
-    done: (usage) => send(IPC.chatDone, { usage }),
+    done: (usage, avoided = 0) => send(IPC.chatDone, { usage, avoided }),
     error: (message) => send(IPC.chatError, message),
     confirm: (req) => {
       if (win.isDestroyed()) return

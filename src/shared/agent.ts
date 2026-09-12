@@ -58,6 +58,11 @@ export interface ToolEvent {
   detail?: string
   /** phase=end/error 时的结果摘要（已截断，供界面显示） */
   summary?: string
+  /**
+   * 这一步的输出被窗口化过时带上：省下多少（估算 token）。
+   * 为什么让界面知道：用户看得见"它压了"，才有依据判断"我的活会不会因此变糊"。
+   */
+  savedTokens?: number
 }
 
 export type AgentStopReason = 'completed' | 'max-rounds'
@@ -90,4 +95,12 @@ export interface AgentLoopResult {
   output: string
   rounds: number
   stopReason: AgentStopReason
+  /**
+   * 这一轮**避免进入上下文的 token**（plan8 R9.1 工具输出窗口化省下的量）。
+   *
+   * ⚠️ 它是**本地估算**，与厂商真报的 `usage` 是两笔账 —— 所以**单独一个字段**，
+   * 绝不并进 `TokenUsage`（把估算混进真值里，用户就没法判断哪个数字能信）。
+   * `0` = 这一轮没压（工具输出都不大，属于正常情况）。
+   */
+  avoidedTokens?: number
 }

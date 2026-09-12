@@ -197,8 +197,15 @@ function buildSystemTools(
           command,
           { cwd: workspaceRoot, timeout: 30000, maxBuffer: MAX_COMMAND_OUTPUT, windowsHide: true },
           (error, stdout, stderr) => {
-            const out = stdout.toString().slice(0, 8000)
-            const errText = stderr.toString().slice(0, 4000)
+            // plan8 R9.1：**这里不再砍尾**。
+            //
+            // 以前是 `stdout.slice(0, 8000)` —— 保留**开头**，而错误与结论在**末尾**：
+            // 于是"输出太长"时，用户看到的永远是没有结论的那半截（这是排错最要命的形状，
+            // dsh 那份插件 README 把它列为反面教材）。
+            // 现在原样交回（上限由 `maxBuffer` 兜底 1MB），由 `loop.ts` 那一处统一做
+            // 「头 + 尾 + 中段带行号采样 + 报错现场保护」——**形状只在一处决定**。
+            const out = stdout.toString()
+            const errText = stderr.toString()
             if (error) {
               resolvePromise(`命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}`)
               return

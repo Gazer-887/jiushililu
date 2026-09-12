@@ -441,6 +441,8 @@ export function registerIpcHandlers(deps: {
           todosByConversation.set(conversationId, todos)
           emit.todos(todos)
         },
+        // 工具输出成形留痕（plan8 R9.1）：界面那条是内存态，日志这条才追得回来
+        onToolWindowed: (info) => log.info('工具输出已成形', { conversationId, ...info }),
         // 子代理事件（plan7 批 D）：同批内就地更新，换批则重开
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
@@ -460,8 +462,8 @@ export function registerIpcHandlers(deps: {
       })
       // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
       if (result.changedFiles > 0) emit.checkpoint(result.runId)
-      // 收尾带货：本轮真实用量（plan8 R9）。厂商没报就是 null —— 界面据此退回占用估算
-      emit.done(result.usage)
+      // 收尾带货：本轮真实用量（plan8 R9）+ 窗口化省下的估算量（R9.1）
+      emit.done(result.usage, result.avoidedTokens ?? 0)
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {
@@ -655,7 +657,9 @@ export function registerIpcHandlers(deps: {
             promptTokens: z.number().finite().nonnegative(),
             completionTokens: z.number().finite().nonnegative()
           })
-          .optional()
+          .optional(),
+        /** 窗口化省下的估算 token（plan8 R9.1），同样不信任上游 */
+        avoidedTokens: z.number().finite().nonnegative().optional()
       })
       .parse(raw)
     const messages = normalizeHistory(input.messages as ChatMessage[])
@@ -666,16 +670,17 @@ export function registerIpcHandlers(deps: {
       log.error('会话保存被拒', { id: input.id, count: messages.length, reason })
       throw new Error(`会话没能存进磁盘：${reason}`)
     }
-    return saveConversation(
-      input.id,
-      parsed.data as ChatMessage[],
-      input.usage
+    return saveConversation(input.id, parsed.data as ChatMessage[], {
+      ...(input.usage
         ? {
-            promptTokens: Math.round(input.usage.promptTokens),
-            completionTokens: Math.round(input.usage.completionTokens)
+            usage: {
+              promptTokens: Math.round(input.usage.promptTokens),
+              completionTokens: Math.round(input.usage.completionTokens)
+            }
           }
-        : undefined
-    )
+        : {}),
+      ...(input.avoidedTokens !== undefined ? { avoidedTokens: Math.round(input.avoidedTokens) } : {})
+    })
   })
 
   ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {

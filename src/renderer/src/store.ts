@@ -289,10 +289,15 @@ interface AppState {
 export interface ConversationUsage {
   total: TokenUsage
   last: TokenUsage | null
+  /**
+   * 累计**省下**的估算 token（plan8 R9.1）。
+   * 它**不进** `total`：那个数字是厂商真值，这个是我们替它做的减法 —— 混在一起就分不清了。
+   */
+  avoided: number
 }
 
 /**
- * 把**盘上**的用量并进内存账本（plan8 R9）。
+ * 把**盘上**的用量并进内存账本（plan8 R9 / R9.1）。
  *
  * 为什么取 **max** 而不是"盘上的覆盖内存里的"：这两个来源谁更新并不总是知道 ——
  * 刚落盘、界面还没回来；或者反过来。直接覆盖会让数字**倒退**，
@@ -309,18 +314,23 @@ function mergeUsage(
   let next: Record<string, ConversationUsage> | null = null
   for (const m of metas) {
     const stored = m.usage
-    if (!stored) continue
+    const storedAvoided = m.avoidedTokens ?? 0
+    if (!stored && storedAvoided === 0) continue
     const cur: ConversationUsage | undefined = (next ?? prev)[m.id]
     const total: TokenUsage = cur
       ? {
-          promptTokens: Math.max(cur.total.promptTokens, stored.promptTokens),
-          completionTokens: Math.max(cur.total.completionTokens, stored.completionTokens)
+          promptTokens: Math.max(cur.total.promptTokens, stored?.promptTokens ?? 0),
+          completionTokens: Math.max(cur.total.completionTokens, stored?.completionTokens ?? 0)
         }
-      : stored
+      : (stored ?? { promptTokens: 0, completionTokens: 0 })
+    const avoided = Math.max(cur?.avoided ?? 0, storedAvoided)
     const same =
-      cur && total.promptTokens === cur.total.promptTokens && total.completionTokens === cur.total.completionTokens
+      cur &&
+      total.promptTokens === cur.total.promptTokens &&
+      total.completionTokens === cur.total.completionTokens &&
+      avoided === cur.avoided
     if (same) continue
-    next = { ...(next ?? prev), [m.id]: { total, last: cur?.last ?? null } }
+    next = { ...(next ?? prev), [m.id]: { total, last: cur?.last ?? null, avoided } }
   }
   return next ?? prev
 }
@@ -801,21 +811,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 缺字段就当"厂商没报"：信封的另一头是**另一个进程**，
     // 版本不齐 / 事件被截断都可能让 payload 给不出 usage —— 这里不许直接炸
     const usage = e.payload?.usage ?? null
+    const avoided = e.payload?.avoided ?? 0
     set((s) => {
       const prev = s.usageByConversation[e.conversationId]
+      const nextUsage: ConversationUsage | null =
+        usage || avoided > 0
+          ? {
+              total: usage ? addUsage(prev?.total ?? emptyUsage(), usage) : (prev?.total ?? emptyUsage()),
+              last: usage ?? prev?.last ?? null,
+              avoided: (prev?.avoided ?? 0) + avoided
+            }
+          : null
       return {
         ...applyToConversation(s, e.conversationId, () => ({ streaming: false })),
-        ...(usage
-          ? {
-              usageByConversation: {
-                ...s.usageByConversation,
-                [e.conversationId]: {
-                  total: addUsage(prev?.total ?? emptyUsage(), usage),
-                  last: usage
-                }
-              }
-            }
-          : {})
+        ...(nextUsage ? { usageByConversation: { ...s.usageByConversation, [e.conversationId]: nextUsage } } : {})
       }
     })
     // ⚠️ 落的是**那一条**（不是当前显示的那条）—— plan11 P0-1 就是这一行的缺失
@@ -910,7 +919,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 后台会话的防抖任务已被这次落盘覆盖，取消掉
     cancelScheduledPersist(id)
     try {
-      const updated = await window.api.saveConversation(id, snap.messages, s.usageByConversation[id]?.total)
+      const rec = s.usageByConversation[id]
+      const updated = await window.api.saveConversation(id, snap.messages, {
+        ...(rec ? { usage: rec.total, avoidedTokens: rec.avoided } : {})
+      })
       if (updated) {
         // 就地更新列表项（避免整表重拉），标题可能已被自动补上
         const next = get().conversations.map((c) => (c.id === id ? updated : c))

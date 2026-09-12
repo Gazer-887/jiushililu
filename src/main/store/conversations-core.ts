@@ -56,14 +56,14 @@ export interface ConversationsRepo {
   /**
    * 保存消息体。
    *
-   * 第三个参数是**可选的**用量账本（plan8 R9）：给了就更新，不给就**保持原值** ——
-   * 这一点是有意的：回滚 / 改名这类保存不该把用量抹掉，
-   * 而"没用量"与"用量为零"是两回事，不能用 undefined 去覆盖一个真数字。
+   * 第三个参数是**可选的会话统计**（plan8 R9 用量 / R9.1 省下的量）：给了就更新，
+   * 不给就**保持原值** —— 这一点是有意的：回滚 / 改名这类保存不该把账抹掉，
+   * 而"没有账"与"账为零"是两回事，不能用 undefined 去覆盖一个真数字。
    */
   saveConversation(
     id: string,
     messages: ChatMessage[],
-    usage?: ConversationMeta['usage']
+    stats?: { usage?: ConversationMeta['usage']; avoidedTokens?: number }
   ): ConversationMeta | null
   renameConversation(id: string, title: string): ConversationMeta | null
   deleteConversation(id: string): void
@@ -234,7 +234,7 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
      * **尾巴当场被抹掉，"撤销"从此静默失效**。
      * 症状极难查：回滚看着是成功的，只有点撤销时才"什么都没发生"。
      */
-    saveConversation(id, messages, usage) {
+    saveConversation(id, messages, stats) {
       const current = backend.readMeta()[id]
       if (!current) return null
       const log = backend.readMessages(id)
@@ -269,6 +269,7 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       // 用量账本（plan8 R9）：**只长不缩**，且"没给"不许把已有的抹掉。
       // 取 max 而不是直接覆盖：并发两条会话同时落盘时，晚到的那个若拿着较旧的快照，
       // 直接覆盖会让账**倒退**（用户看着数字变小，比不显示更费解）。
+      const usage = stats?.usage
       if (usage) {
         const prev = current.usage
         next.usage = prev
@@ -277,6 +278,10 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
               completionTokens: Math.max(prev.completionTokens, usage.completionTokens)
             }
           : usage
+      }
+      // 省下的量（plan8 R9.1）：同一条"只长不缩"的规矩
+      if (typeof stats?.avoidedTokens === 'number') {
+        next.avoidedTokens = Math.max(current.avoidedTokens ?? 0, Math.round(stats.avoidedTokens))
       }
       // **先正文、后索引**（见上方约定）：索引跟着正文走，不会出现"索引说有、正文没有"
       backend.writeMessages(id, nextLog)

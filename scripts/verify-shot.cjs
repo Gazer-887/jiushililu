@@ -3577,10 +3577,11 @@ app.whenReady().then(async () => {
     win.webContents.executeJavaScript(`
       (() => {
         const el = document.querySelector('.usage-chip')
-        if (!el) return { total: null, last: null }
+        if (!el) return { total: null, last: null, saved: null, title: '' }
         return {
           total: el.querySelector('.usage-total')?.textContent ?? null,
           last: el.querySelector('.usage-last')?.textContent ?? null,
+          saved: el.querySelector('.usage-saved')?.textContent ?? null,
           title: el.getAttribute('title') ?? ''
         }
       })()
@@ -3593,7 +3594,7 @@ app.whenReady().then(async () => {
   // 真报一轮：1200 + 340 = 1540 → 显示 1.5k
   win.webContents.send('chat:done', {
     conversationId: 'c1',
-    payload: { usage: { promptTokens: 1200, completionTokens: 340 } }
+    payload: { usage: { promptTokens: 1200, completionTokens: 340 }, avoided: 4800 }
   })
   await new Promise((r) => setTimeout(r, 500))
   const chip1 = await readUsageChip()
@@ -3601,7 +3602,7 @@ app.whenReady().then(async () => {
   // 再来一轮：+1000 → 累计 2540 → 2.5k。**这条才是"累计"的判据**
   win.webContents.send('chat:done', {
     conversationId: 'c1',
-    payload: { usage: { promptTokens: 800, completionTokens: 200 } }
+    payload: { usage: { promptTokens: 800, completionTokens: 200 }, avoided: 400 }
   })
   await new Promise((r) => setTimeout(r, 500))
   const chip2 = await readUsageChip()
@@ -3613,6 +3614,11 @@ app.whenReady().then(async () => {
   checkTrue('悬停说明里**输入/输出分开列**（否则用户没法判断钱花在哪一头上）',
     chip1.title.includes('输入') && chip1.title.includes('输出') && chip1.title.includes('最近一轮'),
     chip1.title)
+  // plan8 R9.1：窗口化省下的量要看得见，**且不许混进厂商真值**
+  checkTrue('省下的量单独显示（5.2k = 4800+400），**没有混进 2.5k 那个真值里**',
+    chip2.saved === '省 5.2k' && chip2.total === '2.5k', chip2)
+  checkTrue('悬停说明把"省下的量"标成**本地估算**（它和厂商账不是一个来源）',
+    chip2.title.includes('本地估算'), chip2.title)
 
   // 落盘那一环：界面记账只是"看得见"，**写进会话索引**才是"记得住"。
   // 这条盯的是渲染端→主进程的**载荷**（主进程侧的读写由单测钉着，两边各管一段）。

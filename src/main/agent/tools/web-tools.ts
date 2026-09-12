@@ -85,8 +85,14 @@ export function createWebTools(): AgentTool[] {
         const body = new TextDecoder('utf-8').decode(buf.slice(0, MAX_BODY_BYTES))
         const text = htmlToText(body)
         if (text.length === 0) return '（页面无可提取文本）'
-        const truncated = text.length > 20000 ? `${text.slice(0, 20000)}\n（已截断，原文 ${text.length} 字符）` : text
-        return truncated
+        // plan8 R9.1：**不再在这里砍一刀**。以前是"前 20000 字符"，而网页的正文经常
+        // 恰恰在后半段（作者、结论、数据表）。现在原样交回，由 `loop.ts` 那一处统一
+        // 做「头 + 尾 + 中段带行号采样」——**形状的事只在一个地方做**，砍两刀必然互相打架。
+        // 这里只保留"请求体太大"的硬上限（512KB，防止把一整部说明书读进内存）。
+        if (buf.byteLength > MAX_BODY_BYTES) {
+          return `${text}\n（页面超过 ${Math.round(MAX_BODY_BYTES / 1024)}KB，只取了前一部分）`
+        }
+        return text
       } catch (err) {
         return `错误：抓取失败——${err instanceof Error ? err.message : String(err)}`
       }
