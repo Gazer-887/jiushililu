@@ -71,6 +71,16 @@ function reportAndExit() {
   app.exit(0)
 }
 
+// 兜底：脚本内部一旦抛异常（例如断言里访问了不存在的字段），
+// Electron 会**挂着不退出** —— 表现为"卡到超时"，完全看不出真实原因。
+// 所以这里显式接住，转成一次带堆栈的失败退出。
+process.on('unhandledRejection', (err) => {
+  console.log('FAIL: 脚本内部异常 → ' + (err && err.stack ? err.stack : String(err)))
+  console.log('CHECKS=' + JSON.stringify({ total: checks.length, failed: checks.length + 1 }))
+  console.log('==== verify-shot 失败：脚本自身异常 ====')
+  app.exit(1)
+})
+
 const settingsView = {
   providerType: 'openai-compatible',
   baseURL: 'https://api.deepseek.com',
@@ -662,15 +672,53 @@ app.whenReady().then(async () => {
   // （实测哈希一致），纯冗余。要设置页截图，看 verify-settings-*.png 即可。
   void shot3
 
+  /**
+   * 打开工作台里的某个内置面板（plan9 W3）。
+   *
+   * 改造前是"点常驻页签"（`.dock-tab`）；现在是**＋ 开窗菜单**：
+   *   ① 工作台没展开就先点顶栏开关（展开且为空时直接出现开窗选择器）
+   *   ② 已经有栏了 → 点该栏的 ＋ 展开菜单
+   *   ③ 点菜单里同名的那一项
+   * 每步之间都要等 React 重渲染，所以拆成三次 executeJavaScript。
+   */
+  const openBuiltin = async (label) => {
+    await win.webContents.executeJavaScript(`
+      (() => {
+        if (document.querySelector('.dock')) return 'already-open';
+        // 必须按 title 定位：顶栏有**两个** panel-btn（第一个是侧栏开关），
+        // 裸 querySelector(".panel-btn") 会点到侧栏上去 —— 踩过一次，别再踩。
+        // （注意：下面是模板字符串，注释里**不能出现反引号**，否则会把字符串提前闭合）
+        const b = document.querySelector('.panel-btn[title*="工作台"]');
+        if (b) b.click();
+        return b ? 'opened' : 'no-toggle';
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 450))
+
+    await win.webContents.executeJavaScript(`
+      (() => {
+        // 空工作台直接就是选择器；有栏了就点栏内 ＋
+        if (document.querySelector('.wb-pick')) return 'chooser-visible';
+        const add = document.querySelector('.pane-add') || document.querySelector('.wb-add');
+        if (add) add.click();
+        return add ? 'menu-opened' : 'no-add';
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 400))
+
+    return win.webContents.executeJavaScript(`
+      (() => {
+        const b = Array.from(document.querySelectorAll('.wb-pick'))
+          .find((x) => x.textContent.trim() === ${JSON.stringify(label)});
+        if (b) b.click();
+        return !!b;
+      })()
+    `)
+  }
+
   // —— 文件变更记录面板（plan8 R4）：真点一遍回滚，验证"改坏能退回" ──
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const tab = Array.from(document.querySelectorAll('.dock-tab'))
-        .find((b) => b.textContent.trim() === '变更');
-      if (tab) tab.click();
-      return !!tab;
-    })()
-  `)
+  const openedChanges = await openBuiltin('文件变更')
+  checkTrue('工作台能通过 ＋ 菜单打开面板（文件变更）', openedChanges === true, openedChanges)
   await new Promise((r) => setTimeout(r, 1200))
 
   // 展开第一轮
@@ -840,14 +888,8 @@ app.whenReady().then(async () => {
   writeFileSync(join(SHOTS, 'verify-splitter.png'), shot7.toPNG())
 
   // —— 批 A：资源管理器（真点一次展开 + 一次文件预览）——
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const tab = Array.from(document.querySelectorAll('.dock-tab'))
-        .find((b) => b.textContent.trim() === '文件');
-      if (tab) tab.click();
-      return !!tab;
-    })()
-  `)
+  const openedExplorer = await openBuiltin('资源管理器')
+  checkTrue('工作台能通过 ＋ 菜单打开资源管理器', openedExplorer === true, openedExplorer)
   await new Promise((r) => setTimeout(r, 1200))
 
   const explorerRoot = await win.webContents.executeJavaScript(`
@@ -1316,15 +1358,9 @@ app.whenReady().then(async () => {
       return !!gear;
     })()
   `)
-  // —— 右栏「任务」页签：子代理运行记录（plan7 批 D）——
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const tab = Array.from(document.querySelectorAll('.dock-tab'))
-        .find((b) => b.textContent.trim() === '任务');
-      if (tab) tab.click();
-      return !!tab;
-    })()
-  `)
+  // —— 工作台「任务管理」面板：子代理 + 后台任务（plan7 批 D）——
+  const openedTasks = await openBuiltin('任务管理')
+  checkTrue('工作台能通过 ＋ 菜单打开任务管理', openedTasks === true, openedTasks)
   await new Promise((r) => setTimeout(r, 900))
   const tasksState = await win.webContents.executeJavaScript(`
     (() => {
@@ -1473,6 +1509,134 @@ app.whenReady().then(async () => {
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))
   console.log('CSP_PROBE=' + JSON.stringify(cspProbe))
 
+  // ── 工作台多栏几何（plan9 W3）─────────────────────────────────────────
+  const wbGeom = await win.webContents.executeJavaScript(`
+    (() => {
+      const dock = document.querySelector('.dock');
+      if (!dock) return { open: false };
+      const row = document.querySelector('.wb-row');
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      const gaps = Array.from(document.querySelectorAll('.wb-gap'));
+      const widths = panes.map((p) => Math.round(p.getBoundingClientRect().width));
+      const gapW = gaps.reduce((a, g) => a + Math.round(g.getBoundingClientRect().width), 0);
+      const sprawl = widths.reduce((a, b) => a + b, 0) + gapW;
+      const rowW = row ? Math.round(row.getBoundingClientRect().width) : -1;
+      return {
+        open: true,
+        paneCount: panes.length,
+        widths,
+        tabs: Array.from(document.querySelectorAll('.pane-tab-name')).map((e) => e.textContent.trim()),
+        activeTab: document.querySelector('.pane-tab.on .pane-tab-name')?.textContent.trim() ?? null,
+        rowW,
+        sprawl,
+        // 关键：栏宽之和 + 间隙 必须**正好等于**行可用宽
+        // —— 这是"PANE_GAP 没算漏、也没被 overflow:hidden 悄悄裁掉"的证据
+        exact: sprawl === rowW,
+        hasAdd: !!document.querySelector('.wb-add')
+      };
+    })()
+  `)
+  console.log('WB_GEOM=' + JSON.stringify(wbGeom))
+
+  // 折叠 / 展开走一遍：验证「折叠 = 藏标题与页签条、内容占满、**宽度不变**」
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.pane-btn[title*="折叠"]');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 450))
+  const wbFolded = await win.webContents.executeJavaScript(`
+    (() => {
+      const pane = document.querySelector('.pane');
+      const body = document.querySelector('.dock-body');
+      return {
+        hasHead: !!document.querySelector('.pane-head'),
+        hasTabs: !!document.querySelector('.pane-tabs'),
+        hasBody: !!body,
+        bodyH: body ? Math.round(body.getBoundingClientRect().height) : 0,
+        width: pane ? Math.round(pane.getBoundingClientRect().width) : 0,
+        hasUnfold: !!document.querySelector('.pane-unfold')
+      };
+    })()
+  `)
+  console.log('WB_FOLDED=' + JSON.stringify(wbFolded))
+
+  // 展开回来（别让后面的截图停在折叠态）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.pane-unfold');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 450))
+  const wbUnfolded = await win.webContents.executeJavaScript(`
+    (() => ({
+      hasHead: !!document.querySelector('.pane-head'),
+      hasTabs: !!document.querySelector('.pane-tabs')
+    }))()
+  `)
+  console.log('WB_UNFOLDED=' + JSON.stringify(wbUnfolded))
+
+  // —— 开第二栏：证明「多栏」真的成立（plan9 W3 的核心诉求）——
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const add = document.querySelector('.wb-add');
+      if (add) add.click();
+      return !!add;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 550))
+  const openedSecond = await win.webContents.executeJavaScript(`
+    (() => {
+      // 新栏是空的 → 它自己就显示开窗选择器（.wb-pick），直接点即可
+      const b = Array.from(document.querySelectorAll('.wb-pick'))
+        .find((x) => x.textContent.trim() === '资源管理器');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1100))
+  const wbTwo = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = document.querySelector('.wb-row');
+      const panes = Array.from(document.querySelectorAll('.pane'));
+      const gaps = Array.from(document.querySelectorAll('.wb-gap'));
+      const widths = panes.map((p) => Math.round(p.getBoundingClientRect().width));
+      const gapW = gaps.reduce((a, g) => a + Math.round(g.getBoundingClientRect().width), 0);
+      const sprawl = widths.reduce((a, b) => a + b, 0) + gapW;
+      const rowW = row ? Math.round(row.getBoundingClientRect().width) : -1;
+      return {
+        paneCount: panes.length,
+        widths,
+        rowW,
+        sprawl,
+        exact: sprawl === rowW,
+        // 两栏各自装了什么（证明它们是**独立**的，不是同一份内容渲染两遍）
+        pane0HasExplorer: !!panes[0] && !!panes[0].querySelector('.ex-panel'),
+        pane1HasExplorer: !!panes[1] && !!panes[1].querySelector('.ex-panel'),
+        pane0Tabs: panes[0] ? panes[0].querySelectorAll('.pane-tab').length : 0,
+        pane1Tabs: panes[1] ? panes[1].querySelectorAll('.pane-tab').length : 0,
+        // 窄栏时 ＋ 会不会被页签条"滚走" —— 真渲染截图抓出来的问题，
+        // 数字全绿也看不出来：必须量它**是否落在栏的边界内**
+        addInsidePane: panes.map((p) => {
+          const add = p.querySelector('.pane-add');
+          if (!add) return false;
+          const pr = p.getBoundingClientRect();
+          const ar = add.getBoundingClientRect();
+          return ar.width > 0 && ar.right <= pr.right + 0.5 && ar.left >= pr.left - 0.5;
+        })
+      };
+    })()
+  `)
+  console.log('WB_TWO_PANE=' + JSON.stringify(wbTwo))
+
+  // 存档：多栏工作台的真渲染截图（给人看的证据，不只是数字）
+  const shotWb = await win.webContents.capturePage()
+  writeFileSync(join(SHOTS, 'verify-workbench.png'), shotWb.toPNG())
+
   // ── 断言（plan9 W2 起，本脚本终于有刻度了）────────────────────────────
   // 只挑"确定的"来断言；每一批新功能由那一批自己补断言，不再堆到最后一批。
   checkTrue(
@@ -1494,6 +1658,48 @@ app.whenReady().then(async () => {
   check('设置页左导航宽度', cssCheck.navWidth, '196px')
   check('设置页右栏不滚动（滚动交给内容区）', cssCheck.scrollable, 'hidden')
   check('CSP 仍拦住内联脚本（安全策略没被新代码打穿）', cspProbe.inlineScriptExecuted, false)
+
+  // —— plan9 W3：多栏工作台 ——
+  checkTrue('工作台处于展开态（.dock 在）', wbGeom.open === true)
+  checkTrue('栏宽之和 + 间隙**正好等于**可用宽（PANE_GAP 没算漏、没被裁）', wbGeom.exact === true, {
+    widths: wbGeom.widths,
+    sprawl: wbGeom.sprawl,
+    rowW: wbGeom.rowW
+  })
+  checkTrue(
+    '至少一栏、且栏内挂着页签',
+    wbGeom.paneCount >= 1 && wbGeom.tabs.length >= 1,
+    { paneCount: wbGeom.paneCount, tabs: wbGeom.tabs }
+  )
+  checkTrue('＋ 开窗入口在位（六页签条已被它取代）', wbGeom.hasAdd === true)
+  checkTrue(
+    '折叠后标题栏与页签条隐藏、内容区还在',
+    wbFolded.hasHead === false && wbFolded.hasTabs === false && wbFolded.hasBody === true,
+    wbFolded
+  )
+  checkTrue('折叠后内容区仍有高度（不是被压没）', wbFolded.bodyH > 100, wbFolded.bodyH)
+  checkTrue('折叠后留了展开按钮（否则用户没法还原）', wbFolded.hasUnfold === true)
+  check('折叠**不改变栏宽**', wbFolded.width, wbGeom.widths ? wbGeom.widths[0] : -1)
+  checkTrue('展开回来标题栏与页签条都回来了', wbUnfolded.hasHead && wbUnfolded.hasTabs, wbUnfolded)
+
+  // —— plan9 W3：多栏（开第二栏）——
+  checkTrue('「＋」能新建一栏', openedSecond === true, openedSecond)
+  check('第二栏开出来了（多栏成立，不是单栏换页签）', wbTwo.paneCount, 2)
+  checkTrue('两栏宽度 + 间隙仍**正好**等于可用宽', wbTwo.exact === true, {
+    widths: wbTwo.widths,
+    sprawl: wbTwo.sprawl,
+    rowW: wbTwo.rowW
+  })
+  checkTrue(
+    '两栏内容**互相独立**（第二栏是刚选的面板，第一栏的页签没被顶掉）',
+    wbTwo.pane1HasExplorer === true && wbTwo.pane0HasExplorer === false && wbTwo.pane0Tabs >= 1,
+    { pane0Tabs: wbTwo.pane0Tabs, pane1Tabs: wbTwo.pane1Tabs, p0ex: wbTwo.pane0HasExplorer, p1ex: wbTwo.pane1HasExplorer }
+  )
+  checkTrue(
+    '窄栏里 ＋ 仍在栏内可见（没被页签条横向滚动带走）',
+    Array.isArray(wbTwo.addInsidePane) && wbTwo.addInsidePane.every((v) => v === true),
+    wbTwo.addInsidePane
+  )
 
   reportAndExit()
 })

@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useAppStore } from './store'
 import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
-import RightDock from './components/RightDock'
+import Workbench from './components/Workbench'
 import ConfirmDialog from './components/ConfirmDialog'
 import Splitter from './components/Splitter'
 import {
@@ -88,7 +88,7 @@ export default function App() {
             onReset={() => void resetUIPrefs()}
           />
         )}
-        <RightDock width={dockWidth} />
+        <Workbench />
       </div>
       {/* 危险操作确认（plan8 R5）：全局只挂一个，主进程推请求即弹出 */}
       <ConfirmDialog />

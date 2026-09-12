@@ -1397,20 +1397,16 @@ label.radio {
   border-right: 0;
 }
 
-/* 右抽屉（工作台） */
+/* 工作台容器（plan9 W3：从「单活跃页签」变成「多栏 × 每栏多页签」）。
+   收起时**整块不渲染**，所以这里不再需要 width:0 的折叠态；
+   展开时的宽度写在容器的内联 style 上（由外层分隔条控制，是**总宽**）。 */
 .dock {
-  width: 0;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--border);
   overflow: hidden;
-  transition: width 0.16s ease;
-}
-
-.dock.open {
-  width: 360px;
 }
 
 .dock-head {
@@ -1423,34 +1419,311 @@ label.radio {
   white-space: nowrap;
 }
 
-.dock-tabs {
-  display: flex;
-  gap: var(--sp-4);
+/* ── 工作台：多栏（plan9 W3）────────────────────────────────────────
+   命名保留 `.dock` / `.dock-body`：验证脚本按它们量宽度与滚动。
+   栏与栏之间的缝必须等于 workbench.ts 的 PANE_GAP（分配时已经算进去了），
+   所以这里用内联宽度（Workbench.tsx 写死 GAP_PX），不在 CSS 里另写一份。 */
+
+.dock-head {
+  flex-shrink: 0;
+}
+
+.wb-title {
   flex: 1;
   min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 
-.dock-tab {
+.wb-add {
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  padding: var(--sp-4) var(--sp-8);
-  font-size: var(--fs-sm);
-  font-family: inherit;
+  border: 0;
   color: var(--muted);
   cursor: pointer;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius-md);
 }
 
-.dock-tab:hover {
+.wb-add:hover {
   background: var(--bg);
   color: var(--text);
 }
 
-.dock-tab.active {
+/* 各栏横排；整体宽度 = 外层分隔条给的 dockWidth */
+.wb-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 连 PANE_ABS_MIN 都放不下时（见 allocate 的三级收缩）→ 让工作台区横向滚动，
+   而不是继续把栏压没 */
+.wb-overflow {
+  overflow-x: auto;
+}
+
+.wb-gap {
+  flex-shrink: 0;
+}
+
+.pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex-shrink: 0;
+  background: var(--panel);
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-8);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pane-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.pane-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* 折叠后标题栏与页签条都藏起来（内容占满、宽度不变），
+   所以必须留一个**常驻**的展开按钮，否则用户没法还原 */
+.pane-unfold {
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-4);
+  z-index: 3;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: var(--sp-2);
+}
+
+.pane-unfold:hover {
+  color: var(--text);
+}
+
+.pane-tabs {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* 只有这一层滚动 —— ＋ 留在外面，窄栏也点得到（真渲染截图抓出来的） */
+.pane-tabs-scroll {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  overflow-x: auto;
+}
+
+.pane-tab {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.pane-tab.on {
   background: var(--accent-soft);
+}
+
+.pane-tab-name {
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  cursor: pointer;
+  padding: var(--sp-4) var(--sp-2);
+  white-space: nowrap;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-tab.on .pane-tab-name {
   color: var(--accent);
+}
+
+.pane-tab-x {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-2);
+}
+
+.pane-tab-x:hover {
+  color: var(--text);
+}
+
+.pane-add {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  padding: var(--sp-4);
+  flex-shrink: 0;
+}
+
+.pane-add:hover {
+  color: var(--text);
+}
+
+.pane-menu {
+  position: absolute;
+  top: 56px;
+  left: var(--sp-6);
+  right: var(--sp-6);
+  z-index: 5;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-6);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+}
+
+/* ＋ 开窗菜单 / 空栏选择器：六项共用一套按钮 */
+.wb-chooser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.wb-pick {
+  text-align: left;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-8);
+  cursor: pointer;
+}
+
+.wb-pick:hover {
+  background: var(--accent-soft);
   border-color: var(--accent-border);
+}
+
+.wb-empty {
+  padding: var(--sp-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.wb-empty-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.wb-empty-desc {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+/* 栏可以比原来的抽屉窄得多（155px 都可能），面板自带的标题与工具行
+   必须**容忍窄宽**：标题宁可省略号，也不许一字一行竖着排（真渲染截图抓出来的）。
+   只作用于工作台内的栏，不动面板在别处的表现。 */
+.pane .ex-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane .ex-head {
+  gap: var(--sp-4);
+}
+
+/* ── 文件预览（抽成独立组件，plan9 W3）── */
+.fp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.fp-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+}
+
+.fp-name {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fp-badge {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.fp-md {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fp-pre {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.fp-size {
+  font-size: var(--fs-xs);
+  color: var(--muted);
 }
 
 .dock-close {

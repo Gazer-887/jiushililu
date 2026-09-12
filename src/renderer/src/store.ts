@@ -17,9 +17,16 @@ import {
   type UIPrefs
 } from '@shared/splitter'
 import {
+  activateTab,
+  addPane,
+  closeTab,
   emptyLayout,
   emptySizes,
   normalizeSizes,
+  openTab,
+  removePane,
+  toggleCollapse,
+  type PaneContent,
   type WorkbenchLayout,
   type WorkbenchSizes
 } from '@shared/workbench'
@@ -28,8 +35,12 @@ import {
 
 export type AppView = 'new' | 'chat' | 'settings'
 
-/** 右侧工作台（抽屉）的页签——D-034 六项，面板实现按批次逐个填 */
-export type DockTab = 'explorer' | 'changes' | 'scm' | 'terminal' | 'browser' | 'tasks'
+/**
+ * 工作台落盘的**合并窗口**（plan9 §W5 提交点表）：切页签、拖宽这类高频动作
+ * 只在停下来之后写一次盘 —— 参照实现每帧同步写盘，是它自己被标注的卡顿源。
+ */
+const WB_PERSIST_DEBOUNCE_MS = 300
+let wbPersistTimer: ReturnType<typeof setTimeout> | null = null
 
 interface AppState {
   view: AppView
@@ -61,18 +72,27 @@ interface AppState {
   workbenchSizes: WorkbenchSizes
   /** 只改内存（拖拽中 / 连续操作时调），不落盘 */
   setWorkbench: (layout: WorkbenchLayout, sizes?: WorkbenchSizes) => void
-  /** 显式落盘当前布局（结构变更立即调；拖宽由 W5 debounce 后调） */
+  /** 显式落盘（**结构变更**走这条：开栏/关栏/换位/开页签/关页签/折叠） */
   persistWorkbench: () => Promise<void>
+  /** 合并落盘（**高频动作**走这条：切页签、拖宽 —— 见 plan9 §W5 提交点表） */
+  persistWorkbenchSoon: () => void
+
+  // ── 工作台结构操作（plan9 W3）──
+  // 全部只是"纯函数 + 内存 + 落盘"的胶水；模型运算一律在 src/shared/workbench.ts
+  wbOpenTab: (paneId: string | null, content: PaneContent) => void
+  wbCloseTab: (paneId: string, tabId: string) => void
+  wbActivateTab: (paneId: string, index: number) => void
+  wbAddPane: () => void
+  wbRemovePane: (paneId: string) => void
+  wbToggleCollapse: (paneId: string) => void
 
   // ── 抽屉侧栏（面板显隐）───────────
   /** 左侧栏（会话记录 / 设置）是否展开 */
   sidebarOpen: boolean
   toggleSidebar: () => void
-  /** 右侧工作台（资源管理器 / 终端 / 浏览器）是否展开 */
+  /** 右侧工作台是否展开（plan9 W3 起：展开后显示的是**多栏**工作台） */
   dockOpen: boolean
   toggleDock: () => void
-  dockTab: DockTab
-  setDockTab: (tab: DockTab) => void
 
   settings: SettingsView | null
   settingsLoaded: boolean
@@ -214,13 +234,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { workbench, workbenchSizes } = get()
     await useAppStore.getState().persistUIPrefs({ workbench, workbenchSizes })
   },
+  persistWorkbenchSoon: () => {
+    if (wbPersistTimer !== null) clearTimeout(wbPersistTimer)
+    wbPersistTimer = setTimeout(() => {
+      wbPersistTimer = null
+      void useAppStore.getState().persistWorkbench()
+    }, WB_PERSIST_DEBOUNCE_MS)
+  },
+
+  wbOpenTab: (paneId, content) => {
+    // 点了面板就必须看得见 —— 否则是"点了没反应"（默认布局是空的）
+    set({ dockOpen: true })
+    get().setWorkbench(openTab(get().workbench, paneId, content))
+    void get().persistWorkbench()
+  },
+  wbCloseTab: (paneId, tabId) => {
+    get().setWorkbench(closeTab(get().workbench, paneId, tabId))
+    void get().persistWorkbench()
+  },
+  wbActivateTab: (paneId, index) => {
+    get().setWorkbench(activateTab(get().workbench, paneId, index))
+    get().persistWorkbenchSoon() // 切页签是高频动作 → 合并落盘
+  },
+  wbAddPane: () => {
+    set({ dockOpen: true })
+    get().setWorkbench(addPane(get().workbench, null))
+    void get().persistWorkbench()
+  },
+  wbRemovePane: (paneId) => {
+    get().setWorkbench(removePane(get().workbench, paneId))
+    void get().persistWorkbench()
+  },
+  wbToggleCollapse: (paneId) => {
+    get().setWorkbench(toggleCollapse(get().workbench, paneId))
+    void get().persistWorkbench()
+  },
 
   sidebarOpen: true,
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   dockOpen: false,
   toggleDock: () => set((s) => ({ dockOpen: !s.dockOpen })),
-  dockTab: 'explorer',
-  setDockTab: (dockTab) => set({ dockTab, dockOpen: true }),
 
   settings: null,
   settingsLoaded: false,
