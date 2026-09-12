@@ -208,6 +208,13 @@ const FAKE_SUBAGENTS = [
 /** 写操作调用流水（验证界面是否真的把动作发下去了，而不只是画了个菜单） */
 const fsOpLog = []
 
+/**
+ * `attach:path` 收到的载荷流水。
+ * 存在的理由：这条通道**两个来源共用**（工作区文件树给相对路径、系统资源管理器给绝对路径），
+ * 而"到底哪条路进来的"只有看载荷形式才知道 —— 0.13.2 用户报的越界就卡在这个区分上。
+ */
+const attachPathCalls = []
+
 /** 后台任务样例：覆盖 running（带终止按钮）与 done（带退出码）两种渲染 */
 const FAKE_BG_TASKS = [
   {
@@ -339,14 +346,23 @@ const STUBS = {
     workbenchSizes: { paneWidths: [] }
   }),
   // ③ 文件拖进会话：按路径取附件（拖拽入口；文件选择框那条走 attach:file）
+  //
+  // ⚠️ 这里的路径处理**是主进程 `readAttachment` 那套两层边界规则的复制品**
+  //    （绝对路径原样；相对路径拼工作区根；不在工作区内则带 `outside` 标记）。
+  //    主进程那边改了规则，这里必须跟着改 —— stub 是**契约的复制品**，
+  //    不同步的话渲染端就会拿到与真机不一样的形状，而这种差异**不会报错、只会静默漏掉**。
   'attach:path': (p) => {
     const s = typeof p === 'string' ? p : ''
-    const name = s.split(/[\\/]/).pop() || 'a.txt'
+    attachPathCalls.push(s)
+    const ws = 'D:\\jsllworkplace_for_test'
+    const abs = /^[a-zA-Z]:[\\/]/.test(s) ? s.replace(/\//g, '\\') : ws + '\\' + s.replace(/\//g, '\\')
+    const name = abs.split(/[\\/]/).pop() || 'a.txt'
     return {
       name,
-      path: 'D:\\jsllworkplace_for_test\\' + s.replace(/\\/g, '/'),
+      path: abs,
       content: '氧化铈粉 120kg\n碳酸钠 45kg',
-      truncated: false
+      truncated: false,
+      ...(abs.toLowerCase().startsWith(ws.toLowerCase() + '\\') ? {} : { outside: true })
     }
   },
   // plan7 批 A3：二进制预览
@@ -501,7 +517,10 @@ app.whenReady().then(async () => {
       preload: join(ROOT, 'out/preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      // ⚠️ 必须与**真机一致**（`src/main/index.ts` 的 createWindow 用的是 sandbox: true）。
+      //    这里长期写的是 false —— 等于一直在**另一个环境**里验真机，
+      //    而"验证环境与生产不一致"正是最容易被放过的一类假绿灯。
+      sandbox: true
     }
   })
 
@@ -1390,53 +1409,150 @@ app.whenReady().then(async () => {
   //    理由只是 `no-row-or-no-console` —— 因为工作台是**视图无关**的（文件行一直在），
   //    而输入框只属于对话页 / 新建页。**"前置状态不对"和"功能坏了"长得一模一样**，
   //    所以先单独断言"输入框在不在"，把这两件事分开。
-  const consoleReady = await win.webContents.executeJavaScript(`
-    (() => ({
-      hasConsole: !!document.querySelector('.console'),
-      hasRow: !!Array.from(document.querySelectorAll('.ex-row'))
-        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt')
-    }))()
+  //
+  // ⚠️⚠️ 第二层（0.13.2 用户报「文件树里的文件拖不动」之后补上的一课）：
+  //    **合成事件永远测不出「真手势能不能拖」**。`new DragEvent('dragstart')` 是
+  //    **我们自己把事件塞进 DOM**，绕过了浏览器判定"这个元素能不能开始拖拽"的全部逻辑
+  //    （`draggable` 属性、是不是可激活控件、有没有被祖先拦住……）——
+  //    也就是说合成事件**天生就是绿的**，而真机上可能一拖什么都不发生。
+  //    所以改用 **CDP 真手势**：`Input.setInterceptDrags` + 真鼠标按下/移动 → 浏览器回一个
+  //    `Input.dragIntercepted`，里面装的是**浏览器自己从 dragstart 收上来的真实拖拽载荷**；
+  //    再用 `Input.dispatchDragEvent` 把这一份真实载荷投到输入框上。
+  //    真手势还差两样才算数：① 元素**真的可见可命中**（几何 + 命中测试，"DOM 里在"远远不够）
+  //    ② 一个**阳性对照** —— 拖一根分栏标题（它本来就该能拖）。只有对照也绿了，
+  //    "行拖不起来"才能算在行头上，而不是算在探针自己头上。
+  const dragPre = await win.webContents.executeJavaScript(`
+    (async () => {
+      const row = Array.from(document.querySelectorAll('.ex-row'))
+        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt');
+      if (row) {
+        row.scrollIntoView({ block: 'center' });
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      const probe = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return null;
+        const x = Math.round(Math.max(0, Math.min(window.innerWidth - 1, r.left + r.width / 2)));
+        const y = Math.round(Math.max(0, Math.min(window.innerHeight - 1, r.top + r.height / 2)));
+        const top = document.elementFromPoint(x, y);
+        return {
+          x: x, y: y,
+          w: Math.round(r.width), h: Math.round(r.height),
+          hittable: !!(top && (top === el || el.contains(top)))
+        };
+      };
+      return {
+        hasConsole: !!document.querySelector('.console'),
+        hasRow: !!row,
+        row: probe(row),
+        box: probe(document.querySelector('.console')),
+        paneHead: probe(document.querySelector('.pane-head'))
+      };
+    })()
   `)
-  console.log('DRAG_PRECONDITION=' + JSON.stringify(consoleReady))
+  const consoleReady = { hasConsole: dragPre.hasConsole, hasRow: dragPre.hasRow }
+  console.log('DRAG_PRECONDITION=' + JSON.stringify(dragPre))
 
+  // 真手势通道：挂不上就**明确失败**，绝不悄悄退回合成事件装作验过
+  let dragGestureReady = false
+  let dragCap = null
+  let dbg = null
+  try {
+    dbg = win.webContents.debugger
+    dbg.attach('1.3')
+    dbg.on('message', (_ev, method, params) => {
+      if (method === 'Input.dragIntercepted') dragCap = params
+    })
+    await dbg.sendCommand('Input.setInterceptDrags', { enabled: true })
+    dragGestureReady = true
+  } catch (err) {
+    console.log('DRAG_GESTURE_UNAVAILABLE=' + (err && err.message ? err.message : String(err)))
+  }
+
+  /** 真鼠标拖一次；返回**浏览器收上来的真实载荷**，可选把它投到某个落点上 */
+  const realDrag = async (from, to, between) => {
+    dragCap = null
+    const move = (type, x, y, buttons) =>
+      dbg.sendCommand('Input.dispatchMouseEvent', {
+        type,
+        x,
+        y,
+        button: 'left',
+        buttons,
+        clickCount: 1
+      })
+    await move('mousePressed', from.x, from.y, 1)
+    // 要走够距离才算拖拽：Chromium 有启动阈值，原地不动只会被当成一次点击
+    for (const d of [10, 26, 48]) await move('mouseMoved', from.x + d, from.y + d, 1)
+    await new Promise((r) => setTimeout(r, 280))
+    const data = dragCap && dragCap.data ? dragCap.data : null
+    const items = data && Array.isArray(data.items) ? data.items : null
+    let mid = null
+    if (items && to) {
+      // dragEnter → dragOver → drop 三步都要发；少了 dragOver，页面不认这里是合法落点
+      for (const type of ['dragEnter', 'dragOver']) {
+        await dbg.sendCommand('Input.dispatchDragEvent', { type, x: to.x, y: to.y, data })
+        await new Promise((r) => setTimeout(r, 130))
+      }
+      if (between) mid = await between()
+      await dbg.sendCommand('Input.dispatchDragEvent', { type: 'drop', x: to.x, y: to.y, data })
+      await new Promise((r) => setTimeout(r, 130))
+    }
+    // 收尾必须干净：被拦截的拖拽不主动取消的话，**后面每一次拖拽都会静默失效**。
+    //（搭探针时真踩到了：第 2、3 次全空，看上去就像"button 不能拖"——
+    //  差点照着这个假根因去改代码。阳性对照就是为了防这种事。）
+    if (data) {
+      await dbg
+        .sendCommand('Input.dispatchDragEvent', {
+          type: 'dragCancel',
+          x: 4,
+          y: 4,
+          data: { items: [], dragOperationsMask: 0 }
+        })
+        .catch(() => {})
+    }
+    await move('mouseReleased', from.x + 48, from.y + 48, 0)
+    await new Promise((r) => setTimeout(r, 260))
+    return { items, mid }
+  }
+
+  // 真拖两次：
+  //   ① 只到 dragEnter/dragOver 就停 —— 量"落点高亮"（高亮本来就是拖拽过程中的状态）
+  //   ② 走完整 drop —— 量"真的变成附件"
   // 载荷必须用**自定义 MIME**（两边同一个常量）：用 text/plain 的话，
-  // 拖到编辑器/终端会被当成"一段文字"贴进去，而这里携带的是一条工作区相对路径
-  const dragStart = await win.webContents.executeJavaScript(`
-    (() => {
-      const row = Array.from(document.querySelectorAll('.ex-row'))
-        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt');
-      const box = document.querySelector('.console');
-      if (!row || !box) return { ok: false, reason: 'no-row-or-no-console' };
-      const dt = new DataTransfer();
-      const mk = (type) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
-      row.dispatchEvent(mk('dragstart'));
-      const carried = dt.getData('application/x-jiushililu-path');
-      box.dispatchEvent(mk('dragover'));
-      return { ok: true, carried };
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 350))
-  const dropHighlight = await win.webContents.executeJavaScript(`
-    (() => ({ highlighted: !!document.querySelector('.console-drop') }))()
-  `)
-  console.log('DRAG_ATTACH=' + JSON.stringify({ ...dragStart, ...dropHighlight }))
-
-  // 真丢下去：dragstart → dragover → drop 走完整一遍
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const row = Array.from(document.querySelectorAll('.ex-row'))
-        .find((b) => b.querySelector('.ex-name')?.textContent?.trim() === '紫水晶采购清单.txt');
-      const box = document.querySelector('.console');
-      if (!row || !box) return false;
-      const dt = new DataTransfer();
-      const mk = (type) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
-      row.dispatchEvent(mk('dragstart'));
-      box.dispatchEvent(mk('dragover'));
-      box.dispatchEvent(mk('drop'));
-      return true;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 800))
+  // 拖到编辑器/终端会被当成"一段文字"贴进去，而这里携带的其实是一条工作区相对路径
+  let controlDrag = null
+  let rowDrag = null
+  if (dragGestureReady) {
+    // 阳性对照：分栏标题本来就能拖（拖拽换位）。只起拖、不落点，所以不会改变布局
+    if (dragPre.paneHead && dragPre.paneHead.hittable) controlDrag = await realDrag(dragPre.paneHead)
+    if (dragPre.row && dragPre.row.hittable && dragPre.box) {
+      rowDrag = await realDrag(dragPre.row, dragPre.box, () =>
+        // 落点高亮要在**真拖拽的过程里**量：dragEnter/dragOver 之后、drop 之前
+        win.webContents.executeJavaScript(
+          `(() => ({ highlighted: !!document.querySelector('.console-drop') }))()`
+        )
+      )
+    }
+  }
+  const carriedItem = ((rowDrag && rowDrag.items) || []).find(
+    (it) => it.mimeType === 'application/x-jiushililu-path'
+  )
+  const dragControl = {
+    gestureReady: dragGestureReady,
+    hasPaneHead: !!dragPre.paneHead,
+    started: !!(controlDrag && controlDrag.items && controlDrag.items.length > 0)
+  }
+  const dragStart = {
+    ok: !!(rowDrag && rowDrag.items && rowDrag.items.length > 0),
+    carried: carriedItem ? carriedItem.data : '',
+    items: rowDrag ? rowDrag.items : null
+  }
+  const dropHighlight = { highlighted: !!(rowDrag && rowDrag.mid && rowDrag.mid.highlighted) }
+  console.log('DRAG_CONTROL=' + JSON.stringify(dragControl))
+  console.log('DRAG_ATTACH=' + JSON.stringify(dragStart))
+  await new Promise((r) => setTimeout(r, 700))
   const attachState = await win.webContents.executeJavaScript(`
     (() => {
       const chips = Array.from(document.querySelectorAll('.attach-chip'));
@@ -1449,6 +1565,89 @@ app.whenReady().then(async () => {
     })()
   `)
   console.log('DRAG_ATTACH_DONE=' + JSON.stringify(attachState))
+
+  // —— ③-2 从**系统资源管理器**拖文件进来（`dataTransfer.files` 那条分支）——
+  //
+  // 这条分支此前**从来没有被验证过**：合成事件走的是自定义 MIME 那条，
+  // 而 0.13.2 用户贴回来的报错是 `attach:path: 只能引用当前工作区内的文件` ——
+  // **只有这条分支会传绝对路径**，所以那句报错只可能从这儿来。也就是说：
+  // 用户踩的分支，恰好是验证唯一没盖到的那条。（"碰巧没验到"和"碰巧对了"一样危险。）
+  //
+  // CDP 的 drag 事件可以直接带 `files`（真实存在的路径），渲染端才拿得到真 File，
+  // `webUtils.getPathForFile` 才有得可查 —— 页面里 `new File()` 造出来的假 File 是查不到的。
+  const osDragFile = join(process.env.TEMP || '.', 'jsl-verify-os-drag.txt')
+  writeFileSync(osDragFile, '从系统资源管理器拖进来的一个真文件\n', 'utf8')
+  const osDragCalls = []
+  attachPathCalls.length = 0
+  let osDrag = { attempted: false }
+  if (dragGestureReady && dragPre.box) {
+    const t = dragPre.box
+    await dbg.sendCommand('Input.dispatchDragEvent', {
+      type: 'dragEnter',
+      x: t.x,
+      y: t.y,
+      data: { items: [], files: [osDragFile], dragOperationsMask: 1 }
+    })
+    await new Promise((r) => setTimeout(r, 200))
+    await dbg.sendCommand('Input.dispatchDragEvent', {
+      type: 'drop',
+      x: t.x,
+      y: t.y,
+      data: { items: [], files: [osDragFile], dragOperationsMask: 1 }
+    })
+    await new Promise((r) => setTimeout(r, 900))
+    Object.assign(osDragCalls, attachPathCalls)
+    const chips = await win.webContents.executeJavaScript(`
+      (() => {
+        const all = Array.from(document.querySelectorAll('.attach-chip'));
+        // 最后一枚 = 刚拖进来的那个；顺带把它身上的标记也读出来
+        const last = all[all.length - 1];
+        return {
+          titles: all.map((c) => c.title || ''),
+          badges: last ? Array.from(last.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean) : []
+        };
+      })()
+    `)
+    osDrag = {
+      attempted: true,
+      payloads: osDragCalls.slice(),
+      // **拿到的必须是绝对路径** —— 相对路径走不到这条分支，走到了就说明串了
+      gotAbsolute: osDragCalls.some((p) => /^[a-zA-Z]:[\\/]/.test(p)),
+      titles: chips.titles,
+      badges: chips.badges
+    }
+  }
+  console.log('DRAG_OS_FILE=' + JSON.stringify(osDrag))
+
+  // —— ③-3 认出是文件拖拽、却**一个可用路径都没拿到** → 必须说话 ——
+  // 改之前这里是什么都不做：界面毫无反应、日志也没痕迹，用户只能报"拖不进去"，
+  // 而排查的人手上一条线索都没有。**最糟的失败方式就是静默失败。**
+  const silentCase = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.console');
+      if (!box) return { ok: false, reason: 'no-console' };
+      const dt = new DataTransfer();
+      // 类型在（认得出这是"文件拖拽"），数据却是空的 —— 正好是"载荷丢了"的样子
+      dt.setData('application/x-jiushililu-path', '');
+      box.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      return { ok: true, hadTypes: dt.types.includes('application/x-jiushililu-path') };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const silentState = await win.webContents.executeJavaScript(`
+    (() => ({ text: (document.querySelector('.console-error')?.textContent ?? '').trim() }))()
+  `)
+  console.log('DRAG_NO_PAYLOAD=' + JSON.stringify({ ...silentCase, ...silentState }))
+
+  // 拖拽通道用完就撤：留着拦截会继续拦住后面所有鼠标手势
+  if (dragGestureReady) {
+    try {
+      await dbg.sendCommand('Input.setInterceptDrags', { enabled: false })
+      dbg.detach()
+    } catch {
+      // 已经断开就算了
+    }
+  }
   await new Promise((r) => setTimeout(r, 900))
   // 若没有返回按钮（初始就在新建页），直接切到新建视图
   await win.webContents.executeJavaScript(`
@@ -2172,11 +2371,18 @@ app.whenReady().then(async () => {
   )
   checkTrue('转储内容能认出文件头（ELF 魔数）', hexPreview.hasElfMagic === true)
 
-  // —— ③ 文件拖进会话 ——
+  // —— ③ 文件拖进会话（**真手势**，不是合成事件）——
   checkTrue('前置状态：输入框与文件行**都在**（否则下面几条失败说明不了任何事）',
     consoleReady.hasConsole === true && consoleReady.hasRow === true, consoleReady)
-  checkTrue('文件行能拖起来（拖拽载荷是工作区相对路径）', dragStart.ok === true && !!dragStart.carried, dragStart)
-  check('载荷用的是**自定义 MIME**（不是 text/plain）', dragStart.carried, '紫水晶采购清单.txt')
+  checkTrue('前置状态：文件行与输入框**看得见、点得到**（几何 + 命中测试，不是"DOM 里在"）',
+    !!(dragPre.row && dragPre.row.hittable && dragPre.box && dragPre.box.hittable), dragPre)
+  checkTrue('真手势通道可用（CDP 拖拽拦截）—— 不可用就必须红，不许退回合成事件装作验过',
+    dragControl.gestureReady === true, dragControl)
+  checkTrue('阳性对照：分栏标题**真拖得起来**（对照不绿，"行拖不动"就说明不了任何事）',
+    dragControl.hasPaneHead === true && dragControl.started === true, dragControl)
+  checkTrue('文件行**真拖得起来**（真手势下浏览器确实开始了拖拽）', dragStart.ok === true, dragStart)
+  check('载荷用的是**自定义 MIME**（不是 text/plain），且是工作区相对路径',
+    dragStart.carried, '紫水晶采购清单.txt')
   checkTrue('拖到输入框上方会有**落点高亮**', dropHighlight.highlighted === true)
   check('丢下去后输入框里出现 **1 个附件 chip**', attachState.count, 1)
   checkTrue(
@@ -2185,6 +2391,17 @@ app.whenReady().then(async () => {
     attachState.titles
   )
   checkTrue('放下之后高亮收回去（不是一直亮着）', attachState.stillHighlighted === false)
+
+  // —— ③-2 系统资源管理器拖进来的那条分支（此前零覆盖，而用户报的错正出在这里）——
+  checkTrue('系统拖拽：真 File 经 `getPathForFile` 解析后确实送到了 `attach:path`',
+    osDrag.attempted === true && (osDrag.payloads ?? []).length > 0, osDrag)
+  checkTrue('系统拖拽送的是**绝对路径**（相对路径走不到这条分支）',
+    osDrag.gotAbsolute === true, osDrag.payloads)
+  checkTrue('工作区外的附件会在 chip 上**标出来**（主人有权知道上下文里混进了外面的文件）',
+    (osDrag.badges ?? []).includes('工作区外'), osDrag.badges)
+  // —— ③-3 认得出是文件拖拽、却拿不到可用路径 ——
+  checkTrue('载荷丢了会**说话**（以前是什么都不做 = 静默失败）',
+    silentState.text.includes('没收到文件路径'), { ...silentCase, ...silentState })
 
   reportAndExit()
 })

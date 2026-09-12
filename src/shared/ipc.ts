@@ -86,12 +86,20 @@ export type PermissionPreset = 'read-only' | 'write' | 'full-access'
 export interface Attachment {
   /** 展示名（文件名） */
   name: string
-  /** 相对/绝对路径 */
+  /** 绝对路径 */
   path: string
   /** 已读取的文本内容（过长会被截断） */
   content: string
   /** 内容是否被截断 */
   truncated: boolean
+  /**
+   * 这个文件**不在当前工作区内**（主人从系统里明确拖/选进来的）。
+   *
+   * 只影响界面标记，不影响能不能读 —— 边界规则见 `workspace-fs.readAttachment`。
+   * 之所以要标出来：工作区是 Agent 的活动范围，用户有权知道自己的上下文里
+   * 混进了一份"外面的"文件。
+   */
+  outside?: boolean
 }
 
 /** 当前 Git 分支信息（输入框分支显示） */
@@ -362,13 +370,13 @@ export interface ApiBridge {
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
   getGitInfo(): Promise<GitInfo | null>
-  /** 弹文件选择器并读入内容作为附件（只接受工作区内文件） */
+  /** 弹文件选择器并读入内容作为附件（工作区外的文件也能选，会在界面上标出来） */
   attachFile(): Promise<Attachment | null>
   /**
-   * 按路径取附件 —— 与 `attachFile` **共用同一份读取与边界校验**（只差"路径从哪来"）。
+   * 按路径取附件 —— 与 `attachFile` **共用同一份读取与边界规则**（只差"路径从哪来"）。
    *
-   * 收**工作区相对路径**或绝对路径都行；越界会抛错。
-   * 两个入口：文件树拖进输入框（相对路径）、系统文件拖进来（绝对路径）。
+   * 两个入口：工作区文件树拖进会话（相对路径）、系统文件拖进来（绝对路径）。
+   * 边界规则见 `workspace-fs.readAttachment` 的注释。
    */
   attachPath(pathOrRel: string): Promise<Attachment>
   /** 提示词优化：把草稿改写成更清晰的指令 */

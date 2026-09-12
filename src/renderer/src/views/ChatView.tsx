@@ -33,6 +33,8 @@ export default function ChatView() {
   /** 思考块是否展开（默认展开：流式期能看见它在想什么，这才是"过程可见"） */
   const [showReasoning, setShowReasoning] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
+  // 「文件拖进会话」的落点 = 整块会话区（不是只有输入框那一小块）
+  const viewRef = useRef<HTMLDivElement>(null)
 
   const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
 
@@ -129,7 +131,7 @@ export default function ChatView() {
   }
 
   return (
-    <div className="chat-view">
+    <div className="chat-view" ref={viewRef}>
       {active && (
         <div className="chat-head">
           <span className="chat-title" title={active.title}>
@@ -182,6 +184,7 @@ export default function ChatView() {
           busy={streaming}
           onStop={() => void stopStreaming()}
           usedTokens={tokens}
+          dropZone={viewRef}
         />
       </div>
     </div>

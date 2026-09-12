@@ -2097,6 +2097,17 @@ label.radio {
   flex-shrink: 0;
 }
 
+/* 「工作区外」标记：与「截断」同形，但走**中性**色 ——
+   它不是警告（明确的拖入是合法的），只是"让你看一眼再发"。 */
+.attach-out {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-2);
+  flex-shrink: 0;
+}
+
 .attach-x {
   background: transparent;
   border: 0;

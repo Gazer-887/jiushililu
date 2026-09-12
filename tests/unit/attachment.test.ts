@@ -6,9 +6,10 @@ import { ATTACH_LIMIT, readAttachment } from '@main/workspace-fs'
 
 // 附件读取（③ 文件拖进会话 / 文件选择框 **共用**这一份）
 //
-// 为什么值得单独测：两个入口只差"路径从哪来"，而**从系统资源管理器拖一个文件进来**
-// 是最容易绕过工作区边界的路径 —— 文件选择框有 defaultPath 引导，拖拽没有。
-// 所以这里重点钉"越界一律拒绝"，而不是只测顺的那条。
+// 为什么值得单独测：两个入口只差"路径从哪来"，边界规则只在这里定义一次。
+// 重点钉**两层边界的差别** —— 绝对路径（主人在系统里明确拖进来的）放行并标记，
+// 相对路径（自家文件树给的）越界一律拒绝。这条线被放松过一次（2026-09-12 用户定案），
+// 所以更要有测试把它钉住：**放松的是哪一层、哪一层不许动**，必须写死在断言里。
 
 describe('readAttachment（路径 → 附件）', () => {
   let root = ''
@@ -46,14 +47,26 @@ describe('readAttachment（路径 → 附件）', () => {
   it('绝对路径也认 —— **只要在工作区内**（系统拖进来的就是这条路）', async () => {
     const a = await readAttachment(root, join(root, 'a.txt'))
     expect(a.content).toBe('hello 附件')
+    // 在工作区内就不该带"外面"的标记
+    expect(a.outside).toBeUndefined()
   })
 
-  it('**工作区外的文件被拒绝**（拖拽最容易踩的这条）', async () => {
-    await expect(readAttachment(root, join(outsideDir, 'secret.txt'))).rejects.toThrow(/越界/)
+  it('**工作区外的文件放行，但要标出来**（2026-09-12 用户定案）', async () => {
+    // 依据：把一份文件拖进会话是**主人的显式动作** —— 和粘贴一段文字同级。
+    // 拦下来保护不到任何东西，只会让人觉得"拖不进去"（旧版就是这么被报上来的）。
+    const outside = join(outsideDir, 'secret.txt')
+    const a = await readAttachment(root, outside)
+    expect(a.content).toBe('工作区外的东西')
+    expect(a.path).toBe(outside)
+    expect(a.outside).toBe(true)
   })
 
-  it('用 .. 往外跳也被拒绝（不能让相对路径绕过边界）', async () => {
-    await expect(readAttachment(root, '../secret.txt')).rejects.toThrow(/越界/)
+  it('用 .. 往外跳仍被拒绝（相对路径这条线**不能松**，它只该来自自家文件树）', async () => {
+    const err = (await readAttachment(root, '../secret.txt').catch((e) => e)) as Error
+    expect(err.message).toContain('越出了工作区')
+    // 被拒的**原始载荷**与**当时的边界**都要原样回显 —— 否则看不出到底是谁越界、边界在哪
+    expect(err.message).toContain('../secret.txt')
+    expect(err.message).toContain(root)
   })
 
   it('超过 64KB 截断并**标注**（不假装读全了）', async () => {
@@ -62,7 +75,9 @@ describe('readAttachment（路径 → 附件）', () => {
     expect(a.content.length).toBe(ATTACH_LIMIT)
   })
 
-  it('文件不存在时抛错（错误信息是人话，直接给用户看）', async () => {
-    await expect(readAttachment(root, 'nope.txt')).rejects.toThrow()
+  it('读不了的文件，错误信息**带上是哪个文件**（不是一句"文件不存在"）', async () => {
+    const missing = join(root, 'nope.txt')
+    const err = (await readAttachment(root, 'nope.txt').catch((e) => e)) as Error
+    expect(err.message).toContain(missing)
   })
 })

@@ -482,10 +482,25 @@ export function registerIpcHandlers(deps: {
   })
 
   // 拖拽进来的文件（③ 文件拖进会话）——
-  // 相对路径来自工作区文件树，绝对路径来自系统资源管理器；越界一律拒绝
+  // 相对路径来自工作区文件树（必须在工作区内），绝对路径来自系统资源管理器（明确拖入即放行）。
+  // 边界规则与理由集中在 `workspace-fs.readAttachment` 一处，这里只管留痕。
   ipcMain.handle(IPC.attachPath, async (_e, raw: unknown): Promise<Attachment> => {
     const pathOrRel = z.string().min(1).max(4096).parse(raw)
-    return readAttachment(getWorkspaceInfo(deps.userDataDir).path, pathOrRel)
+    const ws = getWorkspaceInfo(deps.userDataDir).path
+    try {
+      return await readAttachment(ws, pathOrRel)
+    } catch (err) {
+      // **留痕**：附件被拒以前是静默的 —— 用户在界面上看到一句"越界"，
+      // 而日志里什么都没有，事后只能靠猜是哪条路进来的。带上载荷与边界就够定位了。
+      log.warn('附件被拒', {
+        received: pathOrRel,
+        workspace: ws,
+        // 绝对路径 = 从系统资源管理器拖来的；相对路径 = 从工作区文件树拖来的
+        kind: /^[a-zA-Z]:[\\/]|^\\\\/.test(pathOrRel) ? '系统拖拽/绝对路径' : '工作区相对路径',
+        error: err instanceof Error ? err.message : String(err)
+      })
+      throw err
+    }
   })
 
   // 提示词优化：一次轻量模型调用，把草稿改写成更清晰的指令

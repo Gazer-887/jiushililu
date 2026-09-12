@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
 import InputConsole from '../components/InputConsole'
@@ -25,6 +25,8 @@ export default function NewSessionView(): JSX.Element {
   const [picked, setPicked] = useState<string[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  // 「文件拖进会话」的落点 = 整块新建任务页（不是只有输入框那一小块）
+  const pageRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (settings?.model && !model) setModel(settings.model)
@@ -56,7 +58,7 @@ export default function NewSessionView(): JSX.Element {
   }
 
   return (
-    <div className="new-task">
+    <div className="new-task" ref={pageRef}>
       {/* 居中容器：内容整体垂直水平居中（用户 2026-09-12 美学偏好）。
           用 margin:auto 而非 justify-content:center —— 后者在内容高于容器时会裁掉顶部且滚不上去。 */}
       <div className="new-task-center">
@@ -76,6 +78,7 @@ export default function NewSessionView(): JSX.Element {
           pickedSkills={picked}
           onToggleSkill={toggleSkill}
           showWorkspace
+          dropZone={pageRef}
         />
 
         {picked.length > 0 && (

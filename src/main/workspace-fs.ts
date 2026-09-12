@@ -1,5 +1,5 @@
 import { open, readdir, readFile, stat } from 'node:fs/promises'
-import { basename, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 import type { Attachment } from '@shared/ipc'
 import {
   MAX_ENTRIES,
@@ -120,29 +120,59 @@ export async function readWorkspaceFile(workspaceRoot: string, rel: string): Pro
 export const ATTACH_LIMIT = 64 * 1024
 
 /**
- * 把「工作区里的一个文件」读成附件（③ 文件拖进会话 / 文件选择框 **共用**）。
+ * 把「一个文件」读成附件（③ 文件拖进会话 / 文件选择框 **共用**）。
  *
- * 两个入口只差"路径从哪来"，所以读取、体积上限、**工作区边界**都在这里定义一次 ——
+ * 两个入口只差"路径从哪来"，所以读取、体积上限、**边界规则**都在这里定义一次 ——
  * 各写一份的话，迟早有一天两个入口的边界不一致（而"从系统拖一个外部文件进来"
  * 正是最容易踩到的那条）。
  *
- * `resolveInsideWorkspace` 同时做"解析相对路径"与"越界检查"，正好是这里需要的两件事。
+ * ## 边界规则（2026-09-12 用户定案，**两层**）
  *
- * @throws 路径越界 / 文件不可读时抛错（错误信息是给用户看的人话）
+ * · **绝对路径 = 主人在系统里明确拖/选进来的一个文件** → **放行**，即使在工作区外。
+ *   返回的附件带 `outside: true`，界面上标成「工作区外」。
+ *   依据：把一份文件拖进会话，是主人**显式**把这份内容交给模型 —— 和粘贴一段文字同级。
+ *   拦下来保护不到任何东西，只会让人觉得"拖不进去"（旧版就是这样被报上来的）。
+ * · **相对路径 = 工作区文件树自己给的载荷** → **必须落在工作区内**，`..` 一律拒绝。
+ *   自家文件树不会产出越界路径，出现了就说明有问题，不该当成正常输入放行。
+ *
+ * ⚠️ Agent 自己读写文件的边界**一点没变**：`file-tools` / `workspace-write` /
+ * `system-tools` 各走各的 `resolveInsideWorkspace`，与附件这条线不相干。
+ *
+ * @throws 相对路径越界 / 文件不可读时抛错（错误信息**自证现场**：带上路径与边界）
  */
 export async function readAttachment(
   workspaceRoot: string,
   pathOrRel: string
 ): Promise<Attachment> {
-  const abs = resolveInsideWorkspace(workspaceRoot, pathOrRel)
-  if (!abs) throw new Error('只能引用当前工作区内的文件（越界已被拒绝）')
-  const buf = await readFile(abs)
+  const isAbs = isAbsolute(pathOrRel)
+  const inside = resolveInsideWorkspace(workspaceRoot, pathOrRel)
+  if (!inside && !isAbs) {
+    // 拒绝理由必须**自证现场**：只写"越界已被拒绝"的话，用户和排查者都不知道
+    // 到底是哪个路径被拒了、当时的工作区边界又在哪 —— 2026-09-12 用户报拖拽失败时
+    // 就卡在这里：一条消息四种可能（树里拖的 / 系统拖的 / 工作区换了 / 路径真的越界）
+    // 全都能产生同一句话。把**被拒的路径**和**当前边界**都写进去，一眼就能定位。
+    throw new Error(
+      `工作区文件树给的路径越出了工作区（已拒绝：「${pathOrRel}」；当前工作区：${workspaceRoot}）`
+    )
+  }
+  const abs = inside ?? resolve(pathOrRel)
+  const outside = inside === null
+
+  let buf: Buffer
+  try {
+    buf = await readFile(abs)
+  } catch (err) {
+    // 读不了也要说清**是哪个文件**读不了 —— 否则界面上一句"文件不存在"等于没给线索
+    throw new Error(`读不了这个文件（「${abs}」）：${humanError(err)}`)
+  }
+
   const truncated = buf.byteLength > ATTACH_LIMIT
   return {
     name: basename(abs),
     path: abs,
     content: buf.subarray(0, ATTACH_LIMIT).toString('utf8'),
-    truncated
+    truncated,
+    ...(outside ? { outside: true } : {})
   }
 }
 
