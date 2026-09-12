@@ -389,3 +389,55 @@ describe('格式迁移 v1 → v2（**A 批唯一动用户数据的一步**）', 
     expect(list[0]!.messageCount).toBe(2) // ← 用老格式内嵌正文的长度兜底
   })
 })
+
+// 用量账本（plan8 R9）：它跟会话一起落盘，所以判据都在这儿
+//
+// 为什么账本要写进**会话索引**而不是另开一个文件：界面上那块牌写的是"本会话累计"，
+// 它必须与这条会话同生共死（删会话就没了），另开文件迟早会出现"会话没了账还在"。
+describe('用量账本：落盘 / 只长不缩 / 缺字段', () => {
+  it('给了用量 → 写进 meta；重开一遍还能读到（不是只在内存里亮一下）', () => {
+    const root = tmpRoot()
+    const repo = createConversationsRepo(createFsConversationsBackend(root))
+    const c = repo.createConversation({ workspace: 'D:/ws', model: 'm', skills: [] })
+
+    repo.saveConversation(c.id, [msg(1)], { promptTokens: 1200, completionTokens: 340 })
+
+    // 换一个全新的 backend 实例再读 —— 验的才是"真落盘了"
+    const reopened = createConversationsRepo(createFsConversationsBackend(root))
+    expect(reopened.getConversation(c.id)?.usage).toEqual({ promptTokens: 1200, completionTokens: 340 })
+    // 列表（只读 meta）里也带着 —— 界面不用打开会话就能显示账本
+    expect(reopened.listConversations()[0]?.usage).toEqual({ promptTokens: 1200, completionTokens: 340 })
+  })
+
+  it('**不给用量 → 保持原值**（回滚/改名这类保存不许把账抹掉）', () => {
+    const root = tmpRoot()
+    const repo = createConversationsRepo(createFsConversationsBackend(root))
+    const c = repo.createConversation({ workspace: 'D:/ws', model: 'm', skills: [] })
+    repo.saveConversation(c.id, [msg(1)], { promptTokens: 100, completionTokens: 50 })
+
+    // 不带第三个参数的保存（老调用点就是这么调的）
+    repo.saveConversation(c.id, [msg(1), msg(2)])
+
+    expect(repo.getConversation(c.id)?.usage).toEqual({ promptTokens: 100, completionTokens: 50 })
+  })
+
+  it('**只长不缩**：晚到的旧快照不许把账写回去（数字倒退比不显示更费解）', () => {
+    const root = tmpRoot()
+    const repo = createConversationsRepo(createFsConversationsBackend(root))
+    const c = repo.createConversation({ workspace: 'D:/ws', model: 'm', skills: [] })
+    repo.saveConversation(c.id, [msg(1)], { promptTokens: 900, completionTokens: 300 })
+
+    // 一条"过期的"落盘请求（比如后台会话的防抖落盘晚到了一步）
+    repo.saveConversation(c.id, [msg(1), msg(2)], { promptTokens: 100, completionTokens: 20 })
+
+    expect(repo.getConversation(c.id)?.usage).toEqual({ promptTokens: 900, completionTokens: 300 })
+  })
+
+  it('老数据没有 usage 字段 → 读出来是 undefined（界面据此显示"暂无"，**不许补 0**）', () => {
+    const root = tmpRoot()
+    const backend = createFsConversationsBackend(root)
+    backend.putMeta('a', meta('a'))
+    const repo = createConversationsRepo(backend)
+    expect(repo.getConversation('a')?.usage).toBeUndefined()
+  })
+})

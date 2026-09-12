@@ -25,6 +25,7 @@ import { IPC, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
 import type { ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import type { SubagentJobEvent } from '@shared/agent'
+import type { TokenUsage } from '@shared/usage'
 
 /** 允许出现在这一层的通道（类型上收口：别的通道想从这儿发也发不出去） */
 type StreamChannel =
@@ -44,7 +45,11 @@ export interface ChatEmitter {
   todos(todos: TodoItem[]): void
   subagents(list: SubagentJobEvent[]): void
   checkpoint(runId: string): void
-  done(): void
+  /**
+   * 收尾，**带上本轮真实用量**（plan8 R9）—— 界面据此显示"这轮花了多少"。
+   * `null` = 厂商没报（界面显示占用估算，不假装知道精确值）。
+   */
+  done(usage: TokenUsage | null): void
   error(message: string): void
   /** 危险操作确认（也带会话身份 —— 用户要知道是**哪条会话**在问） */
   confirm(req: ToolConfirmRequest): void
@@ -73,7 +78,7 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     todos: (todos) => send(IPC.todoChanged, todos),
     subagents: (list) => send(IPC.subagentChanged, list),
     checkpoint: (runId) => send(IPC.checkpointChanged, runId),
-    done: () => send(IPC.chatDone, null),
+    done: (usage) => send(IPC.chatDone, { usage }),
     error: (message) => send(IPC.chatError, message),
     confirm: (req) => {
       if (win.isDestroyed()) return

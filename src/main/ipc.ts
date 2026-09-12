@@ -460,7 +460,8 @@ export function registerIpcHandlers(deps: {
       })
       // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
       if (result.changedFiles > 0) emit.checkpoint(result.runId)
-      emit.done()
+      // 收尾带货：本轮真实用量（plan8 R9）。厂商没报就是 null —— 界面据此退回占用估算
+      emit.done(result.usage)
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {
@@ -644,7 +645,18 @@ export function registerIpcHandlers(deps: {
     // 以前是"直接严格 parse"，于是"流式没吐字就切会话/点停止/关窗口"这几条路
     // **保存必然被拒**，而调用方是 `void persistActive()` —— 静默、丢数据、无从解释。
     const input = z
-      .object({ id: z.string().min(1).max(64), messages: incomingMessagesSchema })
+      .object({
+        id: z.string().min(1).max(64),
+        messages: incomingMessagesSchema,
+        // 用量账本（plan8 R9）：可选。**不信任上游的数字**——负/非有限一律拒，
+        // 免得一个 NaN 写进索引，之后每次列表都读到一个坏值
+        usage: z
+          .object({
+            promptTokens: z.number().finite().nonnegative(),
+            completionTokens: z.number().finite().nonnegative()
+          })
+          .optional()
+      })
       .parse(raw)
     const messages = normalizeHistory(input.messages as ChatMessage[])
     const parsed = storedMessagesSchema.safeParse(messages)
@@ -654,7 +666,16 @@ export function registerIpcHandlers(deps: {
       log.error('会话保存被拒', { id: input.id, count: messages.length, reason })
       throw new Error(`会话没能存进磁盘：${reason}`)
     }
-    return saveConversation(input.id, parsed.data as ChatMessage[])
+    return saveConversation(
+      input.id,
+      parsed.data as ChatMessage[],
+      input.usage
+        ? {
+            promptTokens: Math.round(input.usage.promptTokens),
+            completionTokens: Math.round(input.usage.completionTokens)
+          }
+        : undefined
+    )
   })
 
   ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {

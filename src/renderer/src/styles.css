@@ -2624,6 +2624,32 @@ label.radio {
   font-size: var(--fs-xs);
 }
 
+/* 真实用量小牌（plan8 R9）：与圆环并排，但语义是"账"不是"估" —— 所以弱化处理，
+   只有数字用墨色，单位与增量退到 muted，避免跟圆环抢注意力 */
+.usage-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.usage-total {
+  color: var(--text);
+}
+
+.usage-unit,
+.usage-last {
+  color: var(--muted);
+}
+
+.usage-last {
+  margin-left: var(--sp-2);
+}
+
 /* 圆形发送键 */
 .send-btn {
   display: flex;

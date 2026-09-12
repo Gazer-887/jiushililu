@@ -1,10 +1,11 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
-import type { StreamEnvelope } from '@shared/ipc'
+import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
 import type { ModelSaveInput } from '@shared/models'
 import type { GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
+import type { TokenUsage } from '@shared/usage'
 import {
   IPC,
   type AgentRunRequest,
@@ -42,7 +43,7 @@ const api: ApiBridge = {
   //    主进程就算带了会话身份，也会在**这一行**被悄悄丢掉 —— 而"看起来一切正常"。
   onChatChunk: (cb) => subscribe(IPC.chatChunk, (e) => cb(e as StreamEnvelope<string>)),
   onChatReasoning: (cb) => subscribe(IPC.chatReasoning, (e) => cb(e as StreamEnvelope<string>)),
-  onChatDone: (cb) => subscribe(IPC.chatDone, (e) => cb(e as StreamEnvelope<null>)),
+  onChatDone: (cb) => subscribe(IPC.chatDone, (e) => cb(e as StreamEnvelope<ChatDonePayload>)),
   onChatError: (cb) => subscribe(IPC.chatError, (e) => cb(e as StreamEnvelope<string>)),
   onChatTool: (cb) => subscribe(IPC.chatTool, (e) => cb(e as StreamEnvelope<ToolEvent>)),
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
@@ -70,8 +71,8 @@ const api: ApiBridge = {
   listConversations: () => ipcRenderer.invoke(IPC.convList),
   getConversation: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
   createConversation: (input: ConversationCreateInput) => ipcRenderer.invoke(IPC.convCreate, input),
-  saveConversation: (id: string, messages: ChatMessage[]) =>
-    ipcRenderer.invoke(IPC.convSave, { id, messages }),
+  saveConversation: (id: string, messages: ChatMessage[], usage?: TokenUsage) =>
+    ipcRenderer.invoke(IPC.convSave, usage ? { id, messages, usage } : { id, messages }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
   deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
   rollbackConversation: (id: string, toIndex: number) =>

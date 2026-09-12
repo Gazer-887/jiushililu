@@ -2,11 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   addUsage,
   anyEstimated,
-  costOf,
   emptyUsage,
-  formatCost,
   formatTokens,
-  parsePrice,
   sumRecords,
   totalTokens,
   type UsageRecord
@@ -14,13 +11,14 @@ import {
 import { usageFromAnthropicEvent, usageFromOpenAIChunk } from '../../src/main/providers/usage-parsers'
 
 /**
- * 用量与费用（plan8 R9）。
+ * 用量（plan8 R9）。
  *
  * 三条要盯住的：
  *   ① **真实 usage 优先、估算要标出来**（混在一起不标注 = 用户把两笔账当一回事）
- *   ② **没填单价就不假装知道钱**（显示 "—" 而不是 0 —— 0 会让人以为"不要钱"）
- *   ③ 两个协议的 usage 形状不同（OpenAI 在最后一个 chunk、Anthropic 分两处报）——
- *      解析器必须各自认各家的，且**认不出来返回 null 而不是硬编一个 0**
+ *   ② **认不出来就 null，绝不硬编 0** —— 0 会被下游当成"真的没用量"，一路显示成"这轮不花钱"
+ *   ③ 两个协议的 usage 形状不同（OpenAI 在最后一个 chunk、Anthropic 分两处报），解析器各认各家的
+ *
+ * ⚠️ 这里**没有**"费用"用例：用户定调"不用记钱，计量就好"，那盘单价算术已删（见 usage.ts 顶注）。
  */
 
 const rec = (p: number, c: number, estimated = false): UsageRecord => ({
@@ -47,39 +45,6 @@ describe('用量算术', () => {
   it('**只要有一条是估算，整段就得标"含估算"**', () => {
     expect(anyEstimated([rec(1, 1), rec(2, 2, true)])).toBe(true)
     expect(anyEstimated([rec(1, 1)])).toBe(false)
-  })
-})
-
-describe('费用：**没填单价就不假装知道钱**', () => {
-  const price = { inputPerMillion: 2, outputPerMillion: 8 }
-
-  it('按百万 token 算：100 万输入 = 输入单价', () => {
-    expect(costOf({ promptTokens: 1_000_000, completionTokens: 0 }, price)).toBe(2)
-  })
-
-  it('输入输出分开计价（输出一般更贵）', () => {
-    // 50 万输入(1) + 25 万输出(2) = 3
-    expect(costOf({ promptTokens: 500_000, completionTokens: 250_000 }, price)).toBe(3)
-  })
-
-  it('**没填单价 → null**（不是 0 —— 0 会让用户以为"不要钱"）', () => {
-    expect(costOf({ promptTokens: 1000, completionTokens: 1000 }, null)).toBeNull()
-    expect(formatCost(null)).toBeNull()
-  })
-
-  it('极小金额也显示得出来（不然一律显示 0.00 等于没说）', () => {
-    expect(formatCost(0.000123)).toBe('0.0001')
-    expect(formatCost(0.5)).toBe('0.500')
-    expect(formatCost(3.14159)).toBe('3.14')
-  })
-
-  it('单价解析：空串/非法/负数 → null（= 没填价）', () => {
-    expect(parsePrice('')).toBeNull()
-    expect(parsePrice('  ')).toBeNull()
-    expect(parsePrice('abc')).toBeNull()
-    expect(parsePrice('-1')).toBeNull()
-    expect(parsePrice('0')).toBe(0) // 0 是**合法单价**（免费模型），不是"没填"
-    expect(parsePrice(' 2.5 ')).toBe(2.5)
   })
 })
 

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { Goal, GoalAction } from '@shared/goal'
 import type {
+  ChatDonePayload,
   ChatMessage,
   ConversationCreateInput,
   ConversationMeta,
@@ -10,6 +11,7 @@ import type {
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
+import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
 import { estimateMessageTokens } from '@shared/tokens'
 import {
   DOCK_DEFAULT,
@@ -237,6 +239,17 @@ interface AppState {
    * 而"同时只显示一条"这个语义本来就不需要那份复杂度。
    */
   runtimes: Record<string, RuntimeSnapshot>
+  /**
+   * **每条会话的真实用量账本**（plan8 R9）。
+   *
+   * 为什么按会话摊开、而不是像 `messages` 那样只留当前这条：
+   * 用量**不需要"切走时存档、切回时恢复"** —— 它是一个只增不减的账本，
+   * 各条各记一笔就完了。切会话时界面只是换一个 key 去读，没有中间态可丢。
+   *
+   * 缺 key = 这条会话还**没拿到过真实用量**（界面据此显示"暂无"，
+   * 而不是一个看着像真的 0）。
+   */
+  usageByConversation: Record<string, ConversationUsage>
   /** 把当前显示会话的现场收进 `runtimes`（切走 / 开跑前调用） */
   archiveCurrent: () => void
   /**
@@ -249,7 +262,7 @@ interface AppState {
   pushToolEvent: (e: StreamEnvelope<ToolEvent>) => void
   setTodos: (e: StreamEnvelope<TodoItem[]>) => void
   setSubagents: (e: StreamEnvelope<SubagentJobEvent[]>) => void
-  markDone: (e: StreamEnvelope<null>) => void
+  markDone: (e: StreamEnvelope<ChatDonePayload>) => void
   markError: (e: StreamEnvelope<string>) => void
   clearToolEvents: () => void
   sendMessage: (text: string) => Promise<void>
@@ -270,6 +283,46 @@ interface AppState {
    */
   concurrencyNotice: string | null
   dismissConcurrencyNotice: () => void
+}
+
+/** 一条会话的用量账本：`total` 全程累计，`last` 是最近一轮（null = 还没跑过） */
+export interface ConversationUsage {
+  total: TokenUsage
+  last: TokenUsage | null
+}
+
+/**
+ * 把**盘上**的用量并进内存账本（plan8 R9）。
+ *
+ * 为什么取 **max** 而不是"盘上的覆盖内存里的"：这两个来源谁更新并不总是知道 ——
+ * 刚落盘、界面还没回来；或者反过来。直接覆盖会让数字**倒退**，
+ * 而账本倒退比不显示更难解释（用户会以为自己的账丢了）。
+ * 所以规矩是：**只许往前长**。
+ *
+ * ⚠️ 盘上带回来的只是**累计总量**，不是某一轮 —— 所以 `last` 保持内存里的值，
+ * 不拿历史累计去冒充"最近一轮"。
+ */
+function mergeUsage(
+  prev: Record<string, ConversationUsage>,
+  metas: ConversationMeta[]
+): Record<string, ConversationUsage> {
+  let next: Record<string, ConversationUsage> | null = null
+  for (const m of metas) {
+    const stored = m.usage
+    if (!stored) continue
+    const cur: ConversationUsage | undefined = (next ?? prev)[m.id]
+    const total: TokenUsage = cur
+      ? {
+          promptTokens: Math.max(cur.total.promptTokens, stored.promptTokens),
+          completionTokens: Math.max(cur.total.completionTokens, stored.completionTokens)
+        }
+      : stored
+    const same =
+      cur && total.promptTokens === cur.total.promptTokens && total.completionTokens === cur.total.completionTokens
+    if (same) continue
+    next = { ...(next ?? prev), [m.id]: { total, last: cur?.last ?? null } }
+  }
+  return next ?? prev
 }
 
 /** 一条会话的运行时现场（plan11 §2.7）—— 只有后台会话需要它 */
@@ -549,7 +602,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   loadConversations: async () => {
     const conversations = await window.api.listConversations()
-    set({ conversations })
+    // 列表里就带着用量账本（它存在会话索引里）→ 顺手并进内存，不必等哪条会话被打开
+    set({ conversations, usageByConversation: mergeUsage(get().usageByConversation, conversations) })
   },
 
   openConversation: async (id) => {
@@ -595,6 +649,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       todos: snap ? snap.todos.slice() : [],
       subagents: snap ? snap.subagents.slice() : []
     })
+    // 用量账本跟着这条会话一起进来（`conv` 是 meta + 正文，meta 里就带账）
+    set((s) => ({ usageByConversation: mergeUsage(s.usageByConversation, [conv]) }))
   },
 
   newSession: () =>
@@ -646,6 +702,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   subagents: [],
   backgroundTasks: [],
   runtimes: {},
+  usageByConversation: {},
   reasoning: '',
 
   clearToolEvents: () => set({ toolEvents: [] }),
@@ -739,7 +796,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   markDone: (e) => {
-    set((s) => applyToConversation(s, e.conversationId, () => ({ streaming: false })))
+    // 收尾带货（plan8 R9）：真实用量累加进**那一条会话**的账本。
+    // `null` = 厂商没报 → 账本一动都不动（宁可显示"暂无"，也不写一笔假账）
+    // 缺字段就当"厂商没报"：信封的另一头是**另一个进程**，
+    // 版本不齐 / 事件被截断都可能让 payload 给不出 usage —— 这里不许直接炸
+    const usage = e.payload?.usage ?? null
+    set((s) => {
+      const prev = s.usageByConversation[e.conversationId]
+      return {
+        ...applyToConversation(s, e.conversationId, () => ({ streaming: false })),
+        ...(usage
+          ? {
+              usageByConversation: {
+                ...s.usageByConversation,
+                [e.conversationId]: {
+                  total: addUsage(prev?.total ?? emptyUsage(), usage),
+                  last: usage
+                }
+              }
+            }
+          : {})
+      }
+    })
     // ⚠️ 落的是**那一条**（不是当前显示的那条）—— plan11 P0-1 就是这一行的缺失
     void get().persistConversation(e.conversationId)
   },
@@ -832,7 +910,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 后台会话的防抖任务已被这次落盘覆盖，取消掉
     cancelScheduledPersist(id)
     try {
-      const updated = await window.api.saveConversation(id, snap.messages)
+      const updated = await window.api.saveConversation(id, snap.messages, s.usageByConversation[id]?.total)
       if (updated) {
         // 就地更新列表项（避免整表重拉），标题可能已被自动补上
         const next = get().conversations.map((c) => (c.id === id ? updated : c))

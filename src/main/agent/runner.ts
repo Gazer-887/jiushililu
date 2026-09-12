@@ -25,6 +25,7 @@ import type { BackgroundTaskStore } from './background-tasks'
 import { runSubagents } from './scheduler'
 import { mergeAgentLayers } from './loader'
 import { runAgentLoop } from './loop'
+import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
 import type { CheckpointStore } from '../store/checkpoints'
 import { createCheckpointStore } from '../store/checkpoints'
 import { streamWithToolsOpenAI } from '../providers/openai-agent'
@@ -217,7 +218,7 @@ export interface RunAgentArgs {
 export async function runAgent(
   ctx: AgentRuntimeContext,
   args: RunAgentArgs
-): Promise<AgentLoopResult & { agent: string; runId: string; changedFiles: number }> {
+): Promise<AgentLoopResult & { agent: string; runId: string; changedFiles: number; usage: TokenUsage | null }> {
   const workspaceRoot = ctx.getWorkspaceRoot()
   const registry = loadAgentRegistry(ctx)
 
@@ -352,19 +353,31 @@ export async function runAgent(
   const effective: ModelSettings = def?.model ? { ...args.settings, model: def.model } : args.settings
   // 工具 schema 必须下发给模型（否则模型无从知晓可调工具——交叉验证抓出的必修 bug）
   const toolSchemas = tools.map((t) => t.schema)
-  const chat = (messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult> => {
+  /**
+   * 本轮累计的真实用量（plan8 R9）。
+   *
+   * 一轮里**可能调好几次模型**（工具来回），每次的 usage 都要加起来 ——
+   * 只记最后一次会让账面少一大半。
+   * `null` = 厂商一次都没报（**不是**"用量为 0"，两者必须分得清）。
+   */
+  let usageAcc: TokenUsage | null = null
+
+  const chat = async (messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult> => {
     const signal = args.signal ?? AbortSignal.timeout(effective.timeoutMs)
-    return effective.providerType === 'anthropic'
-      ? streamWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, onText, signal)
-      : streamWithToolsOpenAI(
-          effective,
-          args.apiKey,
-          messages,
-          toolSchemas,
-          onText,
-          signal,
-          args.onReasoning
-        )
+    const res =
+      effective.providerType === 'anthropic'
+        ? await streamWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, onText, signal)
+        : await streamWithToolsOpenAI(
+            effective,
+            args.apiKey,
+            messages,
+            toolSchemas,
+            onText,
+            signal,
+            args.onReasoning
+          )
+    if (res.usage) usageAcc = addUsage(usageAcc ?? emptyUsage(), res.usage)
+    return res
   }
 
   let result: AgentLoopResult
@@ -387,7 +400,7 @@ export async function runAgent(
   }
 
   const changedFiles = ctx.checkpoints.get(runId)?.changes.length ?? 0
-  return { ...result, agent: def?.name ?? '内核默认', runId, changedFiles }
+  return { ...result, agent: def?.name ?? '内核默认', runId, changedFiles, usage: usageAcc }
 }
 
 /**

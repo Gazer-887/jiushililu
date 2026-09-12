@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
 import { sourceLabel, type ModelsView } from '@shared/models'
+import { formatTokens, totalTokens } from '@shared/usage'
 import type { GitInfo, PermissionPreset } from '@shared/ipc'
 
 // 输入框工具栏零件（P2 控制台）：模型切换 / 上下文圆环 / 权限档 / Git 分支 / 提示词优化。
@@ -38,6 +39,40 @@ export function ContextRing({ used }: { used: number }): JSX.Element {
         />
       </svg>
       <span className="ctx-ring-text">{pct}%</span>
+    </span>
+  )
+}
+
+/**
+ * **真实用量小牌**（plan8 R9）。
+ *
+ * 与左边那个圆环是**两件事**，别混：
+ * - 圆环 = 上下文占用**估算**（本地按字数算，永远有值，但只是估的）
+ * - 这块牌 = 厂商**真实报的** token 账（准确，但厂商不报时就没有）
+ *
+ * 所以厂商没报时这里就**不渲染**，而不是显示 0：写个 0 会让人以为"这轮不要 token"。
+ * 用户定调是"只计量、不记钱"，故这里只出 token，不出金额。
+ */
+export function UsageChip(): JSX.Element | null {
+  const record = useAppStore((s) => (s.activeId ? s.usageByConversation[s.activeId] : undefined))
+
+  // 没会话、或这条还没拿到过真实用量 → 整块不渲染（工具栏不为"暂无"占位）
+  if (!record) return null
+
+  const { total, last } = record
+  const tip = [
+    `本会话累计（厂商真实值）：${totalTokens(total)} tokens`,
+    `输入 ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}`,
+    last ? `最近一轮：${totalTokens(last)} tokens` : ''
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  return (
+    <span className="usage-chip" title={tip}>
+      <span className="usage-total">{formatTokens(totalTokens(total))}</span>
+      <span className="usage-unit">tok</span>
+      {last && <span className="usage-last">+{formatTokens(totalTokens(last))}</span>}
     </span>
   )
 }

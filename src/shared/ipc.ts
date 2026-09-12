@@ -2,6 +2,7 @@
 
 import type { UIPrefs } from './splitter'
 import type { TodoItem } from './todo'
+import type { TokenUsage } from './usage'
 import type { SubagentJobEvent } from './agent'
 import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
@@ -186,6 +187,15 @@ export interface ConversationMeta {
   createdAt: number
   updatedAt: number
   messageCount: number
+  /**
+   * 这条会话的**真实用量累计**（plan8 R9）。
+   *
+   * 为什么必须落盘而不是只放内存：界面上这块牌写的是"本会话累计"，
+   * 一重启就归零的话，这个数字就是在骗人 —— 用户会拿它做判断（哪条会话烧得多）。
+   *
+   * 缺字段 = 老数据 / 还没跑过：界面据此显示"暂无"，**不补 0**。
+   */
+  usage?: TokenUsage
 }
 
 export interface Conversation extends ConversationMeta {
@@ -384,6 +394,19 @@ export type { BackgroundTask } from './background'
  * 能发流式事件，而它把 `conversationId` 在构造时闭包捕获 ——
  * **漏带 id 在结构上不可能发生**（守常见 `tests/unit/stream-envelope.test.ts`）。
  */
+/**
+ * `chat:done` 的信封负载（plan8 R9）。
+ *
+ * 为什么**收尾事件要带货**而不是另开一条 `usage:changed` 通道：
+ * 用量是"这一轮的总结"，和"跑完了"是同一件事、同一时刻到的。
+ * 分两条发就会出现"done 到了、usage 还没到"的中间态，界面得为它写一个假的等待态。
+ *
+ * `usage: null` = **厂商没报**（不是 0）—— 界面据此显示占用估算，不假装知道精确值。
+ */
+export interface ChatDonePayload {
+  usage: TokenUsage | null
+}
+
 export interface StreamEnvelope<T> {
   conversationId: string
   payload: T
@@ -486,7 +509,7 @@ export interface ApiBridge {
   onChatChunk(cb: (e: StreamEnvelope<string>) => void): () => void
   /** 思考增量（DeepSeek 系 reasoning_content）—— 界面显示"思考过程" */
   onChatReasoning(cb: (e: StreamEnvelope<string>) => void): () => void
-  onChatDone(cb: (e: StreamEnvelope<null>) => void): () => void
+  onChatDone(cb: (e: StreamEnvelope<ChatDonePayload>) => void): () => void
   onChatError(cb: (e: StreamEnvelope<string>) => void): () => void
   onChatTool(cb: (e: StreamEnvelope<import('./agent').ToolEvent>) => void): () => void
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
@@ -499,7 +522,12 @@ export interface ApiBridge {
   listConversations(): Promise<ConversationMeta[]>
   getConversation(id: string): Promise<Conversation | null>
   createConversation(input: ConversationCreateInput): Promise<Conversation>
-  saveConversation(id: string, messages: ChatMessage[]): Promise<ConversationMeta | null>
+  saveConversation(
+    id: string,
+    messages: ChatMessage[],
+    /** 用量账本（plan8 R9）：给了就更新，不给就保持盘上原值 */
+    usage?: TokenUsage
+  ): Promise<ConversationMeta | null>
   renameConversation(id: string, title: string): Promise<ConversationMeta | null>
   deleteConversation(id: string): Promise<void>
   listSkills(): Promise<SkillInfo[]>

@@ -474,9 +474,9 @@ const STUBS = {
     }
   },
   'conv:create': () => ({ id: 'x' }),
-  // 记流水：要验「在别的页面期间流出来的内容有没有被存下来」
-  'conv:save': ({ id, messages }) => {
-    convSaveCalls.push({ id, messages })
+  // 记流水：要验「在别的页面期间流出来的内容有没有被存下来」+ 用量账本有没有跟着走
+  'conv:save': ({ id, messages, usage }) => {
+    convSaveCalls.push({ id, messages, usage })
     return null
   },
   // ④ 会话回滚（plan10 B 批）：记下调用与载荷，并回一份**权威**会话 ——
@@ -3563,6 +3563,63 @@ app.whenReady().then(async () => {
     modelCatalog?.adv)
   checkTrue('切回 A → **A 的字在它自己那条里**（存档/恢复生效，不是靠重新拉盘掩盖）',
     concurrencyResult.aHasOwnText === true, { aHasOwnText: concurrencyResult.aHasOwnText })
+
+  // —— plan8 R9：真实用量（只计量、不记钱）——
+  //
+  // 为什么这条要真推 IPC 事件而不是直接看 store：用量从厂商上报 → Provider 解析
+  // → runner 累加 → `chat:done` 带货 → 预加载桥 → store 记账 → 界面渲染，
+  // 中间断任何一环，用户看到的就是"没有数字"。推事件能覆盖**桥之后**的整条链。
+  //
+  // 上文两处 `chat:done` 带的是 `payload: null` —— 那正是"厂商没报用量"那一档
+  // （DeepSeek 之外的多数端点不带 usage）。先确认它**不冒出一个 0**：
+  // 写个假 0 比不显示更坏，用户会以为"这轮不花 token"。
+  const readUsageChip = async () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const el = document.querySelector('.usage-chip')
+        if (!el) return { total: null, last: null }
+        return {
+          total: el.querySelector('.usage-total')?.textContent ?? null,
+          last: el.querySelector('.usage-last')?.textContent ?? null,
+          title: el.getAttribute('title') ?? ''
+        }
+      })()
+    `)
+
+  const chipNull = await readUsageChip()
+  checkTrue('厂商没报用量时，工具栏**不冒出用量牌**（宁可没有，也不写一笔假账）',
+    chipNull.total === null, chipNull)
+
+  // 真报一轮：1200 + 340 = 1540 → 显示 1.5k
+  win.webContents.send('chat:done', {
+    conversationId: 'c1',
+    payload: { usage: { promptTokens: 1200, completionTokens: 340 } }
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  const chip1 = await readUsageChip()
+
+  // 再来一轮：+1000 → 累计 2540 → 2.5k。**这条才是"累计"的判据**
+  win.webContents.send('chat:done', {
+    conversationId: 'c1',
+    payload: { usage: { promptTokens: 800, completionTokens: 200 } }
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  const chip2 = await readUsageChip()
+
+  checkTrue('厂商真报了 → 用量牌出现，且填的是**真实值**（1540 → 1.5k）',
+    chip1.total === '1.5k' && chip1.last === '+1.5k', chip1)
+  checkTrue('第二轮**累计**上去（2540 → 2.5k，不是把上一轮覆盖掉）',
+    chip2.total === '2.5k' && chip2.last === '+1.0k', chip2)
+  checkTrue('悬停说明里**输入/输出分开列**（否则用户没法判断钱花在哪一头上）',
+    chip1.title.includes('输入') && chip1.title.includes('输出') && chip1.title.includes('最近一轮'),
+    chip1.title)
+
+  // 落盘那一环：界面记账只是"看得见"，**写进会话索引**才是"记得住"。
+  // 这条盯的是渲染端→主进程的**载荷**（主进程侧的读写由单测钉着，两边各管一段）。
+  const savedUsage = [...convSaveCalls].reverse().find((c) => c.id === 'c1')?.usage
+  checkTrue('`conv:save` 的载荷**带上了账本**（否则一重启"本会话累计"就归零 —— 那数字会骗人）',
+    savedUsage?.promptTokens === 2000 && savedUsage?.completionTokens === 540,
+    savedUsage)
 
   reportAndExit()
 })

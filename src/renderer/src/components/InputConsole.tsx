@@ -3,7 +3,7 @@ import type { Attachment } from '@shared/ipc'
 import { DRAG_PATH_MIME } from '@shared/fs-tree'
 import PlusMenu from './PlusMenu'
 import WorkspaceChip from './WorkspaceChip'
-import { BranchChip, ContextRing, ModelSwitcher, PermissionChip, PolishButton, SendButton } from './InputTools'
+import { BranchChip, ContextRing, ModelSwitcher, PermissionChip, PolishButton, SendButton, UsageChip } from './InputTools'
 
 // 输入控制台（P2，D-032 输入框控制台化）——对齐用户图纸：
 //
@@ -265,6 +265,7 @@ export default function InputConsole({
 
         <div className="tb-group tb-right">
           <ContextRing used={usedTokens} />
+          <UsageChip />
           <PolishButton text={value} onPolished={(next) => onChange(next)} />
           <ModelSwitcher />
           <SendButton
