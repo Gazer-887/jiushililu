@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ToolConfirmRequest } from '@shared/ipc'
+import { useAppStore } from '../store'
 
 // 危险操作确认对话框（plan8 R5）
 //
@@ -7,22 +8,34 @@ import type { ToolConfirmRequest } from '@shared/ipc'
 // 但"可写"档下模型仍能执行任意 shell 命令 —— 用户没法说"这一次让我看一眼"。
 // 这个框补的就是那一次。
 //
-// 两条行为约定：
+// 三条行为约定：
 //   ① **不点就不放行**：主进程 60 秒无应答即按拒绝处理（安全默认）。
 //      所以界面不显示倒计时催促，但也不做"自动允许"。
 //   ② 展示**命令原文**且不截断关键部分：判断危险与否靠的是内容，不是工具名。
+//   ③ **排队，不覆盖**（plan11 P0-3）：以前这里是单槽 state，后到的请求**直接顶掉**正在显示的那条 ——
+//      并发时用户**读着 A 的命令、点下的却是 B 的「允许」**，R5 那句"用户看过才批准的那一条"
+//      就不成立了。这是**安全语义**问题，不是体验问题：
+//      · 一次只显示队首，并写明**还有几条在排队**
+//      · 每条请求都标明**来自哪条会话**（用户才知道自己在批谁的）
+//      · 答复按**该条的 id** 配对（不是"当前那条"）
 
 export default function ConfirmDialog(): JSX.Element | null {
-  const [req, setReq] = useState<ToolConfirmRequest | null>(null)
+  /**
+   * 待确认队列。用数组而不是单个 `req` —— 这就是本组件唯一的改动要点：
+   * **后到的请求排到后面，绝不覆盖前面那条**。
+   */
+  const [queue, setQueue] = useState<ToolConfirmRequest[]>([])
   const [busy, setBusy] = useState(false)
+  const conversations = useAppStore((s) => s.conversations)
 
   useEffect(() => {
     return window.api.onToolConfirmRequest((r) => {
-      setReq(r)
+      setQueue((q) => [...q, r])
       setBusy(false)
     })
   }, [])
 
+  const req = queue[0] ?? null
   if (!req) return null
 
   // **两种确认说两种话**（plan10 §六 第 6 条）：文件回滚在右抽屉、会话回滚在消息右键，
@@ -30,12 +43,21 @@ export default function ConfirmDialog(): JSX.Element | null {
   // 所以会话回滚这一路**不许出现"文件"二字**（有一条断言专门钉这个）。
   const isRollback = req.kind === 'rollback-messages'
 
+  /** 请求来自哪条会话 —— 显示标题（拿不到就退回 id，绝不显示成"未知"让人无从追溯） */
+  const fromTitle =
+    conversations.find((c) => c.id === req.conversationId)?.title ?? req.conversationId
+
   const answer = async (allowed: boolean): Promise<void> => {
+    const current = queue[0]
+    if (!current) return
     setBusy(true)
     try {
-      await window.api.respondToolConfirm({ id: req.id, allowed })
+      // ⚠️ 用**这一条的 id** 配对（不是"当前那条"）—— 队列里排队的那几条各有各的 id
+      await window.api.respondToolConfirm({ id: current.id, allowed })
     } finally {
-      setReq(null)
+      setBusy(false)
+      // 只弹出队首；后面排队的继续问
+      setQueue((q) => q.slice(1))
     }
   }
 
@@ -56,11 +78,18 @@ export default function ConfirmDialog(): JSX.Element | null {
         <pre className="cf-cmd">{req.detail}</pre>
 
         <div className="cf-meta">
+          <span className="cf-from" title={fromTitle}>
+            来自会话：{fromTitle}
+          </span>
           <span>发起：{req.agent}</span>
           <span className="cf-where" title={req.where}>
             位置：{req.where}
           </span>
         </div>
+
+        {queue.length > 1 && (
+          <p className="cf-queue">还有 {queue.length - 1} 条确认在排队，这条答复后就轮到手</p>
+        )}
 
         <div className="cf-actions">
           <button className="cf-btn" disabled={busy} onClick={() => void answer(false)}>

@@ -45,6 +45,7 @@ import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { ConfirmBridge } from './confirm'
 import { chatSendInputSchema, conversationIdSchema, incomingMessagesSchema, settingsSchema, storedMessagesSchema } from './schemas'
 import { createChatEmitter } from './chat-emitter'
+import { createChatGate } from './agent/concurrency'
 import {
   BUILTIN_TYPES,
   DIRTY_MAX_LEN,
@@ -135,17 +136,22 @@ import { normalizeHistory } from './store/conversations-core'
 // schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
 
 /**
+ * 对话并发的上限（plan11 §2.1）：每跑一条会话就是一堆工具调用 / 子进程，
+ * 不设上限等于允许用户一键把机器压垮；3 条够"一条改代码 + 一条查资料 + 一条跑长任务"。
+ */
+const MAX_CONCURRENT_CHATS = 3
+
+/**
  * 进行中的对话，**按会话**记（plan11 §2.1）。
  *
  * 以前 key 是 `e.sender.id`（窗口）—— 一个窗口同时只能跑一条会话。
  * 现在按 `conversationId` 记：**同会话重复发送 → 拒绝；跨会话 → 放行**。
  *
- * ⚠️ **总并发上限当前锁在 1**（`MAX_CONCURRENT_CHATS`）：
- * plan11 §三 的顺序是"**落盘先修好，再放开并发**" —— 后台会话整轮丢失那个洞没堵上之前
- * 放开并发 = 一半的活白跑。等落盘那一段的测试绿了，这里才改成 3。
+ * ⚠️ 闸的逻辑抽在 `./agent/concurrency`（纯函数，可单测）：`verify-shot` 把 `chat:send`
+ * 整个 stub 掉了，界面上"两条都在跑"与闸的实际值**无关** —— 实测把上限改回 1，
+ * 那边 6 条并发断言照样全绿。也就是说：**只有纯单测才验得到这道闸**。
  */
-const activeChats = new Map<string, AbortController>()
-const MAX_CONCURRENT_CHATS = 1
+const chatGate = createChatGate(MAX_CONCURRENT_CHATS)
 /** Agent 循环并发闸（按窗口）：同时只允许一个 Agent 任务 */
 const activeAgents = new Set<number>()
 
@@ -261,33 +267,34 @@ export function registerIpcHandlers(deps: {
     const emit = createChatEmitter(e.sender, conversationId)
 
     // IPC 层并发防护：渲染层的 streaming 标志只是软约束，这里才是硬闸。
-    // 同会话重复 → 拒；跨会话 → 放行（上限见 MAX_CONCURRENT_CHATS）
-    if (activeChats.has(conversationId)) {
-      emit.error('这条会话已经在跑了：请先点「停止」或等它完成')
-      return
-    }
-    if (activeChats.size >= MAX_CONCURRENT_CHATS) {
-      emit.error(`同时最多跑 ${MAX_CONCURRENT_CHATS} 条会话：等有会话跑完再发`)
+    // 同会话重复 → 拒；跨会话 → 放行（上限见 MAX_CONCURRENT_CHATS）。
+    // 规则本身在 ./agent/concurrency（纯函数，有单测 —— 这里只负责把话传给界面）
+    const gate = chatGate.begin(conversationId)
+    if (!gate.ok) {
+      emit.error(gate.message)
       return
     }
 
     if (!settings.baseURL || !settings.model) {
+      // 开跑前就退回的路径，**必须把刚占的位子还回去** ——
+      // 不然这条会话在闸里永远"在跑"，之后连重发都发不出去
+      chatGate.end(conversationId)
       emit.error('还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
       return
     }
     if (!hasApiKey()) {
+      chatGate.end(conversationId)
       emit.error('还没有保存 API Key：请先到「设置」页填写并保存')
       return
     }
 
     const apiKey = getDecryptedApiKey()
-    const controller = new AbortController()
+    const controller = gate.controller
     let timedOut = false
     const timer = setTimeout(() => {
       timedOut = true
       controller.abort()
     }, settings.timeoutMs)
-    activeChats.set(conversationId, controller)
 
     // D-032：单一通道——带工具清单 + 流式，由模型自决"直接回答还是先调工具"。
     // 文本增量 → chat:chunk（上屏）；工具生命周期 → chat:tool（进度卡片）。
@@ -338,14 +345,14 @@ export function registerIpcHandlers(deps: {
       emit.error(friendlyChatError(err, timedOut, settings.timeoutMs))
     } finally {
       clearTimeout(timer)
-      activeChats.delete(conversationId)
+      chatGate.end(conversationId)
     }
   })
 
   ipcMain.handle(IPC.chatAbort, (_e, raw: unknown) => {
     // 并发之后"停止"必须指名道姓 —— 不指名就是停错会话
     const conversationId = friendlyParse(conversationIdSchema, raw)
-    activeChats.get(conversationId)?.abort()
+    chatGate.abort(conversationId)
   })
 
   // 关窗口前的落盘回执（plan11 P0-2）：主进程收到它才真关窗口
@@ -522,7 +529,8 @@ export function registerIpcHandlers(deps: {
   // ── 会话回滚（plan10 B 批 · ④）──────────────────────────────────
   //
   // 三条边界，每条都有理由：
-  //   ① **正在生成回复时拒绝回滚** —— 复用现成的并发闸（`activeChats` 按窗口记）
+  //   ① **正在生成回复时拒绝回滚** —— 复用现成的并发闸（`chatGate`，按**会话**判断：
+  //      回滚哪条会话就只看那条会话跑没跑，别把另一条会话的流当成障碍）
   //      流式还没结束就动历史，等于在动的数据上做手术
   //   ② **走 R5 确认桥**（`kind: 'rollback-messages'`）—— 回滚会"藏起"一段对话，
   //      不该一点就走；而且文案必须与**文件回滚**分得清（plan10 §六 第 6 条）
@@ -565,7 +573,7 @@ export function registerIpcHandlers(deps: {
     const input = z
       .object({ id: z.string().min(1).max(64), toIndex: z.number().int().min(0).max(100000) })
       .parse(raw)
-    if (activeChats.has(input.id)) {
+    if (chatGate.isRunning(input.id)) {
       throw new Error('这条会话正在生成回复：请先等它结束、或点「停止」，再回滚')
     }
     return doRollback(input.id, input.toIndex)

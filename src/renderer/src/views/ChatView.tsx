@@ -24,6 +24,8 @@ export default function ChatView() {
   const streaming = useAppStore((s) => s.streaming)
   const streamError = useAppStore((s) => s.streamError)
   const saveError = useAppStore((s) => s.saveError)
+  const concurrencyNotice = useAppStore((s) => s.concurrencyNotice)
+  const dismissConcurrencyNotice = useAppStore((s) => s.dismissConcurrencyNotice)
   const rollbackNotice = useAppStore((s) => s.rollbackNotice)
   const rollbackTo = useAppStore((s) => s.rollbackTo)
   const undoRollback = useAppStore((s) => s.undoRollback)
@@ -216,6 +218,16 @@ export default function ChatView() {
         {/* 落盘失败独立一条：切会话 / 点停止 / 关窗口那一刻最常发生，不能被 streamError 的清空带走
             （样式复用 .chat-error，不新增类 —— 免得又多一处"JSX 里有、样式表里没有"的死类） */}
         {saveError && <div className="chat-error">{saveError}</div>}
+        {/* 并发提醒（plan11 §2.3）：**只提醒一次，可关掉，不拦** ——
+            两个会话同时改同一个工作区会互相覆盖，这是用法层面的风险，知情权在用户手里 */}
+        {concurrencyNotice && (
+          <div className="cc-bar">
+            <span className="cc-text">{concurrencyNotice}</span>
+            <button className="cc-btn" onClick={dismissConcurrencyNotice}>
+              知道了
+            </button>
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 

@@ -38,6 +38,18 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
   const renameConversation = useAppStore((s) => s.renameConversation)
   const removeConversation = useAppStore((s) => s.removeConversation)
   const setView = useAppStore((s) => s.setView)
+  /**
+   * **正在跑的会话集合**（plan11）：当前那条看顶层的 `streaming`，
+   * 后台那几条看各自存档里的 `streaming` —— 两边合起来才是"谁在跑"的全貌。
+   */
+  const runtimes = useAppStore((s) => s.runtimes)
+  const activeStreaming = useAppStore((s) => s.streaming)
+  const runningIds = new Set<string>([
+    ...Object.entries(runtimes)
+      .filter(([, r]) => r.streaming)
+      .map(([id]) => id),
+    ...(activeId && activeStreaming ? [activeId] : [])
+  ])
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [menuFor, setMenuFor] = useState<string | null>(null)
@@ -120,6 +132,13 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
                       />
                     ) : (
                       <span className="conv-title">{c.title}</span>
+                    )}
+                    {/* 「这条会话正在跑」（plan11）：并发之后一眼看出**哪几条**在生成 ——
+                        不看这个标记，用户会以为切走的那条已经停了 */}
+                    {runningIds.has(c.id) && (
+                      <span className="conv-running" title="这条会话正在生成">
+                        正在生成
+                      </span>
                     )}
                     <button
                       className="conv-more"

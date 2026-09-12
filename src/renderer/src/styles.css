@@ -1792,6 +1792,38 @@ label.radio {
 /* ── 会话回滚提示条（plan10 B 批 · ④）──────────────────────────
    回滚之后必须**再声明一次作用域**（用户会担心"文件是不是也退了"），
    并给一个撤销入口 —— 回滚只移游标不删数据，撤销是零成本的。 */
+/* 并发提醒条（plan11 §2.3）：样式与 .rb-bar 同一族（都是"一句提醒 + 一个动作"），
+   但用**警示色**区分 —— 回滚提示是"我做了件事，你可以撤"，这条是"你可能会踩到坑"。 */
+.cc-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin: var(--sp-8) 0;
+  padding: var(--sp-6) var(--sp-8);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--warn-deep);
+}
+
+.cc-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.cc-btn {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--warn-deep);
+  background: var(--panel);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-6);
+  cursor: pointer;
+}
+
 .rb-bar {
   display: flex;
   align-items: center;
@@ -3039,6 +3071,38 @@ label.radio {
   gap: var(--sp-2);
   font-size: var(--fs-xs);
   color: var(--muted);
+}
+
+/* 「正在生成」标记（plan11）：并发时哪几条会话在跑，必须一眼看得出 ——   否则用户切走之后会以为那条停了。用点 + 小字，不抢标题的地方。 */
+.conv-running {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-4);
+  white-space: nowrap;
+}
+
+/* 「来自会话 XXX」（plan11 P0-3）：并发时用户必须一眼看出自己在批**谁**的命令 */
+.cf-from {
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「还有 N 条在排队」—— 用警示色：它提醒用户**别把这条当成唯一那条** */
+.cf-queue {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--warn-deep);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-4) var(--sp-6);
 }
 
 .cf-where {

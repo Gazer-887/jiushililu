@@ -37,16 +37,15 @@ describe('确认桥：无人应答 = 拒绝（安全默认）', () => {
   it('推不到界面（无窗口）→ 立即拒绝，不留待决', async () => {
     const bridge = createConfirmBridge({ send: () => false, log: silentLog })
     await expect(bridge.ask(req())).resolves.toBe(false)
-    expect(bridge.hasPending()).toBe(false)
+    // 不留待决：用**可判定的事实**（任何答复都没人认领），而不是一个自省用的 API
+    expect(bridge.respond({ id: 'any-id', allowed: true })).toBe(false)
   })
 
   it('窗口全关时 abortAll → 待决请求按拒绝处理', async () => {
     const bridge = createConfirmBridge({ send: () => true, log: silentLog, timeoutMs: 60_000 })
     const p = bridge.ask(req())
-    expect(bridge.hasPending()).toBe(true)
     bridge.abortAll('窗口已全部关闭')
     await expect(p).resolves.toBe(false)
-    expect(bridge.hasPending()).toBe(false)
   })
 })
 
@@ -81,10 +80,19 @@ describe('确认桥：答复配对', () => {
   })
 
   it('不认识的 id 被忽略（过期/伪造响应不会误配新请求）', async () => {
-    const bridge = createConfirmBridge({ send: () => true, log: silentLog, timeoutMs: 60_000 })
+    let capturedId = ''
+    const bridge = createConfirmBridge({
+      send: (r) => {
+        capturedId = r.id
+        return true
+      },
+      log: silentLog,
+      timeoutMs: 60_000
+    })
     const p = bridge.ask(req())
     expect(bridge.respond({ id: 'forged-id', allowed: true })).toBe(false)
-    expect(bridge.hasPending()).toBe(true) // 原请求仍在等
+    // 原请求仍在等 —— 用它的**真 id** 回一次就能证明（而不是问桥"你还有没有待决"）
+    expect(bridge.respond({ id: capturedId, allowed: false })).toBe(true)
     bridge.abortAll('cleanup')
     await expect(p).resolves.toBe(false)
   })

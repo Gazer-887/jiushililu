@@ -327,27 +327,44 @@ const STUBS = {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messageCount: 2
+    },
+    // plan11 步骤 6：**第二条会话** —— 并发验收需要真的能"两条一起跑"
+    {
+      id: 'c2',
+      title: '查点资料',
+      workspace: 'D:\\jsllworkplace_for_test',
+      model: 'deepseek-flash',
+      skills: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messageCount: 0
     }
   ],
-  'conv:get': () => ({
-    id: 'c1',
-    title: '打个招呼',
-    workspace: 'D:\\jsllworkplace_for_test',
-    model: 'deepseek-flash',
-    skills: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    messageCount: 0,
-    // 空消息 → 对话页显示空状态（验证 0.9.9 的空状态文案）
-    // 给一条真实的消息流：这样"过程块在最后一条助手消息之前"这个位置断言才有得验
-    messages: [
-      { role: 'user', content: '把工作区里的三个文件汇总成一份报告' },
-      {
-        role: 'assistant',
-        content: '# 汇总报告\n\n- 紫水晶采购清单已归档\n- 预算草案待复核\n'
-      }
-    ]
-  }),
+  'conv:get': (id) => {
+    const which = id === 'c2' ? 'c2' : 'c1'
+    return {
+      id: which,
+      title: which === 'c2' ? '查点资料' : '打个招呼',
+      workspace: 'D:\\jsllworkplace_for_test',
+      model: 'deepseek-flash',
+      skills: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messageCount: which === 'c2' ? 0 : 2,
+      // c2 从空会话开始（"并发时第二条会话刚开"正是要验的场景）；
+      // c1 给一条真实的消息流：这样"过程块在最后一条助手消息之前"这个位置断言才有得验
+      messages:
+        which === 'c2'
+          ? []
+          : [
+              { role: 'user', content: '把工作区里的三个文件汇总成一份报告' },
+              {
+                role: 'assistant',
+                content: '# 汇总报告\n\n- 紫水晶采购清单已归档\n- 预算草案待复核\n'
+              }
+            ]
+    }
+  },
   'conv:create': () => ({ id: 'x' }),
   // 记流水：要验「在别的页面期间流出来的内容有没有被存下来」
   'conv:save': ({ id, messages }) => {
@@ -3131,6 +3148,101 @@ app.whenReady().then(async () => {
     'SUB_LIFECYCLE=' + JSON.stringify({ before: subBefore.got, onSettings, savedWhileAway, ...subAfter })
   )
 
+  // —— plan11 步骤 6：**两条会话同时跑**（并发这个能力的最后一道验收）——
+  //
+  // 计划 §四 第 2 条要求验四件事：
+  //   ① 两条都在跑（侧边栏两个「正在生成」标记）
+  //   ② 切到 A：A 的流在长，**B 的字不串进来**（这就是"切会话串台"的回归门）
+  //   ③ A 结束后 B 仍在跑
+  //   ④ 两条**各自落盘**（P0-1：后台那条跑完必须有人替它存）
+  //
+  // 手段：真键盘往输入框打字 + 回车发送（真输入路径），事件直接推（stub 环境跑不了真模型）。
+  // 判据盯着**界面上的字落在哪条会话**与**conv:save 的载荷**，不盯实现细节。
+  const convItems = async () =>
+    win.webContents.executeJavaScript(`
+      (() => Array.from(document.querySelectorAll('.conv-item')).map((b) => ({
+        text: (b.textContent || '').trim(),
+        running: !!b.querySelector('.conv-running'),
+        active: b.classList.contains('active')
+      })))()
+    `)
+
+  const clickConv = async (title) => {
+    const ok = await win.webContents.executeJavaScript(`
+      (() => {
+        const it = Array.from(document.querySelectorAll('.conv-item'))
+          .find((b) => (b.textContent || '').includes(${JSON.stringify('__T__')}));
+        if (it) it.click();
+        return !!it;
+      })()
+    `.replace('__T__', title))
+    await new Promise((r) => setTimeout(r, 800))
+    return ok
+  }
+
+  /** 真键盘：点输入框聚焦 → 逐字打 → 回车发送 */
+  const typeAndSend = async (text) => {
+    const pos = await centerOf('.console-input')
+    if (!pos) return false
+    await realClick(pos.x, pos.y, 'left')
+    for (const ch of text) {
+      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', text: ch })
+      await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp' })
+    }
+    const enter = {
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+      nativeVirtualKeyCode: 13
+    }
+    await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...enter })
+    await dbg.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', ...enter })
+    await new Promise((r) => setTimeout(r, 500))
+    return true
+  }
+
+  const chatText = async () =>
+    win.webContents.executeJavaScript(`(() => (document.querySelector('.chat-messages')?.textContent ?? ''))()`)
+
+  await clickConv('打个招呼')
+  const sentA = await typeAndSend('A 的活开工')
+  await new Promise((r) => setTimeout(r, 300))
+  const runningAfterA = await convItems()
+
+  await clickConv('查点资料')
+  const sentB = await typeAndSend('B 的活开工')
+  await new Promise((r) => setTimeout(r, 300))
+  const runningAfterB = await convItems()
+
+  // ② 此时界面显示的是 B：推一段**属于 A** 的字 —— 它**不许**出现在 B 的对话里
+  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '【这是 A 的字】' })
+  await new Promise((r) => setTimeout(r, 500))
+  const bText = await chatText()
+
+  // ③ A 结束 → A 的标记消失、B 仍在跑；④ 落盘的是 **A**
+  convSaveCalls.length = 0
+  win.webContents.send('chat:done', { conversationId: 'c1', payload: null })
+  await new Promise((r) => setTimeout(r, 800))
+  const runningAfterADone = await convItems()
+  const savedAOnly = convSaveCalls.map((c) => c.id)
+
+  // 切回 A：它的字**在它自己那条里**（存档 / 恢复）
+  await clickConv('打个招呼')
+  const aText = await chatText()
+  const concurrencyResult = {
+    sentA,
+    sentB,
+    runningAfterA: runningAfterA.filter((c) => c.running).map((c) => c.text),
+    runningAfterB: runningAfterB.filter((c) => c.running).map((c) => c.text),
+    leakedIntoB: bText.includes('【这是 A 的字】'),
+    runningAfterADone: runningAfterADone.filter((c) => c.running).map((c) => c.text),
+    savedAOnly,
+    aHasOwnText: aText.includes('【这是 A 的字】')
+  }
+  console.log('CONCURRENCY=' + JSON.stringify(concurrencyResult))
+  const shotConc = await win.webContents.capturePage()
+  writeFileSync(join(SHOTS, 'verify-concurrency.png'), shotConc.toPNG())
+
   if (rbInputReady) {
     try {
       dbg.detach()
@@ -3206,6 +3318,22 @@ app.whenReady().then(async () => {
     savedWhileAway === true, { savedWhileAway, saves: convSaveCalls.length })
   checkTrue('**收到 `chat:done` 之后不卡在"生成中"**（发送键回到「发送」）',
     subAfter.stopping === false && subAfter.sendTitle.includes('发送'), subAfter)
+
+  // —— plan11 步骤 6：两条会话同时跑（并发能力的验收）——
+  checkTrue('前置：**两条会话都发出去了**（真键盘打字 + 回车；没发出去的话下面全说明不了任何事）',
+    concurrencyResult.sentA === true && concurrencyResult.sentB === true, concurrencyResult)
+  checkTrue('① **两条都在跑** —— 侧边栏两个「正在生成」标记（并发没生效时只会有 1 个）',
+    concurrencyResult.runningAfterB.length === 2, concurrencyResult.runningAfterB)
+  checkTrue('② **切到 B 时，属于 A 的字不会串进来**（这就是"切会话串台"的回归门）',
+    concurrencyResult.leakedIntoB === false, { leakedIntoB: concurrencyResult.leakedIntoB })
+  checkTrue('③ **A 结束后 B 仍在跑**（一条跑完不该把另一条也标记成结束）',
+    concurrencyResult.runningAfterADone.length === 1 &&
+      concurrencyResult.runningAfterADone.some((t) => t.includes('查点资料')),
+    concurrencyResult.runningAfterADone)
+  checkTrue('④ **后台那条（A）跑完真的落了盘，且落的是它自己**（P0-1：以前只存"当前显示的那条"）',
+    concurrencyResult.savedAOnly.includes('c1'), concurrencyResult.savedAOnly)
+  checkTrue('切回 A → **A 的字在它自己那条里**（存档/恢复生效，不是靠重新拉盘掩盖）',
+    concurrencyResult.aHasOwnText === true, { aHasOwnText: concurrencyResult.aHasOwnText })
 
   reportAndExit()
 })

@@ -257,6 +257,12 @@ interface AppState {
   persistConversation: (id: string) => Promise<void>
   /** 关窗口前把所有在跑的会话落盘（plan11 P0-2）—— 主进程等到回执才真关 */
   flushAll: () => Promise<void>
+  /**
+   * 并发提醒（plan11 §2.3）：同时跑第二条会话时提醒一次"两个会话改同一个工作区会互相覆盖"。
+   * **只提醒不拦** —— 应用没法判断两件事会不会碰同一批文件，把知情权交给用户。
+   */
+  concurrencyNotice: string | null
+  dismissConcurrencyNotice: () => void
 }
 
 /** 一条会话的运行时现场（plan11 §2.7）—— 只有后台会话需要它 */
@@ -753,6 +759,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     // **先把这条会话的现场存进存档**：它一旦被切到后台，
     // 属于它的片段才知道该往哪儿落（不然只能丢）
     get().archiveCurrent()
+
+    // 并发提醒（plan11 §2.3）：**只提醒一次，不拦** ——
+    // 两个会话同时改同一个工作区文件夹会互相覆盖，这是用法层面的风险，
+    // 应用没法替用户判断"这两件事会不会碰同一批文件"，所以把知情权交给他。
+    const othersRunning = Object.entries(get().runtimes).filter(
+      ([id, r]) => id !== conversationId && r.streaming
+    )
+    if (othersRunning.length > 0) {
+      set({
+        concurrencyNotice:
+          `现在有 ${othersRunning.length} 条会话也在跑。两个会话同时改同一个工作区文件夹会互相覆盖文件 —— ` +
+          `要么错开跑，要么留意一下它们动的是不是同一批文件。`
+      })
+    }
+
     try {
       await window.api.chatSend({ conversationId, messages: payload })
     } catch {
@@ -829,5 +850,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const ids = new Set<string>(Object.keys(s.runtimes))
     if (s.activeId) ids.add(s.activeId)
     await Promise.all([...ids].map((id) => get().persistConversation(id)))
-  }
+  },
+
+  concurrencyNotice: null,
+  dismissConcurrencyNotice: () => set({ concurrencyNotice: null })
 }))
+

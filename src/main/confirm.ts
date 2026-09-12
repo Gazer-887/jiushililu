@@ -10,6 +10,11 @@ import type { ToolConfirmRequest, ToolConfirmResult } from '@shared/ipc'
 //      一律按拒绝处理 —— 绝不能因为"没等到答复"就把危险操作放过去。
 //   ② 请求带**唯一 id** 并成对响应，避免旧响应误配新请求。
 //   ③ 桥本身不知道"哪些工具危险"，由调用方（runner）决定何时调 —— 单一职责。
+//
+// plan11（多会话并发）：**待决可以有多个**（两条会话同时问就同时挂着，各带各的 id），
+// 界面侧按队列逐条问用户。原先这里有个 `hasPending()`（注释写着"界面据此避免重复弹"）
+// 但**全仓零调用点** —— 那是最坏的一类 API：它让读代码的人以为有这道防线，实际没有。
+// 已删除；"一次只问一条"改由界面队列保证（`ConfirmDialog`）。
 
 /** 确认超时：超过则按拒绝处理（安全默认） */
 const CONFIRM_TIMEOUT_MS = 60_000
@@ -22,8 +27,6 @@ export interface ConfirmBridge {
   ask(req: Omit<ToolConfirmRequest, 'id'>): Promise<boolean>
   /** 渲染进程回传答复；返回是否匹配到待决请求 */
   respond(result: ToolConfirmResult): boolean
-  /** 当前是否已有待决请求（界面据此避免重复弹） */
-  hasPending(): boolean
   /** 丢弃某个待决请求（按拒绝处理）—— 窗口关闭/渲染崩溃时调用 */
   abortAll(reason: string): void
 }
@@ -78,10 +81,6 @@ export function createConfirmBridge(deps: ConfirmBridgeDeps): ConfirmBridge {
       deps.log('危险操作确认结果', { tool: p.req.tool, allowed: result.allowed })
       p.resolve(result.allowed)
       return true
-    },
-
-    hasPending() {
-      return pending.size > 0
     },
 
     abortAll(reason) {
