@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit -p config/tsconfig.main.json && tsc --noEmit -p config/tsconfig.renderer.json",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --config config/eslint.config.js",
     "test": "vitest run --config config/vitest.config.ts",
-    "test:watch": "vitest --config config/vitest.config.ts"
+    "test:watch": "vitest --config config/vitest.config.ts",
+    "bench": "vitest run --config config/vitest.bench.config.ts"
   },
   "dependencies": {
     "electron-store": "^8.2.0"
