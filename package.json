@@ -1,6 +1,6 @@
 {
   "name": "jiushililu",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "九十里路 —— 一个会自己长经验的全能 AI 工作台",
   "main": "out/main/index.js",
   "author": "Gazer",
