@@ -11,6 +11,7 @@ import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import { useAppStore } from '../store'
 import { THEMES } from '@shared/splitter'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
+import { TOKEN_TIER_LIST, type TokenSaverTier } from '@shared/token-tier'
 
 /*
  * 设置分区导航（plan8 R7 形态改造，2026-09-12 用户意见）：
@@ -156,6 +157,8 @@ export default function SettingsView() {
   /** 通用设置：工作区与访问权限档 —— 都存在主进程，与输入框工具栏是同一份数据 */
   const [ws, setWs] = useState<WorkspaceInfo | null>(null)
   const [perm, setPerm] = useState<PermissionPreset>('write')
+  /** 省 token 档位（plan8 R9.1 §七②）：跟权限档一样是"人定的档"，真值在主进程 */
+  const [tier, setTier] = useState<TokenSaverTier>('balanced')
   /** 故障排查区（plan8 R2）：日志目录与最近文件，用于"出问题能查" */
   const [logs, setLogs] = useState<LogsInfo | null>(null)
 
@@ -201,6 +204,7 @@ export default function SettingsView() {
       .then(setWs)
       .catch(() => setWs(null))
     void window.api.getPermission().then(setPerm)
+    void window.api.getTokenTier().then(setTier)
   }, [])
 
   useEffect(() => {
@@ -321,6 +325,11 @@ export default function SettingsView() {
 
   const choosePerm = async (p: PermissionPreset): Promise<void> => {
     setPerm(await window.api.setPermission(p))
+  }
+
+  /** 选省 token 档位（plan8 R9.1 §七②）。**全局一档** —— 不做会话级覆盖（用户定调） */
+  const chooseTier = async (next: TokenSaverTier): Promise<void> => {
+    setTier(await window.api.setTokenTier(next))
   }
 
   // ── 多模型：增删改与"改用这个"（plan7 F5）──
@@ -458,6 +467,28 @@ export default function SettingsView() {
                 >
                   <span className="choice-name">{PERM_LABEL[p]}</span>
                   <span className="choice-desc">{PERM_HINT[p]}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="field-label">省 token 档位</div>
+            {/* 用户定调（plan8 R9.1 §七②）：**省 token 不许让模型降智**，
+                所以"能力 vs 省钱"这个取舍摆出来让人选，不替他默认一个激进值 */}
+            <p className="hint">
+              只影响省 token 的手段（工具输出的压缩力度、读文件默认给多少行），
+              不会因为选了省档就改数字或藏起厂商没报的东西。
+            </p>
+            <div className="choice-list choice-list-fill" role="radiogroup" aria-label="省 token 档位">
+              {TOKEN_TIER_LIST.map((t) => (
+                <button
+                  key={t.tier}
+                  role="radio"
+                  aria-checked={tier === t.tier}
+                  className={`choice-item${tier === t.tier ? ' is-on' : ''}`}
+                  onClick={() => void chooseTier(t.tier)}
+                >
+                  <span className="choice-name">{t.label}</span>
+                  <span className="choice-desc">{t.note}</span>
                 </button>
               ))}
             </div>

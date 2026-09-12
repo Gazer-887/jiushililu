@@ -6,6 +6,7 @@ import type { GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import type { TokenUsage } from '@shared/usage'
+import type { TokenSaverTier } from '@shared/token-tier'
 import {
   IPC,
   type AgentRunRequest,
@@ -71,8 +72,11 @@ const api: ApiBridge = {
   listConversations: () => ipcRenderer.invoke(IPC.convList),
   getConversation: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
   createConversation: (input: ConversationCreateInput) => ipcRenderer.invoke(IPC.convCreate, input),
-  saveConversation: (id: string, messages: ChatMessage[], stats?: { usage?: TokenUsage; avoidedTokens?: number }) =>
-    ipcRenderer.invoke(IPC.convSave, stats ? { id, messages, ...stats } : { id, messages }),
+  saveConversation: (
+    id: string,
+    messages: ChatMessage[],
+    stats?: { usage?: TokenUsage; avoidedTokens?: number; tokenTier?: TokenSaverTier }
+  ) => ipcRenderer.invoke(IPC.convSave, stats ? { id, messages, ...stats } : { id, messages }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
   deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
   rollbackConversation: (id: string, toIndex: number) =>
@@ -81,6 +85,8 @@ const api: ApiBridge = {
   listSkills: () => ipcRenderer.invoke(IPC.skillsList),
   getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
+  getTokenTier: () => ipcRenderer.invoke(IPC.tokenTierGet),
+  setTokenTier: (tier: TokenSaverTier) => ipcRenderer.invoke(IPC.tokenTierSet, tier),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
   attachFile: () => ipcRenderer.invoke(IPC.attachFile),
   attachPath: (pathOrRel) => ipcRenderer.invoke(IPC.attachPath, pathOrRel),

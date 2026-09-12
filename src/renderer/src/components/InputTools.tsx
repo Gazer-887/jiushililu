@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
 import { sourceLabel, type ModelsView } from '@shared/models'
 import { cacheHitRate, formatRate, formatTokens, reasoningShare, totalTokens } from '@shared/usage'
+import { tierLabel } from '@shared/token-tier'
 import type { GitInfo, PermissionPreset } from '@shared/ipc'
 
 // 输入框工具栏零件（P2 控制台）：模型切换 / 上下文圆环 / 权限档 / Git 分支 / 提示词优化。
@@ -78,6 +79,8 @@ export function UsageChip(): JSX.Element | null {
       ? `输出里推理（思考）：${formatTokens(total.reasoningTokens ?? 0)}（${formatRate(think)}）`
       : '输出里推理（思考）：厂商未报',
     last ? `最近一轮：${totalTokens(last)} tokens` : '',
+    // 档位（§七②）：记下"这轮是哪一档跑的" —— 用户比数字时得知道它的出处
+    record.tier ? `省 token 档位（设置页可改）：${tierLabel(record.tier)}` : '',
     // ⚠️ 这一行必须**说清是估算**：它和上面那个"厂商真实值"不是一个来源，
     // 混着说不清，用户就没法判断哪个数字能信。
     avoided > 0 ? `工具输出成形省下（本地估算）：约 ${formatTokens(avoided)} tokens` : ''
@@ -92,6 +95,8 @@ export function UsageChip(): JSX.Element | null {
       {last && <span className="usage-last">+{formatTokens(totalTokens(last))}</span>}
       {hit !== null && <span className="usage-rate">命中 {formatRate(hit)}</span>}
       {think !== null && <span className="usage-rate">思考 {formatRate(think)}</span>}
+      {/* 档位（§七②）：主进程没带这个字段就**不显示** —— 不替它编一个默认档 */}
+      {record.tier && <span className="usage-tier">{tierLabel(record.tier)}</span>}
       {avoided > 0 && <span className="usage-saved">省 {formatTokens(avoided)}</span>}
     </span>
   )

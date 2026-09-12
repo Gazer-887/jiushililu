@@ -2668,6 +2668,17 @@ label.radio {
   color: var(--muted);
 }
 
+/* 省 token 档位标签（plan8 R9.1 §七②）：它是账目的**出处**，不是账本身 ——
+   所以用最轻的一档视觉（框起来但不抢数字的注意力） */
+.usage-tier {
+  margin-left: var(--sp-2);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
 /* 圆形发送键 */
 .send-btn {
   display: flex;

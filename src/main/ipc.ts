@@ -27,7 +27,8 @@ import {
   type BackgroundTask,
   type ConversationRollbackResult
 } from '@shared/ipc'
-import { getPermissionPreset, setPermissionPreset } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier } from './store/settings'
+import { resolvePolicy, type TokenSaverTier } from '@shared/token-tier'
 // 「当前用哪个模型」现在由**模型档案**决定（plan7 F5 多模型）：
 // 下面这几个名字语义没变（内核/界面永远只看见"当前这一个模型"），只是真源搬到了 store/models
 import {
@@ -446,6 +447,9 @@ export function registerIpcHandlers(deps: {
         // 校准开关（plan8 R9.1）：`JSL_TOOL_WINDOW=off` 时工具输出原样进上下文。
         // 只认这一个环境变量的值，不给就是默认开 —— 免得留一个"忘了配就悄悄变了行为"的配置面。
         ...(process.env['JSL_TOOL_WINDOW'] === 'off' ? { toolWindow: false } : {}),
+        // 省 token 档位（plan8 R9.1 §七②）：**在这里解析**（组合根读了设置再往下给 policy）。
+        // runner 不许碰 electron-store（CI 无 Electron 二进制），所以读设置只能发生在本层。
+        policy: resolvePolicy(getTokenTier()),
         // 子代理事件（plan7 批 D）：同批内就地更新，换批则重开
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
@@ -466,7 +470,7 @@ export function registerIpcHandlers(deps: {
       // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
       if (result.changedFiles > 0) emit.checkpoint(result.runId)
       // 收尾带货：本轮真实用量（plan8 R9）+ 窗口化省下的估算量（R9.1）
-      emit.done(result.usage, result.avoidedTokens ?? 0)
+      emit.done(result.usage, result.avoidedTokens ?? 0, getTokenTier())
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {
@@ -771,6 +775,18 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.permissionSet, (_e, raw: unknown): PermissionPreset => {
     const preset = z.enum(['read-only', 'write', 'full-access']).parse(raw)
     return setPermissionPreset(preset)
+  })
+
+  // ── 省 token 档位（plan8 R9.1 §七②）────────────────────────
+  //
+  // 与权限档同一个模式：**人定的档存在主进程**，界面只是它的一个视图。
+  // 这里用 zod 收口而不是"认不出就回落"：回落是给**读**用的（老配置得能跑），
+  // 而**写**进来的脏值必须当场拒掉 —— 用户点了却没生效，比报错更难查。
+  ipcMain.handle(IPC.tokenTierGet, (): TokenSaverTier => getTokenTier())
+
+  ipcMain.handle(IPC.tokenTierSet, (_e, raw: unknown): TokenSaverTier => {
+    const tier = z.enum(['rich', 'ultimate', 'balanced', 'light']).parse(raw)
+    return setTokenTier(tier)
   })
 
   ipcMain.handle(IPC.gitInfo, (): Promise<GitInfo | null> =>

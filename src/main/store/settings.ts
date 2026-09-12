@@ -1,6 +1,7 @@
 import Store from 'electron-store'
 import { safeStorage } from 'electron'
 import type { ModelSettings, PermissionPreset } from '@shared/ipc'
+import { DEFAULT_TOKEN_TIER, isTokenSaverTier, type TokenSaverTier } from '@shared/token-tier'
 
 // 持久化设置。铁律（D-013 / AGENTS.md）：API Key 只走 safeStorage 加密落盘，绝不存明文。
 // safeStorage 在 Windows 用 DPAPI、macOS 用 Keychain（DIARY 术语词典有词条）。
@@ -19,6 +20,14 @@ interface StoredSettings extends ModelSettings {
   apiKeysEncrypted?: Record<string, string>
   /** 访问权限档（D-032：能力归模型，权限归人） */
   permissionPreset?: PermissionPreset
+  /**
+   * 省 token 档位（plan8 R9.1 §七②）。
+   *
+   * 为什么放**全局设置**而不是模型档案：用户定调"**档位是全局的**，不做会话级覆盖"
+   * ——它是"你更在乎能力还是在乎钱"的偏好，跟用哪条连接无关。
+   * 缺字段 = 老配置 → 按 `DEFAULT_TOKEN_TIER`（平衡）回落，**不写回盘**（写回会让"默认"变成"显式选择"）。
+   */
+  tokenSaverTier?: TokenSaverTier
 }
 
 const store = new Store<StoredSettings>({ name: 'settings' })
@@ -31,6 +40,22 @@ export function getPermissionPreset(): PermissionPreset {
 export function setPermissionPreset(preset: PermissionPreset): PermissionPreset {
   store.set('permissionPreset', preset)
   return getPermissionPreset()
+}
+
+/**
+ * 当前**省 token 档位**（plan8 R9.1 §七②）。
+ *
+ * 认不出来的值（老配置 / 手改坏的 json）**回落到默认档**，不抛错 ——
+ * 配置坏掉时让应用照常能跑，比"启动就炸"重要；而回落方向一律是"更不激进"的那档。
+ */
+export function getTokenTier(): TokenSaverTier {
+  const raw = store.store.tokenSaverTier
+  return isTokenSaverTier(raw) ? raw : DEFAULT_TOKEN_TIER
+}
+
+export function setTokenTier(tier: TokenSaverTier): TokenSaverTier {
+  store.set('tokenSaverTier', tier)
+  return getTokenTier()
 }
 
 export function encryptionAvailable(): boolean {

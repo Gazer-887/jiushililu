@@ -3,6 +3,7 @@
 import type { UIPrefs } from './splitter'
 import type { TodoItem } from './todo'
 import type { TokenUsage } from './usage'
+import type { TokenSaverTier } from './token-tier'
 import type { SubagentJobEvent } from './agent'
 import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
@@ -201,6 +202,14 @@ export interface ConversationMeta {
    * 与 `usage` 分开存：它不是厂商账，是"我们替你做掉的量"，混着算等于两笔账糊在一起。
    */
   avoidedTokens?: number
+  /**
+   * 这条会话**最后一轮用的省 token 档位**（plan8 R9.1 §七②）。
+   *
+   * 为什么留在会话索引里：同一条会话中途换档是允许的（档位是全局设置，随时可改），
+   * 所以这个字段只代表"最近一次"——**它够用了**：用户问的是"我这会话是在哪种档位下跑的"，
+   * 而真要逐轮比对，那属于校准 harness 的事，不该让会话索引承担。
+   */
+  tokenTier?: TokenSaverTier
 }
 
 export interface Conversation extends ConversationMeta {
@@ -278,6 +287,9 @@ export const IPC = {
   /** 访问权限档（只读 / 可写 / 完全访问） */
   permissionGet: 'permission:get',
   permissionSet: 'permission:set',
+  /** 省 token 档位（plan8 R9.1 §七②）：全局一档，不做会话级覆盖 */
+  tokenTierGet: 'token-tier:get',
+  tokenTierSet: 'token-tier:set',
   /** 当前工作区的 Git 分支 */
   gitInfo: 'git:info',
   /** 选择文件作为上下文附件（读入内容） */
@@ -417,6 +429,14 @@ export interface ChatDonePayload {
    * 混在一起用户就分不清哪个数字能信。它**不参与**会话用量账本的加减。
    */
   avoided?: number
+  /**
+   * 这一轮用的**省 token 档位**（plan8 R9.1 §七②）。
+   *
+   * 用户定调第 4 条：**计量必须记下"这轮用的哪一档"** —— 否则事后按档位比数字时，
+   * 说不清"这个数是在哪一档下跑出来的"。界面把它显示在用量牌上（如「平衡」）。
+   * 缺字段 = 老版本主进程 / 还没选过 → 界面**不显示档位标签**，不替它编一个默认值。
+   */
+  tier?: TokenSaverTier
 }
 
 export interface StreamEnvelope<T> {
@@ -549,6 +569,9 @@ export interface ApiBridge {
   listSkills(): Promise<SkillInfo[]>
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
+  /** 省 token 档位（plan8 R9.1 §七②）：全局一档，与权限档同样"存在主进程、界面只是视图" */
+  getTokenTier(): Promise<TokenSaverTier>
+  setTokenTier(tier: TokenSaverTier): Promise<TokenSaverTier>
   getGitInfo(): Promise<GitInfo | null>
   /**
    * **回到第 `toIndex` 条消息之前**（plan10 B 批 ④）。

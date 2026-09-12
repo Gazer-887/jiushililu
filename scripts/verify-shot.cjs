@@ -530,6 +530,10 @@ const STUBS = {
   ],
   'permission:get': () => 'write',
   'permission:set': () => 'write',
+  // 省 token 档位（plan8 R9.1 §七②）：`set` **回显传入值** —— 跟真实主进程一样，
+  // 界面就拿它的返回值更新显示，所以这里不需要在 mock 里存状态
+  'token-tier:get': () => 'balanced',
+  'token-tier:set': (tier) => tier,
   'git:info': () => ({ branch: 'master', dirty: false }),
   'attach:file': () => null,
   'prompt:polish': () => 'polished',
@@ -2332,6 +2336,47 @@ app.whenReady().then(async () => {
 
   await new Promise((r) => setTimeout(r, 900))
 
+  // ── 省 token 档位（plan8 R9.1 §七②）──
+  //
+  // 这时还停在「通用设置」分区（默认分区就是它），档位卡片与权限档**同屏**，
+  // 所以下面一律用 `[aria-label="省 token 档位"]` **限定范围**去查 ——
+  // 只按 `.choice-item` 会把权限档那三个也捞进来（那是另一组，数量不一样）。
+  const tierBefore = await win.webContents.executeJavaScript(`
+    (() => {
+      const group = document.querySelector('[aria-label="省 token 档位"]');
+      if (!group) return { found: false };
+      return {
+        found: true,
+        items: Array.from(group.querySelectorAll('.choice-name')).map((e) => e.textContent.trim()),
+        checked: group.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null
+      };
+    })()
+  `)
+  checkTrue('设置页有「省 token 档位」一栏，四档都在（土豪/极致/平衡/轻量）',
+    tierBefore.found && tierBefore.items.join('/') === '土豪/极致/平衡/轻量', tierBefore)
+  checkTrue('默认落在**平衡**档（用户定调的默认，不是界面随手编的）',
+    tierBefore.checked === '平衡', tierBefore)
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const group = document.querySelector('[aria-label="省 token 档位"]');
+      const btn = group && Array.from(group.querySelectorAll('.choice-item'))
+        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '轻量');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const tierAfter = await win.webContents.executeJavaScript(`
+    (() => {
+      const group = document.querySelector('[aria-label="省 token 档位"]');
+      if (!group) return null;
+      return group.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null;
+    })()
+  `)
+  checkTrue('点一下就切到「轻量」—— 档位真值在主进程，界面只是它的视图',
+    tierAfter === '轻量', tierAfter)
+
   // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
   await win.webContents.executeJavaScript(`
     (() => {
@@ -3577,7 +3622,7 @@ app.whenReady().then(async () => {
     win.webContents.executeJavaScript(`
       (() => {
         const el = document.querySelector('.usage-chip')
-        if (!el) return { total: null, last: null, saved: null, rates: [], title: '' }
+        if (!el) return { total: null, last: null, saved: null, rates: [], tier: null, title: '' }
         return {
           total: el.querySelector('.usage-total')?.textContent ?? null,
           last: el.querySelector('.usage-last')?.textContent ?? null,
@@ -3585,6 +3630,7 @@ app.whenReady().then(async () => {
           // 命中率 / 思考占比（plan8 R9.1 §七①）：两块可能都在、只在一块、或一块都没有
           // （"一块都没有"正是**厂商没报**那一档 —— 那时不许冒出 0%）
           rates: Array.from(el.querySelectorAll('.usage-rate')).map((n) => n.textContent),
+          tier: el.querySelector('.usage-tier')?.textContent ?? null,
           title: el.getAttribute('title') ?? ''
         }
       })()
@@ -3601,7 +3647,8 @@ app.whenReady().then(async () => {
     conversationId: 'c1',
     payload: {
       usage: { promptTokens: 1200, completionTokens: 340, cachedPromptTokens: 0, reasoningTokens: 0 },
-      avoided: 4800
+      avoided: 4800,
+      tier: 'light'
     }
   })
   await new Promise((r) => setTimeout(r, 500))
@@ -3613,7 +3660,8 @@ app.whenReady().then(async () => {
     conversationId: 'c1',
     payload: {
       usage: { promptTokens: 800, completionTokens: 200, cachedPromptTokens: 800, reasoningTokens: 200 },
-      avoided: 400
+      avoided: 400,
+      tier: 'balanced'
     }
   })
   await new Promise((r) => setTimeout(r, 500))
@@ -3636,6 +3684,10 @@ app.whenReady().then(async () => {
     chip1.rates.length === 2 && chip1.rates[0] === '命中 0%' && chip1.rates[1] === '思考 0%', chip1.rates)
   checkTrue('第二轮按**累计**算命中率（800/2000 = 40%；推理 200/540 = 37%）',
     chip2.rates.length === 2 && chip2.rates[0] === '命中 40%' && chip2.rates[1] === '思考 37%', chip2.rates)
+  // 档位（§七②）：用户定调第 4 条 —— **计量必须记下"这轮用的哪一档"**，
+  // 否则事后按档位比数字时说不清来源。这里顺带验它跟着轮次更新
+  checkTrue('用量牌显示这轮用的档位（第一轮 light → 第二轮 balanced，跟着更新）',
+    chip1.tier === '轻量' && chip2.tier === '平衡', { c1: chip1.tier, c2: chip2.tier })
 
   // 落盘那一环：界面记账只是"看得见"，**写进会话索引**才是"记得住"。
   // 这条盯的是渲染端→主进程的**载荷**（主进程侧的读写由单测钉着，两边各管一段）。

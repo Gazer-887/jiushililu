@@ -12,6 +12,7 @@ import type { TodoItem } from '@shared/todo'
 import { ToolGate } from './guard'
 import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
 import { createFileTools } from './tools/file-tools'
+import type { TokenPolicy } from '@shared/token-tier'
 import {
   createSystemTools,
   createSystemToolsWithConfirm,
@@ -82,7 +83,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
       }
     })
   return [
-    ...createFileTools(writer),
+    ...createFileTools(writer, hooks.policy),
     ...(hooks.confirmCommand
       ? createSystemToolsWithConfirm(
           workspaceRoot,
@@ -107,6 +108,11 @@ export interface ToolHooks {
    * 不传则用默认实现（能写、不能删 —— 安全默认）。
    */
   writer?: WorkspaceWriter
+  /**
+   * 省 token 档位（plan8 R9.1 §七②）解析出来的开关。
+   * 目前它只影响 `read_file` 的**默认行数**；工具输出的窗口化门槛在 `runAgentLoop` 那侧给。
+   */
+  policy?: TokenPolicy
   /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
   confirmCommand?: CommandConfirm
   /** 待办清单变化（界面据此显示"干到哪一步了"） */
@@ -226,6 +232,13 @@ export interface RunAgentArgs {
    * 关掉时工具输出原样进上下文 —— 供 A/B 校准与"怀疑被压糊了"时的复现排查用。
    */
   toolWindow?: boolean
+  /**
+   * 省 token 档位（plan8 R9.1 §七②）解析出来的开关，**由调用方注入**。
+   * 为什么不让 runner 自己读设置：本模块**不许碰 electron-store**
+   * （CI 的 Linux 环境没有 Electron 二进制，见文件末尾那段注释）——
+   * 所以"读用户设置"这一步只能发生在组合根（`ipc.ts` / `scheduler.ts`）。
+   */
+  policy?: TokenPolicy
 }
 
 export async function runAgent(
@@ -280,7 +293,8 @@ export async function runAgent(
               : streamWithToolsOpenAI(model, args.apiKey, messages, schemas, () => {}, signal)
           }
         },
-        ...(args.onSubagentEvent ? { onJobEvent: args.onSubagentEvent } : {})
+        ...(args.onSubagentEvent ? { onJobEvent: args.onSubagentEvent } : {}),
+        ...(args.policy ? { policy: args.policy } : {})
       })
       const parts = results.map((r) =>
         r.ok
@@ -305,6 +319,7 @@ export async function runAgent(
 
   const allTools = createAllTools(workspaceRoot, {
     writer,
+    ...(args.policy ? { policy: args.policy } : {}),
     ...(ctx.background ? { background: ctx.background, agentLabel } : {}),
     // 逐次确认（plan8 R5）：仅「可写」档需要 ——
     //   · 只读档本就不下发 run_command，不会走到这里
@@ -407,7 +422,8 @@ export async function runAgent(
       ...(args.onText ? { onText: args.onText } : {}),
       ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {}),
       ...(args.onToolWindowed ? { onToolWindowed: args.onToolWindowed } : {}),
-      ...(args.toolWindow === undefined ? {} : { toolWindow: args.toolWindow })
+      ...(args.toolWindow === undefined ? {} : { toolWindow: args.toolWindow }),
+      ...(args.policy ? { policy: args.policy } : {})
     })
   } finally {
     // 无论正常结束、抛异常还是被中止，都要收尾 ——

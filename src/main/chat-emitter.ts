@@ -26,6 +26,7 @@ import type { ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import type { SubagentJobEvent } from '@shared/agent'
 import type { TokenUsage } from '@shared/usage'
+import type { TokenSaverTier } from '@shared/token-tier'
 
 /** 允许出现在这一层的通道（类型上收口：别的通道想从这儿发也发不出去） */
 type StreamChannel =
@@ -51,8 +52,12 @@ export interface ChatEmitter {
    *
    * `avoided`（plan8 R9.1）= 本轮工具输出窗口化**省下的估算 token**（没省就是 0）。
    * 它跟 `usage` 是两笔账（本地估算 vs 厂商真值），所以**分开传**，界面也分开显示。
+   *
+   * `tier`（plan8 R9.1 §七②）= **这一轮用的省 token 档位**。
+   * 用户定调第 4 条：**计量必须记下这轮用的哪一档** —— 否则事后按档位比数字时，
+   * 根本说不清"这个数是在哪档下跑出来的"。
    */
-  done(usage: TokenUsage | null, avoided?: number): void
+  done(usage: TokenUsage | null, avoided?: number, tier?: TokenSaverTier): void
   error(message: string): void
   /** 危险操作确认（也带会话身份 —— 用户要知道是**哪条会话**在问） */
   confirm(req: ToolConfirmRequest): void
@@ -81,7 +86,8 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     todos: (todos) => send(IPC.todoChanged, todos),
     subagents: (list) => send(IPC.subagentChanged, list),
     checkpoint: (runId) => send(IPC.checkpointChanged, runId),
-    done: (usage, avoided = 0) => send(IPC.chatDone, { usage, avoided }),
+    done: (usage, avoided = 0, tier) =>
+      send(IPC.chatDone, { usage, avoided, ...(tier ? { tier } : {}) }),
     error: (message) => send(IPC.chatError, message),
     confirm: (req) => {
       if (win.isDestroyed()) return

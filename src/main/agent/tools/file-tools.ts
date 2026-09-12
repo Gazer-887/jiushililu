@@ -3,6 +3,7 @@ import type { AgentTool } from '@shared/agent'
 import { estimateTokens } from '@shared/tokens'
 import { resolveInsideWorkspace } from '../guard'
 import type { WorkspaceWriter } from '../../workspace-write'
+import type { TokenPolicy } from '@shared/token-tier'
 
 // 内置工具第一批（plan6）：文件读写。
 // 两条硬边界：① 路径必须落在 workspaceRoot 内（防逃逸）② 读取按**行窗口**给（防撑爆上下文）。
@@ -52,12 +53,20 @@ function toPositiveInt(v: unknown, fallback: number): number {
   return Math.floor(n)
 }
 
-export function createFileTools(writer: WorkspaceWriter): AgentTool[] {
+/**
+ * @param policy 省 token 档位解析出来的开关（plan8 R9.1 §七②）。
+ *   这里**只管"默认给多少行"** —— 模型显式给了 `limit` 就按它的来：
+ *   档位影响的是"没人说要看多少"时的默认值，**不是硬上限**（否则就变成替模型做决定了）。
+ *   不传 = 平衡档的现状值（200 行），所以老调用点行为不变。
+ */
+export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): AgentTool[] {
+  /** 默认读多少行（平衡档 = 200，与改造前一致） */
+  const defaultLines = policy?.readLines ?? DEFAULT_LIMIT_LINES
   const read_file: AgentTool = {
     schema: {
       name: 'read_file',
       description:
-        '读取工作区内一个文本文件的一段内容（默认第 1 行起、最多 200 行）。' +
+        `读取工作区内一个文本文件的一段内容（默认第 1 行起、最多 ${defaultLines} 行）。` +
         '返回的每一行前面都有「行号|」前缀，那是**定位用的，不属于文件内容**。' +
         '要读后面的内容：把 offset 设成上一段末尾行号加一。文件很长时不要一次全要 —— 先看结构再按需取段。',
       parameters: {
@@ -65,7 +74,7 @@ export function createFileTools(writer: WorkspaceWriter): AgentTool[] {
         properties: {
           path: { type: 'string', description: '相对工作区根的文件路径' },
           offset: { type: 'number', description: '从第几行开始读（从 1 数起，默认 1）' },
-          limit: { type: 'number', description: `最多读多少行（默认 ${DEFAULT_LIMIT_LINES}，上限 ${MAX_LIMIT_LINES}）` }
+          limit: { type: 'number', description: `最多读多少行（默认 ${defaultLines}，上限 ${MAX_LIMIT_LINES}）` }
         },
         required: ['path']
       }
@@ -88,12 +97,12 @@ export function createFileTools(writer: WorkspaceWriter): AgentTool[] {
         const all = text.split(/\r?\n/)
         const total = all.length
         const offset = toPositiveInt(args['offset'], 1)
-        const limit = Math.min(toPositiveInt(args['limit'], DEFAULT_LIMIT_LINES), MAX_LIMIT_LINES)
+        const limit = Math.min(toPositiveInt(args['limit'], defaultLines), MAX_LIMIT_LINES)
         const start = Math.min(offset, total + 1)
         const end = Math.min(start + limit - 1, total)
 
         if (start > total) {
-          return `错误：起始行 ${offset} 超出文件范围（该文件共 ${total} 行）。要看末尾请用 offset=${Math.max(1, total - DEFAULT_LIMIT_LINES + 1)}`
+          return `错误：起始行 ${offset} 超出文件范围（该文件共 ${total} 行）。要看末尾请用 offset=${Math.max(1, total - defaultLines + 1)}`
         }
 
         const window = all.slice(start - 1, end)

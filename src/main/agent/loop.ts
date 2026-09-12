@@ -1,6 +1,7 @@
 import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
 import { toolCallDetail } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
+import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { trimMessages, type TrimOptions } from './context'
 
 // Agent 主循环（plan6 → P1；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，
@@ -45,6 +46,12 @@ export interface AgentLoopOptions {
    * 另外它也是排查手段：怀疑"模型没看见原文"时，先关掉它再复现一次。
    */
   toolWindow?: boolean
+  /**
+   * 省 token 档位解析出来的开关（plan8 R9.1 §七②）。
+   * **调用方只给 policy，不认识档位名** —— 加档 / 改取值都只动 `@shared/token-tier`。
+   * 不给 = 平衡档（与改造前一致）。
+   */
+  policy?: TokenPolicy
   /** 工具执行生命周期（界面显示"正在读 xx / 完成 / 失败"） */
   onToolEvent?: (evt: ToolEvent) => void
   /**
@@ -84,8 +91,16 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
   let lastText = ''
   let rounds = 0
-  /** 窗口化总开关（默认开；关掉时一切原样 —— 校准用） */
-  const windowEnabled = opts.toolWindow !== false
+  /**
+   * 省 token 档位（§七②）：不给就是平衡档。
+   *
+   * ⚠️ `toolWindow: false` 仍然**压过**档位 —— 它和档位不是一回事：
+   * 那是校准脚本要的"**这一轮**强行原样"（一次实验），
+   * 而档位是"**用户长期**要不要省"（一个偏好）。混成一个会让人分不清"为什么没压"。
+   */
+  const policy = opts.policy ?? resolvePolicy(DEFAULT_TOKEN_TIER)
+  /** 窗口化总开关：档位说关就关（土豪档），或被校准时强行关掉 */
+  const windowEnabled = opts.toolWindow === false ? false : policy.windowEnabled
   /** 这一轮靠窗口化省下的估算 token（plan8 R9.1 记账用） */
   let avoidedTokens = 0
 
@@ -144,7 +159,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       // 双门控不过就**原样放行**（`windowToolOutput` 自己保证"不压也不亏"）。
       let saved = 0
       if (windowEnabled && !SELF_MANAGED_TOOLS.has(tc.name)) {
-        const w = windowToolOutput(output, { toolName: tc.name })
+        // 档位（§七②）只调**三个数**：进判断的门槛、相对门、绝对预算。
+        // 头/尾行数、采样条数、单行掐断那些**不随档位变** —— 它们决定的是"压缩的形状"，
+        // 而三条共同红线（不静默 / 不压报错现场 / 不伪造）正挂在那上面，不该跟着档位松紧。
+        const w = windowToolOutput(output, {
+          toolName: tc.name,
+          minBytes: policy.minBytes,
+          keepRatioMax: policy.keepRatioMax,
+          maxTokens: policy.maxTokens
+        })
         // **静默是禁止的**：每一次成形都要留下痕迹（界面 + 主进程日志两处）。
         // 只在"确实够大、值得一记"时报（`small` = 这条输出压根没进入判断，报它等于刷日志）
         if (w.reason !== 'small') {

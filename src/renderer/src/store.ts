@@ -12,6 +12,7 @@ import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import { addUsage, emptyUsage, mergeOptionalMax, type TokenUsage } from '@shared/usage'
+import type { TokenSaverTier } from '@shared/token-tier'
 import { estimateMessageTokens } from '@shared/tokens'
 import {
   DOCK_DEFAULT,
@@ -289,6 +290,13 @@ interface AppState {
 export interface ConversationUsage {
   total: TokenUsage
   last: TokenUsage | null
+  /**
+   * 最近一轮用的**省 token 档位**（plan8 R9.1 §七②）。
+   *
+   * 用户定调第 4 条：**计量必须记下"这轮用的哪一档"** —— 否则按档位比数字时说不清来源。
+   * 缺 = 老版本主进程没带这个字段 → 界面不显示档位标签（不替它编一个默认值）。
+   */
+  tier?: TokenSaverTier
   /**
    * 累计**省下**的估算 token（plan8 R9.1）。
    * 它**不进** `total`：那个数字是厂商真值，这个是我们替它做的减法 —— 混在一起就分不清了。
@@ -823,6 +831,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 版本不齐 / 事件被截断都可能让 payload 给不出 usage —— 这里不许直接炸
     const usage = e.payload?.usage ?? null
     const avoided = e.payload?.avoided ?? 0
+    const tier = e.payload?.tier
     set((s) => {
       const prev = s.usageByConversation[e.conversationId]
       const nextUsage: ConversationUsage | null =
@@ -830,7 +839,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? {
               total: usage ? addUsage(prev?.total ?? emptyUsage(), usage) : (prev?.total ?? emptyUsage()),
               last: usage ?? prev?.last ?? null,
-              avoided: (prev?.avoided ?? 0) + avoided
+              avoided: (prev?.avoided ?? 0) + avoided,
+              // 档位（§七②）：**这一轮没带就保留上一次的** —— 老版本主进程不带这个字段，
+              // 直接覆盖会把已经记下的档位抹掉（"没给就不动"，与账本那条规矩一致）
+              ...(tier ? { tier } : prev?.tier ? { tier: prev.tier } : {})
             }
           : null
       return {
@@ -932,7 +944,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const rec = s.usageByConversation[id]
       const updated = await window.api.saveConversation(id, snap.messages, {
-        ...(rec ? { usage: rec.total, avoidedTokens: rec.avoided } : {})
+        ...(rec
+          ? { usage: rec.total, avoidedTokens: rec.avoided, ...(rec.tier ? { tokenTier: rec.tier } : {}) }
+          : {})
       })
       if (updated) {
         // 就地更新列表项（避免整表重拉），标题可能已被自动补上

@@ -6,6 +6,7 @@ import type {
   SubagentJobEvent
 } from '@shared/agent'
 import { runAgentLoop } from './loop'
+import type { TokenPolicy } from '@shared/token-tier'
 import type { AgentDefinition } from './loader'
 
 // 子代理调度器（plan6 D3/D5）：并发上限 + 单代理预算，独立上下文执行，结果带名字回流。
@@ -44,6 +45,8 @@ export interface SubagentRunOptions {
   runId?: string
   /** 运行事件（开始 / 结束 / 失败）—— 界面据此显示进度 */
   onJobEvent?: (evt: SubagentJobEvent) => void
+  /** 省 token 档位（plan8 R9.1 §七②）的开关取值；**与主代理同一份**（由 runner 透传） */
+  policy?: TokenPolicy
 }
 
 /** 事件里任务书与结果摘要的截断长度（界面只显示一行） */
@@ -78,7 +81,10 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           history: [{ role: 'user', content: jobTask }],
           tools: opts.tools,
           maxRounds: opts.maxRoundsPerAgent,
-          chat: opts.chatFactory(def)
+          chat: opts.chatFactory(def),
+          // 子代理跟主代理**同一个档位**：否则土豪档用户派个子代理时，
+          // 子代理那边还在压 —— 用户看到的省钱行为跟自己的设置对不上，最难解释
+          ...(opts.policy ? { policy: opts.policy } : {})
         })
         results[index] = {
           name: def.name,
