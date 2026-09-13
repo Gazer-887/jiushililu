@@ -65,6 +65,11 @@ export function createWorkspaceWriter(
     async rename(rel, nextRel) {
       const from = absOf(rel)
       const to = absOf(nextRel)
+      // ⚠️ 目标已存在 → **拒绝**，不静默覆盖。
+      //    `fs.rename` 在 POSIX 与 Windows 上都会**直接替换**已存在的目标（Windows 走
+      //    MoveFileEx + REPLACE_EXISTING）—— 用户只是改个名，就把另一个文件悄悄冲掉了：
+      //    不报错、不进回收站、退不回来。与 `write` 的"外部冲突"同一条原则：**不许静默覆盖**。
+      if (existsSync(to)) throw new Error(`目标「${nextRel}」已存在，未做改动（不会覆盖已有文件）`)
       // 源与目标**都要**快照：源会消失（记 modified → 回滚写回原位），目标可能被覆盖
       // （原本不存在则记 created → 回滚删掉它）。两条合起来，回滚后正好回到 rename 之前。
       hooks.beforeChange?.(rel, from)

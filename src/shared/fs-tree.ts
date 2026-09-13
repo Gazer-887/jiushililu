@@ -95,6 +95,18 @@ const TEXT_EXT = new Set([
  */
 export const DRAG_PATH_MIME = 'application/x-jiushililu-path'
 
+/**
+ * 「文件树内部移动」用的自定义 MIME（plan16 尾巴 · 文件移动）。
+ *
+ * 为什么不复用 `DRAG_PATH_MIME`：那一个是**给输入框当附件**用的（文件拖进对话 = 把内容贴进去），
+ * 两者语义完全不同 —— 拖到另一个文件夹是**移动**，拖到输入框是**引用**。
+ * 共用一条的话，目录行也会被输入框认成"可拖的附件"，而附件只能是**一个文件的内容**。
+ *
+ * 于是：文件行**两条都带**（拖到文件夹=移动、拖到输入框=附件），目录行**只带这一条**
+ * （它只能被移动；拖进输入框时输入框会说"请拖入文件而非文件夹" —— 正是对的反馈）。
+ */
+export const DRAG_MOVE_MIME = 'application/x-jiushililu-move'
+
 /** 没有扩展名的也给（Makefile / LICENSE 这类很常见）；误判最坏是乱码，不动数据 */
 export function isTextPreviewable(name: string): boolean {
   const dot = name.lastIndexOf('.')

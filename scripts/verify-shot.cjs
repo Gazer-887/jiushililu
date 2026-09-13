@@ -2199,7 +2199,8 @@ app.whenReady().then(async () => {
   await win.webContents.executeJavaScript(`
     (() => {
       const b = Array.from(document.querySelectorAll('.ex-menu-item'))
-        .find((x) => x.textContent.trim() === '重命名');
+        // ⚠️ 用 includes 而非 ===：菜单项叫「重命名 / 移动到…」，写死全等会在改文案时静默点不中
+        .find((x) => x.textContent.includes('重命名'));
       if (b) b.click();
       return !!b;
     })()
@@ -2306,6 +2307,73 @@ app.whenReady().then(async () => {
       highlightGone: !document.querySelector('.ex-row-drop')
     }))()
   `)
+
+  // —— 文件「移动」（plan16 尾巴）：工作区内部拖拽 = 移动，不再只有"同目录改名"——
+  // ⚠️ 合成拖拽必须**自己造 DataTransfer 并塞进 DragEvent**：只 dispatch 'drop' 而不给
+  //    dataTransfer，`getData` 恒为空串 → 移动分支永远走不到，而断言会红得像"功能没做"。
+  const syntheticDrag = (fromText, toText) =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const rows = Array.from(document.querySelectorAll('.ex-row'));
+        const src = rows.find((b) => b.textContent.includes(${JSON.stringify(fromText)}));
+        const dst = rows.find((b) => b.textContent.includes(${JSON.stringify(toText)}));
+        if (!src || !dst) return { ok: false, why: !src ? 'no-src' : 'no-dst' };
+        const dt = new DataTransfer();
+        // 起点必须先跑 dragstart —— 行上的 onDragStart 就是在这儿把路径写进 dataTransfer 的
+        src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        const carried = dt.getData('application/x-jiushililu-move'); // 契约副本：DRAG_MOVE_MIME（shared/fs-tree.ts）
+        dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        return { ok: true, carried, from: src.getAttribute('title'), to: dst.getAttribute('title') };
+      })()
+    `)
+
+  const exMoveBefore = fsOpLog.filter((s) => s.startsWith('rename:')).length
+  // 把根目录下的 README.md 拖进「归档」目录 —— 服务层 rename 本来就支持跨目录，缺的一直是这条接线
+  const exMoveDrag = await syntheticDrag('README.md', '归档')
+  await new Promise((r) => setTimeout(r, 700))
+  const exMoveState = await win.webContents.executeJavaScript(`
+    (() => ({
+      notice: document.querySelector('.ex-notice')?.textContent?.trim() ?? null
+    }))()
+  `)
+  console.log('EX_MOVE=' + JSON.stringify({ drag: exMoveDrag, state: exMoveState }))
+  const exMoveCalls = fsOpLog.filter((s) => s.startsWith('rename:'))
+  checkTrue(
+    '拖拽**真的带上了路径**（合成拖拽必须自己造 DataTransfer，否则移动分支根本走不到）',
+    exMoveDrag.ok === true && exMoveDrag.carried === 'README.md',
+    exMoveDrag
+  )
+  checkTrue(
+    '把文件拖到别的目录 = **移动**（调用 `fs:rename`，目标是「归档/README.md」而不是同名改名）',
+    exMoveCalls.length === exMoveBefore + 1 &&
+      exMoveCalls[exMoveCalls.length - 1] === 'rename:README.md->归档/README.md',
+    exMoveCalls
+  )
+  checkTrue(
+    '移动成功的提示**写清去了哪儿**（`README.md → 归档/README.md`），不是一句笼统的"已重命名"',
+    typeof exMoveState.notice === 'string' &&
+      exMoveState.notice.includes('README.md') &&
+      exMoveState.notice.includes('归档/README.md'),
+    exMoveState
+  )
+
+  // —— 不能把目录拖进它自己（文件系统会拒，但理由必须是人话，不是 EINVAL）——
+  const exSelfBefore = fsOpLog.filter((s) => s.startsWith('rename:')).length
+  await syntheticDrag('归档', '归档')
+  await new Promise((r) => setTimeout(r, 600))
+  const exSelfState = await win.webContents.executeJavaScript(`
+    (() => document.querySelector('.ex-notice')?.textContent?.trim() ?? null)()
+  `)
+  console.log('EX_MOVE_SELF=' + JSON.stringify(exSelfState))
+  checkTrue(
+    '把目录拖进它自己 → **拦下并说人话**（不许冒出 EINVAL 那种系统话）',
+    fsOpLog.filter((s) => s.startsWith('rename:')).length === exSelfBefore &&
+      typeof exSelfState === 'string' &&
+      exSelfState.includes('不能把') &&
+      exSelfState.includes('它自己'),
+    { calls: fsOpLog.filter((s) => s.startsWith('rename:')).length, notice: exSelfState }
+  )
 
   // —— 资源管理器：工具栏图标 + 在选中文件夹下新建 + 预览（0.12.0 验收反馈）——
   const exTools = await win.webContents.executeJavaScript(`

@@ -64,6 +64,29 @@ describe('workspace-write（统一写入服务）', () => {
     expect(snaps).toEqual(['from.txt|exists', 'to.txt|missing'])
   })
 
+  it('rename **跨目录**（文件移动）：目标目录不存在时自动建，且源真的消失', async () => {
+    const { root, writer } = setup()
+    writeFileSync(join(root, 'from.txt'), '内容', 'utf8')
+    await writer.rename('from.txt', '子目录/deeper/from.txt')
+    expect(existsSync(join(root, 'from.txt'))).toBe(false)
+    expect(readFileSync(join(root, '子目录', 'deeper', 'from.txt'), 'utf8')).toBe('内容')
+  })
+
+  it('rename **不静默覆盖**已存在的目标（`fs.rename` 默认会直接替换掉它）', async () => {
+    // 这是"文件移动"最容易出事的一处：用户把 a.txt 改名成 b.txt，而 b.txt 已经存在 ——
+    // `fs.rename` 在 POSIX 与 Windows 上都会**无声替换**，b.txt 的内容就这么没了，
+    // 既不报错也不进回收站。宁可拒绝，也不许把用户的东西悄悄冲掉。
+    const { root, writer, snaps } = setup()
+    writeFileSync(join(root, 'a.txt'), 'A 的内容', 'utf8')
+    writeFileSync(join(root, 'b.txt'), 'B 的内容', 'utf8')
+    await expect(writer.rename('a.txt', 'b.txt')).rejects.toThrow('已存在')
+    // 两边都**原样**：既没冲掉 b，也没动 a
+    expect(readFileSync(join(root, 'b.txt'), 'utf8')).toBe('B 的内容')
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('A 的内容')
+    // 拒绝的操作不该污染回滚记录（与"越界不留快照"同一条）
+    expect(snaps).toHaveLength(0)
+  })
+
   it('remove 走回收站，**不硬删**', async () => {
     const { root, writer, trashed } = setup()
     writeFileSync(join(root, 'del.txt'), 'x', 'utf8')

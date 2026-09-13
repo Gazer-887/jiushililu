@@ -7,7 +7,7 @@ import {
   type ReactNode
 } from 'react'
 import type { FsEntry } from '@shared/fs-tree'
-import { DRAG_PATH_MIME, formatSize } from '@shared/fs-tree'
+import { DRAG_MOVE_MIME, DRAG_PATH_MIME, formatSize } from '@shared/fs-tree'
 import { useAppStore } from '../store'
 
 // 资源管理器：工作区文件树 + 写操作。
@@ -202,22 +202,75 @@ export default function ExplorerPanel(): JSX.Element {
     const name = e.value.trim()
     setEditing(null)
     if (!name) return
-    if (name.includes('/') || name.includes('\\')) {
-      setNotice({ ok: false, text: '名称不能包含路径分隔符' })
-      return
+    // 反斜杠统一成正斜杠：Windows 用户手打路径的习惯是 `\`，而全项目路径口径一律 `/`
+    const clean = name.replace(/\\/g, '/')
+    if (clean.includes('/')) {
+      // ⚠️ rename **允许**带目录 —— 那就是"移动"（服务层 rename 会 `mkdir -p` 目标目录）；
+      //    新建则不许：新建的输入框语义是"名字"，带路径只会让人以为建出了嵌套目录。
+      if (e.kind !== 'rename') {
+        setNotice({ ok: false, text: '名称不能包含路径分隔符' })
+        return
+      }
+      // `..` 段会让路径指向父目录 —— 越出工作区的部分服务层会拒，但**理由要说在前面**，
+      // 且不能等它绕一圈回来变成一句系统话
+      if (clean.split('/').some((seg) => seg === '..' || seg === '')) {
+        setNotice({ ok: false, text: '路径不合法：不能含空段或 `..`' })
+        return
+      }
     }
-    const rel = e.parentRel ? `${e.parentRel}/${name}` : name
+    const rel = e.parentRel ? `${e.parentRel}/${clean}` : clean
     if (e.kind === 'new-file') await runOp(() => window.api.writeWorkspaceFile(rel, ''), e.parentRel)
     else if (e.kind === 'new-dir') await runOp(() => window.api.createWorkspaceDir(rel), e.parentRel)
     else if (e.target) {
-      await runOp(() => window.api.renameWorkspacePath(e.target!.rel, rel), parentOf(e.target.rel))
+      const from = e.target.rel
+      await runOp(() => window.api.renameWorkspacePath(from, rel), parentOf(from))
+      // 移动到别的目录时**两个目录都要刷新**：源目录少了一条、目标目录多了一条，
+      // 只刷一个会留下"文件凭空消失"或"刷新才出现"的假象
+      const toParent = parentOf(rel)
+      if (toParent !== parentOf(from)) {
+        await loadDir(toParent)
+        setTree((t) => ({ ...t, expanded: new Set(t.expanded).add(toParent) }))
+      }
     }
+  }
+
+  /**
+   * 把一条（文件或目录）移动到目标目录下。
+   *
+   * 三条必须在**界面**拦的边界 —— 服务层只会给一句系统话（`EPERM` / `EINVAL`），用户看不懂：
+   *   1. 拖到自己所在目录 = 没动，明说而不是"操作成功"；
+   *   2. 把目录拖进它自己或它的子目录 —— 文件系统会拒绝，但理由要提前说成人话；
+   *   3. 目标已存在则由**服务层**拒绝（不许静默覆盖，见 `workspace-write.rename`）。
+   */
+  const moveEntry = async (from: string, destDir: string): Promise<void> => {
+    const name = from.split('/').pop() ?? ''
+    if (!name) return
+    const to = destDir ? `${destDir}/${name}` : name
+    if (to === from) {
+      setNotice({ ok: false, text: `「${name}」已经在这个目录里了` })
+      return
+    }
+    if (destDir === from || destDir.startsWith(from + '/')) {
+      setNotice({ ok: false, text: `不能把「${name}」移动到它自己的里面` })
+      return
+    }
+    await runOp(() => window.api.renameWorkspacePath(from, to), parentOf(from))
+    await loadDir(destDir)
+    // 展开目标目录：不展开的话用户只看到文件"消失了"，不知道它去了哪儿
+    setTree((t) => ({ ...t, expanded: new Set(t.expanded).add(destDir) }))
   }
 
   const handleDrop = async (e: ReactDragEvent, parentRel: string): Promise<void> => {
     e.preventDefault()
     e.stopPropagation()
     setDropTarget(null)
+    // ① **工作区内部移动**优先于"从系统拖进来"：内部拖拽不带 `files`，
+    //    两者不会同时发生，但顺序写反了会在内部拖拽时静默走进导入分支（什么都不做）。
+    const from = e.dataTransfer?.getData(DRAG_MOVE_MIME) ?? ''
+    if (from) {
+      await moveEntry(from, parentRel)
+      return
+    }
     const files = Array.from(e.dataTransfer?.files ?? [])
     if (files.length === 0) return
     const outs: Array<{ ok: boolean; message: string }> = []
@@ -253,7 +306,7 @@ export default function ExplorerPanel(): JSX.Element {
         ref={editRef}
         className="ex-edit"
         value={editing?.value ?? ''}
-        placeholder={editing?.kind === 'rename' ? '新名称' : '名称'}
+        placeholder={editing?.kind === 'rename' ? '新名称（可写 目录/新名 来移动）' : '名称'}
         onChange={(e) => setEditing((cur) => (cur ? { ...cur, value: e.target.value } : cur))}
         onKeyDown={(e) => {
           if (e.key === 'Enter') void commitEdit()
@@ -268,7 +321,10 @@ export default function ExplorerPanel(): JSX.Element {
     const entries = tree.children[rel]
     if (!entries) return []
     const err = tree.errors[rel]
-    const tail = editing && editing.parentRel === rel ? [editRow(depth)] : []
+    // ⚠️ 改名时**不再**追加这一行输入框：被改名的那条自己就会变成输入框（见下面 `renaming`），
+    //    再追加一条就变成"改名冒出两个输入框"（两处同 key `__edit`，焦点也不知落在哪个）。
+    const tail =
+      editing && editing.parentRel === rel && editing.kind !== 'rename' ? [editRow(depth)] : []
 
     if (err) {
       return [
@@ -311,12 +367,13 @@ export default function ExplorerPanel(): JSX.Element {
           }`}
           style={{ paddingLeft: 8 + depth * 14 }}
           title={e.rel}
-          // 只有文件行可拖（拖进输入框当附件）；目录不行 —— 附件是"一个文件的内容"
-          draggable={e.kind === 'file'}
+          // 文件与目录**都可拖**：文件带两条 MIME（拖到文件夹=移动、拖到输入框=附件），
+          // 目录只带移动那条（附件只能是"一个文件的内容"，见 `DRAG_MOVE_MIME` 的注释）
+          draggable
           onDragStart={(ev) => {
-            if (e.kind !== 'file') return
-            ev.dataTransfer.setData(DRAG_PATH_MIME, e.rel)
-            ev.dataTransfer.effectAllowed = 'copy'
+            ev.dataTransfer.setData(DRAG_MOVE_MIME, e.rel)
+            if (e.kind === 'file') ev.dataTransfer.setData(DRAG_PATH_MIME, e.rel)
+            ev.dataTransfer.effectAllowed = 'copyMove'
           }}
           onClick={() => {
             // 点目录也要选中：工具栏「新建」落到选中的文件夹下
@@ -490,11 +547,12 @@ export default function ExplorerPanel(): JSX.Element {
               <div className="ex-menu-sep" />
               <button
                 className="ex-menu-item"
+                title="改名；也可以直接写成「目录/新名」把它移到别的目录（目录不存在会自动建）"
                 onClick={() =>
                   startEdit('rename', parentOf(menu.entry!.rel), menu.entry!)
                 }
               >
-                重命名
+                重命名 / 移动到…
               </button>
               <button
                 className="ex-menu-item ex-menu-danger"
