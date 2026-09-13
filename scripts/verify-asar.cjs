@@ -89,6 +89,34 @@ function main() {
     console.log(`${inAsar ? '❌' : '✅'} 反向 ${JSON.stringify(s)}${inAsar ? '  ← 旧代码还在包里' : '  ← 已清掉'}`)
   }
 
+  // ── 原生模块必须**解包到 asar 外**（plan7 批 C 补的一节）─────────────
+  //
+  // 为什么必须单独查、不能用字节搜索：
+  // `.node` / `.dll` / `*.exe` 是**操作系统直接加载**的二进制。打进 asar 之后
+  // Node 的 `process.dlopen` 找不到它们 —— 症状是"开发态一切正常、打包版一开终端就报
+  // 模块加载失败"。而 asarUnpack 解包出来的文件在 asar 头里**仍有条目**（内容在外面），
+  // 所以"文件在不在 asar 里"搜不出来，只能直接查那个目录。
+  //
+  // ⚠️ 这里写死的是**win32-x64** 那一套（本项目目前只出 Windows 包）。
+  //    将来出 mac/linux 包，这份清单要按平台分开（`prebuilds/<platform>-<arch>/…`）。
+  const UNPACKED_ROOT = join(ROOT, 'dist', 'win-unpacked', 'resources', 'app.asar.unpacked')
+  const NATIVE_REQUIRED = [
+    'node_modules/node-pty/prebuilds/win32-x64/pty.node',
+    'node_modules/node-pty/prebuilds/win32-x64/conpty.node',
+    'node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll',
+    'node_modules/node-pty/prebuilds/win32-x64/conpty/OpenConsole.exe',
+    'node_modules/node-pty/prebuilds/win32-x64/winpty-agent.exe'
+  ]
+  for (const rel of NATIVE_REQUIRED) {
+    const abs = join(UNPACKED_ROOT, rel)
+    const ok = existsSync(abs)
+    if (!ok) failed++
+    const size = ok ? `（${Math.round(statSync(abs).size / 1024)} KB）` : ''
+    console.log(
+      `${ok ? '✅' : '❌'} 原生解包 ${rel}${size}${ok ? '' : '  ← asarUnpack 没生效 / 平台目录不对'}`
+    )
+  }
+
   console.log(failed ? `\n==== 不通过：${failed} 项 ====` : '\n==== 正反校验通过 ====')
   process.exit(failed ? 1 : 0)
 }

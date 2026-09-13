@@ -30,6 +30,22 @@ asarUnpack:
   - '**/node_modules/node-pty/**'
   - '**/*.node'
 
+# ⚠️ **必须关掉默认的"为 Electron ABI 重编原生模块"**（2026-09-13 实测踩到）。
+#
+# 默认值 `true` 会让 electron-builder 对每个原生依赖跑一遍 `node-gyp rebuild`。
+# 实测后果：本机没有 Visual Studio 工具链，直接打包失败 ——
+#   `Error: Could not find any Visual Studio installation to use`
+#   `⨯ node-gyp failed to rebuild 'D:\…\node_modules\node-pty'  failedTask=build`
+#
+# 为什么关掉是**安全**的（不是"为了省事"）：
+#   · node-pty 1.1.0 走 **N-API（Node-API）预编译**，而 N-API 的 ABI **跨 Node/Electron 版本稳定** ——
+#     这正是"零 rebuild 直接可用"的原因，本批在 Electron 33 里实测过（`require('node-pty')` 直接成功、
+#     子进程 `isTTY === true`、`resize` 生效）；
+#   · 反过来说，**重编只会引入风险**：要么要求用户的机器装一套 VS 工具链，
+#     要么产出一个与预编译行为不同的二进制。
+#   · 代价是：将来若引入**非 N-API** 的原生模块，这一条必须重新评估（那种模块确实需要按 ABI 重编）。
+npmRebuild: false
+
 extraResources:
   - from: resources/icon.ico
     to: icon.ico
