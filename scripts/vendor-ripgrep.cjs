@@ -11,7 +11,8 @@
 // ② 版本要**钉死**：用户机器上 rg 版本不同会导致"同一个查询两种结果"，随包那份是唯一保证。
 //    版本从实际装到的包里读，不手写 —— 手写会和 package.json 漂移。
 
-const { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } = require('node:fs')
+const { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync } = require('node:fs')
+const { createHash } = require('node:crypto')
 const { join } = require('node:path')
 
 const ROOT = join(__dirname, '..')
@@ -40,10 +41,36 @@ if (!existsSync(src)) {
 }
 
 mkdirSync(destDir, { recursive: true })
-copyFileSync(src, dest)
 
-const size = statSync(dest).size
+/** 内容哈希 —— 用来判断"要不要真的重拷"，而不是无脑覆盖 */
+function sha256(p) {
+  return createHash('sha256').update(readFileSync(p)).digest('hex')
+}
+
+const srcHash = sha256(src)
+if (existsSync(dest) && sha256(dest) === srcHash) {
+  // 已是同一份字节：跳过复制。**但必须补可执行位** —— git 不记录 POSIX 执行位
+  // 之外的信息，而 Windows 上 checkout 出来的文件在 POSIX 上可能没有 +x。
+  try {
+    chmodSync(dest, 0o755)
+  } catch {
+    /* Windows 上 chmod 基本是空操作，失败可忽略 */
+  }
+  console.log(`[vendor-ripgrep] ${BIN_NAME} 已是最新（sha256 相同），跳过复制`)
+} else {
+  copyFileSync(src, dest)
+  // ⚠️ `copyFileSync` **只拷内容、不继承可执行位**：POSIX 上拷出来的文件是 644，
+  // spawn 会直接 EACCES。Windows 上无所谓（故本机测不出来），但 Linux/macOS 打包必炸。
+  try {
+    chmodSync(dest, 0o755)
+  } catch {
+    /* 同上 */
+  }
+  const size = statSync(dest).size
+  console.log(`[vendor-ripgrep] 已复制 ${BIN_NAME}（${(size / 1024 / 1024).toFixed(1)} MB）→ resources/ripgrep/`)
+}
+
 const version = readFileSync(join(ROOT, 'node_modules', '@vscode', 'ripgrep', 'package.json'), 'utf8')
   .match(/"version"\s*:\s*"([^"]+)"/)?.[1]
-console.log(`[vendor-ripgrep] 已复制 ${BIN_NAME}（${(size / 1024 / 1024).toFixed(1)} MB）→ resources/ripgrep/`)
 console.log(`[vendor-ripgrep] 来源：${pkgName} · @vscode/ripgrep@${version ?? '未知'}`)
+console.log(`[vendor-ripgrep] sha256：${srcHash}`)
