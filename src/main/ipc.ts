@@ -29,6 +29,8 @@ import {
   type FsListResult,
   type FsReadResult,
   type FsBinaryResult,
+  type FsOpenResult,
+  type FsOfficeResult,
   type FsOpResult,
   type BackgroundTask,
   type ConversationRollbackResult,
@@ -67,6 +69,7 @@ import type { ModelProfileView, ModelsView, ModelSaveInput } from '@shared/model
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
+import { renderOfficePreview } from './office-preview'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { TerminalSessionStore } from './terminal-session'
 import type { TerminalSessionSnapshot, TerminalStartResult } from '@shared/terminal'
@@ -1161,6 +1164,13 @@ export function registerIpcHandlers(deps: {
     return readWorkspaceBinary(deps.agent.getWorkspaceRoot(), rel)
   })
 
+  // Office 内嵌预览（docx/xlsx）：主进程解析 → 内存预览表 → 渲染端拿沙箱 URL。
+  // ⚠️ 故意不在渲染端解析：HTML 是用户文件内容，渲染层「零 HTML 注入原语」的基线不能破。
+  ipcMain.handle(IPC.officePreview, (_e, raw: unknown): Promise<FsOfficeResult> => {
+    const rel = z.string().min(1).max(1024).parse(raw)
+    return renderOfficePreview(deps.agent.getWorkspaceRoot(), rel)
+  })
+
   // 工作区写操作（plan7 批 A2）：① 全部走**统一写入服务**（界面与 Agent 同一条写入路径）；② 每个操作**各开一个检查点轮次**，于是界面里删掉/改掉的东西同样出现在「文件变更记录」里、同样退得回；③ 删除走回收站，不是硬删。
   const fsWriteInput = z.object({
     rel: z.string().min(1).max(1024),
@@ -1383,6 +1393,17 @@ export function registerIpcHandlers(deps: {
     const abs = resolveInsideWorkspace(deps.agent.getWorkspaceRoot(), p.data.rel)
     if (abs) shell.showItemInFolder(abs)
     return Promise.resolve()
+  })
+
+  // 用系统默认程序打开（pptx 等不支持内嵌预览的格式的出口）。与 fsReveal 同一条边界：
+  // 只开工作区内（resolveInsideWorkspace，含符号链接防逃逸），越界一律拒绝。
+  ipcMain.handle(IPC.fsOpenInSystem, async (_e, raw: unknown): Promise<FsOpenResult> => {
+    const p = fsRelInput.safeParse(raw)
+    if (!p.success) return { ok: false, error: '路径不合法' }
+    const abs = resolveInsideWorkspace(deps.agent.getWorkspaceRoot(), p.data.rel)
+    if (!abs) return { ok: false, error: '路径越出工作区边界，拒绝访问' }
+    const msg = await shell.openPath(abs)
+    return msg ? { ok: false, error: msg } : { ok: true }
   })
 
   // 后台任务：只读查询 + 终止。**启动**不在这里：那是 run_command 工具的事（要过危险确认）。

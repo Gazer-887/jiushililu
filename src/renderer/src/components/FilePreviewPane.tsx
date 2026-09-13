@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { formatSize, imageMimeOf, isTextPreviewable } from '@shared/fs-tree'
 import { isHtmlFile, workspaceRelToPreviewUrl } from '@shared/html-preview'
+import { isDocxPreviewable, isSheetPreviewable } from '@shared/office-preview'
+import type { OfficeSheetEntry } from '@shared/office-preview'
 import MessageMarkdown from './MessageMarkdown'
 import CodeEditor, { languageOf } from './CodeEditor'
 
@@ -28,7 +30,11 @@ type View =
   | { kind: 'loading' }
   | { kind: 'text'; content: string; truncated: boolean; mtimeMs?: number }
   | { kind: 'image'; dataUrl: string }
-  | { kind: 'binary'; hexHead: string }
+  /** docx 内嵌预览：主进程解析好的**沙箱 URL**（jsl-preview://mem/<token>），不是 HTML 本体 */
+  | { kind: 'docx'; url: string }
+  /** xlsx 内嵌预览：每个 sheet 一个沙箱 URL，界面给按钮组切换 */
+  | { kind: 'sheet'; sheets: OfficeSheetEntry[]; clipped: boolean; sheetCount: number }
+  | { kind: 'binary'; hexHead: string; note?: string }
   | { kind: 'tooLarge'; size: number }
   | { kind: 'error'; message: string }
 
@@ -52,12 +58,15 @@ export default function FilePreviewPane({
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [conflict, setConflict] = useState(false)
+  /** xlsx 的当前 sheet（切换按钮用；换文件时重置回第一个） */
+  const [sheetIdx, setSheetIdx] = useState(0)
 
   useEffect(() => {
     let alive = true
     setView({ kind: 'loading' })
     setSaveMsg(null)
     setConflict(false)
+    setSheetIdx(0)
 
     const name = baseName(rel)
 
@@ -97,7 +106,35 @@ export default function FilePreviewPane({
       }
     }
 
-    // ③ 其余二进制：**降级而不是放弃** —— 给十六进制文件头，一眼认出它是什么格式
+    // ③ Office 内嵌预览（docx / xlsx）：主进程解析，这里只拿**沙箱 URL** 装 iframe。
+    //    解析失败**降级而不是放弃**：退回十六进制头 + 「用系统程序打开」，失败原因带在 note 里。
+    if (isDocxPreviewable(name) || isSheetPreviewable(name)) {
+      void window.api.previewOffice(rel).then((res) => {
+        if (!alive) return
+        if (res.ok && res.kind === 'docx') {
+          setView({ kind: 'docx', url: res.url })
+          return
+        }
+        if (res.ok && res.kind === 'sheet') {
+          setView({ kind: 'sheet', sheets: res.sheets, clipped: res.clipped, sheetCount: res.sheetCount })
+          return
+        }
+        void window.api.readWorkspaceBinary(rel).then((b) => {
+          if (!alive) return
+          setView({
+            kind: 'binary',
+            hexHead: b.hexHead ?? '',
+            ...(res.ok ? {} : { note: `${res.error}——下方为文件头，可用系统程序打开` })
+          })
+        })
+      })
+      return () => {
+        alive = false
+      }
+    }
+
+    // ④ 其余二进制：**降级而不是放弃** —— 给十六进制文件头，一眼认出它是什么格式；
+    //    出口给「用系统程序打开」（pptx 这类没法内嵌的，到系统里看才是正路）
     void window.api.readWorkspaceBinary(rel).then((res) => {
       if (!alive) return
       if (!res.ok) return setView({ kind: 'error', message: res.error ?? '读取失败' })
@@ -176,6 +213,17 @@ export default function FilePreviewPane({
     onDirtyChange?.(next === disk ? undefined : next)
   }
 
+  /** 用系统默认程序打开这个文件（pptx / 老格式 / 内嵌预览失败时的出口） */
+  const [openSysMsg, setOpenSysMsg] = useState<string | null>(null)
+  const openInSystem = (): void => {
+    void window.api.openWorkspacePathInSystem(rel).then((res) => {
+      setOpenSysMsg(res.ok ? '已交给系统打开' : (res.error ?? '打开失败'))
+    })
+  }
+  // 这些视图给「用系统程序打开」：要么内嵌不了（pptx/未知二进制），要么内嵌只是降级（docx/xlsx 超限/失败）
+  const showOpenInSystem =
+    view.kind === 'binary' || view.kind === 'docx' || view.kind === 'sheet' || view.kind === 'tooLarge'
+
   return (
     <div className="fp">
       <div className="fp-head">
@@ -201,6 +249,12 @@ export default function FilePreviewPane({
             {editing ? '预览' : '编辑'}
           </button>
         )}
+        {showOpenInSystem && (
+          <button className="fp-btn" title="调用 Windows 默认程序打开此文件" onClick={openInSystem}>
+            用系统程序打开
+          </button>
+        )}
+        {openSysMsg && <span className="fp-msg">{openSysMsg}</span>}
       </div>
 
       {view.kind === 'error' && <div className="ex-msg ex-err">{view.message}</div>}
@@ -300,9 +354,58 @@ export default function FilePreviewPane({
         </div>
       )}
 
+      {view.kind === 'docx' && (
+        <>
+          {/*
+            ⚠️ 与 HTML 预览同一个沙箱形态（sandbox="" 两道锁的锁一）：文档 HTML 来自用户文件，
+            绝不许进主文档 —— 渲染层也保持「零 HTML 注入原语」。内容侧由预览响应头断脚本断网。
+          */}
+          <iframe
+            className="fp-office"
+            title={`文档预览 ${baseName(rel)}`}
+            sandbox=""
+            key={view.url}
+            src={view.url}
+          />
+          <div className="fp-html-note">文档以内嵌方式只读预览；排版细节可能与 Word 有出入。</div>
+        </>
+      )}
+
+      {view.kind === 'sheet' && (
+        <>
+          {view.sheets.length > 1 && (
+            <div className="fp-sheet-tabs">
+              {view.sheets.map((s, i) => (
+                <button
+                  // sheet 名可能重复？Excel 里名字本来就唯一，但索引才是稳定 key
+                  key={`${i}:${s.name}`}
+                  className={i === sheetIdx ? 'fp-sheet-tab is-active' : 'fp-sheet-tab'}
+                  onClick={() => setSheetIdx(i)}
+                >
+                  {s.name}
+                </button>
+              ))}
+              {view.sheetCount > view.sheets.length && (
+                <span className="fp-hint">其余 {view.sheetCount - view.sheets.length} 个工作表未显示</span>
+              )}
+            </div>
+          )}
+          {view.clipped && (
+            <div className="ex-msg">表格较大，仅显示前 500 行 × 50 列。</div>
+          )}
+          <iframe
+            className="fp-office"
+            title={`表格预览 ${baseName(rel)}`}
+            sandbox=""
+            key={`${sheetIdx}:${view.sheets[sheetIdx]?.url ?? ''}`}
+            src={view.sheets[sheetIdx]?.url ?? ''}
+          />
+        </>
+      )}
+
       {view.kind === 'binary' && (
         <>
-          <div className="ex-msg">二进制文件：下方为文件头</div>
+          <div className="ex-msg">{view.note ?? '二进制文件：下方为文件头'}</div>
           <pre className="fp-hex">{view.hexHead}</pre>
         </>
       )}

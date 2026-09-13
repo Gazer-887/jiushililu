@@ -152,6 +152,9 @@ const api: ApiBridge = {
   listWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsList, rel),
   readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel),
   readWorkspaceBinary: (rel) => ipcRenderer.invoke(IPC.fsReadBinary, rel),
+  // Office 内嵌预览：主进程解析，渲染端只拿沙箱 URL（不拿 HTML 本体）
+  previewOffice: (rel) => ipcRenderer.invoke(IPC.officePreview, rel),
+  openWorkspacePathInSystem: (rel) => ipcRenderer.invoke(IPC.fsOpenInSystem, rel),
   // 写操作全部走统一写入服务（留检查点、可回滚）
   writeWorkspaceFile: (rel, content, expectedMtimeMs) =>
     ipcRenderer.invoke(IPC.fsWrite, {

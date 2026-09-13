@@ -160,6 +160,12 @@ export interface FsBinaryResult {
   error?: string
 }
 
+/** 「用系统默认程序打开」的结果（Electron `shell.openPath`：成功返回空串，失败返回错误消息） */
+export interface FsOpenResult {
+  ok: boolean
+  error?: string
+}
+
 /**
  * 十六进制转储（hexdump 的样子）—— 非图片二进制的降级展示：用户点开一个 `.so` / `.db` 时，
  * 「暂不支持预览」是句废话，而**看文件头**往往就能认出它是什么。

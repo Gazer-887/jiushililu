@@ -315,8 +315,9 @@ nav {
 
 /* ── 设置独立窗口的外壳（2026-09-13）─────────────────────────────
  * 主进程建的是**普通边框窗口**（不藏系统标题栏：藏了就得自己实现拖动/缩放/最小化，不值得）。
- * 下面这条是**内容区内的标题行** —— 对齐参考图里「设置 / ×」那一行的视觉锚点：
- * 设置窗口没有菜单栏也没有地址栏，需要一句话说清"这是什么"。
+ * 下面这条是**内容区内的标题行** —— 只留「设置」两个字当视觉锚点；
+ * ⚠️ 刻意**没有**自绘关闭按钮（2026-09-14 用户反馈双 ×）：系统标题栏已有 ×，
+ *    再画一个紧贴其下、干同一件事，用户想关设置时极易误点成关掉整个应用。
  */
 .settings-window {
   display: flex;
@@ -330,7 +331,6 @@ nav {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   height: 44px;
   padding: 0 var(--sp-12) 0 var(--sp-20);
   border-bottom: 1px solid var(--border);
@@ -339,24 +339,6 @@ nav {
 .settings-window-title {
   font-size: var(--fs-lg);
   font-weight: 600;
-  color: var(--text);
-}
-
-.settings-window-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.settings-window-close:hover {
-  background: var(--bg-soft, var(--bg));
   color: var(--text);
 }
 
@@ -2357,6 +2339,47 @@ label.radio {
   margin: 0;
   overflow: auto;
   white-space: pre;
+}
+
+/* ── Office 内嵌预览（docx / xlsx，2026-09-14）────────────────────
+ * 形态与 HTML 预览一致：iframe 沙箱吃满剩余高度。文档内容自带白底
+ * （主进程包的骨架 bg:#fff），深色主题下像"一张纸"，刻意不反转。 */
+.fp-office {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: none;
+  background: #fff;
+  border-radius: var(--radius-md);
+}
+
+/* xlsx 的 sheet 切换按钮组（Excel 里 sheet 名唯一，按钮组比下拉框少一次点击） */
+.fp-sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 4px);
+  flex-wrap: wrap;
+}
+
+.fp-sheet-tab {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 10px;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.fp-sheet-tab:hover {
+  color: var(--text);
+  background: var(--bg-soft, var(--bg));
+}
+
+.fp-sheet-tab.is-active {
+  background: var(--accent-soft, var(--bg-soft, var(--bg)));
+  color: var(--text);
+  border-color: var(--accent, var(--border));
 }
 
 .dock-body {

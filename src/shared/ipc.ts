@@ -6,7 +6,8 @@ import type { TokenUsage } from './usage'
 import type { TokenSaverTier } from './token-tier'
 import type { SubagentJobEvent } from './agent'
 import type { BackgroundTask } from './background'
-import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
+import type { FsBinaryResult, FsListResult, FsReadResult, FsOpenResult } from './fs-tree'
+import type { FsOfficeResult } from './office-preview'
 import type { AskRequest, AskResult } from './ask'
 import type { SystemSettings, SystemView } from './system'
 import type { NetworkPatch, NetworkView } from './network'
@@ -347,7 +348,8 @@ export const IPC = {
   // ── 设置独立窗口（2026-09-13）──
   // 开设置窗口（幂等：已开则聚焦，不开第二个）
   settingsOpenWindow: 'settings:open-window',
-  // 关设置窗口（由**设置窗口自己**发起：点右上角 ×。渲染端拿不到 BrowserWindow，只能走主进程）
+  // 关设置窗口（由**设置窗口自己**发起：按 Esc。渲染端拿不到 BrowserWindow，只能走主进程；
+  // ⚠️ 刻意不画自绘关闭按钮——系统标题栏已有 ×，双 × 紧贴易误关整个应用，2026-09-14 用户反馈）
   settingsCloseWindow: 'settings:close-window',
   // ⚠️ 变更广播是**进程级**通道（每个窗口都该收到，与终端/后台任务同类）——
   //    它不在 `STREAM_CONSTS` 里，须显式登记进 `stream-envelope.test.ts` 的 `EXEMPT_CONSTS`。
@@ -355,6 +357,12 @@ export const IPC = {
   fsList: 'fs:list',
   fsRead: 'fs:read',
   fsReadBinary: 'fs:read-binary',
+  // ── Office 内嵌预览（2026-09-14，用户反馈 docx 只能看十六进制）──
+  // 主进程解析 docx/xlsx → 注册内存预览 → 渲染端拿 `jsl-preview://mem/<token>` 用沙箱 iframe 加载。
+  // 解析放主进程是刻意的：渲染层「零 HTML 注入原语」的安全基线不破（真源见 shared/office-preview.ts）。
+  officePreview: 'office:preview',
+  /** 用系统默认程序打开工作区内的文件（pptx 等不支持内嵌的格式的出口；shell.openPath） */
+  fsOpenInSystem: 'fs:open-in-system',
   // ── 工作区写操作（plan7 批 A2）：全部走统一写入服务 + 各开一个检查点轮次 ──
   fsWrite: 'fs:write',
   fsMkdir: 'fs:mkdir',
@@ -380,7 +388,9 @@ export const IPC = {
 
 export type { UIPrefs } from './splitter'
 
-export type { FsEntry, FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
+export type { FsEntry, FsBinaryResult, FsListResult, FsReadResult, FsOpenResult } from './fs-tree'
+
+export type { FsOfficeResult, OfficeSheetEntry } from './office-preview'
 
 /** 工作区写操作结果：失败也**用人话回**、不抛异常（界面直接拿去显示，不必再翻译一遍） */
 export interface FsOpResult {
@@ -577,6 +587,11 @@ export interface ApiBridge {
   /** 读二进制文件用于预览：图片给 `dataUrl`、其余给 `hexHead`，超上限则 `tooLarge` 且**不给数据**。
    *  ⚠️ 渲染端**只能**用 `<img src>` 消费 `dataUrl` —— SVG 是可执行内容，走 `<object>` / `<iframe>` / 内联就等于执行工作区里的代码。 */
   readWorkspaceBinary(rel: string): Promise<FsBinaryResult>
+  /** Office 内嵌预览（docx/xlsx/xls/xlsm）：主进程解析后返回**沙箱 URL**（内存预览），
+   *  渲染端只许用 `<iframe sandbox="">` 加载 —— HTML 是用户文件内容，不许进主文档。 */
+  previewOffice(rel: string): Promise<FsOfficeResult>
+  /** 用系统默认程序打开工作区内的文件（pptx 等不支持内嵌预览的格式的出口） */
+  openWorkspacePathInSystem(rel: string): Promise<FsOpenResult>
   // ── 工作区写操作（plan7 批 A2）──
   writeWorkspaceFile(rel: string, content: string, expectedMtimeMs?: number): Promise<FsOpResult>
   createWorkspaceDir(rel: string): Promise<FsOpResult>

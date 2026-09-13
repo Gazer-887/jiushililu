@@ -5,14 +5,14 @@ import { useAppStore } from '../store'
 /*
  * 设置**独立窗口**的外壳（2026-09-13 用户定案）。
  *
- * 形态对齐用户给的 WorkBuddy 参考图：浮在主窗口之上的独立窗口 ——
- * 顶部一行「设置」标题 + 右上角关闭按钮，下面才是「左栏分区 + 右内容」。
+ * 顶部一行「设置」标题是**内容区内的视觉锚点**（设置窗口没有菜单栏、没有地址栏，
+ * 需要一句话说清"这是什么"），下面才是「左栏分区 + 右内容」。
  *
- * ⚠️ **为什么标题栏要自己画**：主进程建窗口时用的是系统默认边框（`frame: true`），
- *    系统标题栏已经带了关闭按钮。这里再画一条"设置 / ×"是为了**内容区内的视觉锚点** ——
- *    参考图里那条标题栏与设置内容是一体的（设置窗口没有菜单栏、没有地址栏，需要一句话说清"这是什么"）。
- *    故本 shell **不隐藏系统边框**（藏了就要自己实现拖动/缩放/最小化，不值得），
- *    只在其下加一条轻量标题行。
+ * ⚠️ **这里刻意不画关闭按钮**（2026-09-14 用户反馈「右上角有两个X号退出键」）：
+ *    主进程建窗口用的是系统默认边框（`frame: true`），系统标题栏已带 ×；
+ *    再画一个 × 垂直紧贴在它正下方，两个 × 干同一件事（关窗）——
+ *    用户想关设置时极易误点到系统的那个，把整个应用关掉。出口收敛为：
+ *    ① 系统标题栏 ×（唯一鼠标出口）；② Esc（键盘出口，见下）。
  *
  * ⚠️ 这里**不挂流式订阅**（那是 App 层的事，设置窗口没有会话）。
  *    但**必须挂设置变更订阅**：设置窗口自己也是"会改设置的那个窗口"，
@@ -37,21 +37,19 @@ export default function SettingsWindow(): JSX.Element {
     void window.api.closeSettingsWindow()
   }
 
+  // Esc 关窗（键盘出口）：监听在 window 上，输入框不消费 Escape，无误伤
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') void window.api.closeSettingsWindow()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
     <div className="settings-window">
       <header className="settings-window-bar">
         <span className="settings-window-title">设置</span>
-        <button className="settings-window-close" type="button" title="关闭设置" onClick={close}>
-          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d="M3.5 3.5l9 9M12.5 3.5l-9 9"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
-        </button>
       </header>
       <SettingsView onClose={close} />
     </div>

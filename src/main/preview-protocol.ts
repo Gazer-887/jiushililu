@@ -15,6 +15,8 @@ import {
   previewContentType,
   previewUrlToWorkspaceRel
 } from '@shared/html-preview'
+import { MEM_PREVIEW_HOST, isMemPreviewToken } from '@shared/office-preview'
+import { memPreviews } from './office-preview'
 import { resolveInsideWorkspace } from './agent/guard'
 
 /**
@@ -36,10 +38,30 @@ export function registerPreviewScheme(): void {
   ])
 }
 
-/** 装上真正的处理器：`jsl-preview://doc/<工作区相对路径>` */
+/** 装上真正的处理器：`jsl-preview://doc/<工作区相对路径>` + `jsl-preview://mem/<token>` */
 export function installPreviewProtocol(getRoot: () => string): void {
   protocol.handle(PREVIEW_SCHEME, async (req) => {
     const url = new URL(req.url)
+
+    // ── 内存预览（docx/xlsx 解析产物）：host=mem，token 查表，不碰文件系统 ──
+    // ⚠️ token 必须形状校验 + 不可猜（crypto.randomBytes）：DOM 里的 URL 谁都看得见，
+    //    能猜到才能读到；形状不对直接 400，查无此 token 一律 404（不区分"没注册过"和"过期"）。
+    if (url.host === MEM_PREVIEW_HOST) {
+      const token = url.pathname.slice(1)
+      if (!isMemPreviewToken(token)) return new Response(null, { status: 400 })
+      const html = memPreviews.get(token)
+      if (html === null) return new Response(null, { status: 404 })
+      return new Response(html, {
+        status: 200,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          // 与文档预览同一套锁：断脚本、断网络 —— 内容来自用户文件，一个字都不许执行
+          'content-security-policy': PREVIEW_CSP,
+          'cache-control': 'no-store'
+        }
+      })
+    }
+
     if (url.host !== PREVIEW_HOST) return new Response(null, { status: 404 })
 
     // ① 语法层：畸形 / 越界 / 编码绕过的写法在这里就被拒

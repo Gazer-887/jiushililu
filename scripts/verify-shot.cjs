@@ -964,7 +964,43 @@ const STUBS = {
         hexHead: '00000000  7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00  |.ELF............|\n00000010  03 00 3e 00 01 00 00 00 40 10 00 00 00 00 00 00  |..>.....@.......|'
       }
     }
+    if (rel.endsWith('产品演示.pptx')) {
+      // pptx 不支持内嵌预览 → 十六进制头 + 「用系统程序打开」（ZIP 魔数可认出它是 OOXML）
+      return {
+        ok: true,
+        rel,
+        size: 20480,
+        hexHead: '00000000  50 4b 03 04 14 00 06 00 08 00 00 00 21 00 d4 d3  |PK..........!...|\n00000010  03 00 00 00 00 00 00 00 00 00 00 00 00 00 13 00  |................|'
+      }
+    }
     return { ok: false, rel, size: 0, error: '不支持的预览类型' }
+  },
+  // Office 内嵌预览：桩只回「沙箱 URL」的形状（解析真链路由 tests/unit/office-preview.test.ts
+  // 喂真实字节覆盖；门禁验的是渲染端的**分发与容器**——iframe 装上、按钮组能切、失败会降级）
+  'office:preview': (rel) => {
+    const r = typeof rel === 'string' ? rel : ''
+    if (r.endsWith('会议纪要.docx')) {
+      return { ok: true, rel: r, size: 10240, kind: 'docx', url: `jsl-preview://mem/${'a'.repeat(32)}` }
+    }
+    if (r.endsWith('库存表.xlsx')) {
+      return {
+        ok: true,
+        rel: r,
+        size: 8192,
+        kind: 'sheet',
+        clipped: false,
+        sheetCount: 2,
+        sheets: [
+          { name: '一月', url: `jsl-preview://mem/${'b'.repeat(32)}` },
+          { name: '二月', url: `jsl-preview://mem/${'c'.repeat(32)}` }
+        ]
+      }
+    }
+    return { ok: false, rel: r, size: 0, error: '解析失败：文件可能已损坏或不是标准 Office 格式' }
+  },
+  'fs:open-in-system': (payload) => {
+    fsOpLog.push(`open-in-system:${typeof payload === 'string' ? payload : ''}`)
+    return { ok: true }
   },
   // plan7 批 A：工作区文件树（stub 数据；真实文件系统由 tests/unit/fs-tree.test.ts 覆盖）
   'fs:list': (arg) => {
@@ -980,7 +1016,11 @@ const STUBS = {
           { name: '预览桩.html', rel: '预览桩.html', kind: 'file', size: HTML_STUB.length },
           { name: '示例截图.png', rel: '示例截图.png', kind: 'file', size: PNG_BYTES.length },
           { name: '超大图.png', rel: '超大图.png', kind: 'file', size: 12 * 1024 * 1024 },
-          { name: '固件镜像.bin', rel: '固件镜像.bin', kind: 'file', size: 4096 }
+          { name: '固件镜像.bin', rel: '固件镜像.bin', kind: 'file', size: 4096 },
+          // Office 内嵌预览（2026-09-14）：docx/xlsx 走内存沙箱；pptx 不支持内嵌 → 十六进制 + 系统打开
+          { name: '会议纪要.docx', rel: '会议纪要.docx', kind: 'file', size: 10240 },
+          { name: '库存表.xlsx', rel: '库存表.xlsx', kind: 'file', size: 8192 },
+          { name: '产品演示.pptx', rel: '产品演示.pptx', kind: 'file', size: 20480 }
         ]
       }
     }
@@ -1606,22 +1646,23 @@ app.whenReady().then(async () => {
     typeof swin.webContents.getURL() === 'string' && swin.webContents.getURL().includes('settings'),
     { url: swin.webContents.getURL().slice(-60) }
   )
-  // 外壳：标题行 + 关闭按钮（连系统标题栏一起看，参考图那个形态）
+  // 外壳：标题行（视觉锚点）—— ⚠️ **没有**自绘关闭按钮（2026-09-14 用户反馈双 ×：
+  // 系统标题栏已有 ×，再画一个紧贴其下干同一件事，想关设置时极易误点成关掉整个应用）
   const shellInfo = await sevalRaw(`
     (() => ({
       hasShell: !!document.querySelector('.settings-window'),
       title: document.querySelector('.settings-window-title')?.textContent?.trim() ?? null,
-      hasClose: !!document.querySelector('.settings-window-close'),
-      // ⚠️ 旧的「← 返回」必须**不在**：设置是独立窗口，出口是 ×；留着返回就是死按钮
+      hasDrawnClose: !!document.querySelector('.settings-window-close'),
+      // ⚠️ 旧的「← 返回」必须**不在**：设置是独立窗口，出口是系统标题栏 × 与 Esc
       hasBackBtn: !!document.querySelector('.settings-nav .back-btn')
     }))()
   `)
   console.log('SETTINGS_SHELL=' + JSON.stringify(shellInfo))
   checkTrue(
-    '设置窗口有外壳：标题「设置」+ 右上角关闭按钮；**旧的「← 返回」已删**（独立窗口的出口是 ×）',
+    '设置窗口有外壳标题「设置」；**自绘 × 已删**（系统标题栏 × 是唯一鼠标出口，双 × 会误关应用）；旧的「← 返回」也不在',
     shellInfo.hasShell === true &&
       shellInfo.title === '设置' &&
-      shellInfo.hasClose === true &&
+      shellInfo.hasDrawnClose === false &&
       shellInfo.hasBackBtn === false,
     shellInfo
   )
@@ -2658,6 +2699,69 @@ app.whenReady().then(async () => {
     })()
   `)
   console.log('BIN_HEX=' + JSON.stringify(hexPreview))
+
+  // —— Office 内嵌预览（2026-09-14）：docx/xlsx 沙箱 iframe + pptx 走系统打开 ——
+  // 桩只回沙箱 URL 的形状（解析真链路在 office-preview.test.ts 喂真实字节）；这里验**分发与容器**：
+  // ① docx 装进 iframe（沙箱属性必须是空串 —— 与 HTML 预览同一道锁）；
+  // ② xlsx 出 sheet 按钮组且点击切换真的换 URL；
+  // ③ pptx 内嵌不了 → 十六进制头 + 「用系统程序打开」按钮（出口必须存在，不能是死胡同）。
+  const clickDocx = await clickFile('会议纪要.docx')
+  await new Promise((r) => setTimeout(r, 800))
+  const docxPreview = await win.webContents.executeJavaScript(`
+    (() => {
+      const f = document.querySelector('.fp-office');
+      const btns = Array.from(document.querySelectorAll('.fp-head button')).map(b => b.textContent.trim());
+      return {
+        clicked: ${clickDocx},
+        hasFrame: !!f,
+        srcOk: !!f && (f.getAttribute('src') || '').startsWith('jsl-preview://mem/'),
+        // sandbox=""（空串 = 全锁）：少了这个属性，沙箱就是摆设
+        sandboxEmpty: !!f && f.getAttribute('sandbox') === '',
+        hasOpenSys: btns.some(t => t.includes('用系统程序打开'))
+      };
+    })()
+  `)
+  console.log('OFFICE_DOCX=' + JSON.stringify(docxPreview))
+
+  const clickXlsx = await clickFile('库存表.xlsx')
+  await new Promise((r) => setTimeout(r, 800))
+  const sheetPreview = await win.webContents.executeJavaScript(`
+    (() => {
+      const tabs = Array.from(document.querySelectorAll('.fp-sheet-tab'));
+      const f = document.querySelector('.fp-office');
+      const before = f ? f.getAttribute('src') : '';
+      const names = tabs.map(t => t.textContent.trim());
+      if (tabs[1]) tabs[1].click();
+      return { clicked: ${clickXlsx}, tabCount: tabs.length, names, srcBefore: before };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
+  const sheetAfter = await win.webContents.executeJavaScript(`
+    (() => {
+      const f = document.querySelector('.fp-office');
+      return { srcAfter: f ? f.getAttribute('src') : '' };
+    })()
+  `)
+  console.log('OFFICE_XLSX=' + JSON.stringify({ ...sheetPreview, ...sheetAfter }))
+
+  const clickPptx = await clickFile('产品演示.pptx')
+  await new Promise((r) => setTimeout(r, 800))
+  const pptxPreview = await win.webContents.executeJavaScript(`
+    (() => {
+      const pre = document.querySelector('.fp-hex');
+      const btns = Array.from(document.querySelectorAll('.fp-head button')).map(b => b.textContent.trim());
+      return {
+        clicked: ${clickPptx},
+        hasHex: !!pre,
+        // PPTX 是 ZIP 容器：文件头 PK 魔数可认出它（hex 展示不是摆设）
+        hasPkmagic: !!pre && pre.textContent.includes('50 4b 03 04'),
+        hasOpenSys: btns.some(t => t.includes('用系统程序打开')),
+        // 内嵌 iframe 不该出现（pptx 不支持内嵌，别给一个白框装样子）
+        noOfficeFrame: !document.querySelector('.fp-office')
+      };
+    })()
+  `)
+  console.log('OFFICE_PPTX=' + JSON.stringify(pptxPreview))
 
   // —— HTML 沙箱预览（渲染 / 源码 开关 + 「不执行工作区代码」红线）——
   // 不验“iframe 在不在 DOM 里”（太容易绿）：① 渲染真的渲染出来了 —— 常见死法是 srcdoc 被页面 CSP
@@ -4176,11 +4280,14 @@ app.whenReady().then(async () => {
     })
   `)
 
-  // ── 设置窗口的生命周期：× 真能关掉 / 齿轮能再开出来 / 连点两次不叠窗（幂等）──
+  // ── 设置窗口的生命周期：Esc 真能关掉 / 齿轮能再开出来 / 连点两次不叠窗（幂等）──
   // 这三条是独立窗口形态的核心交互，缺一条用户就会遇到"关不掉""开出两个一模一样的设置窗口"。
+  // （自绘 × 删除后，渲染端的关窗出口是 Esc —— 就测它，别的都是主进程/OS 层的事）
   {
     const beforeClose = BrowserWindow.getAllWindows().length
-    await sevalRaw(`(() => { document.querySelector('.settings-window-close')?.click(); return true; })()`)
+    await sevalRaw(
+      `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return true; })()`
+    )
     // 等窗口真的销毁（close 是异步的，立刻查会假绿）
     let gone = false
     for (let i = 0; i < 30; i += 1) {
@@ -4191,7 +4298,7 @@ app.whenReady().then(async () => {
       }
     }
     checkTrue(
-      '设置窗口的 × **真能关掉窗口**（关完窗口数回落，不是只隐藏）',
+      '设置窗口 **Esc 真能关掉**（关完窗口数回落，不是只隐藏）',
       gone === true && BrowserWindow.getAllWindows().length < beforeClose,
       { before: beforeClose, after: BrowserWindow.getAllWindows().length, gone }
     )
@@ -4663,6 +4770,42 @@ app.whenReady().then(async () => {
     hexPreview.firstLine
   )
   checkTrue('转储内容能认出文件头（ELF 魔数）', hexPreview.hasElfMagic === true)
+
+  // —— Office 内嵌预览（2026-09-14）：docx/xlsx 沙箱 iframe、pptx 系统打开 ——
+  checkTrue(
+    'docx：点开是**沙箱 iframe**（不是十六进制，也不是把文档 HTML 灌进主文档）',
+    docxPreview.clicked === true && docxPreview.hasFrame === true && docxPreview.srcOk === true,
+    docxPreview
+  )
+  checkTrue(
+    'docx：iframe 的 sandbox 是**空值**（与 HTML 预览同一道锁；内容来自用户文件）',
+    docxPreview.sandboxEmpty === true
+  )
+  checkTrue(
+    'docx：给「用系统程序打开」出口（内嵌是便利，不是唯一出路）',
+    docxPreview.hasOpenSys === true
+  )
+  checkTrue(
+    'xlsx：sheet 按钮组在（多 sheet 可切，不是只看第一个）',
+    sheetPreview.clicked === true && sheetPreview.tabCount === 2 &&
+      sheetPreview.names.join(',') === '一月,二月',
+    { names: sheetPreview.names, tabCount: sheetPreview.tabCount }
+  )
+  checkTrue(
+    'xlsx：点「二月」后 iframe 真的换了 URL（不是按钮摆设）',
+    sheetPreview.srcBefore !== sheetAfter.srcAfter &&
+      sheetAfter.srcAfter === `jsl-preview://mem/${'c'.repeat(32)}`,
+    { before: sheetPreview.srcBefore, after: sheetAfter.srcAfter }
+  )
+  checkTrue(
+    'pptx：不支持内嵌 → 十六进制头（PK 魔数认得出它是 OOXML 容器）',
+    pptxPreview.clicked === true && pptxPreview.hasHex === true && pptxPreview.hasPkmagic === true,
+    pptxPreview
+  )
+  checkTrue(
+    'pptx：**没有**装样子的内嵌 iframe + 「用系统程序打开」出口在',
+    pptxPreview.noOfficeFrame === true && pptxPreview.hasOpenSys === true
+  )
 
   checkTrue('前置状态：点开了桩 HTML，且沙箱 iframe 在',
     htmlRender.hasFrame === true && clickHtmlFile === true, {
