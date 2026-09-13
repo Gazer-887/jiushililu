@@ -8,7 +8,8 @@ import { resolveInsideWorkspace } from '../guard'
 
 // 系统类工具（P1 工具层补全）：列目录 / 文本搜索 / 命令执行。
 // 前三者只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
-// ⚠️ run_command 是高危工具：**内核默认工具集不含它**，自定义 Agent 显式声明才下发（限时 30s、输出上限 1MB、cwd 锁工作区）。
+// ⚠️ run_command 是高危工具：**内核默认工具集不含它**，自定义 Agent 显式声明才下发；
+// 而可写档下每次执行前还要**逐次确认**（plan8 R5，确认钩子由组合根注入）。限时 30s、输出上限 1MB、cwd 锁工作区。
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist', '.workbuddy'])
 const MAX_LIST_ENTRIES = 500

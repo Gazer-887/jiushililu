@@ -128,8 +128,80 @@ describe('runAgent（工具链路集成）', () => {
     const names = toolNamesOf(openaiSpy)
     expect(names).not.toContain('write_file') // 白名单外的工具不下发
     expect(res.agent).toBe('runner-bot')
-    // 默认「可写」档：run_command 属高危，即便定义里声明了也被权限档压住
-    expect(names).not.toContain('run_command')
+    // plan8 R5（2026-09-13 改正）：可写档下**声明了就下发** —— 每次执行前由确认桥把关
+    // （此前这条断言写成 not.toContain，等于让 R5 永远触发不了，与界面文案"执行命令仍需逐次授权"矛盾）
+    expect(names).toContain('run_command')
+  })
+
+  it('⚠️ 可写档 + 声明了 run_command：执行前**真的会问用户**，拒绝则该命令不执行（plan8 R5 的接线证明）', async () => {
+    const ctx = makeCtx()
+    const asked: Array<{ tool: string; detail: string }> = []
+    // 确认桥：注入式（工具层不知道确认从哪来），这里用一个记录答案的替身
+    ctx.confirmCommand = async (req) => {
+      asked.push({ tool: req.tool, detail: req.detail })
+      return false // 用户拒绝
+    }
+    mkdirSync(ctx.userAgentsDir, { recursive: true })
+    writeFileSync(
+      join(ctx.userAgentsDir, 'runner-bot.md'),
+      '---\nname: runner-bot\ndescription: 会跑命令的机器人\ntools: [read_file, run_command]\n---\n按需执行命令。',
+      'utf8'
+    )
+    // 第 1 次模型回复要求执行一条命令；第 2 次收尾
+    openaiSpy.mockResolvedValueOnce({
+      text: '先跑个命令',
+      // @ts-expect-error 测试替身：只填本用例断言用到的字段
+      toolCalls: [{ id: 'c1', name: 'run_command', arguments: JSON.stringify({ command: 'echo JSL_R5' }) }]
+    })
+    openaiSpy.mockResolvedValueOnce({ text: '好', toolCalls: [] })
+
+    await runAgent(ctx, {
+      settings,
+      apiKey: 'k',
+      history: [{ role: 'user', content: '跑一下' }],
+      agentName: 'runner-bot',
+      conversationId: 'conv-r5'
+    })
+
+    expect(asked).toHaveLength(1)
+    expect(asked[0]?.tool).toBe('run_command')
+    expect(asked[0]?.detail).toContain('JSL_R5')
+    // 拒绝后工具如实返回"用户拒绝"，而不是静默执行
+    const secondCall = openaiSpy.mock.calls[1] as unknown[] | undefined
+    const messages = (secondCall?.[2] ?? []) as Array<{ content?: string }>
+    expect(messages.some((m) => (m.content ?? '').includes('用户拒绝'))).toBe(true)
+  })
+
+  it('完全访问档：高危工具不弹确认（那是用户明确选的"别拦我"）', async () => {
+    const ctx = makeCtx()
+    const asked: string[] = []
+    ctx.confirmCommand = async (req) => {
+      asked.push(req.detail)
+      return true
+    }
+    mkdirSync(ctx.userAgentsDir, { recursive: true })
+    writeFileSync(
+      join(ctx.userAgentsDir, 'runner-bot.md'),
+      '---\nname: runner-bot\ndescription: 会跑命令的机器人\ntools: [read_file, run_command]\n---\n按需执行命令。',
+      'utf8'
+    )
+    openaiSpy.mockResolvedValueOnce({
+      text: '跑',
+      // @ts-expect-error 测试替身：只填本用例断言用到的字段
+      toolCalls: [{ id: 'c1', name: 'run_command', arguments: JSON.stringify({ command: 'echo JSL_NOASK' }) }]
+    })
+    openaiSpy.mockResolvedValueOnce({ text: '好', toolCalls: [] })
+
+    await runAgent(ctx, {
+      settings,
+      apiKey: 'k',
+      history: [{ role: 'user', content: '跑一下' }],
+      agentName: 'runner-bot',
+      permission: 'full-access',
+      conversationId: 'conv-full'
+    })
+
+    expect(asked).toHaveLength(0)
   })
 
   it('权限档是硬上限：完整访问档下，声明了 run_command 才下发', async () => {

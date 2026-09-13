@@ -37,7 +37,10 @@ import { streamWithToolsAnthropic } from '../providers/anthropic-agent'
 // Agent 运行入口（IPC agent:run 的后端）：把加载器、门控、工具、Provider 通道拼成一杆枪。职责单一：不碰 UI、不碰流式对话。
 // ⚠️ 本模块**不得 import 任何 electron 模块**（含 electron-store）：runner 被单测直接 import，而 CI 的 Linux 无 Electron 二进制，一旦引入即 `Electron failed to install correctly`（踩过）。
 
-/** 高危工具：内核默认工具集不下发；自定义 Agent 在 tools 里显式声明才会启用 */
+/**
+ * 高危工具：**内核默认工具集不含**（plan6 D4 —— 免得"开箱就能跑命令"）；
+ * 自定义 Agent 在 `tools` 里显式声明才会下发，而可写档下每次执行前**逐次确认**（plan8 R5）。
+ */
 const DANGEROUS_TOOLS = new Set(['run_command'])
 
 /** 「只读」权限档下模型只能拿到这些（D-032：权限是上限，不是建议）。
@@ -58,17 +61,21 @@ const READ_ONLY_TOOLS = new Set([
   'ask_user'
 ])
 
-/** 按权限档求工具上限（纯函数，可单测）。权限档是**硬上限**：声明的 tools 只能在其中再收窄，不能越权扩大 */
+/**
+ * 按权限档求工具上限（纯函数，可单测）。权限档是**硬上限**：声明的 tools 只能在其中再收窄，不能越权扩大。
+ *
+ * ⚠️ **两条决定在这里交汇，改之前先读完**：
+ * - plan6 D4：**内核默认集不含高危工具** —— 没声明（`declared === undefined`）= 用默认集，
+ *   所以默认 Agent 拿不到 `run_command`；
+ * - plan8 R5：**可写档下声明了就能用，但每次执行前要确认**（确认桥只在可写档注入，见下方 `runAgent`）。
+ *   故可写档的上限**不再**滤掉高危工具 —— 否则"声明了也被权限档压住"，R5 永远触发不了，
+ *   而界面上却写着"执行命令仍需逐次授权"（2026-09-13 对账时发现这个自相矛盾并改正）。
+ * - 只读档仍然只留读类；可写与完全访问的**工具集相同**，差别只在"高危工具要不要逐次确认"。
+ */
 export function allowedToolsFor(preset: PermissionPreset, declared: string[] | undefined, allNames: string[]): string[] {
-  const ceiling =
-    preset === 'read-only'
-      ? allNames.filter((n) => READ_ONLY_TOOLS.has(n))
-      : preset === 'write'
-        ? allNames.filter((n) => !DANGEROUS_TOOLS.has(n))
-        : allNames // full-access
-  if (!declared) return ceiling
-  const ceilingSet = new Set(ceiling)
-  return declared.filter((n) => ceilingSet.has(n))
+  const requested = declared ?? allNames.filter((n) => !DANGEROUS_TOOLS.has(n))
+  const known = new Set(allNames)
+  return requested.filter((n) => known.has(n) && (preset !== 'read-only' || READ_ONLY_TOOLS.has(n)))
 }
 
 export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): AgentTool[] {
