@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { join, basename, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ChatMessage, ConversationMeta } from '@shared/ipc'
 import { createConversationsRepo } from '@main/store/conversations-core'
@@ -166,6 +166,44 @@ describe('原子写：换掉 electron-store 之后必须守住的性质', () => 
     expect(() => backend.writeMessages('../evil', [msg(1)])).toThrow(/不合法/)
     expect(backend.readMessages('../evil')).toEqual([])
     expect(existsSync(join(root, 'evil.json'))).toBe(false)
+  })
+
+  it('**崩溃安全：fsync 在 rename 之前、目录 fsync 在之后**（顺序不许乱）', () => {
+    // 光是"临时文件 + rename"不叫崩溃安全：rename 只改目录项，数据可能还在缓存里。
+    // 断电后要么拿到旧内容、要么留下 tmp。补两道 fsync 才让"要么新、要么完整旧"成立。
+    // ⚠️ 这条断言盯的是**顺序**，不是"调没调" —— 顺序反了（先 rename 再 fsync 数据）等于没做。
+    const root = tmpRoot()
+    const calls: string[] = []
+    const recording: FsAdapter = {
+      ...nodeFsAdapter,
+      writeFileSync: (p, d, e) => {
+        nodeFsAdapter.writeFileSync(p, d, e)
+        calls.push(`write:${basename(p)}`)
+      },
+      fsyncFile: (p) => {
+        calls.push(`fsyncFile:${basename(p)}`)
+      },
+      renameSync: (a, b) => {
+        nodeFsAdapter.renameSync(a, b)
+        calls.push(`rename:${basename(b)}`)
+      },
+      fsyncDir: () => {
+        calls.push('fsyncDir')
+      }
+    }
+    const backend = createFsConversationsBackend(root, recording)
+    backend.writeMessages('a', [msg(1)])
+
+    const idx = (pred: (s: string) => boolean) => calls.findIndex(pred)
+    const writeTmp = idx((s) => s.startsWith('write:') && s.endsWith('.tmp'))
+    const syncTmp = idx((s) => s.startsWith('fsyncFile:'))
+    const rename = idx((s) => s.startsWith('rename:'))
+    const syncDir = idx((s) => s === 'fsyncDir')
+
+    expect(writeTmp).toBeGreaterThan(-1)
+    expect(syncTmp).toBeGreaterThan(writeTmp) // 数据落盘 → 在 rename 之前
+    expect(rename).toBeGreaterThan(syncTmp)
+    expect(syncDir).toBeGreaterThan(rename) // 目录项落盘 → 在 rename 之后
   })
 
   it('**文件带 BOM 也读得出来**（JSON.parse 遇 BOM 会直接抛，表现为"会话全不见了"）', () => {

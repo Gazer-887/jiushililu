@@ -19,6 +19,10 @@ export interface FsAdapter {
   writeFileSync(path: string, data: string, enc: 'utf8'): void
   renameSync(from: string, to: string): void
   rmSync(path: string, opts?: { force?: boolean }): void
+  /** 把文件内容刷到磁盘（2026-09-13 补）。**不做的话 rename 只是"目录项换了名"** —— 断电后你可能拿到旧内容 */
+  fsyncFile(path: string): void
+  /** 刷目录项（POSIX 需要；Windows 上打不开目录，实现里吞掉错误） */
+  fsyncDir(path: string): void
 }
 
 export const nodeFsAdapter: FsAdapter = {
@@ -27,7 +31,35 @@ export const nodeFsAdapter: FsAdapter = {
   readFileSync: (p, e) => nodeFs.readFileSync(p, e),
   writeFileSync: (p, d, e) => nodeFs.writeFileSync(p, d, e),
   renameSync: (a, b) => nodeFs.renameSync(a, b),
-  rmSync: (p, o) => nodeFs.rmSync(p, o)
+  rmSync: (p, o) => nodeFs.rmSync(p, o),
+  fsyncFile: (p) => {
+    const fd = nodeFs.openSync(p, 'r+')
+    try {
+      nodeFs.fsyncSync(fd)
+    } finally {
+      nodeFs.closeSync(fd)
+    }
+  },
+  fsyncDir: (p) => {
+    // Windows 不允许对目录取句柄（EISDIR/EPERM）—— 这里的目的是"让 rename 这件事落盘"，
+    // POSIX 上由目录 fsync 保证；Windows 上 rename 的元数据落盘由 NTFS 日志负责，故静默跳过。
+    // ⚠️ 吞掉的是**平台不支持**，不是所有错误 —— 但这里没有"部分失败"可处置（文件已经写完了）。
+    let fd: number | null = null
+    try {
+      fd = nodeFs.openSync(p, 'r')
+      nodeFs.fsyncSync(fd)
+    } catch {
+      /* 平台不支持目录 fsync —— 见上 */
+    } finally {
+      if (fd !== null) {
+        try {
+          nodeFs.closeSync(fd)
+        } catch {
+          /* 已经关了 */
+        }
+      }
+    }
+  }
 }
 
 /** 磁盘格式版本。老格式（electron-store 整表、正文内嵌）没有这个字段，等价于 1 */
@@ -61,12 +93,24 @@ export function backupFilePath(root: string, tag: string): string {
   return `${metaFilePath(root)}.bak-${tag}`
 }
 
-/** 原子写：临时文件 + rename。tmp 放在同目录（跨盘 rename 会失败） */
+/**
+ * 原子写：**写 tmp → fsync → rename → fsync 目录**。
+ *
+ * ⚠️ 只做"临时文件 + rename"**不足以**叫"崩溃安全"（2026-09-13 补）：
+ * rename 在多数文件系统上只改**目录项**，不等数据落盘。断电/蓝屏后可能拿到旧内容、
+ * 或留下一个 tmp 文件 —— "读者看不到半截"成立，但"写入活得过崩溃"不成立。
+ * 补两道 fsync 后，语义才与 SQLite 的"事务提交"接近：**要么看到新内容、要么看到完整旧内容**。
+ * 代价：每轮保存多几毫秒（会话保存是"每轮一次"，不是每 token —— 见 plan10 §一 事实 7）。
+ *
+ * tmp 放在同目录：跨盘 rename 会失败（`EXDEV`）。
+ */
 function atomicWrite(fs: FsAdapter, path: string, data: string): void {
   fs.mkdirSync(dirname(path), { recursive: true })
   const tmp = `${path}.tmp`
   fs.writeFileSync(tmp, data, 'utf8')
+  fs.fsyncFile(tmp) // 数据先落盘，再改目录项
   fs.renameSync(tmp, path)
+  fs.fsyncDir(dirname(path)) // 让"改名"这件事本身也落盘
 }
 
 function readJson<T>(fs: FsAdapter, path: string): T | null {

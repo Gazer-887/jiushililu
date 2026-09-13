@@ -272,6 +272,10 @@ app.whenReady().then(() => {
     // 提问口（ask_user）：注入的是**桥本体**（只用到 ask 一个方法）—— runner 不许 import electron，故由组合根注入
     ask,
     background,
+    // L0 检索（plan3/plan4）：随包的 ripgrep 放 resources/ripgrep/（extraResources）。
+    // ⚠️ 开发态 `process.resourcesPath` 指向 electron 自己的 resources —— 那里没有我们的 rg，
+    //    于是会自动退到环境变量 / PATH（本机 WinGet 装的 rg 15.2.0 能接上）；这不是降级事故。
+    resourcesPath: app.isPackaged ? process.resourcesPath : null,
     // 回收站（plan7 批 A2）：界面与 Agent 的删除都走它（非硬删）
     trash: (abs) => shell.trashItem(abs)
   })

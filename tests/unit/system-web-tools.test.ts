@@ -41,12 +41,16 @@ describe('search_files（文本搜索工具）', () => {
     const msg = await searchFiles.execute({ query: 'magic', path: dir })
     expect(msg).toContain('app.ts:1:')
     expect(msg).toContain('notes.md:1:')
-    expect(msg).not.toContain('node_modules')
+    // ⚠️ 判据改过一次：原写 `not.toContain('node_modules')` —— 现在**跳过目录会被如实报告**
+    //    （"跳过了什么"必须说出来，否则"搜不到"与"没搜"同形），于是那句话里就会出现这个名字。
+    //    要防的失败模式是"node_modules 里的内容被当成命中返回"，所以判据盯着**命中行**。
+    expect(msg).not.toContain('node_modules/lib.js:')
+    expect(msg).toContain('跳过的目录：node_modules')
   })
 
   it('无匹配返回明确提示', async () => {
     const msg = await searchFiles.execute({ query: '不存在的词xyz', path: dir })
-    expect(msg).toBe('（无匹配）')
+    expect(msg.startsWith('（无匹配）')).toBe(true)
   })
 
   it('空 query 拒绝', async () => {

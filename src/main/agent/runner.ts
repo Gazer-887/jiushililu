@@ -94,9 +94,10 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
           workspaceRoot,
           hooks.confirmCommand,
           hooks.background,
-          hooks.agentLabel
+          hooks.agentLabel,
+          hooks.resourcesPath
         )
-      : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel)),
+      : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel, hooks.resourcesPath)),
     ...createWebTools(),
     ...createBrowserTools(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
@@ -121,6 +122,8 @@ export interface ToolHooks {
   spawnAgents?: SubagentDispatcher
   background?: BackgroundTaskStore
   agentLabel?: string
+  /** 打包态资源根（找随包的 ripgrep）。装配层注入 —— runner 不许 import electron；不传 = 只用环境变量/PATH 上的 rg */
+  resourcesPath?: string | null
 }
 
 export interface AgentRuntimeContext {
@@ -134,6 +137,8 @@ export interface AgentRuntimeContext {
   /** 提问桥（`ask_user` 的落地口）。由组合根注入：它要推窗口，而 runner 不许 import electron；
    *  会话身份**不在这里补** —— 同一个上下文会被多条会话共用，`conversationId` 只能由 `runAgent` 按轮次补。 */
   ask?: AskReporter
+  /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 `process.resourcesPath` —— runner 不许 import electron */
+  resourcesPath?: string | null
   confirmCommand?: (req: {
     tool: string
     detail: string
@@ -289,7 +294,9 @@ export async function runAgent(
           }
         }
       : {}),
-    ...(registry.definitions.size > 0 ? { spawnAgents: subagentDispatcher } : {})
+    ...(registry.definitions.size > 0 ? { spawnAgents: subagentDispatcher } : {}),
+    // L0 检索（plan3/plan4）：打包态把随包的 ripgrep 位置传下去 —— 工具层不许 import electron
+    ...(ctx.resourcesPath ? { resourcesPath: ctx.resourcesPath } : {})
   })
   const allNames = allTools.map((t) => t.schema.name)
 
@@ -403,6 +410,8 @@ export function createAgentContext(opts: {
   background?: BackgroundTaskStore
   trash?: (abs: string) => Promise<void>
   ask?: AskReporter
+  /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 —— runner 不许 import electron */
+  resourcesPath?: string | null
 }): AgentRuntimeContext {
   const ctx: AgentRuntimeContext = {
     getWorkspaceRoot: opts.getWorkspaceRoot,
