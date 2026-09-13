@@ -377,6 +377,25 @@ let termRestartCalls = 0
 /** `terminal:start` 被调用的次数（只读档断言要用它证明"界面试过启动"） */
 let termStartCalls = 0
 const termSessionId = () => (termSessionNo === 1 ? 'term-probe' : `term-probe-${termSessionNo}`)
+
+// 系统集成（plan7 批 F1）。⚠️ 契约副本：`SystemView` 加字段必须同步加，否则渲染端静默拿到 undefined。
+// 做成**可变对象 + 收到的载荷流水**：① 界面勾了要能验载荷与回显；② 翻成"不支持"就能验禁用分支（真主进程里
+// 开发态就是这条），而这段只有"重进分区重取真值"才验得到（故渲染端取数挂在 section 上）。
+let systemStub = {
+  keepRunning: false,
+  keepRunningActive: false,
+  keepRunningError: null,
+  openAtLogin: false,
+  openAtLoginActive: false,
+  openAtLoginSupported: true,
+  openAtLoginReason: null,
+  openAtLoginError: null
+}
+const systemSetCalls = []
+/** `system:get` 被调用次数 —— 没有它，"取数失败回落到 `setSys(null)`（未勾选+禁用）"与"存根返回 false"在断言层不可区分 */
+let systemGetCalls = 0
+/** 让下一次 `system:set` 回一个**载荷没要的值**：只有这样才能证明界面跟着返回值走，而不是乐观更新 */
+let systemForceNextSet = null
 const makeTermSnapshot = () => ({
   id: termSessionId(),
   cwd: 'D:\\jsllworkplace_for_test',
@@ -589,6 +608,21 @@ const STUBS = {
   // 省 token 档位：set 回显传入值（与真主进程一致，界面拿返回值更新显示，故 mock 不存状态）
   'token-tier:get': () => 'balanced',
   'token-tier:set': (tier) => tier,
+  // 系统集成（plan7 批 F1）：set 记流水并真的改存根状态 —— 与真主进程一致（界面拿返回值回显）
+  'system:get': () => {
+    systemGetCalls += 1
+    return { ...systemStub }
+  },
+  'system:set': (patch) => {
+    systemSetCalls.push({ ...(patch ?? {}) })
+    systemStub = { ...systemStub, ...(patch ?? {}) }
+    if (systemForceNextSet) {
+      systemStub = { ...systemStub, ...systemForceNextSet }
+      systemForceNextSet = null
+    }
+    systemStub.keepRunningActive = systemStub.keepRunning === true
+    return { ...systemStub }
+  },
   'git:info': () => ({ branch: 'master', dirty: false }),
   'attach:file': () => null,
   'prompt:polish': () => 'polished',
@@ -2939,6 +2973,153 @@ app.whenReady().then(async () => {
   `)
   checkTrue('点一下就切到「轻量」—— 档位真值在主进程，界面只是它的视图',
     tierAfter === '轻量', tierAfter)
+
+  // ── 系统集成（plan7 批 F1）：锁屏/熄屏后继续运行 + 开机自启 ──
+  // ⚠️ 门禁里主进程是存根，故这一段能验的只有"界面结构与载荷对不对"；"真生效"由实机验收
+  //    （`scripts/probe-main-system.cjs` 跑真组合根 + `powercfg /requests` 人工看，见 PLAN/plan15 §六），
+  //    **不许在这里冒充**。
+  const systemRead = () => win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
+      const pick = (t) => rows.find((r) => r.textContent.trim().startsWith(t)) ?? null;
+      const size = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      const shape = (el) => {
+        if (!el) return null;
+        const input = el.querySelector('input');
+        return { checked: input.checked, disabled: input.disabled, box: size(input) };
+      };
+      const hints = Array.from(document.querySelectorAll('.settings-body p.hint'));
+      return {
+        labels: rows.map((r) => r.textContent.trim()),
+        keep: shape(pick('锁屏与熄屏后继续运行')),
+        auto: shape(pick('开机自启')),
+        hints: hints.map((p) => p.textContent.trim()),
+        // 几何也要量：DOM 里在 ≠ 用户看得见（AGENTS §八同源教训）
+        hintBoxes: hints.map((p) => size(p))
+      };
+    })()
+  `)
+  const systemBefore = await systemRead()
+  const visible = (box) => box !== null && box.w >= 12 && box.h >= 12
+  checkTrue('设置页「系统」有两项：锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
+    systemBefore.labels.length === 2 &&
+      systemBefore.keep !== null && systemBefore.keep.checked === false && systemBefore.keep.disabled === false &&
+      systemBefore.auto !== null && systemBefore.auto.checked === false && systemBefore.auto.disabled === false,
+    systemBefore)
+  // 初值必须是**从主进程取到的**：取数失败会回落到"未勾选+禁用"，那与"存根返回 false"在断言层分不开 → 查调用次数
+  checkTrue('初值来自主进程（`system:get` 真的被调过，不是界面默认值）',
+    systemGetCalls >= 1 && systemBefore.keep !== null && systemBefore.keep.disabled === false,
+    { systemGetCalls })
+  checkTrue('两个勾选框**量出来是看得见的**（宽高 > 0，不是零尺寸的隐形控件）',
+    visible(systemBefore.keep.box) && visible(systemBefore.auto.box),
+    { keep: systemBefore.keep.box, auto: systemBefore.auto.box })
+  // 承重文案：这两项都是**系统级副作用**，代价与边界必须写在界面上
+  // （"空闲"两个字是承诺范围的边界：合盖/手动睡眠仍会中断，写成"系统绝不睡眠"是兑现不了的）
+  checkTrue('两项都写明了代价/边界（只阻止空闲睡眠 · 功耗代价 · 无托盘且关窗即退出）',
+    systemBefore.hints.some((t) => t.indexOf('空闲') >= 0) &&
+      systemBefore.hints.some((t) => t.indexOf('功耗') >= 0) &&
+      systemBefore.hints.some((t) => t.indexOf('托盘') >= 0) &&
+      systemBefore.hints.some((t) => t.indexOf('关闭主窗口即退出应用') >= 0),
+    systemBefore.hints)
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
+      const pick = (t) => rows.find((r) => r.textContent.trim().startsWith(t));
+      const k = pick('锁屏与熄屏后继续运行');
+      const a = pick('开机自启');
+      if (k) k.querySelector('input').click();
+      if (a) a.querySelector('input').click();
+      return !!k && !!a;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const systemAfter = await systemRead()
+  checkTrue('勾选后载荷正确：两个开关各发自己那一个键（互不污染）',
+    systemSetCalls.length === 2 &&
+      systemSetCalls[0].keepRunning === true && systemSetCalls[0].openAtLogin === undefined &&
+      systemSetCalls[1].openAtLogin === true && systemSetCalls[1].keepRunning === undefined,
+    systemSetCalls)
+  checkTrue('勾选后两个开关都变成已勾选（载荷已发出）',
+    systemAfter.keep !== null && systemAfter.keep.checked === true &&
+      systemAfter.auto !== null && systemAfter.auto.checked === true,
+    systemAfter)
+
+  // ⚠️ 上面那条在"纯回显"的存根下**乐观更新也能绿**。真正能分辨的是这一条：让存根回一个**载荷没要的值**
+  //    （点击发 `openAtLogin:false`，存根回 `true`）—— 界面若跟着返回值走，就该保持勾选。
+  systemForceNextSet = { openAtLogin: true }
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
+      const a = rows.find((r) => r.textContent.trim().startsWith('开机自启'));
+      if (a) a.querySelector('input').click();
+      return !!a;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const systemEcho = await systemRead()
+  checkTrue('界面跟随**主进程返回值**而不是乐观更新（存根故意回了与载荷相反的值，勾选态跟着返回值）',
+    systemSetCalls.length === 3 && systemSetCalls[2].openAtLogin === false &&
+      systemEcho.auto !== null && systemEcho.auto.checked === true,
+    { calls: systemSetCalls, echo: systemEcho.auto })
+
+  // 翻存根 → 验两条"设了却不生效"的真实分支：blocker 起不来（显示原因）· 开发态不给写启动项（禁用 + 原因）
+  // ⚠️ 原因用**哨兵串**（同 JSL_RO_9Z 的手法）：用真文案的话，界面里硬编码同一句也能绿
+  systemStub = {
+    ...systemStub,
+    keepRunningActive: false,
+    keepRunningError: '系统拒绝了执行状态请求 JSL_SYS_K7',
+    openAtLogin: false,
+    openAtLoginActive: false,
+    openAtLoginSupported: false,
+    openAtLoginReason: '开发态写入的启动项指向 Electron 而非本应用，仅安装版可用。JSL_SYS_A9'
+  }
+  // ⚠️ 必须"切走、**等一帧**、再切回"：两次点击在同一批次里会被 React 合并成"没离开过"，依赖 section 的
+  //    取数就不会重跑 —— 那会把"重取真值"验成假绿（探针只验到内存里的旧值）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item')).find((x) => x.textContent.trim() === '模型');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item')).find((x) => x.textContent.trim() === '通用设置');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const systemTrouble = await systemRead()
+  checkTrue('blocker 设了却没生效时：复选框仍反映用户的选择，但**当场显示原因**（不许静默显示"已开"）',
+    systemTrouble.keep !== null && systemTrouble.keep.checked === true &&
+      systemTrouble.hints.some((t) => t.indexOf('JSL_SYS_K7') >= 0),
+    systemTrouble)
+  checkTrue('开机自启不可用时：复选框**禁用**且给出原因（不会写出指向 electron.exe 的启动项）',
+    systemTrouble.auto !== null && systemTrouble.auto.disabled === true &&
+      systemTrouble.auto.checked === false &&
+      systemTrouble.hints.some((t) => t.indexOf('JSL_SYS_A9') >= 0),
+    systemTrouble)
+  checkTrue('「没生效」的提示行**量出来是看得见的**（那句防线不许是零尺寸的隐形文字）',
+    systemTrouble.hintBoxes.some((b) => visible(b)) &&
+      systemTrouble.hints.some((t) => t.indexOf('JSL_SYS_K7') >= 0 && t.length > 10),
+    systemTrouble.hintBoxes)
+
+  // 还原存根状态（验证脚本要能重复运行：留着"不支持"会让后面再进通用设置的段落看到禁用态）
+  systemStub = {
+    ...systemStub,
+    keepRunning: false,
+    keepRunningActive: false,
+    keepRunningError: null,
+    openAtLoginSupported: true,
+    openAtLoginReason: null
+  }
 
   // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
   await win.webContents.executeJavaScript(`

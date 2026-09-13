@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell } from 'electron'
+import { app, BrowserWindow, Menu, powerSaveBlocker, shell } from 'electron'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { registerIpcHandlers } from './ipc'
@@ -21,7 +21,8 @@ import {
 import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
-import { getPermissionPreset } from './store/settings'
+import { createSystemIntegration } from './system-integration'
+import { getPermissionPreset, getSystemSettings, setSystemSettings } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
@@ -208,6 +209,40 @@ app.whenReady().then(() => {
   // 后台任务注册表（plan7 批 D）：**进程级单例** —— 窗口关闭时统一终止，留一堆没人管的进程是隐患
   const background = createBackgroundTaskStore()
 
+  // ── 系统集成（plan7 批 F1）：锁屏/熄屏后继续运行 + 开机自启 ──────
+  //
+  // 依赖全部注入（连 store 也是）：`system-integration.ts` **不 import electron** ——
+  // 架构守卫禁止单测 import 图里出现 electron / electron-store，注入才让它进得了单测链路。
+  //
+  // ⚠️ 启动项要写的是**用户手里那个可执行文件**：portable 版每次运行解压到不同的临时目录，
+  //    写 `process.execPath` 会得到一个下次开机根本不存在的路径（electron-builder 为 portable 注入了
+  //    `PORTABLE_EXECUTABLE_FILE`，指向用户解压/存放的那个 .exe）。
+  const systemExecPath = process.env['PORTABLE_EXECUTABLE_FILE'] ?? process.execPath
+  const system = createSystemIntegration({
+    packaged: app.isPackaged,
+    platform: process.platform,
+    execPath: systemExecPath,
+    powerSaveBlocker,
+    loginItem: {
+      set: (input) => app.setLoginItemSettings(input),
+      // ⚠️ 读也要传同一个 path：Electron 只在 set/get 参数一致时才认得出那条启动项
+      get: (input) => app.getLoginItemSettings(input)
+    },
+    store: { read: getSystemSettings, write: setSystemSettings },
+    log: (message, extra) => log.info(message, extra)
+  })
+  // 重启后仍生效靠这一步：blocker 是**进程级**的，进程没了就没了，每次启动都要按落盘意图重新起
+  const systemAtStart = system.applyStored()
+  // 记录 execPath：portable 版自启项指向哪儿，只有日志能事后查（也是安装版验收的一条证据）
+  log.info('系统集成已就绪', {
+    packaged: app.isPackaged,
+    execPath: systemExecPath,
+    keepRunning: systemAtStart.keepRunning,
+    keepRunningActive: systemAtStart.keepRunningActive,
+    openAtLogin: systemAtStart.openAtLogin,
+    openAtLoginSupported: systemAtStart.openAtLoginSupported
+  })
+
   // Agent 提问桥（带选项）：与确认桥同样是"惰性取窗口"。
   // ⚠️ 推送走**所有窗口**（同后台任务 / 终端的广播写法），不是 `getAllWindows()[0]`：只推第一个窗口的话，
   //    用户关窗重开（macOS activate）那条问题就没人看得见 —— 而桥还在等答复，白等到超时。
@@ -292,6 +327,7 @@ app.whenReady().then(() => {
     confirm,
     ask,
     terminal,
+    system,
     // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
     onFlushDone: () => finishClose?.()
   })
@@ -323,7 +359,12 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+      // macOS 关窗即 `teardownAll`（cookie：两个入口都调它）→ blocker 被收掉；窗口重建时按落盘意图重新应用，
+      // 否则"设置里开着、实际没生效"。`applyStored` 幂等，window 已存在时不会走到这里。
+      system.applyStored()
+    }
   })
 
   // 窗口全关时，把待决的危险操作确认按**拒绝**处理 —— 否则那个 Agent 会一直卡在等待上直到超时。
@@ -338,6 +379,8 @@ app.whenReady().then(() => {
     background.killAll()
     // 终端会话同理：**不留没人管的 shell**（它可能正跑着 dev server / 数据库）。
     terminal.killAll()
+    // 系统请求也要收（不清掉的话退出瞬间系统仍被我们按着不休眠）。它**只收系统请求、不改用户的落盘选择**
+    system.dispose()
   }
 
   app.on('window-all-closed', teardownAll)

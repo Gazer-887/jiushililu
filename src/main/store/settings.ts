@@ -2,6 +2,7 @@ import Store from 'electron-store'
 import { safeStorage } from 'electron'
 import type { ModelSettings, PermissionPreset } from '@shared/ipc'
 import { DEFAULT_TOKEN_TIER, isTokenSaverTier, type TokenSaverTier } from '@shared/token-tier'
+import type { SystemSettings } from '@shared/system'
 
 // 持久化设置。铁律（D-013 / AGENTS.md）：API Key 只走 safeStorage 加密落盘，绝不存明文。
 // safeStorage 在 Windows 用 DPAPI、macOS 用 Keychain（DIARY 术语词典有词条）。
@@ -23,6 +24,13 @@ interface StoredSettings extends ModelSettings {
    * 回落，**不写回盘**（写回会让"默认"变成"显式选择"）。
    */
   tokenSaverTier?: TokenSaverTier
+  /**
+   * **锁屏与熄屏后继续运行**（plan7 批 F1）：阻止**系统**进入睡眠（不是让屏幕常亮 —— 用户定调"屏幕可以关，
+   * 后台任务要继续跑"）。缺字段 = 老配置 → `false`：阻止睡眠必须由用户显式开启，不能替他默认。
+   */
+  keepRunning?: boolean
+  /** **开机自启**（plan7 批 F1）。⚠️ 只有安装版会写进来：开发态写入的启动项指向 electron.exe，不是本应用 */
+  openAtLogin?: boolean
 }
 
 const store = new Store<StoredSettings>({ name: 'settings' })
@@ -49,6 +57,17 @@ export function getTokenTier(): TokenSaverTier {
 export function setTokenTier(tier: TokenSaverTier): TokenSaverTier {
   store.set('tokenSaverTier', tier)
   return getTokenTier()
+}
+
+/** 系统集成（plan7 批 F1）的落盘意图。与档位同一口径：缺字段回落 `false`、**不写回盘** */
+export function getSystemSettings(): SystemSettings {
+  const s = store.store
+  return { keepRunning: s.keepRunning === true, openAtLogin: s.openAtLogin === true }
+}
+
+export function setSystemSettings(patch: Partial<SystemSettings>): void {
+  if (patch.keepRunning !== undefined) store.set('keepRunning', patch.keepRunning)
+  if (patch.openAtLogin !== undefined) store.set('openAtLogin', patch.openAtLogin)
 }
 
 export function encryptionAvailable(): boolean {

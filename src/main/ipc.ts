@@ -31,6 +31,8 @@ import {
   type ConversationRollbackResult
 } from '@shared/ipc'
 import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier } from './store/settings'
+import type { SystemSettings, SystemView } from '@shared/system'
+import type { SystemIntegration } from './system-integration'
 import { resolvePolicy, type TokenSaverTier } from '@shared/token-tier'
 // 「当前用哪个模型」由**模型档案**决定（plan7 F5 多模型）：内核/界面永远只看见"当前这一个模型"，真源搬到了 store/models
 import {
@@ -125,6 +127,12 @@ const workbenchSchema = z.object({
 
 const workbenchSizesSchema = z.object({
   paneWidths: z.array(z.number().finite().min(PANE_ABS_MIN).max(4096)).max(PANE_MAX_COUNT)
+})
+
+// 系统集成（plan7 批 F1）：只认这两个键 —— zod 会**剥掉**未声明字段，故新增开关必须在这里一起声明
+const systemSetSchema = z.object({
+  keepRunning: z.boolean().optional(),
+  openAtLogin: z.boolean().optional()
 })
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
@@ -223,6 +231,8 @@ export function registerIpcHandlers(deps: {
   ask: AskBridge
   /** 内置终端会话（plan7 批 C）。⚠️ 传进来而不是在这里 new：**广播代码必须放 `main/index.ts`**（本文件里一个裸 `.send(` 都不许有，见 `tests/unit/stream-envelope.test.ts`），而会话的 `onData` 要往所有窗口推 —— 故"建会话"在组合根，这里只做转交。 */
   terminal: TerminalSessionStore
+  /** 系统集成（plan7 批 F1）：同样是组合根建、这里转交 —— 它持有 blocker id 与自启状态，**每个进程只能有一份** */
+  system: SystemIntegration
   onFlushDone?: () => void
 }): void {
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
@@ -712,6 +722,15 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.tokenTierSet, (_e, raw: unknown): TokenSaverTier => {
     const tier = z.enum(['rich', 'ultimate', 'balanced', 'light']).parse(raw)
     return setTokenTier(tier)
+  })
+
+  // 系统集成（plan7 批 F1）。⚠️ 返回的是**主进程算出来的真值**（含 blocker 是否真生效、自启是否被系统接受），
+  // 界面一律用它回显 —— 乐观更新会做出"点了变绿、其实没生效"的假象。
+  ipcMain.handle(IPC.systemGet, (): SystemView => deps.system.view())
+
+  ipcMain.handle(IPC.systemSet, (_e, raw: unknown): SystemView => {
+    const patch = systemSetSchema.parse(raw) as Partial<SystemSettings>
+    return deps.system.set(patch)
   })
 
   ipcMain.handle(IPC.gitInfo, (): Promise<GitInfo | null> =>

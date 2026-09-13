@@ -8,6 +8,7 @@ import type { SubagentJobEvent } from './agent'
 import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
 import type { AskRequest, AskResult } from './ask'
+import type { SystemSettings, SystemView } from './system'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
 
@@ -222,6 +223,9 @@ export const IPC = {
   permissionSet: 'permission:set',
   tokenTierGet: 'token-tier:get',
   tokenTierSet: 'token-tier:set',
+  // ── 系统集成（plan7 批 F1）：后台运行 + 开机自启 ──
+  systemGet: 'system:get',
+  systemSet: 'system:set',
   gitInfo: 'git:info',
   attachFile: 'attach:file',
   /** 按**路径**取附件：文件树拖入 / 系统拖入共用这一条，只差"路径从哪来" */
@@ -411,6 +415,9 @@ export interface ApiBridge {
   /** 省 token 档位（plan8 R9.1 §七②）：全局一档，与权限档同样"存在主进程、界面只是视图" */
   getTokenTier(): Promise<TokenSaverTier>
   setTokenTier(tier: TokenSaverTier): Promise<TokenSaverTier>
+  /** 系统集成（plan7 批 F1）：值与**真生效状态**都由主进程给（界面不猜） */
+  getSystem(): Promise<SystemView>
+  setSystem(patch: Partial<SystemSettings>): Promise<SystemView>
   getGitInfo(): Promise<GitInfo | null>
   /** **回到第 `toIndex` 条消息之前**（plan10 B 批 ④）：走 R5 确认桥，用户拒绝 → 返回 `null`。⚠️ **正在生成回复时拒绝** —— 流式没结束就回滚等于在动的数据上做手术。 */
   rollbackConversation(id: string, toIndex: number): Promise<ConversationRollbackResult | null>

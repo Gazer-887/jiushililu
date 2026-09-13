@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import type {
   LogsInfo,
   PermissionPreset,
@@ -12,6 +12,7 @@ import { useAppStore } from '../store'
 import { THEMES } from '@shared/splitter'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
 import { TOKEN_TIER_LIST, type TokenSaverTier } from '@shared/token-tier'
+import { SYSTEM_TOGGLES, type SystemSettings, type SystemView } from '@shared/system'
 
 /*
  * 设置分区导航（plan8 R7）：形制对齐 DSH 设置页 —— 左侧分区导航 + 右侧内容，选中项为圆角胶囊高亮。
@@ -157,6 +158,8 @@ export default function SettingsView() {
   const [perm, setPerm] = useState<PermissionPreset>('write')
   /** 省 token 档位：跟权限档一样是"人定的档"，真值在主进程 */
   const [tier, setTier] = useState<TokenSaverTier>('balanced')
+  /** 系统集成（plan7 批 F1）：值与**真生效状态**都在主进程（blocker 起没起来只有它知道） */
+  const [sys, setSys] = useState<SystemView | null>(null)
   /** 故障排查区：日志目录与最近文件，用于"出问题能查" */
   const [logs, setLogs] = useState<LogsInfo | null>(null)
 
@@ -203,6 +206,30 @@ export default function SettingsView() {
     void window.api.getPermission().then(setPerm)
     void window.api.getTokenTier().then(setTier)
   }, [])
+
+  // 系统集成（plan7 批 F1）：进「通用设置」时取一次真值。依赖 section 而不是空数组，
+  // 是为了"切走再回来"能重取 —— 系统状态可能被应用之外的东西改（用户在系统的启动项里关掉自启）
+  useEffect(() => {
+    if (section !== 'general') return
+    void window.api
+      .getSystem()
+      .then(setSys)
+      .catch(() => setSys(null))
+  }, [section])
+
+  const chooseSystem = async (key: keyof SystemSettings, value: boolean): Promise<void> => {
+    const patch: Partial<SystemSettings> =
+      key === 'keepRunning' ? { keepRunning: value } : { openAtLogin: value }
+    try {
+      // 用主进程返回值回显，不做乐观更新：真值可能是"没生效"（blocker 起不来 / 启动项被系统拒绝）
+      setSys(await window.api.setSystem(patch))
+    } catch {
+      void window.api
+        .getSystem()
+        .then(setSys)
+        .catch(() => setSys(null))
+    }
+  }
 
   useEffect(() => {
     if (settings && !draft) {
@@ -494,6 +521,46 @@ export default function SettingsView() {
                 恢复默认布局
               </button>
             </div>
+
+            {/* ── 系统（plan7 批 F1）：两项都是**系统级副作用**，故各自都要写出代价 ──
+                取数规则：值取主进程回显（不乐观更新）；"设了不等于生效"的两条路径各有自己的提示行
+                （blocker 起不来 / 系统启动项里查不到），这正是 plan7 点名的"以为在跑、其实被挂起了"的防线。 */}
+            <div className="field-label">系统</div>
+            {SYSTEM_TOGGLES.map((t) => {
+              const unsupported = t.key === 'openAtLogin' && sys !== null && !sys.openAtLoginSupported
+              // 「设了」与「生效了」不一致时**必须当场说**（plan7 点名的"以为在跑、其实被挂起了"）：
+              // 故这里用**意图 vs 生效**的组合判据，只看错误位会漏掉"没有任何报错但就是不生效"那条路
+              const trouble = !sys
+                ? null
+                : t.key === 'keepRunning'
+                  ? (sys.keepRunningError ??
+                    (sys.keepRunning === sys.keepRunningActive
+                      ? null
+                      : sys.keepRunning
+                        ? '设置已保存，但当前未生效：系统未接受阻止睡眠的请求。'
+                        : '关闭未成功：系统当前仍不会自动睡眠。'))
+                  : (sys.openAtLoginError ??
+                    (unsupported
+                      ? sys.openAtLoginReason
+                      : sys.openAtLogin && !sys.openAtLoginActive
+                        ? '启动项已写入，但系统不会在登录时拉起本应用（可能已在任务管理器或系统设置里停用）。'
+                        : null))
+              return (
+                <Fragment key={t.key}>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={sys ? sys[t.key] : false}
+                      disabled={!sys || unsupported}
+                      onChange={(e) => void chooseSystem(t.key, e.target.checked)}
+                    />
+                    {t.label}
+                  </label>
+                  <p className="hint">{t.note}</p>
+                  {trouble && <p className="hint">{trouble}</p>}
+                </Fragment>
+              )
+            })}
           </div>
         )}
 

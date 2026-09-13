@@ -8,6 +8,7 @@ import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import type { TokenUsage } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
+import type { SystemSettings } from '@shared/system'
 import type { TerminalDataPayload } from '@shared/terminal'
 import {
   IPC,
@@ -88,6 +89,8 @@ const api: ApiBridge = {
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getTokenTier: () => ipcRenderer.invoke(IPC.tokenTierGet),
   setTokenTier: (tier: TokenSaverTier) => ipcRenderer.invoke(IPC.tokenTierSet, tier),
+  getSystem: () => ipcRenderer.invoke(IPC.systemGet),
+  setSystem: (patch: Partial<SystemSettings>) => ipcRenderer.invoke(IPC.systemSet, patch),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
   attachFile: () => ipcRenderer.invoke(IPC.attachFile),
   attachPath: (pathOrRel) => ipcRenderer.invoke(IPC.attachPath, pathOrRel),
