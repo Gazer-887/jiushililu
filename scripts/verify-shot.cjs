@@ -605,7 +605,7 @@ const STUBS = {
   ],
   'permission:get': () => 'write',
   'permission:set': () => 'write',
-  // 省 token 档位：set 回显传入值（与真主进程一致，界面拿返回值更新显示，故 mock 不存状态）
+  // Token Saver 档位：set 回显传入值（与真主进程一致，界面拿返回值更新显示，故 mock 不存状态）
   'token-tier:get': () => 'balanced',
   'token-tier:set': (tier) => tier,
   // 系统集成（plan7 批 F1）：set 记流水并真的改存根状态 —— 与真主进程一致（界面拿返回值回显）
@@ -2732,6 +2732,15 @@ app.whenReady().then(async () => {
       const host = document.querySelector('.tm-host');
       const rows = document.querySelector('.tm-host .xterm-rows');
       const span = rows ? rows.querySelector('span') : null;
+      // ⚠️ 底色不在 .xterm-rows 上 —— 它在 .xterm-screen（xterm 把主题背景画在这一层）。
+      //    早先断言读 rows.backgroundColor，恒得 rgba(0,0,0,0)（透明），于是这条断言**必红且没诊断力**：
+      //    它抓的是"取错了节点"，不是"配色对不对"。故这里显式取 screen，并回传二者便于日后排障。
+      const screen = document.querySelector('.tm-host .xterm-screen');
+      // ⚠️⚠️ 底色真正的落点（2026-09-13 用树遍历查明）：.xterm-scrollable-element。
+      //    踩坑记：先取 .xterm-rows（透明）、再改取 .xterm-screen（还是透明），两条都恒红。
+      //    教训：xterm 的 DOM 层级是 terminal > xterm-viewport / xterm-scrollable-element > xterm-screen > xterm-rows，
+      //    主题底色画在**带滚动的那一层**上；写断言前先把树打出来看，别猜。
+      const scroller = document.querySelector('.tm-host .xterm-scrollable-element');
       const cs = (el) => { if (!el) return null; const c = getComputedStyle(el); return { color: c.color, background: c.backgroundColor, whiteSpace: c.whiteSpace, display: c.display, verticalAlign: c.verticalAlign }; };
       return {
         hasPanel: !!document.querySelector('.tm-panel'),
@@ -2743,6 +2752,8 @@ app.whenReady().then(async () => {
         status: document.querySelector('.tm-status')?.textContent?.trim() ?? null,
         shell: document.querySelector('.tm-shell')?.textContent?.trim() ?? null,
         rowsStyle: cs(rows),
+        screenStyle: cs(screen),
+        scrollerStyle: cs(scroller),
         spanStyle: cs(span),
         // ⚠️ 锚定直接子节点：面板里有两个 .tm-note，裸 querySelector('.tm-note') 拿的是文档序第一个
         note: document.querySelector('.tm-panel > .tm-note')?.textContent?.trim() ?? null
@@ -2846,13 +2857,21 @@ app.whenReady().then(async () => {
   // ⚠️ 这一条最容易静默坏掉：xterm 运行时插 <style>，被生产 CSP 拒掉后字会变成背景色（什么都看不见）、
   //    white-space 从 pre 掉回 normal —— 而页面照样渲染得出来，“元素在不在”抓不到它。判据必须落在计算样式上、
   //    钉住主题常量（期望色与 TerminalPanel.tsx 的 THEME_* 同源、改配色要同步改；只断言“前景 ≠ 背景”近乎恒真）。
-  const themeFg = termState.dataTheme === 'ink' ? 'rgb(232, 230, 227)' : 'rgb(43, 43, 40)'
+  // 2026-09-13 用户定调**对调**：经典 → 纯黑底白字；水墨 → 白盖黑（墨字纸底）。
+  // 故这里的期望值也跟着对调，否则门禁会挡住这次有意的配色变更（它本来就该挡住无意的变更）。
+  const themeFg = termState.dataTheme === 'ink' ? 'rgb(43, 43, 40)' : 'rgb(232, 230, 227)'
   checkTrue('**终端样式真的生效**（字色 = 当前主题的前景色、white-space:pre、span 是 inline-block）',
     termState.rowsStyle?.color === themeFg &&
       termState.rowsStyle?.whiteSpace === 'pre' &&
       termState.spanStyle?.display === 'inline-block',
     { theme: termState.dataTheme, expect: themeFg, rows: termState.rowsStyle, span: termState.spanStyle })
-
+  // 底色也要钉 —— 只钉前景色的话，"把两套主题的背景色写反"这类错误照样全绿
+  const themeBg = termState.dataTheme === 'ink' ? 'rgb(251, 250, 247)' : 'rgb(28, 28, 26)'
+  // 从 `.xterm-scrollable-element` 取（xterm 把主题底色画在带滚动的那一层；rows/screen 都是透明的）
+  const scrollerBg = termState.scrollerStyle?.background
+  checkTrue('终端底色跟着主题走（经典=墨底 / 水墨=纸底），不是两套都一个色',
+    scrollerBg === themeBg,
+    { theme: termState.dataTheme, expect: themeBg, actual: scrollerBg, rowsBg: termState.rowsStyle?.background })
   checkTrue('**样式类 CSP 违规为 0**（`style-src-elem` 与 `style-src-attr` 两档都放行了）',
     cspViolations.filter((m) => /Refused to apply inline style/i.test(m)).length === 0,
     cspViolations.filter((m) => /Refused to apply inline style/i.test(m)).slice(0, 3))
@@ -2937,10 +2956,10 @@ app.whenReady().then(async () => {
     { termStartCalls, termStartCallsBefore, termHasSession })
   termPermission = 'write' // 收尾：把门禁的存根状态还原，免得影响后面段落
 
-  // ── 省 token 档位：档位卡片与权限档同屏 —— 一律用 [aria-label="省 token 档位"] 限定范围查（.choice-item 会把权限档也捞进来）──
+  // ── Token Saver 档位：档位卡片与权限档同屏 —— 一律用 [aria-label="Token Saver 档位"] 限定范围查（.choice-item 会把权限档也捞进来）──
   const tierBefore = await win.webContents.executeJavaScript(`
     (() => {
-      const group = document.querySelector('[aria-label="省 token 档位"]');
+      const group = document.querySelector('[aria-label="Token Saver 档位"]');
       if (!group) return { found: false };
       return {
         found: true,
@@ -2949,14 +2968,14 @@ app.whenReady().then(async () => {
       };
     })()
   `)
-  checkTrue('设置页有「省 token 档位」一栏，四档都在（土豪/极致/平衡/轻量）',
+  checkTrue('设置页有「Token Saver」一栏，四档都在（土豪/极致/平衡/轻量）',
     tierBefore.found && tierBefore.items.join('/') === '土豪/极致/平衡/轻量', tierBefore)
   checkTrue('默认落在**平衡**档（用户定调的默认，不是界面随手编的）',
     tierBefore.checked === '平衡', tierBefore)
 
   await win.webContents.executeJavaScript(`
     (() => {
-      const group = document.querySelector('[aria-label="省 token 档位"]');
+      const group = document.querySelector('[aria-label="Token Saver 档位"]');
       const btn = group && Array.from(group.querySelectorAll('.choice-item'))
         .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '轻量');
       if (btn) btn.click();
@@ -2966,7 +2985,7 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 500))
   const tierAfter = await win.webContents.executeJavaScript(`
     (() => {
-      const group = document.querySelector('[aria-label="省 token 档位"]');
+      const group = document.querySelector('[aria-label="Token Saver 档位"]');
       if (!group) return null;
       return group.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null;
     })()
@@ -3919,12 +3938,43 @@ app.whenReady().then(async () => {
         "]; if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } })()"
     )
 
-  /** 按 **id** 读某一张提问卡（待答 / 只读同一把尺子：只读态靠 done 字段与"按钮归零"判定） */
-  const readAskCardById = async (id) =>
+  /** 展开某张已答卡的折叠头（**必须独立成一次 executeJavaScript**）
+   *  ⚠️ 血泪（2026-09-13）：早先把 `foldHead.click()` 和"读 DOM"写在同一个 executeJavaScript 里，
+   *     点完立刻同步读 —— React 还没重渲染，`aria-expanded` 恒为 false、`.ask-done-body` 恒不存在。
+   *     症状是三条"展开后…"的断言全红，**但功能本身是好的**（假红，方向反了：它冤枉了产品代码）。
+   *     故这里拆成两步：本函数只负责点 + 等重渲染；读取交给下面的 readAskCardById。
+   *  另：返回 `folded` 供断言核对"点之前确实是折叠的"，否则卡本来就是展开态，这一步等于没点、断言恒绿。 */
+  const expandAskCard = async (id) => {
+    const clicked = await win.webContents.executeJavaScript(`
+      (() => {
+        const card = document.querySelector('.ask-card[data-ask-id="${id}"]');
+        if (!card) return { clicked: false, reason: 'no-card' };
+        const head = card.querySelector('.ask-fold-head');
+        if (!head) return { clicked: false, reason: 'no-fold-head' };
+        const before = head.getAttribute('aria-expanded') === 'true';
+        if (!before) head.click();
+        return { clicked: !before, reason: before ? 'already-open' : 'clicked' };
+      })()
+    `)
+    // 等 React 提交 + 浏览器把新节点插进版面（一帧不够稳，给足 250ms）
+    if (clicked.clicked) await new Promise((r) => setTimeout(r, 250))
+    return clicked
+  }
+
+  /** 按 **id** 读某一张提问卡（待答 / 只读同一把尺子：只读态靠 done 字段与"按钮归零"判定）
+   *  ⚠️ 已答卡**默认折叠**（2026-09-13 起）：详情（选项行 / 自填文字 / 说明）只在展开态渲染。
+   *     故读展开态要先 await expandAskCard(id)**（独立一步，不能塞进这里）**，再调 readAskCardById。
+   *     **不这么做而直接放宽断言（比如删掉 answerText 那几条）就等于把留痕的哨兵撤了**：
+   *     将来谁把展开态弄坏，界面上"我写了什么"消失，而门禁全绿。 */
+  const readAskCardById = async (id, expand = false) =>
     win.webContents.executeJavaScript(`
       (() => {
         const card = document.querySelector('.ask-card[data-ask-id="${id}"]');
         if (!card) return { shown: false };
+        const foldHead = card.querySelector('.ask-fold-head');
+        const wasFoldable = !!foldHead;
+        // ⚠️ expand=true 时这里**只**用来兜底（正常情况下调用方已 await expandAskCard）。
+        //    塞进同一次读取里是不行的：React 未提交，读到的还是折叠态。故这里显式不点，只观察。
         const rows = Array.from(card.querySelectorAll('.ask-row'));
         const box = (el) => { const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };
         const composer = document.querySelector('.console-input');
@@ -3963,7 +4013,13 @@ app.whenReady().then(async () => {
           picked: picked.length,
           pickedText: picked.length > 0 ? (picked[0].textContent || '').trim() : '',
           answerText: (card.querySelector('.ask-answer-text') || { textContent: '' }).textContent.trim(),
-          note: ((card.querySelector('.ask-note') || { textContent: '' }).textContent || '').trim()
+          note: ((card.querySelector('.ask-note') || { textContent: '' }).textContent || '').trim(),
+          // —— 折叠态三个字段（2026-09-13 新增）——
+          hasFoldHead: wasFoldable,
+          foldOpen: wasFoldable ? foldHead.getAttribute('aria-expanded') === 'true' : null,
+          summary: (card.querySelector('.ask-summary') || { textContent: '' }).textContent.trim(),
+          // 折叠态的高度 —— 用来验"收起确实把卡片压矮了"（不是只改了个属性）
+          cardH: Math.round(cr.height)
         };
       })()
     `)
@@ -4058,8 +4114,13 @@ app.whenReady().then(async () => {
     freeSubmit = { ok: true, enabled }
   }
   await new Promise((r) => setTimeout(r, 400))
+  // 自填作答后：**默认折叠** → 展开后能看到"我写了什么"
+  // ⚠️ 2026-09-13 起已答卡默认折叠，故这里分两段验：折叠态（摘要对、详情不渲染）+ 展开态（留痕还在）
+  const askedFreeFolded = await readAskCardById('ask-probe-1')
+  // ⚠️ 先独立点开 + 等重渲染，再读（同一同步块里点完就读 = 读到折叠态，三条断言会假红）
+  const freeExpandAct = await expandAskCard('ask-probe-1')
   const askedFree = await readAskCardById('ask-probe-1')
-  console.log('ASK_FREE=' + JSON.stringify({ ...freeTyped, ...freeSubmit, sent: askResponses, card: askedFree }))
+  console.log('ASK_FREE=' + JSON.stringify({ ...freeTyped, ...freeSubmit, sent: askResponses, folded: askedFreeFolded, card: askedFree }))
   checkTrue(
     '框里有字 → 「提交」不再是禁用态（不是写完点不动）',
     freeSubmit.ok === true && freeSubmit.enabled === true,
@@ -4075,12 +4136,23 @@ app.whenReady().then(async () => {
     askResponses[0]
   )
   checkTrue(
-    '自填作答后卡片转只读，并**留住"我写了什么"**（那段字原样显示在卡上）',
-    askedFree.done === true &&
-      askedFree.buttonCount === 0 &&
-      askedFree.title === '已回答' &&
-      askedFree.answerText.includes(FREE_TEXT),
-    askedFree
+    '自填作答后卡片**默认折叠**：只剩一行摘要（自填原文），详情不渲染（选项行 = 0）',
+    askedFreeFolded.done === true &&
+      askedFreeFolded.hasFoldHead === true &&
+      askedFreeFolded.foldOpen === false &&
+      askedFreeFolded.rowCount === 0 &&
+      askedFreeFolded.summary.includes(FREE_TEXT),
+    askedFreeFolded
+  )
+  checkTrue(
+    '展开折叠头 → **留住"我写了什么"**（那段字原样显示在卡上）+ 四个选项行回来了',
+    freeExpandAct.clicked === true &&
+      askedFree.hasFoldHead === true &&
+      askedFree.foldOpen === true &&
+      askedFree.answerText.includes(FREE_TEXT) &&
+      askedFree.rowCount === 3 &&
+      askedFree.buttonCount === 0,
+    { act: freeExpandAct, card: askedFree }
   )
 
   // —— 多选：勾选**先不作答**，点「提交」才发（此时当前问题是排队的那条 ASK2）——
@@ -4107,8 +4179,12 @@ app.whenReady().then(async () => {
   const submitPos2 = await centerOf('.ask-submit')
   if (rbInputReady && submitPos2) await realClick(submitPos2.x, submitPos2.y, 'left')
   await new Promise((r) => setTimeout(r, 400))
+  // 多选卡：先验折叠态，再展开验"选中的那一行被标出来了"
+  const askedMultiFolded = await readAskCardById('ask-probe-2')
+  // ⚠️ 同上：展开必须独立成一步并等待重渲染，否则读到的还是折叠态
+  const multiExpandAct = await expandAskCard('ask-probe-2')
   const askedMulti = await readAskCardById('ask-probe-2')
-  console.log('ASK_MULTI=' + JSON.stringify({ sent: askResponses, card: askedMulti }))
+  console.log('ASK_MULTI=' + JSON.stringify({ sent: askResponses, folded: askedMultiFolded, card: askedMulti }))
   check(
     '点「提交」→ stub 收到第二条回执，且 values **就是那个选项的值**（不是 label、不是第一个）',
     [askResponses.length, askResponses[1] && askResponses[1].id, askResponses[1] && askResponses[1].values],
@@ -4121,19 +4197,33 @@ app.whenReady().then(async () => {
     askResponses[1]
   )
   checkTrue(
-    '答完卡片**转只读**：按钮一个不剩，且把选中的那一行标了出来',
-    askedMulti.done === true &&
+    '多选作答后折叠：摘要**就是选中的那个选项文案**（不是"已答复"这种空话）',
+    askedMultiFolded.done === true &&
+      askedMultiFolded.foldOpen === false &&
+      askedMultiFolded.rowCount === 0 &&
+      askedMultiFolded.summary.includes('补测试'),
+    askedMultiFolded
+  )
+  checkTrue(
+    '展开后：**按钮一个不剩**（转只读），且把选中的那一行标了出来',
+    multiExpandAct.clicked === true &&
       askedMulti.buttonCount === 0 &&
       askedMulti.rowCount === 3 &&
       askedMulti.picked === 1 &&
       askedMulti.pickedText.includes('补测试'),
-    askedMulti
+    { act: multiExpandAct, card: askedMulti }
   )
 
   // 只读之后再点同一处：不该产生新回执（重复回执会让"已经定下的结论"被改写）
-  if (rbInputReady && multiOpt) await realClick(multiOpt.x, multiOpt.y, 'left')
+  // ⚠️ 必须先**展开**再点：折叠态那个坐标上根本没有选项行，点它是"点空气"——
+  //    回执数当然不变，于是这条会**假绿**（本仓已吃过一次"探针点空气"的亏）。
+  const multiOptAgain = await (async () => {
+    await expandAskCard('ask-probe-2') // 展开（同样的两步走：点 → 等重渲染）
+    return centerOfNth('button.ask-row', 1)
+  })()
+  if (rbInputReady && multiOptAgain) await realClick(multiOptAgain.x, multiOptAgain.y, 'left')
   await new Promise((r) => setTimeout(r, 300))
-  check('只读卡片再点同一处 → 回执数**没有变化**', askResponses.length, 2)
+  check('只读卡片（已展开）再点同一处 → 回执数**没有变化**', askResponses.length, 2)
 
   // —— 单选：点整行**直接作答**（不需要再点「提交」）——
   win.webContents.send('ask:request', ASK3)
@@ -4141,17 +4231,29 @@ app.whenReady().then(async () => {
   const singleOpt = await centerOfNth('button.ask-row', 0)
   if (rbInputReady && singleOpt) await realClick(singleOpt.x, singleOpt.y, 'left')
   await new Promise((r) => setTimeout(r, 400))
+  const askedSingleFolded = await readAskCardById('ask-probe-3')
+  const singleExpandAct = await expandAskCard('ask-probe-3')
   const askedSingle = await readAskCardById('ask-probe-3')
-  console.log('ASK_SINGLE=' + JSON.stringify({ sent: askResponses, card: askedSingle }))
+  console.log('ASK_SINGLE=' + JSON.stringify({ sent: askResponses, folded: askedSingleFolded, card: askedSingle }))
   check(
     '单选：点一下整行 → **立即作答**（values = 那一行的值）',
     [askResponses.length, askResponses[2] && askResponses[2].id, askResponses[2] && askResponses[2].values],
     [3, 'ask-probe-3', ['opt-1']]
   )
   checkTrue(
-    '只读卡片把**这一行**标了出来（留住"我选了什么"）',
-    askedSingle.done === true && askedSingle.picked === 1 && askedSingle.pickedText.includes('水墨'),
-    askedSingle
+    '单选作答后折叠：摘要 = 选中项文案（「水墨」那条）',
+    askedSingleFolded.done === true &&
+      askedSingleFolded.foldOpen === false &&
+      askedSingleFolded.summary.includes('水墨'),
+    askedSingleFolded
+  )
+  checkTrue(
+    '展开后把**这一行**标了出来（留住"我选了什么"）',
+    singleExpandAct.clicked === true &&
+      askedSingle.done === true &&
+      askedSingle.picked === 1 &&
+      askedSingle.pickedText.includes('水墨'),
+    { act: singleExpandAct, card: askedSingle }
   )
 
   // —— 跳过本题：明确不答 ≠ 超时（回执走 `skip`，不是把空数组当脏值丢掉继续等）——
@@ -4175,6 +4277,28 @@ app.whenReady().then(async () => {
     '跳过后卡片转只读，且标题明说"已跳过本题"（不是"已回答"）',
     askedSkip.done === true && askedSkip.title === '已跳过本题' && askedSkip.picked === 0,
     askedSkip
+  )
+  // 折叠态：跳过没有"我选了什么"可摘要，故摘要位写「未作答」——**不能空着**（空着像加载失败）
+  checkTrue(
+    '跳过的卡折叠后：摘要写「未作答」（跳过没有选项可摘要，但位置不能空着）',
+    askedSkip.hasFoldHead === true &&
+      askedSkip.foldOpen === false &&
+      askedSkip.summary === '未作答' &&
+      askedSkip.rowCount === 0,
+    askedSkip
+  )
+  // 「全部清除」出口：用户反馈的原话是「无法关闭或收起」——这条验它真能收掉
+  const clearPos = await centerOf('.ask-clear')
+  if (rbInputReady && clearPos) await realClick(clearPos.x, clearPos.y, 'left')
+  await new Promise((r) => setTimeout(r, 300))
+  const afterClear = await win.webContents.executeJavaScript(
+    "(() => ({ cards: document.querySelectorAll('.ask-card').length, bar: !!document.querySelector('.ask-done-bar'), shown: !!document.querySelector('.ask-card[data-ask-id=\"ask-probe-4\"]') }))()"
+  )
+  console.log('ASK_CLEAR=' + JSON.stringify(afterClear))
+  checkTrue(
+    '点「全部清除」→ 已处理的卡片**真的消失**（不是只隐藏了清除条）',
+    afterClear.cards === 0 && afterClear.bar === false && afterClear.shown === false,
+    afterClear
   )
 
   // —— Markdown 轻编辑：三条边界各验一条 —— 用真鼠标（el.click() 只发 click、不发 mousedown，会绕过真故障）。

@@ -20,17 +20,12 @@ function loadXterm(): Promise<[XtermModule, FitModule]> {
   return xtermPromise
 }
 
-/** 终端配色 —— **跟着应用主题走**。⚠️ 不许写死一套墨色：本项目默认是**纸白浅色**，写死会让终端变成浅色界面正中嵌着的一块黑板。
- *  浅色对应**纸白底 + 墨字 + 朱砂光标**（与 ink 是同一套语义，只是纸墨对调）。 */
-const THEME_LIGHT = {
-  background: '#fbfaf7',
-  foreground: '#2b2b28',
-  cursor: '#a8342c',
-  cursorAccent: '#fbfaf7',
-  selectionBackground: '#dcd7cd'
-}
-
-const THEME_INK = {
+/** 终端配色 —— **跟着应用主题走**，且两套是**刻意对调**的（2026-09-13 用户定调）：
+ *  · 经典（`default`）→ **纯黑底 + 白字**（终端就该是这个样子，也是绝大多数人的肌肉记忆）
+ *  · 水墨（`ink`）   → **白盖黑**（纸白底 + 墨字），与水墨主题"墨分五色"的整体调子一致
+ *  ⚠️ 光标两套都用朱砂（#a8342c）—— 它是水墨体系里唯一允许出现的彩色，且只做点睛。
+ *  ⚠️ 别把这里改成"跟随系统深浅色"：终端配色跟的是**应用主题**，两者是两个独立的选择。 */
+const THEME_CLASSIC = {
   background: '#1c1c1a',
   foreground: '#e8e6e3',
   cursor: '#a8342c',
@@ -38,9 +33,17 @@ const THEME_INK = {
   selectionBackground: '#3a3a36'
 }
 
-/** `html[data-theme="ink"]` 才用墨色，其余（含未设置）一律纸白 */
-function themeFor(theme: string | undefined): typeof THEME_LIGHT {
-  return theme === 'ink' ? THEME_INK : THEME_LIGHT
+const THEME_INK = {
+  background: '#fbfaf7',
+  foreground: '#2b2b28',
+  cursor: '#a8342c',
+  cursorAccent: '#fbfaf7',
+  selectionBackground: '#dcd7cd'
+}
+
+/** `html[data-theme="ink"]` 用「白盖黑」，其余（含未设置）一律「纯黑」 */
+function themeFor(theme: string | undefined): typeof THEME_CLASSIC {
+  return theme === 'ink' ? THEME_INK : THEME_CLASSIC
 }
 
 /** 重放协议状态（跨渲染存活 —— 「重启终端」要在事件回调里改它）。⚠️ 必须是**对象**而不是几个 `let`：`boot()` 活在 effect 里、订阅回调活在事件里，用对象引用才不会有"各改各的副本"。 */
