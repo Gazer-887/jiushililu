@@ -4,12 +4,10 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ATTACH_LIMIT, readAttachment } from '@main/workspace-fs'
 
-// 附件读取（③ 文件拖进会话 / 文件选择框 **共用**这一份）
+// 附件读取（③ 文件拖进会话 / 文件选择框 **共用**这一份；两入口只差"路径从哪来"）
 //
-// 为什么值得单独测：两个入口只差"路径从哪来"，边界规则只在这里定义一次。
-// 重点钉**两层边界的差别** —— 绝对路径（主人在系统里明确拖进来的）放行并标记，
-// 相对路径（自家文件树给的）越界一律拒绝。这条线被放松过一次（2026-09-12 用户定案），
-// 所以更要有测试把它钉住：**放松的是哪一层、哪一层不许动**，必须写死在断言里。
+// ⚠️ 两层边界待遇不同，**不许一起放松**：绝对路径（主人显式拖进来的）放行并打 outside 标记，
+// 相对路径（自家文件树给的）越界一律拒绝 —— 这条线被放松过一次，必须由断言钉住。
 
 describe('readAttachment（路径 → 附件）', () => {
   let root = ''
@@ -52,8 +50,7 @@ describe('readAttachment（路径 → 附件）', () => {
   })
 
   it('**工作区外的文件放行，但要标出来**（2026-09-12 用户定案）', async () => {
-    // 依据：把一份文件拖进会话是**主人的显式动作** —— 和粘贴一段文字同级。
-    // 拦下来保护不到任何东西，只会让人觉得"拖不进去"（旧版就是这么被报上来的）。
+    // 拖进会话是主人的显式动作（同粘贴）—— 拦下保护不到任何东西，只会让人觉得"拖不进去"
     const outside = join(outsideDir, 'secret.txt')
     const a = await readAttachment(root, outside)
     expect(a.content).toBe('工作区外的东西')

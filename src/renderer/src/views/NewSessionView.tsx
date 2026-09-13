@@ -3,11 +3,10 @@ import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
 import InputConsole from '../components/InputConsole'
 
-// 新建任务页（P2）：极简初始页——一个输入控制台 + 技能勾选。
-// 设计原则（用户要求）：技能 / 子 Agent 不直接摆出来，收进「＋」按需选取。
-// 输入框与对话页共用同一组件（InputConsole），形态完全一致。
+// 新建任务页（P2）：一个输入控制台 + 技能勾选 —— 技能 / 子 Agent 不直接摆出来，收进「＋」按需选取（用户要求）。
+// 输入框与对话页共用 InputConsole，形态完全一致。
 
-/** 附件内容 → 上下文块（与对话页同规则） */
+/** 附件 → 上下文块：与对话页同一套规则（两边各一份，改一处要同步另一处） */
 function composeWithAttachments(text: string, attachments: Attachment[]): string {
   if (attachments.length === 0) return text
   const blocks = attachments
@@ -25,7 +24,7 @@ export default function NewSessionView(): JSX.Element {
   const [picked, setPicked] = useState<string[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
-  // 「文件拖进会话」的落点 = 整块新建任务页（不是只有输入框那一小块）
+  // 拖拽落点 = 整块新建任务页，不只是输入框那一小块
   const pageRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -59,8 +58,7 @@ export default function NewSessionView(): JSX.Element {
 
   return (
     <div className="new-task" ref={pageRef}>
-      {/* 居中容器：内容整体垂直水平居中（用户 2026-09-12 美学偏好）。
-          用 margin:auto 而非 justify-content:center —— 后者在内容高于容器时会裁掉顶部且滚不上去。 */}
+      {/* 居中容器：用 margin:auto 而非 justify-content:center —— 后者在内容高于容器时会裁掉顶部且滚不上去 */}
       <div className="new-task-center">
         <div className="new-task-hero">
           <h1>行百里者半九十</h1>

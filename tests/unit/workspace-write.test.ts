@@ -5,9 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { createWorkspaceWriter } from '@main/workspace-write'
 
 // 统一写入服务（plan7 批 A2）：界面与 Agent 共用同一条写入路径。
-// 重点覆盖三件事：① 边界（越界一律拒绝，且不留快照）
-//                ② 快照时机（必须发生在真正落盘**之前**）
-//                ③ 删除走**回收站**（不是硬删）
+// 三条不能破的规矩：越界一律拒且不留快照、快照必须发生在真正落盘**之前**、删除走**回收站**不硬删。
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'jsl-write-'))

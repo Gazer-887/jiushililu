@@ -9,14 +9,11 @@ import {
 } from '@shared/goal'
 import { createLogger } from '../log'
 
-// 目标的落盘（plan12）。
-//
-// 存在 `userData/goals.json`，一条目标带 `conversationId` —— **目标是会话的属性**，
+// 目标的落盘（plan12）。存在 `userData/goals.json`，一条目标带 `conversationId` —— **目标是会话的属性**，
 // 所以"切回那条会话还看得见它"是自然结果，不用另建索引（plan11 给的会话身份在这儿第二次派上用场）。
 //
-// 两条纪律：
-//   ① **读盘逐条校验**：坏条目丢掉并计数 + 留痕，绝不整表崩（`@shared/goal` 的 normalizeGoals）
-//   ② **非法状态转移带着理由被拒**，而不是静默不动 —— 界面据此说人话
+// 两条纪律：① **读盘逐条校验**：坏条目丢掉并计数 + 留痕，绝不整表崩（`@shared/goal` 的 normalizeGoals）；
+// ② **非法状态转移带着理由被拒**，而不是静默不动 —— 界面据此说人话。
 
 interface StoredGoals {
   goals?: unknown
@@ -44,7 +41,7 @@ export function listGoals(conversationId: string): Goal[] {
 }
 
 /**
- * 建一个目标。`createdBy` 是 `user` 或 Agent 名 —— **内核也能自建目标**（这是计划里的要求：
+ * 建一个目标。`createdBy` 是 `user` 或 Agent 名 —— **内核也能自建目标**（计划里的要求：
  * "这件事我打算持续做"不该只有用户能说）。
  */
 export function createGoalFor(input: {

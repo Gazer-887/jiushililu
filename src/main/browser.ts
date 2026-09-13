@@ -2,13 +2,10 @@ import { WebContentsView, BrowserWindow } from 'electron'
 import type { BrowserBounds, BrowserState } from '@shared/ipc'
 
 // 内置浏览器（P2 右抽屉「浏览器」）：**真浏览器**，不是占位。
-//
-// 方案说明：Electron 33 已移除 <webview> 标签，改用 WebContentsView ——
-// 一个真实的 Chromium 视图，由主进程管理、挂在主窗口上，按渲染进程给的矩形定位。
-//
-// **关键能力：Agent 可直接操控它**——同一份 WebContents 既供用户点击浏览，
-// 也供内核的浏览器工具（browser_navigate / browser_read_page / browser_click / browser_type）
-// 驱动。用户看到的就是 Agent 在操作的那个页面，不是两个世界。
+// 方案：Electron 33 已移除 <webview> 标签，改用 WebContentsView —— 一个真实 Chromium 视图，
+// 由主进程管理、挂在主窗口上，按渲染进程给的矩形定位。
+// **关键能力：Agent 可直接操控它** —— 同一份 WebContents 既供用户点击浏览，也供内核的浏览器工具
+// （browser_navigate / browser_read_page / browser_click / browser_type）驱动，用户看到的就是 Agent 在操作的那个页面。
 
 let view: WebContentsView | null = null
 let hostWindow: BrowserWindow | null = null

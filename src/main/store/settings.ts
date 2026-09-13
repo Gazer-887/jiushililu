@@ -10,22 +10,17 @@ interface StoredSettings extends ModelSettings {
   /** ⚠️ **遗留字段**：多模型之前"整个应用只有一把 Key"用的就是它。迁移时认领走（见 store/models.ts） */
   apiKeyEncrypted?: string
   /**
-   * **档案 id → 密文**（多模型：每个模型一把 Key）。
-   *
-   * 为什么放在这个文件而不是 `models.json`：红线是"Key 一个字节都不进模型档案文件"，
-   * 而 settings.json 一直是 Key 的唯一落脚点（只存 safeStorage 密文）。
-   * 另一个原因同样重要：**同一个 json 只能有一个写入者** —— 两个 electron-store 实例
-   * 各写各的会互相覆盖（本项目踩过"last write wins 静默丢数据"）。
+   * **档案 id → 密文**（多模型：每个模型一把 Key）。放这个文件而不是 `models.json`：红线是"Key 一个字节都不进
+   * 模型档案文件"，而 settings.json 一直是 Key 的唯一落脚点；且**同一个 json 只能有一个写入者** —— 两个
+   * electron-store 实例各写各的会互相覆盖（本项目踩过"last write wins 静默丢数据"）。
    */
   apiKeysEncrypted?: Record<string, string>
   /** 访问权限档（D-032：能力归模型，权限归人） */
   permissionPreset?: PermissionPreset
   /**
-   * 省 token 档位（plan8 R9.1 §七②）。
-   *
-   * 为什么放**全局设置**而不是模型档案：用户定调"**档位是全局的**，不做会话级覆盖"
-   * ——它是"你更在乎能力还是在乎钱"的偏好，跟用哪条连接无关。
-   * 缺字段 = 老配置 → 按 `DEFAULT_TOKEN_TIER`（平衡）回落，**不写回盘**（写回会让"默认"变成"显式选择"）。
+   * 省 token 档位（plan8 R9.1 §七②）。放**全局设置**而非模型档案：用户定调"**档位是全局的**，不做会话级覆盖"
+   * —— 它是"你更在乎能力还是在乎钱"的偏好，跟用哪条连接无关。缺字段 = 老配置 → 按 `DEFAULT_TOKEN_TIER`（平衡）
+   * 回落，**不写回盘**（写回会让"默认"变成"显式选择"）。
    */
   tokenSaverTier?: TokenSaverTier
 }
@@ -43,10 +38,8 @@ export function setPermissionPreset(preset: PermissionPreset): PermissionPreset 
 }
 
 /**
- * 当前**省 token 档位**（plan8 R9.1 §七②）。
- *
- * 认不出来的值（老配置 / 手改坏的 json）**回落到默认档**，不抛错 ——
- * 配置坏掉时让应用照常能跑，比"启动就炸"重要；而回落方向一律是"更不激进"的那档。
+ * 当前**省 token 档位**（plan8 R9.1 §七②）。认不出来的值（老配置 / 手改坏的 json）**回落到默认档**、不抛错 ——
+ * 配置坏掉时让应用照常能跑比"启动就炸"重要；且回落方向一律是"更不激进"的那档。
  */
 export function getTokenTier(): TokenSaverTier {
   const raw = store.store.tokenSaverTier
@@ -77,10 +70,8 @@ function decryptKey(stored: StoredSettings): string {
 }
 
 // ── 多模型（plan7 F5）：每个档案一把 Key ──────────────────────────────────
-//
-// 落点只有这一个文件（红线：Key 不进 models.json），密文一律走 safeStorage。
-// 这一组函数**只做存取**；"哪把 Key 归哪个档案""旧的 Key 归谁"由 store/models.ts 决定
-// —— 那些是**可判定**的业务判断，放在能被单测覆盖的地方。
+// 落点只有这一个文件（红线：Key 不进 models.json），密文一律走 safeStorage。这一组函数**只做存取**；
+// "哪把 Key 归哪个档案""旧的 Key 归谁"由 store/models.ts 决定 —— 那些是**可判定**的业务判断，该放在能被单测覆盖的地方。
 
 export function getProfileKey(profileId: string): string {
   const enc = store.store.apiKeysEncrypted?.[profileId]
@@ -148,7 +139,6 @@ export function readLegacyModelSettings(): ModelSettings {
   }
 }
 
-// ⚠️ 这几个老名字（`getSettingsView` / `getDecryptedApiKey` / `hasApiKey` / `saveSettings` /
-// `setModel`）**已经搬去 store/models.ts** —— 多模型之后它们的语义是"作用于**当前档案**"，
-// 而档案与 Key 的对应关系只有那边知道。调用方改一行 import 即可，其余语义完全不变。
-// 这里**不做 re-export**：两个模块会互相 import，循环依赖下 re-export 拿到 undefined 的时机很难说。
+// ⚠️ 这几个老名字（`getSettingsView` / `getDecryptedApiKey` / `hasApiKey` / `saveSettings` / `setModel`）**已经搬去
+// store/models.ts** —— 多模型之后它们的语义是"作用于**当前档案**"，而档案与 Key 的对应关系只有那边知道。
+// 这里**不做 re-export**：两个模块会互相 import，循环依赖下 re-export 拿到 undefined 的时机很难说（调用方改一行 import 即可）。

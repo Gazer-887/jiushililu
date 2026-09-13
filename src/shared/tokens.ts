@@ -1,4 +1,4 @@
-// token 估算的**单一真相源**（主进程上下文裁剪与渲染进程用量显示共用，避免两处算法漂移）。
+// token 估算的**单一真相源**（主进程裁剪与渲染端用量显示共用，防两处算法漂移）。
 // 口径：CJK 按 1 token/字（保守上限），其余按 4 字符/token。
 
 export function estimateTokens(text: string): number {
@@ -12,7 +12,7 @@ export function estimateTokens(text: string): number {
   return Math.ceil(cjk + rest / 4)
 }
 
-/** 单条消息的估算（含 role 与工具调用的固定开销） */
+/** 单条消息的估算（含 role 与工具调用的固定开销，故在正文之外 +4） */
 export function estimateMessageTokens(content: string, extraJson = ''): number {
   return estimateTokens(content) + estimateTokens(extraJson) + 4
 }

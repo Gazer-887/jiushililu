@@ -1,11 +1,8 @@
 import type { ToolCall } from '@shared/agent'
 
 // 流式工具调用累积器（D-032 核心）：工具调用的参数是**分片到达**的，必须按 index 归位拼接。
-//
-// 两家协议的分片形态不同：
-//   OpenAI   — delta.tool_calls[{index, id?, function:{name?, arguments?}}]，首片带 id/name，后续片只带 arguments
-//   Anthropic— content_block_start(tool_use: id/name) 开启，随后 content_block_delta(input_json_delta.partial_json) 追加
-//
+// 两家协议形态不同：OpenAI 用 `delta.tool_calls[{index, id?, function:{name?, arguments?}}]`（首片带 id/name、
+// 后续片只带 arguments）；Anthropic 用 `content_block_start(tool_use)` 开启 + `content_block_delta(partial_json)` 追加。
 // 纯逻辑、零依赖，可直接单测（这是本批正确性风险最高的地方）。
 
 export interface ToolCallDraft {
@@ -55,10 +52,7 @@ export class ToolCallAccumulator {
     return this.drafts.size
   }
 
-  /**
-   * 收尾产出：按 index 升序返回；丢弃没有名字的残缺项（协议异常时不产生半截调用）。
-   * 参数缺失时给空对象——工具侧会收到 {}，由其自身校验报错，比吞掉调用更可诊断。
-   */
+  /** 收尾产出：按 index 升序；丢弃没有名字的残缺项（协议异常时不产生半截调用）；参数缺失给 `{}` 交给工具侧报错 */
   finish(): ToolCall[] {
     return [...this.drafts.entries()]
       .sort((a, b) => a[0] - b[0])

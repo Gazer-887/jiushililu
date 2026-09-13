@@ -1,16 +1,9 @@
 /**
- * 视觉验证脚本（可复用）：启动构建产物 → 量取尺寸 → 截图 → 退出。
- * 目的：**真实渲染验证**（不靠猜），用于布局类改动回归。
- *
- * 用法：先 `npm run build`，再 `node scripts/verify-shot.cjs`
- * 产出：verify-wide.png / verify-narrow.png / verify-settings.png
- *
- * 覆盖：
- *   ① 对话页输入控制台的宽度自适应（宽窗 / 窄窗）
- *   ② 设置页「故障排查」区（plan8 R2）
- *
- * 说明：本脚本独立于应用主进程，故需自行 stub 全部 IPC handler——
- * 数据返回空值即可，本脚本验证的是**布局几何**，不是数据流。
+ * **真实渲染门禁**：启动构建产物 → 量几何尺寸 → 截图 → 退出，用于布局类改动回归（不靠猜）。
+ * 用法：先 `npm run build`，再 `node scripts/verify-shot.cjs`；产出 verify-*.png。
+ * 本脚本独立于应用主进程，故自行 stub 全部 IPC handler —— 数据返回空值即可，
+ * 它验的是**布局几何**，不是数据流。
+ * ⚠️ 嵌入片段（`executeJavaScript` 的模板字符串）里不许出现反引号，见下面的自检函数。
  */
 const { app, BrowserWindow, ipcMain, protocol } = require('electron')
 const {
@@ -28,19 +21,11 @@ const ROOT = process.cwd()
 
 /**
  * 自检：嵌入片段（`executeJavaScript` 的模板字符串）里**不许出现反引号**。
- *
- * 为什么非要有这个自检 —— 这是本项目**第四次**栽在同一个坑里（2026-09-13 一天之内两次）：
- * 探针是"写在字符串里的 JS"，写注释时很自然会想用反引号去圈一个标识符，
- * **可那段字符串本身就是用反引号界定的** —— 一个反引号就把模板提前结束，
- * 后面那半句变成真代码（形如 （字符串）.fp —— textarea 这种），于是：
- *   · `node --check` **照样通过**（它是合法的 JS 表达式）
- *   · 只在运行时炸出 `ReferenceError: textarea is not defined`
- *   · 而报错行号指向**模板开头**，与真凶（某行注释里的反引号）毫不相干
- * 上次为此浪费了一轮完整的门禁（157 条断言跑出 103 条就崩）。
- *
- * 判据（精确、不会误报）：**模板字符串内部的注释行上出现反引号**。
- * 模板内部的任何反引号都必然提前结束模板，所以"注释里带反引号"永远是笔误，不可能是本意。
- * （正常写法：强调就用「」或直接裸写标识符。）
+ * ⚠️ 为什么必须装：模板串本身就用反引号界定 —— 注释里拿反引号圈一个标识符就会提前结束模板，
+ * 后半句变成真代码；而 `node --check` **照样通过**（那是合法表达式），只在运行时炸出
+ * `ReferenceError`，报错行号还指向**模板开头**，与真凶毫不相干。
+ * 判据：模板字符串内部的注释行上出现反引号即违规（模板内部任何反引号都必然提前结束模板，
+ * 不可能是本意）；强调请用「」或裸写标识符。
  */
 function selfCheckEmbeddedBackticks() {
   const lines = readFileSync(__filename, 'utf8').split('\n')
@@ -75,17 +60,12 @@ selfCheckEmbeddedBackticks()
 
 /**
  * 守卫：**构建产物是不是比源码旧**。
- *
- * 为什么非加不可（2026-09-13 亲身踩到）：本脚本加载的是 `out/`（构建产物），
- * 忘了 `npm run build` 就直接跑，它**不会报错**，只会拿着一份**旧界面**把那套断言全跑一遍 ——
- * 结果就是"新加的功能一条都不对"，长得**和真回归一模一样**：
- * 我那次 16 条新断言全红，`{files:0, withBtn:0}` 看着像是列表没渲染出来，
- * 真相是旧包里压根没有那些 DOM。差点照着假根因去改根本没坏的代码。
- *
- * 判据：`out/` 树里**最新的**那个文件，必须比 `src/` 里**最新的**源文件新。
- * （不盯单个文件比如 `index.html` —— 万一某次构建没重写它，就会变成永久假阳性，
- *   而假阳性守卫会被当成"门禁坏了"，最后被人关掉。用"整棵树最新"才稳。）
- * 逃生舱：确实要跑旧包时设 `SKIP_FRESH=1`（但那样出的结论不能当回归依据）。
+ * ⚠️ 忘了 `npm run build` 时本脚本不报错，只会拿一份**旧界面**把断言全跑一遍 ——
+ * 结果"新加的功能一条都不对"，长得**和真回归一模一样**（曾 16 条新断言全红，
+ * 真相是旧包里压根没有那些 DOM；照着假根因去改没坏的代码最亏）。
+ * 判据：`out/` 树里**最新的**文件必须比 `src/` 里**最新的**源文件新 —— 盯单个文件
+ * （如 `index.html`）会因"某次构建没重写它"变成永久假阳性，而假阳性守卫最后会被人关掉。
+ * 逃生舱：`SKIP_FRESH=1` 跑旧包（这样出的结论不能当回归依据）。
  */
 function assertBuildFresh() {
   if (process.env.SKIP_FRESH === '1') {
@@ -134,70 +114,49 @@ function assertBuildFresh() {
   console.log('FRESH_CHECK=ok')
 }
 assertBuildFresh()
-/**
- * 截图统一落这里 —— 用户要求「项目下的图片建档（Photo 目录）收录」：
- * 验证产出不该散在项目根（此前根目录堆过 17 张）。
- */
+/** 截图统一落 Photo/（用户要求"项目下的图片建档收录"）：验证产出不散在项目根 */
 const SHOTS = join(ROOT, 'Photo')
 mkdirSync(SHOTS, { recursive: true })
 const OUT = join(SHOTS, 'verify-shot.png')
 
-// 让 userData 独立，避免与已安装版本抢目录。
-//
-// ⚠️ **每次跑之前先清空**（2026-09-12 实测抓到的坑）：不清的话**连跑两遍结果不一样** ——
-//    第一遍结束后目录里留下了 Chromium 的 `Preferences` / `Cache`，
-//    第二遍的拖拽那一族探针会整片红（"文件行真拖得起来"之类 6 条），
-//    而**功能一点没坏**：换一个干净目录立刻 107/107 全绿。
-//    这种"跑第二遍就红"最危险的地方在于它长得跟**回归**一模一样 ——
-//    会让人去改根本没坏的代码。验证工具本身必须**可重复**，这是它的底线。
+// ⚠️ 每次跑之前**必须清空** userData：不清则连跑两遍结果不一样 —— 残留的 Chromium
+//    `Preferences` / `Cache` 会让拖拽那一族探针整片红（6 条），而功能一点没坏
+//    （换干净目录立刻 107/107 全绿）。这种"跑第二遍就红"长得和回归一模一样，
+//    会让人去改根本没坏的代码 —— 验证工具本身必须**可重复**，这是它的底线。
 const VERIFY_UD = join(ROOT, '.verify-userdata')
 try {
   rmSync(VERIFY_UD, { recursive: true, force: true })
 } catch (err) {
-  // 上一轮进程还占着目录（Windows 文件锁）→ 不阻断本次运行，但要说出来：
-  // 这一跑的结论可能受残留状态影响
+  // 上一轮进程还占着目录（Windows 文件锁）→ 不阻断本次运行，但结论可能受残留状态影响
   console.log(
     'VERIFY_UD_RESET_FAILED=' + (err && err.message ? err.message : String(err))
   )
 }
 app.setPath('userData', VERIFY_UD)
 
-// ⚠️ HTML 预览协议必须赶在 ready 之前注册（真应用里 `src/main/index.ts` 也是这个位置）——
+// ⚠️ HTML 预览协议必须赶在 ready 之前注册（真应用 `src/main/index.ts` 也是这个位置）——
 //    迟了协议拿不到 standard/secure 语义，相对路径解析不了，本段会整段红。
-//    这里**不 require 真实现**：verify-shot 是独立的 main 进程（只加载 out/renderer），
-//    真处理器在 out/main 里，拖进来会把整个应用启动一遍。
-//    所以下面是**契约副本**：策略字面量的真源在 `src/shared/html-preview.ts`，
-//    由 `tests/unit/html-preview.test.ts` 钉住（含"构建配置不许漂移"那条）。
+//    这里**不 require 真实现**：verify-shot 是独立 main 进程（只加载 out/renderer），
+//    真处理器在 out/main 里，拖进来会把整个应用启动一遍。所以下面是**契约副本**：
+//    策略字面量的真源在 `src/shared/html-preview.ts`，由 `tests/unit/html-preview.test.ts` 钉住。
 protocol.registerSchemesAsPrivileged([
   { scheme: 'jsl-preview', privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false } }
 ])
 
-// ── 断言器（plan9 W2 新增）──────────────────────────────────────────────
-//
-// 为什么必须加（两份独立审查都点到的**实锤**）：
-// 在此之前本脚本只 `console.log` 一堆汇总 + `app.exit(0)` ——
-// **没有期望值比对、没有失败退出码**。于是"验证通过"全靠人眼看输出，
-// 等于**拿一把没有刻度的尺子当验收标准**。
-//
-// 用法：`check(名字, 实际, 期望)` 或 `checkTrue(名字, 条件[, 实际值])`；
-// 结尾一律调 `reportAndExit()`：有 FAIL → exit(1)，全过 → exit(0)。
-//
-// 原则：**只断言"确定的"**。每批新功能由那一批自己补断言（plan9 §二），
-// 不再把验证的活堆到最后一批。
+// ── 断言器（plan9 W2）────────────────────────────────────────────────────
+// ⚠️ 没有它之前本脚本只 `console.log` + `app.exit(0)`：无期望值比对、无失败退出码，
+// "验证通过"全靠人眼看输出 —— 等于拿一把**没有刻度的尺子**当验收标准。
+// 用法：`check(名字, 实际, 期望)` 或 `checkTrue(名字, 条件[, 实际值])`，结尾一律 `reportAndExit()`
+// （有 FAIL → exit(1)，全过 → exit(0)）。原则：**只断言"确定的"**，新功能由那一批自己补断言。
 const checks = []
 
-/**
- * 记录"带 workbench 的 ui-prefs:set"调用 —— 用来断言**提交点**（plan9 §W5）：
- * 拖拽过程中一帧都不该写盘，松手后才合并写一次。
- * 参照实现是每帧同步写盘（它自己标注的卡顿源），我们不学它，但**不学这件事必须被验到**。
- */
+/** 记录"带 workbench 的 ui-prefs 写盘"调用（plan9 §W5）：拖拽过程一帧都不该写盘，松手后合并写一次。
+ *  参照实现是每帧同步写盘（它自标的卡顿源），我们不学它 —— 但"不学这件事"必须被验到。 */
 const wbSetCalls = []
 
 // ── 造一张**真实可解码**的 PNG（plan7 批 A3 图片预览要验）────────────────
-//
-// 为什么不直接写个假 base64：图片预览的断言要量 `naturalWidth` ——
-// 假串会被浏览器解码失败，naturalWidth 恒为 0，那条断言就永远是红的（测不出东西）。
-// 所以这里手搓一个最小的 PNG：IHDR + IDAT(zlib) + IEND，带正确的 CRC32。
+// 为什么不用假 base64：图片断言要量 `naturalWidth`，假串解码失败会让它恒为 0、断言永远红。
+// 所以手搓最小 PNG：IHDR + IDAT(zlib) + IEND，带正确的 CRC32。
 const zlib = require('node:zlib')
 
 const CRC_TABLE = (() => {
@@ -253,13 +212,9 @@ function makePng(w, h) {
 
 const PNG_BYTES = makePng(48, 32)
 
-// HTML 沙箱预览的**测谎仪**桩文件。
-//
-// 它不是"随便一个 html"：背景先刷**品红**，紧跟的脚本会把它改成**纯红**。
-// 于是像素采样能分辨三种结局，且互不混淆：
-//   品红 → 渲染成功 + 脚本被拦（红线成立，就是要这个）
-//   纯红 → **脚本真的跑了**（红线破了，必须炸）
-//   白/灰 → 根本没渲染出来（srcdoc 被 CSP 拦了，功能等于没做）
+// HTML 沙箱预览的**测谎仪**桩：背景先刷**品红**，紧跟的脚本把它改成**纯红** —— 于是像素采样能分辨
+// 三种互不混淆的结局：品红 = 渲染成功 + 脚本被拦（红线成立，就是要这个）；纯红 = **脚本真的跑了**
+// （红线破了，必须炸）；白 / 灰 = 根本没渲染出来（srcdoc 被 CSP 拦了，功能等于没做）。
 // 换句话说：**它自己会报告自己有没有被执行**，不靠我们去信任任何一个属性。
 const HTML_STUB = [
   '<!doctype html>',
@@ -301,9 +256,8 @@ function reportAndExit() {
   app.exit(0)
 }
 
-// 兜底：脚本内部一旦抛异常（例如断言里访问了不存在的字段），
-// Electron 会**挂着不退出** —— 表现为"卡到超时"，完全看不出真实原因。
-// 所以这里显式接住，转成一次带堆栈的失败退出。
+// 兜底：脚本内部一抛异常（例如断言里访问了不存在的字段），Electron 会**挂着不退出** ——
+// 表现是"卡到超时"，完全看不出真实原因。所以显式接住，转成一次带堆栈的失败退出。
 process.on('unhandledRejection', (err) => {
   console.log('FAIL: 脚本内部异常 → ' + (err && err.stack ? err.stack : String(err)))
   console.log('CHECKS=' + JSON.stringify({ total: checks.length, failed: checks.length + 1 }))
@@ -311,10 +265,8 @@ process.on('unhandledRejection', (err) => {
   app.exit(1)
 })
 
-/**
- * 模型档案的公共字段（plan7 F5）：三条假档案共用一份，只改 id / 名字 / 来源 / Key。
- * 写成一个常量是为了让"列表形态"这件事在 stub 里只描述一次 —— 三份复制必然漂移。
- */
+/** 模型档案的公共字段（plan7 F5）：三条假档案共用一份，只改 id / 名字 / 来源 / Key ——
+ *  写成常量是为了让"列表形态"这件事在 stub 里只描述一次（三份复制必然漂移）。 */
 const FAKE_PROFILE_BASE = {
   providerType: 'openai-compatible',
   baseURL: 'https://api.deepseek.com',
@@ -332,10 +284,8 @@ const FAKE_PROFILE_BASE = {
   updatedAt: Date.now()
 }
 
-/**
- * 一条假端点（plan7 F5.1）：**端点 + 模型目录** —— 一把 Key 能调好几个模型。
- * 写成函数是为了让"目录里三条模型"这件事只描述一次（三份复制必然漂移）。
- */
+/** 一条假端点（plan7 F5.1）：**端点 + 模型目录**（一把 Key 能调好几个模型）——
+ *  写成函数是为了让"目录里三条模型"只描述一次（三份复制必然漂移）。 */
 function fakeEndpoint(id, name, firstModel, source, hasApiKey) {
   return {
     ...FAKE_PROFILE_BASE,
@@ -434,11 +384,8 @@ const FAKE_SUBAGENTS = [
 /** 写操作调用流水（验证界面是否真的把动作发下去了，而不只是画了个菜单） */
 const fsOpLog = []
 
-/**
- * `attach:path` 收到的载荷流水。
- * 存在的理由：这条通道**两个来源共用**（工作区文件树给相对路径、系统资源管理器给绝对路径），
- * 而"到底哪条路进来的"只有看载荷形式才知道 —— 0.13.2 用户报的越界就卡在这个区分上。
- */
+/** `attach:path` 收到的载荷流水 —— 这条通道**两个来源共用**（工作区文件树给相对路径、
+ *  系统资源管理器给绝对路径），只有看载荷形式才知道是哪条路进来的（0.13.2 用户报的越界卡在这）。 */
 const attachPathCalls = []
 
 /** ④ 会话回滚的调用流水（回滚 / 撤销各一条） */
@@ -448,23 +395,15 @@ const convUndoCalls = []
 /** Markdown 轻编辑：fs:write 收到的载荷（要验"冲突基线有没有带上来"） */
 const fsWritePayloads = []
 
-/**
- * plan13 B4：逐处退回的调用流水。
- * 要验的是"界面只负责说**退第几处**，具体内容由主进程算"——
- * 所以这里连 `expectedMtimeMs` 一起记：那条是防"看着旧的差异退新的文件"的安全阀。
- */
+/** plan13 B4：逐处退回的调用流水 —— 要验的是"界面只负责说**退第几处**，内容由主进程算"，
+ *  所以连 `expectedMtimeMs` 一起记（那是防"看着旧的差异退新的文件"的安全阀）。 */
 const revertCalls = []
 /** 退过一次之后，`checkpoint:sides` 要回一份"那一处已经不见了"的内容（验界面有没有重取） */
 let appHunkOneReverted = false
 
-/**
- * plan7 批 C：终端面板的假会话。
- *
- * ⚠️ 门禁**把 IPC 全 stub**，所以这里**跑不了真 shell**。但"重放"这件事必须能验 ——
- * 而它的判据是"**切走再切回，输出不重不漏**"，那就要求 stub **记住推过什么**：
- * 只回一个固定快照的话，不管重放有没有做对，断言都会以同一个结果收场（自证式）。
- * 所以这里维护一份**累积缓冲**，`terminal:snapshot` 每次都把它回给界面。
- */
+// plan7 批 C：终端面板的假会话。⚠️ 门禁**把 IPC 全 stub**，所以跑不了真 shell —— 但"重放"
+// 这件事必须能验，判据是"**切走再切回，输出不重不漏**"，这就要求 stub **记住推过什么**：
+// 只回一个固定快照的话，不管重放有没有做对，断言都会以同一个结果收场（自证式）。
 const termChunks = [{ seq: 1, data: 'PS D:\\jsllworkplace_for_test> ' }]
 let termSeq = 2
 let termStatus = 'running'
@@ -739,11 +678,9 @@ const STUBS = {
     workbenchSizes: { paneWidths: [] }
   }),
   // ③ 文件拖进会话：按路径取附件（拖拽入口；文件选择框那条走 attach:file）
-  //
-  // ⚠️ 这里的路径处理**是主进程 `readAttachment` 那套两层边界规则的复制品**
-  //    （绝对路径原样；相对路径拼工作区根；不在工作区内则带 `outside` 标记）。
-  //    主进程那边改了规则，这里必须跟着改 —— stub 是**契约的复制品**，
-  //    不同步的话渲染端就会拿到与真机不一样的形状，而这种差异**不会报错、只会静默漏掉**。
+  // ⚠️ 这里的路径处理**是主进程 `readAttachment` 那套两层边界规则的复制品**（绝对路径原样；
+  //    相对路径拼工作区根；不在工作区内则带 `outside` 标记）—— 主进程改了规则这里必须跟着改，
+  //    否则渲染端拿到与真机不一样的形状，而这种差异**不报错、只会静默漏掉**。
   'attach:path': (p) => {
     const s = typeof p === 'string' ? p : ''
     attachPathCalls.push(s)
@@ -758,8 +695,7 @@ const STUBS = {
       ...(abs.toLowerCase().startsWith(ws.toLowerCase() + '\\') ? {} : { outside: true })
     }
   },
-  // plan7 批 A3：二进制预览
-  // 三种情况都要有各自的路径 —— 只验"正常图片"那一档，就是上次假绿灯的老路
+  // plan7 批 A3：二进制预览 —— 三种情况各走一条路（只验"正常图片"那一档，就是上次假绿灯的老路）
   'fs:read-binary': (arg) => {
     const rel = typeof arg === 'string' ? arg : ''
     if (rel.endsWith('示例截图.png')) {
@@ -899,14 +835,10 @@ const STUBS = {
     rejected: []
   }),
 
-  // plan13 B3：Diff 视图的两侧内容。
-  //
-  // ⚠️ 这份 fixture 是**刻意设计**的，四种情形各管一件事（随手编的数据测不出东西）：
-  //   · src/app.ts      → 两处**相隔很远**的改动 —— 断言"块数 == 2"才有意义
-  //                        （只造一处的话，写成"恒等于 1"也能绿）
-  //   · src/notes.md    → 两侧**完全一致** —— 阴性对照，证明它不是"恒显示有改动"
-  //   · src/brand-new.md→ created：改前不存在，必须走"没有快照侧"的分支，且**不给逐处退回**
-  //   · src/huge.log    → truncated：只读了前 256KB，界面必须说出来、且**不给逐处退回**
+  // plan13 B3：Diff 视图的两侧内容 —— fixture 是**刻意设计**的，四种情形各管一件事（随手编的数据测不出东西）：
+  //   src/app.ts 两处**相隔很远**的改动 → 断言"块数 == 2"才有意义（只造一处，写成"恒等于 1"也能绿）；
+  //   src/notes.md 两侧**完全一致** → 阴性对照，证明它不是"恒显示有改动"；
+  //   src/brand-new.md=created 与 src/huge.log=truncated → 都必须走"不给逐处退回"的分支。
   'checkpoint:sides': ({ runId, rel }) => {
     const APP_BEFORE = [
       "import { a } from './a'",
@@ -989,22 +921,19 @@ const STUBS = {
       ...base,
       rel,
       before: APP_BEFORE,
-      // 退过一次之后：第 1 处已还原（第 2 行又变回 `const x = 1`），差异应当只剩 1 处。
-      // 这一步是给"退回成功 → 界面有没有重新取数"那条断言准备的：
-      // 不重取的话界面上仍会显示 2 处，断言立刻红。
+      // 退过一次之后：第 1 处已还原，差异应只剩 1 处 —— 这是给"退回成功 → 界面有没有重新取数"
+      // 那条断言准备的：不重取的话界面仍显示 2 处，断言立刻红。
       after: appHunkOneReverted ? APP_AFTER.replace('const x = 42', 'const x = 1') : APP_AFTER
     }
   },
 
-  // plan7 批 C：内置终端的存根。
-  // ⚠️ 门禁里**不起真 shell**（IPC 全 stub）—— 真机验证在单测里（`terminal-session.test.ts`
-  //    有一条真 node-pty 端到端）。这里验的是**界面那条链路**：渲染、样式、重放、权限文案。
+  // plan7 批 C：内置终端的存根。⚠️ 门禁里**不起真 shell**（IPC 全 stub）—— 真机验证在单测里
+  // （`terminal-session.test.ts` 有一条真 node-pty 端到端），这里验的是**界面那条链路**。
   'terminal:start': () => {
     termStartCalls += 1
-    // 只读档**在启动处就拒绝**（与主进程真实实现同一条口径）——
-    // 门禁要能验"界面把原因说清楚"，而不是给一个黑框。
+    // 只读档**在启动处就拒绝**（与主进程真实实现同一条口径）—— 门禁要能验"界面把原因说清楚"。
     // ⚠️ 文案末尾那个哨兵串是给断言用的：证明界面上那句话**真的来自 IPC 返回值**，
-    //    而不是界面模板里自己写死的（审查 D 指出：只断言 includes('只读') 会被常驻文案满足）。
+    //    而不是界面模板里自己写死的（只断言 includes('只读') 会被常驻文案满足）。
     if (termPermission === 'read-only') {
       return {
         ok: false,
@@ -1034,9 +963,8 @@ const STUBS = {
     termHasSession = true
     return { ok: true, session: makeTermSnapshot() }
   },
-  // ⚠️ **故意慢 400ms** —— 这是"订阅 ↔ 重放那个缝"的**制造器**。
-  //    不慢的话，帧永远在重放之后才到，那条"实时帧顺序"断言就成了摆设
-  //    （审查 D 正是据此判定它**名不副实**：老协议下也会绿）。
+  // ⚠️ **故意慢 400ms** —— 它是"订阅 ↔ 重放那个缝"的**制造器**：不慢的话帧永远在重放之后才到，
+  //    "实时帧顺序"那条断言就成了摆设（老协议下也会绿）。
   'terminal:snapshot': async () => {
     await new Promise((r) => setTimeout(r, 400))
     return termHasSession ? makeTermSnapshot() : null
@@ -1079,11 +1007,9 @@ app.whenReady().then(async () => {
     confirmResponses.push(payload)
   })
 
-  // HTML 预览协议：契约副本（真实现见 src/main/preview-protocol.ts）。
-  // 这里只回一个桩页：**不读盘**（本进程的 fs 全是 stub，读盘只会 404）。
-  // 要验的是"渲染管线 + 策略这套组合能不能跑通"，不是读盘本身（那由单测覆盖）。
-  // `previewHits` 记下**主进程真的收到了什么请求** —— 它是"帧到底加载没加载"的
-  // 唯一可信证据（渲染进程侧拿不到不透明源的内容，只能靠这一侧说话）。
+  // HTML 预览协议：契约副本（真实现见 src/main/preview-protocol.ts）。只回一个桩页、**不读盘**
+  // （本进程的 fs 全是 stub）。`previewHits` 记下**主进程真的收到了什么请求** —— 那是"帧到底
+  // 加载没加载"的唯一可信证据（渲染进程侧拿不到不透明源的内容，只能靠这一侧说话）。
   const previewHits = []
   protocol.handle('jsl-preview', (req) => {
     previewHits.push(new URL(req.url).pathname)
@@ -1111,17 +1037,12 @@ app.whenReady().then(async () => {
       //    而"验证环境与生产不一致"正是最容易被放过的一类假绿灯。
       sandbox: true,
       /**
-       * **关掉后台节流**（2026-09-13 加，这是墨迹了很久的一类"假红"的真凶）。
-       *
-       * 窗口是 `show: false`（有意不打扰用户），而**隐藏/被遮挡的窗口会被 Chromium 节流**：
-       * `requestAnimationFrame` 被压到极低频甚至停掉。而 Monaco 的渲染**正是走 rAF** ——
-       * 于是出现"等 2.6 秒刚好够 / 等 4.8 秒一行都没有"这种看天吃饭的结果，
-       * 症状是 `.view-line` 高度在 0 和 16 之间跳。
-       *
-       * 它之所以难查：红的是**后面**那 9 条（打字没生效 → 没变脏 → Ctrl+S 没反应 → 守卫不出现），
-       * 长得跟真回归一模一样；而真正的原因在**更早的某一帧还没画出来**。
-       * 之前 plan13 §4.4 记的是"把等待从 0.9s 提到 2.6s"——那是治症状，
-       * 这一条才是把节流关掉（等待仍需保留，但不再靠它兜住正确性）。
+       * **必须关掉后台节流**（2026-09-13）：窗口是 `show: false`，而**隐藏/被遮挡的窗口会被
+       * Chromium 节流**，`requestAnimationFrame` 被压到极低频甚至停掉 —— Monaco 的渲染正是走
+       * rAF，于是出现"等 2.6 秒刚好够 / 等 4.8 秒一行都没有"这种看天吃饭的结果
+       * （症状是 `.view-line` 高度在 0 和 16 之间跳）。
+       * ⚠️ 它难查的原因是红的是**后面**那 9 条（打字没生效 → 没变脏 → Ctrl+S 没反应 → 守卫不出现），
+       * 长得和真回归一模一样，真凶却在**更早的某一帧还没画出来**；等待仍需保留，但不再靠它兜正确性。
        */
       backgroundThrottling: false
     }
@@ -1135,12 +1056,11 @@ app.whenReady().then(async () => {
     // 兼容新旧签名：Electron 33 是 (event, level, message, ...)，35+ 是 (event, details)
     const msg = typeof a[2] === 'string' ? a[2] : (a[0] && a[0].message) || ''
     if (/Content Security Policy|Refused to/i.test(msg)) {
-      // ⚠️ **必须记来源**（plan7 批 C 加的）：同一条指令可能由不同文档触发 ——
-      //    应用自己的 index.html、HTML 预览的 `jsl-preview:` 子文档、monaco / xterm 的注入……
-      //    不记来源时"谁在违反 CSP"只能靠猜（本轮就猜错过一次：把 172 条全算到终端头上，
-      //    实测才发现大头是 monaco 的 diff 余量装饰）。
-      // ⚠️ 取值要容错：新版 Electron 把 `sourceId` 给成 **URL 对象**而不是字符串
-      //    （写成 `typeof === 'string'` 会静默退化成"来源未知"——第一版就这么错了一次）。
+      // ⚠️ **必须记来源**：同一条指令可能由不同文档触发（应用自己的 index.html、
+      //    HTML 预览的 `jsl-preview:` 子文档、monaco / xterm 的注入），不记来源时
+      //    "谁在违反 CSP"只能靠猜（本轮就猜错过一次：把 172 条全算到终端头上，实测大头是 monaco）。
+      // ⚠️ 取值要容错：新版 Electron 把 `sourceId` 给成 **URL 对象**而不是字符串 ——
+      //    写成 typeof === 'string' 会静默退化成"来源未知"。
       const raw = a[4] ?? (a[0] && (a[0].sourceId ?? a[0].sourceURL))
       const src = raw ? String(raw) : '(来源未知)'
       cspViolations.push(`[${src}] ${msg}`)
@@ -1511,26 +1431,20 @@ app.whenReady().then(async () => {
     })()
   `)
   const shot3 = await win.webContents.capturePage()
-  // 不额外存 verify-settings.png：它与下面分区循环里的 trouble 那张**逐字节相同**
-  // （实测哈希一致），纯冗余。要设置页截图，看 verify-settings-*.png 即可。
+  // 不额外存 verify-settings.png：它与下面分区循环里的 trouble 那张**逐字节相同**（实测哈希一致）
   void shot3
 
   /**
-   * 打开工作台里的某个内置面板（plan9 W3）。
-   *
-   * 改造前是"点常驻页签"（`.dock-tab`）；现在是**＋ 开窗菜单**：
-   *   ① 工作台没展开就先点顶栏开关（展开且为空时直接出现开窗选择器）
-   *   ② 已经有栏了 → 点该栏的 ＋ 展开菜单
-   *   ③ 点菜单里同名的那一项
-   * 每步之间都要等 React 重渲染，所以拆成三次 executeJavaScript。
+   * 打开工作台里的某个内置面板（plan9 W3）。改造后不再是"点常驻页签"，而是**＋ 开窗菜单**：
+   * 没展开先点顶栏开关 → 已有栏就点栏内 ＋ → 点菜单里同名那项；每步之间要等 React 重渲染，
+   * 所以拆成三次 executeJavaScript。
    */
   const openBuiltin = async (label) => {
     await win.webContents.executeJavaScript(`
       (() => {
         if (document.querySelector('.dock')) return 'already-open';
-        // 必须按 title 定位：顶栏有**两个** panel-btn（第一个是侧栏开关），
-        // 裸 querySelector(".panel-btn") 会点到侧栏上去 —— 踩过一次，别再踩。
-        // （注意：下面是模板字符串，注释里**不能出现反引号**，否则会把字符串提前闭合）
+        // 必须按 title 定位：顶栏有**两个** panel-btn（第一个是侧栏开关），裸 querySelector(".panel-btn")
+        // 会点到侧栏上去 —— 踩过一次，别再踩。（本行在模板字符串里，注释不许出现反引号）
         const b = document.querySelector('.panel-btn[title*="工作台"]');
         if (b) b.click();
         return b ? 'opened' : 'no-toggle';
@@ -1596,9 +1510,8 @@ app.whenReady().then(async () => {
   const shot4 = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-changes.png'), shot4.toPNG())
 
-  // 点「整轮回滚」→ 应进入二次确认（不会立刻执行）
-  // 注意：React 状态更新是异步的，点击后必须等一拍再读 DOM，
-  // 否则读到的是旧树 → 假阴性（曾在同 tick 读到 hasConfirm:false 而实际已弹出）。
+  // 点「整轮回滚」→ 应进入二次确认（不会立刻执行）。
+  // ⚠️ React 状态更新是异步的，点击后必须等一拍再读 DOM，否则读到旧树 → 假阴性。
   await win.webContents.executeJavaScript(`
     (() => {
       const btn = Array.from(document.querySelectorAll('.ck-run .ck-btn'))
@@ -1637,9 +1550,8 @@ app.whenReady().then(async () => {
   writeFileSync(join(SHOTS, 'verify-rollback.png'), shot5.toPNG())
 
   // —— 文件差异（plan13 B3）：真点开一个文件，看它算出来的差异**对不对** ——
-  //
-  // ⚠️ 这一段刻意**不**用"有没有出现某个元素"当判据 —— 那样把块切错、把行号算错也照样绿。
-  //    判据落在**内容与行号**上：哪一个文件、第几块、哪一行、改前还是改后。
+  // ⚠️ 刻意**不**用"有没有出现某个元素"当判据（那样把块切错、行号算错也照样绿）：
+  //    判据落在**内容与行号**上 —— 哪一个文件、第几块、哪一行、改前还是改后。
   /** 点某个文件的「看差异」并等它读完（读盘 + 算差异都是异步的） */
   const openDiff = async (rel) => {
     const clicked = await win.webContents.executeJavaScript(`
@@ -1771,18 +1683,15 @@ app.whenReady().then(async () => {
     clickedClose === true && diffClosed.gone === true, { clickedClose, ...diffClosed })
 
   // —— 逐处退回（plan13 B4）：真点一次，验"界面说退第几处、内容由主进程算" ——
-  //
-  // 判据分三层：
-  //   ① 危险动作**点一下不写盘**（先弹确认）—— 与"整轮回滚"同一个规矩
-  //   ② 载荷是**序号 + mtime 安全阀**，不是"退成什么内容"（界面不许参与算写入内容）
-  //   ③ 退回之后界面**必须重新取数**（那块得从差异里消失，否则就是在骗人）
+  // 判据分三层：① 危险动作**点一下不写盘**（先弹确认，与"整轮回滚"同一规矩）；② 载荷是
+  // **序号 + mtime 安全阀**、不是"退成什么内容"（界面不许参与算写入内容）；③ 退回后界面
+  // **必须重新取数**（那块得从差异里消失，否则就是在骗人）。
   const openedAppRevert = await openDiff('src/app.ts')
   const revertUi = await win.webContents.executeJavaScript(`
     (() => {
       const wrap = document.querySelector('.df-wrap');
       if (!wrap) return { shown: false, hunks: 0, perHunk: [] };
-      // ⚠️ **逐块**收集按钮，不是只看第一块 —— 只看第一块的话，
-      //    "只有第 1 处给了退回入口"也能绿（审查指出过这条自证式断言）。
+      // ⚠️ **逐块**收集按钮，不是只看第一块 —— 只看第一块的话，"只有第 1 处给了退回入口"也能绿（自证式）
       const perHunk = Array.from(wrap.querySelectorAll('.df-hunk')).map((h) =>
         Array.from(h.querySelectorAll('.ck-btn')).map((b) => b.textContent.trim())
       );
@@ -2026,20 +1935,16 @@ app.whenReady().then(async () => {
       return !!f;
     })()
   `)
-  // ⚠️ plan13 B1：Monaco 靠 requestAnimationFrame 渲染，而验证窗口是**离屏**的 ——
-  //    实测 900ms 时容器已建、尺寸正常，但 `.view-line` 是 **0 行**（渲染循环被节流）。
-  //    给到 2.6s，让 rAF 真的跑起来。
+  // ⚠️ plan13 B1：Monaco 靠 requestAnimationFrame 渲染，而验证窗口是**离屏**的 —— 实测 900ms 时
+  //    容器已建、尺寸正常，但 .view-line 是 **0 行**（渲染循环被节流）。给到 2.6s 让 rAF 真跑起来。
   await new Promise((r) => setTimeout(r, 2600))
   const previewState = await win.webContents.executeJavaScript(`
     (() => {
       const panes = Array.from(document.querySelectorAll('.pane'));
       const last = panes[panes.length - 1];
-      /**
-       * ⚠️ plan13 批 B：非 Markdown 的文本改用 **Monaco** 渲染。
-       * 它**虚拟化**（全文不在 DOM 里，只有可见行有 \`.view-line\`），所以这里读"可见行拼起来"。
-       * 这对"能不能看见这个关键词"这类断言足够，而且**更贴近用户实际看到的** ——
-       * 直接读编辑器 API 反而会验到"DOM 里没有的东西"。
-       */
+      // ⚠️ plan13 批 B：非 Markdown 的文本改用 **Monaco** 渲染。它**虚拟化**（全文不在 DOM 里，
+      // 只有可见行有 .view-line），所以这里读"可见行拼起来"：对"能不能看见这个关键词"足够，
+      // 而且**更贴近用户实际看到的** —— 直接读编辑器 API 反而会验到"DOM 里没有的东西"。
       const editor = last ? last.querySelector('.ce-host') : null;
       const visibleText = editor
         ? Array.from(editor.querySelectorAll('.view-line')).map((el) => el.textContent).join('\\n')
@@ -2052,10 +1957,8 @@ app.whenReady().then(async () => {
         isOwnPane: panes.length >= 2 && !!last && !last.querySelector('.ex-panel'),
         hasPreview: !!editor,
         firstLine: visibleText.split('\\n')[0] || null,
-        // ⚠️ Monaco **虚拟化**：只有可见行在 DOM 里 —— 所以这条查的是"可见行里能不能看到
-        //    这个文件的内容特征"。原实现读 .fp-pre 的全文，换编辑器后不再适用。
-        //    ⚠️ 注：这段注释在**模板字符串**里 —— 里面的反引号必须转义，否则会提前结束字符串
-        //    （2026-09-13 实际踩到：node --check 照样通过，运行时才报 pre is not defined）。
+        // ⚠️ Monaco **虚拟化**：只有可见行在 DOM 里 —— 这条查的是"可见行里能不能看到本文件的内容特征"
+        //    （原实现读 .fp-pre 的全文，换编辑器后不再适用）。
         hasFileContent: visibleText.includes('紫水晶'),
         // 关键：**看得见**才算数（DOM 存在但高度塌成 0 等于没显示）
         preBox: dim(editor),
@@ -2175,9 +2078,8 @@ app.whenReady().then(async () => {
     }))()
   `)
 
-  // —— 拖拽上传（plan7 批 A2 第 3 步）——
-  // 验两件事：① dragover 时落点高亮 ② drop 真的接线（合成 File 没有磁盘路径，
-  // 正确行为是**如实提示**而不是静默什么都不做）
+  // —— 拖拽上传（plan7 批 A2 第 3 步）：验 ① dragover 落点高亮 ② drop 真的接线 ——
+  // 合成 File 没有磁盘路径，正确行为是**如实提示**而不是静默什么都不做。
   await win.webContents.executeJavaScript(`
     (() => {
       const row = Array.from(document.querySelectorAll('.ex-row'))
@@ -2305,9 +2207,8 @@ app.whenReady().then(async () => {
   writeFileSync(join(SHOTS, 'verify-ex-preview.png'), shotMd.toPNG())
 
   // —— plan7 批 A3：二进制预览（三档各走一遍）——
-  // ⚠️ 探针**必须放在这一段**：此时前台面板还是「资源管理器」（文件行在 DOM 里）、
-  //    工作台只有两栏（预览栏放得下）。放到脚本末尾会全红：
-  //    那时前台已切成「任务管理」→ clickFile 静默失败；而且多开一栏会溢出、预览栏被挤出可视区。
+  // ⚠️ 探针**必须放在这一段**：此时前台面板还是「资源管理器」（文件行在 DOM 里）、工作台只有两栏。
+  //    放到脚本末尾会全红：前台已切成「任务管理」→ clickFile 静默失败，且多开一栏会把预览栏挤出可视区。
   const clickFile = async (name) => {
     return win.webContents.executeJavaScript(`
       (() => {
@@ -2376,13 +2277,10 @@ app.whenReady().then(async () => {
   console.log('BIN_HEX=' + JSON.stringify(hexPreview))
 
   // —— HTML 沙箱预览（渲染 / 源码 开关 + 「不执行工作区代码」红线）——
-  //
-  // 这一段**不验"iframe 在不在 DOM 里"**（那种断言太容易绿），验的是两件真事：
-  //   ① 渲染**真的渲染出来了** —— 常见死法是 srcdoc 被页面 CSP 拦成一个空白框，
-  //      DOM 里照样有 iframe，用户看见的却是白的
-  //   ② 工作区的 HTML **一行脚本都没跑** —— 这是应用的红线（渲染进程绝不执行工作区代码）
-  // 手段是**采像素**：桩文件自己会把背景从品红改成纯红（脚本真跑了才会红），
-  // 拿 `capturePage` + `toBitmap` 直接数三种颜色各占多少。见上方 HTML_STUB 的注释。
+  // 不验"iframe 在不在 DOM 里"（那种断言太容易绿），验两件真事：① 渲染**真的渲染出来了** ——
+  // 常见死法是 srcdoc 被页面 CSP 拦成一个空白框，DOM 里照样有 iframe、用户看见的却是白的；
+  // ② 工作区的 HTML **一行脚本都没跑**（应用红线）。手段是**采像素**：桩文件自己会把背景从品红
+  // 改成纯红（脚本真跑了才会红），拿 capturePage + toBitmap 直接数三种颜色各占多少。
   const clickHtmlFile = await clickFile('预览桩.html')
   await new Promise((r) => setTimeout(r, 900))
 
@@ -2400,9 +2298,8 @@ app.whenReady().then(async () => {
         return {
           hasFrame: !!f,
           sandbox: f ? f.getAttribute('sandbox') : null,
-          // ⚠️ 必须**没有** srcdoc：srcdoc/blob/data 都是本地 scheme，
-          //    子文档会继承父页策略，父页的 style-src 'self' 会把内联样式全砍光
-          //    （实测三种写法渲染出来都是白色骨架）—— 所以这条是**回归守卫**
+          // ⚠️ 必须**没有** srcdoc：srcdoc/blob/data 都是本地 scheme，子文档会继承父页策略，
+          //    父页的 style-src 'self' 会把内联样式全砍光（实测三种写法渲染出来都是白色骨架）—— 回归守卫
           srcdoc: f ? f.getAttribute('srcdoc') : 'no-frame',
           srcScheme: f ? String(f.getAttribute('src') || '').split(':')[0] : null,
           frameRect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null,
@@ -2445,12 +2342,10 @@ app.whenReady().then(async () => {
     return out
   }
 
-  // 采样区取 iframe 的**下半部分**：上半有标题文字，下半是纯背景，最有代表性
-  //
-  // ⚠️ **窗口必须先显示出来**：本进程的窗口一直是 `show: false`（不打扰用户），
-  //    但跨进程渲染的 iframe（沙箱帧有自己的进程）在**隐藏窗口里不会被合成**，
-  //    capturePage 拿到的就是一片白 —— 那不是"没渲染"，是"没合成"。
-  //    这两种情况长得一模一样，所以下面还有一条**主进程侧**的证据（previewHits）把二者分开。
+  // 采样区取 iframe 的**下半部分**（上半有标题文字，下半是纯背景，最有代表性）。
+  // ⚠️ **窗口必须先显示出来**：本进程的窗口一直是 `show: false`，而跨进程渲染的 iframe（沙箱帧
+  //    有自己的进程）在**隐藏窗口里不会被合成**，capturePage 拿到的就是一片白 —— 那是"没合成"
+  //    不是"没渲染"，两者长得一模一样，所以另有**主进程侧**证据（previewHits）把二者分开。
   win.showInactive()
   await new Promise((r) => setTimeout(r, 400))
 
@@ -2473,12 +2368,10 @@ app.whenReady().then(async () => {
   // 拍一张留证（人眼看得到才算数）
   writeFileSync(join(SHOTS, 'verify-html-preview.png'), (await win.webContents.capturePage()).toPNG())
 
-  // ② 开关：点「源码」→ 换回原始代码；再点「渲染」→ 换回沙箱预览
-  //
-  // ⚠️ 真手势。**这里不能用 `el.click()`**，也不便用脚本后段声明的 `dbg` + `realClick`
-  //    ——那两个是 `const`，在这里还在 TDZ（上一轮就因为这个吃过
-  //    `Cannot access 'rbPre' before initialization`）。
-  //    `sendInputEvent` 是主进程注入真实输入、同样产生 isTrusted 的事件，是本段唯一可用的真手势通道。
+  // ② 开关：点「源码」→ 换回原始代码；再点「渲染」→ 换回沙箱预览。
+  // ⚠️ 必须走**真手势**：不能用 el.click()，也不便用后段声明的 dbg + realClick（那两个是 const，
+  //    在这里还在 TDZ，上一轮就因此吃过 Cannot access 'rbPre' before initialization）。
+  //    sendInputEvent 是主进程注入真实输入、同样产生 isTrusted 事件 —— 本段唯一可用的真手势通道。
   const realClickHere = async (pos) => {
     win.webContents.sendInputEvent({
       type: 'mouseDown',
@@ -2549,23 +2442,16 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 800))
 
   // —— ③ 文件拖进会话：把文件树里的一行拖到输入框 ——
-  //
-  // ⚠️ 探针**必须在输入框存在的时候跑**：此前插在设置页那一段，结果 5 条全红、
-  //    理由只是 `no-row-or-no-console` —— 因为工作台是**视图无关**的（文件行一直在），
-  //    而输入框只属于对话页 / 新建页。**"前置状态不对"和"功能坏了"长得一模一样**，
-  //    所以先单独断言"输入框在不在"，把这两件事分开。
-  //
-  // ⚠️⚠️ 第二层（0.13.2 用户报「文件树里的文件拖不动」之后补上的一课）：
-  //    **合成事件永远测不出「真手势能不能拖」**。`new DragEvent('dragstart')` 是
-  //    **我们自己把事件塞进 DOM**，绕过了浏览器判定"这个元素能不能开始拖拽"的全部逻辑
-  //    （`draggable` 属性、是不是可激活控件、有没有被祖先拦住……）——
-  //    也就是说合成事件**天生就是绿的**，而真机上可能一拖什么都不发生。
-  //    所以改用 **CDP 真手势**：`Input.setInterceptDrags` + 真鼠标按下/移动 → 浏览器回一个
-  //    `Input.dragIntercepted`，里面装的是**浏览器自己从 dragstart 收上来的真实拖拽载荷**；
-  //    再用 `Input.dispatchDragEvent` 把这一份真实载荷投到输入框上。
-  //    真手势还差两样才算数：① 元素**真的可见可命中**（几何 + 命中测试，"DOM 里在"远远不够）
-  //    ② 一个**阳性对照** —— 拖一根分栏标题（它本来就该能拖）。只有对照也绿了，
-  //    "行拖不起来"才能算在行头上，而不是算在探针自己头上。
+  // ⚠️ 探针**必须在输入框存在的时候跑**：工作台是**视图无关**的（文件行一直在），而输入框只属于
+  //    对话页 / 新建页 —— 插错了地方会 5 条全红，理由只是 no-row-or-no-console，长得和"功能坏了"一样。
+  // ⚠️⚠️ **合成事件永远测不出「真手势能不能拖」**：`new DragEvent(...)` 是我们自己把事件塞进 DOM，
+  //    绕过了浏览器判定"这个元素能不能开始拖拽"的全部逻辑（draggable 属性、是否可激活控件、
+  //    有没有被祖先拦住）—— 所以它**天生就是绿的**，而真机上可能一拖什么都不发生（0.13.2 用户报的
+  //    「文件树里的文件拖不动」就是这么漏过去的）。故改用 **CDP 真手势**：`Input.setInterceptDrags`
+  //    + 真鼠标按下/移动 → 浏览器回 `Input.dragIntercepted`（里面是**它自己从 dragstart 收上来的
+  //    真实载荷**）→ 再用 `Input.dispatchDragEvent` 投到输入框上。
+  //    真手势还差两样才算数：① 元素**真的可见可命中**（几何 + 命中测试，"DOM 里在"远远不够）；
+  //    ② 一个**阳性对照**（拖分栏标题，它本来就该能拖）—— 只有对照也绿了，"行拖不起来"才能算在行头上。
   const dragPre = await win.webContents.executeJavaScript(`
     (async () => {
       const row = Array.from(document.querySelectorAll('.ex-row'))
@@ -2644,9 +2530,8 @@ app.whenReady().then(async () => {
       await dbg.sendCommand('Input.dispatchDragEvent', { type: 'drop', x: to.x, y: to.y, data })
       await new Promise((r) => setTimeout(r, 130))
     }
-    // 收尾必须干净：被拦截的拖拽不主动取消的话，**后面每一次拖拽都会静默失效**。
-    //（搭探针时真踩到了：第 2、3 次全空，看上去就像"button 不能拖"——
-    //  差点照着这个假根因去改代码。阳性对照就是为了防这种事。）
+    // 收尾必须干净：被拦截的拖拽不主动取消的话，**后面每一次拖拽都会静默失效**
+    //（搭探针时真踩到：第 2、3 次全空，看上去就像"button 不能拖"—— 阳性对照就是防这个）
     if (data) {
       await dbg
         .sendCommand('Input.dispatchDragEvent', {
@@ -2662,11 +2547,10 @@ app.whenReady().then(async () => {
     return { items, mid }
   }
 
-  // 真拖两次：
-  //   ① 只到 dragEnter/dragOver 就停 —— 量"落点高亮"（高亮本来就是拖拽过程中的状态）
-  //   ② 走完整 drop —— 量"真的变成附件"
-  // 载荷必须用**自定义 MIME**（两边同一个常量）：用 text/plain 的话，
-  // 拖到编辑器/终端会被当成"一段文字"贴进去，而这里携带的其实是一条工作区相对路径
+  // 真拖两次：① 只到 dragEnter/dragOver 就停 —— 量"落点高亮"（那本来就是拖拽过程中的状态）；
+  // ② 走完整 drop —— 量"真的变成附件"。
+  // 载荷必须用**自定义 MIME**（两边同一个常量）：用 text/plain 的话，拖到编辑器 / 终端会被当成
+  // "一段文字"贴进去，而这里携带的其实是一条工作区相对路径。
   let controlDrag = null
   let rowDrag = null
   if (dragGestureReady) {
@@ -2712,14 +2596,11 @@ app.whenReady().then(async () => {
   console.log('DRAG_ATTACH_DONE=' + JSON.stringify(attachState))
 
   // —— ③-2 从**系统资源管理器**拖文件进来（`dataTransfer.files` 那条分支）——
-  //
-  // 这条分支此前**从来没有被验证过**：合成事件走的是自定义 MIME 那条，
-  // 而 0.13.2 用户贴回来的报错是 `attach:path: 只能引用当前工作区内的文件` ——
-  // **只有这条分支会传绝对路径**，所以那句报错只可能从这儿来。也就是说：
-  // 用户踩的分支，恰好是验证唯一没盖到的那条。（"碰巧没验到"和"碰巧对了"一样危险。）
-  //
-  // CDP 的 drag 事件可以直接带 `files`（真实存在的路径），渲染端才拿得到真 File，
-  // `webUtils.getPathForFile` 才有得可查 —— 页面里 `new File()` 造出来的假 File 是查不到的。
+  // ⚠️ 这条分支 0.13.2 之前**从来没被验证过**：合成事件走的是自定义 MIME 那条，而**只有这条分支
+  //    会传绝对路径**，用户贴回来的 `attach:path: 只能引用当前工作区内的文件` 只可能从这儿来 ——
+  //    用户踩的分支，恰好是验证唯一没盖到的那条。
+  // CDP 的 drag 事件可以直接带 `files`（真实存在的路径），渲染端才拿得到真 File、
+  // `webUtils.getPathForFile` 才有得可查（页面里 new File() 造的假 File 查不到）。
   const osDragFile = join(process.env.TEMP || '.', 'jsl-verify-os-drag.txt')
   writeFileSync(osDragFile, '从系统资源管理器拖进来的一个真文件\n', 'utf8')
   const osDragCalls = []
@@ -2765,8 +2646,8 @@ app.whenReady().then(async () => {
   console.log('DRAG_OS_FILE=' + JSON.stringify(osDrag))
 
   // —— ③-3 认出是文件拖拽、却**一个可用路径都没拿到** → 必须说话 ——
-  // 改之前这里是什么都不做：界面毫无反应、日志也没痕迹，用户只能报"拖不进去"，
-  // 而排查的人手上一条线索都没有。**最糟的失败方式就是静默失败。**
+  // 改之前这里什么都不做：界面毫无反应、日志也没痕迹，用户只能报"拖不进去"而排查的人手上没线索。
+  // **最糟的失败方式就是静默失败。**
   const silentCase = await win.webContents.executeJavaScript(`
     (() => {
       const box = document.querySelector('.console');
@@ -2842,11 +2723,9 @@ app.whenReady().then(async () => {
   const shot9 = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-newtask.png'), shot9.toPNG())
 
-  // —— 水墨风配色预览（INK=1 时启用）——
-  // 用 insertCSS 注入 token 覆盖 + 水印样式，**不改动正式源码** ——
-  // 审美决策先看效果，定了才落进 styles.css。
-  // 注：不用内联 <style> 是因为 CSP 的 style-src 'self' 会拦；
-  // insertCSS 是 Electron API，属 devtools 特权，不受页面 CSP 限制。
+  // —— 水墨风配色预览（INK=1 时启用）：用 insertCSS 注入 token 覆盖 + 水印，**不改动正式源码** ——
+  // 审美决策先看效果、定了才落进 styles.css。不用内联 <style> 是因为 CSP 的 style-src 'self' 会拦，
+  // insertCSS 是 Electron API（devtools 特权），不受页面 CSP 限制。
   if (process.env.INK === '1') {
     const inkCss = `
       :root {
@@ -2967,14 +2846,10 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 900))
 
   // —— 工作台「终端」面板（plan7 批 C）——
-  //
-  // ⚠️ 门禁**把 IPC 全 stub 掉了**（本文件开头就写着），所以这里**跑不了真 shell** ——
-  //    「敲命令能看到输出」这件事在门禁里验不了。这一节能验、也必须验的是：
-  //      ① 终端面板真的渲染出来了（xterm 实例在、可交互）
-  //      ② **它的样式真的生效**（生产 CSP 下最容易静默坏掉的一条，见下）
-  //      ③ 从主进程推一帧输出 → 屏幕上看得见
-  //      ④ **切走再切回：输出还在、且不重**（重放协议的核心，靠序号）
-  //      ⑤ 只读档 → 明说"不执行"，而不是给一个黑框
+  // ⚠️ 门禁**把 IPC 全 stub 掉了**，所以**跑不了真 shell** —— "敲命令能看到输出"在门禁里验不了。
+  // 这一节能验、也必须验的是：① 终端面板真的渲染出来（xterm 实例在、可交互）；② **它的样式真的
+  // 生效**（生产 CSP 下最容易静默坏掉的一条）；③ 推一帧输出屏幕上看得见；④ **切走再切回不重不漏**；
+  // ⑤ 只读档 → 明说"不执行"，而不是给一个黑框。
   const openedTerm = await openBuiltin('终端')
   checkTrue('工作台能通过 ＋ 菜单打开终端', openedTerm === true, openedTerm)
   await new Promise((r) => setTimeout(r, 2500)) // xterm 按需加载 + 建实例
@@ -2990,17 +2865,14 @@ app.whenReady().then(async () => {
         hasTerm: !!document.querySelector('.tm-host .xterm'),
         hasRows: !!rows,
         hostH: host ? Math.round(host.getBoundingClientRect().height) : 0,
-        // 当前主题（值 'ink' 才是墨色，其余一律纸白）—— 下面的样式断言要按它选期望色
-        // 注：这段是字符串里的 JS，注释里不许出现反引号（会截断模板串）。
+        // 当前主题（值 'ink' 才是墨色，其余一律纸白）—— 下面的样式断言按它选期望色（本行在模板串里，注释不许有反引号）
         dataTheme: document.documentElement.dataset.theme ?? '',
         status: document.querySelector('.tm-status')?.textContent?.trim() ?? null,
         shell: document.querySelector('.tm-shell')?.textContent?.trim() ?? null,
         rowsStyle: cs(rows),
         spanStyle: cs(span),
-        // ⚠️ 锚定**直接子节点**：面板里有两个 '.tm-note'（拒绝提示里的说明 + 底部常驻说明），
-        //    裸 querySelector('.tm-note') 取的是文档序第一个 —— 谁把采样挪到只读段之后
-        //    就会得到一条莫名其妙的红（审查 D 指出的脆弱点）。
-        //    注：这段是**字符串里的 JS**，注释里不许出现反引号（会截断模板串）。
+        // ⚠️ 锚定**直接子节点**：面板里有两个 '.tm-note'（拒绝提示里的说明 + 底部常驻说明），裸
+        //    querySelector('.tm-note') 拿的是文档序第一个 —— 谁把采样挪到只读段之后就会莫名其妙地红。
         note: document.querySelector('.tm-panel > .tm-note')?.textContent?.trim() ?? null
       };
     })()
@@ -3008,19 +2880,16 @@ app.whenReady().then(async () => {
   const shotTerm = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-terminal.png'), shotTerm.toPNG())
 
-  // 从主进程推一帧输出（真链路：主进程 → preload → React → xterm）。
-  // ⚠️ 同时**记进 `termChunks`** —— 否则切页签回来时 stub 的快照里没有这一帧，
-  //    "重放"这件事就验不出来了（断言会以"本来就没有"收场 = 自证式）。
-  //
-  // 这一帧里**故意带一段 ANSI 红**：xterm 的 DOM 渲染器是往单元格上写**内联 `style` 属性**
-  // （`_addStyle()`，4 个调用点里 3 个是设颜色）。生产 CSP 一旦把 `style-src-attr` 收成 `'none'`，
-  // **字还在、颜色没了** —— `ls` / `git diff` 全变灰。只验"文字在不在"抓不到这件事。
+  // 从主进程推一帧输出（真链路：主进程 → preload → React → xterm）。⚠️ 同时**记进 termChunks** ——
+  // 否则切页签回来时 stub 的快照里没有这一帧，"重放"就验不出来（断言会以"本来就没有"收场 = 自证式）。
+  // 这一帧里**故意带一段 ANSI 红**：xterm 的 DOM 渲染器往单元格写**内联 style 属性**（_addStyle()），
+  // 生产 CSP 一旦把 style-src-attr 收成 'none'，**字还在、颜色没了**（ls / git diff 全变灰）——
+  // 只验"文字在不在"抓不到这件事。
   const TERM_MARK = 'JSL_TERM_PROBE_9Z'
   // **16 色 palette** —— 走 xterm 注入样式表里的类名（`xterm-fg-1`），归 `style-src-elem` 档
   const TERM_RED_MARK = 'JSL_TERM_RED_9Z'
   // **真彩** —— 走 `_addStyle()` 的 `setAttribute('style', 'color:#…')`，归 `style-src-attr` 档。
-  // 这一条是给 attr 那一档补的牙：只验 16 色的话，把 attr 收成 'none' 断言照样绿
-  //（审查 D 的实测结论：16 色走注入样式表，真彩才走属性）。
+  // 这条是给 attr 那一档补的牙：只验 16 色的话，把它收成 'none' 断言照样绿（16 色走注入样式表）。
   const TERM_TRUE_MARK = 'JSL_TERM_TRUE_9Z'
   const termFrameSeq = termSeq
   const termFrameData =
@@ -3065,10 +2934,9 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 600))
   await openBuiltin('终端')
 
-  // ⚠️ **就在这一刻推一帧实时输出**（不再额外等待）：面板刚挂载、`boot()` 正卡在
-  //    stub 的 400ms 快照上（`replaying = true`）—— 这一帧**必然落进"订阅↔重放"那个缝**。
-  //    老协议（先订阅立刻落屏 → 再重放全量）会让它**写两遍**、且第一遍排在历史**前面**。
-  //    （审查 D 的判据：不制造这个缝，这条断言在老实现下也会绿 = 名不副实。）
+  // ⚠️ **就在这一刻推一帧实时输出**（不再额外等待）：面板刚挂载、`boot()` 正卡在 stub 的 400ms
+  //    快照上（`replaying = true`）—— 这一帧**必然落进"订阅↔重放"那个缝**。不制造这个缝，
+  //    这条断言在老实现（先订阅落屏 → 再重放全量，会写两遍且排在历史**前面**）下也会绿 = 名不副实。
   const LIVE_MARK = 'JSL_TERM_LIVE_7Q'
   const liveSeq = termSeq
   const liveData = LIVE_MARK + '\r\n'
@@ -3109,16 +2977,12 @@ app.whenReady().then(async () => {
     termState)
 
   // ⚠️ **这一条是本批最容易静默坏掉的**：xterm 运行时插 `<style>`，被生产 CSP 拒掉之后
-  //    **字会变成背景色（屏幕上什么都看不见）**、`white-space` 从 pre 掉回 normal、
-  //    `span` 的 display 从 inline-block 掉回 inline —— 而**页面照样渲染得出来**，
-  //    所以"元素在不在"完全抓不到它。判据必须落在**计算样式**上，而且**钉住主题常量**
-  //    （只断言"前景 ≠ 背景"是近乎恒真的：没背景规则时 backgroundColor 是 `rgba(0,0,0,0)`，
-  //     格式天然不同，注入样式全被砍掉它也照样通过 —— 审查 B 抓出来的）。
-  //    常量与 `TerminalPanel.tsx` 的 THEME 同源：foreground `#e8e6e3` = rgb(232, 230, 227)。
-  //    ⚠️ 改主题色时这里要跟着改（这正是"钉住"的意思）。
-  // ⚠️ 期望色**按当前主题选**（与 `TerminalPanel.tsx` 的 THEME_LIGHT / THEME_INK 同源）：
-  //    `ink` → 墨底亮字 `#e8e6e3`；默认（纸白）→ 墨字 `#2b2b28`。
-  //    ⚠️ 改主题配色时必须同步改这里（这正是"钉住"的意思 —— 代价是改色会红一次）。
+  //    **字会变成背景色（屏幕上什么都看不见）**、`white-space` 从 pre 掉回 normal、`span` 的
+  //    display 从 inline-block 掉回 inline —— 而**页面照样渲染得出来**，"元素在不在"抓不到它。
+  //    判据必须落在**计算样式**上、并**钉住主题常量**：只断言"前景 ≠ 背景"近乎恒真（没有背景规则时
+  //    backgroundColor 是 rgba(0,0,0,0)，格式天然不同，注入样式全被砍掉它也照样通过）。
+  // ⚠️ 期望色按当前主题选（与 TerminalPanel.tsx 的 THEME_LIGHT / THEME_INK 同源）：墨色 → 墨底亮字
+  //    #e8e6e3，默认纸白 → 墨字 #2b2b28；改主题配色时必须同步改这里（这就是"钉住"的代价）。
   const themeFg = termState.dataTheme === 'ink' ? 'rgb(232, 230, 227)' : 'rgb(43, 43, 40)'
   checkTrue('**终端样式真的生效**（字色 = 当前主题的前景色、white-space:pre、span 是 inline-block）',
     termState.rowsStyle?.color === themeFg &&
@@ -3134,7 +2998,7 @@ app.whenReady().then(async () => {
     termAfterFrame.has === true, termAfterFrame)
 
   // ⚠️ **先说清这条判不了什么**：把构建产物的 `style-src-attr` 改回 `'none'`（CSP 证伪实验）
-  //    之后这条**仍然绿** —— **16 色**走的是注入样式表里的类名（`xterm-fg-N`），归 elem 档。
+  //    之后这条**仍然绿** —— 16 色走的是注入样式表里的类名（`xterm-fg-N`），归 elem 档。
   //    它守的是"终端的颜色链路整体没坏"（主题 / 注入样式 / 渲染器任一出问题都会红）。
   checkTrue('**16 色 ANSI 颜色真的画上去了**（红色那段的计算色 ≠ 行的默认前景色）',
     termAfterFrame.redColor !== null &&
@@ -3143,8 +3007,8 @@ app.whenReady().then(async () => {
     termAfterFrame)
 
   // ⚠️ 这才是**咬住 `style-src-attr` 那一档**的断言：真彩走 `_addStyle()` 的
-  //    `setAttribute('style', 'color:#ff0000')` —— 那一档一旦收成 `'none'`，
-  //    span 拿不到颜色、计算色会掉回行的默认前景色，这条**必红**。
+  //    `setAttribute('style', 'color:#ff0000')` —— 那一档一旦收成 `'none'`，span 拿不到颜色、
+  //    计算色掉回行的默认前景色，这条**必红**。
   checkTrue('**真彩（24 位）颜色真的画上去了**（`38;2;255;0;0` 那段 = rgb(255, 0, 0)，这条咬 style-src-attr）',
     termAfterFrame.trueColor === 'rgb(255, 0, 0)',
     { trueColor: termAfterFrame.trueColor, rowsColor: termAfterFrame.rowsColor })
@@ -3156,11 +3020,10 @@ app.whenReady().then(async () => {
     termLive.liveMarks === 1 && termLive.termMarks === 1 && termLive.liveAt > termLive.termAt,
     termLive)
 
-  // ── 「重启终端」必须是**真重启** ───────────────────────────────
-  //
-  // 老实现点它走的是**幂等**的 `terminal:start`：拿回同一个会话、屏幕内容原样 ——
-  // 一个**死按钮**。而它的唯一用途是"会话卡住时自救"，那个场景里会话**必然是活的**，
-  // 也就是**必然**走到那条幂等分支。判据落在"会话号变了 + 旧屏被清掉"上。
+  // ── 「重启终端」必须是**真重启** ───────────────────────────────────────
+  // 老实现点它走的是**幂等**的 `terminal:start`：拿回同一个会话、屏幕内容原样 —— 一个**死按钮**。
+  // 而它唯一的用途是"会话卡住时自救"，那个场景里会话**必然是活的**，也就**必然**走那条幂等分支。
+  // 判据落在"会话号变了 + 旧屏被清掉"上。
   const clickedRestart = await win.webContents.executeJavaScript(`
     (() => {
       const btn = Array.from(document.querySelectorAll('.tm-bar .ck-btn'))
@@ -3191,10 +3054,9 @@ app.whenReady().then(async () => {
   checkTrue('边界如实写在界面上（终端里改/删的文件不进检查点与回收站）',
     (termState.note || '').includes('回收站'), termState.note)
 
-  // ── 只读档：**拒绝执行 + 说清原因**（plan14 C5 的验收项）────────────
-  //
-  // 这一段在**最后**做：它会把会话置成"没有"，之后终端就停在"还没有会话"的状态。
-  // 判据是两条：① 界面上明说原因（不是给一个黑框）；② **真的没有起会话**。
+  // ── 只读档：**拒绝执行 + 说清原因**（plan14 C5 的验收项）──────────────
+  // 这一段放在**最后**做：它会把会话置成"没有"，之后终端就停在"还没有会话"的状态。
+  // 判据两条：① 界面上明说原因（不是给一个黑框）；② **真的没有起会话**。
   termPermission = 'read-only'
   termHasSession = false
   const termStartCallsBefore = termStartCalls
@@ -3209,25 +3071,22 @@ app.whenReady().then(async () => {
       status: document.querySelector('.tm-status')?.textContent?.trim() ?? null
     }))()
   `)
-  // ⚠️ 判据读的是**独立节点** `.tm-refuse`，且要求出现 stub 文案里的**哨兵串** ——
-  //    证明那句话真的来自 IPC 返回值，而不是界面模板里自己写死的
-  //    （审查 D：只断言 includes('只读') 会被常驻文案满足 = 假阳性）。
+  // ⚠️ 判据读的是**独立节点** `.tm-refuse`，且要求出现 stub 文案里的**哨兵串** —— 证明那句话真的
+  //    来自 IPC 返回值，而不是界面模板里自己写死的（只断言 includes('只读') 会被常驻文案满足）。
   checkTrue('只读档下终端**拒绝执行**，且界面把 IPC 返回的原因**原样说出来**（哨兵串在）',
     (termReadOnly.refuse || '').includes('JSL_RO_9Z') && termReadOnly.status === '还没有会话',
     { termReadOnly, termStartCalls })
-  // ⚠️ 光断言 `termHasSession === false` 是**恒真**的（门禁自己刚把它设成 false，
-  //    而只读档下没有任何界面路径能改回来）。加上"界面试过启动"的计数差才算真的验了
-  //    plan14 C5 那句话：「启动会话这一步都被拒绝」。
+  // ⚠️ 光断言 `termHasSession === false` 是**恒真**的（门禁自己刚把它设成 false，只读档下没有任何
+  //    界面路径能改回来）；加上"界面试过启动"的计数差，才算真的验了 plan14 C5 那句「启动会话
+  //    这一步都被拒绝」。
   checkTrue('只读档下**界面试过启动、却一条会话都没留下**（计数差 + 会话状态双判）',
     termStartCalls > termStartCallsBefore && termHasSession === false,
     { termStartCalls, termStartCallsBefore, termHasSession })
   termPermission = 'write' // 收尾：把门禁的存根状态还原，免得影响后面段落
 
   // ── 省 token 档位（plan8 R9.1 §七②）──
-  //
-  // 这时还停在「通用设置」分区（默认分区就是它），档位卡片与权限档**同屏**，
-  // 所以下面一律用 `[aria-label="省 token 档位"]` **限定范围**去查 ——
-  // 只按 `.choice-item` 会把权限档那三个也捞进来（那是另一组，数量不一样）。
+  // 此时还停在「通用设置」分区（默认就是它），档位卡片与权限档**同屏** —— 所以下面一律用
+  // [aria-label="省 token 档位"] **限定范围**去查：只按 .choice-item 会把权限档那三个也捞进来。
   const tierBefore = await win.webContents.executeJavaScript(`
     (() => {
       const group = document.querySelector('[aria-label="省 token 档位"]');
@@ -3640,12 +3499,9 @@ app.whenReady().then(async () => {
     })()
   `)
   // 等 debounce 窗口（300ms）后数写盘次数。
-  //
-  // ⚠️ **轮询等它发生，而不是睡一个定值**（2026-09-12 实测抓到的 race）：
-  //    同一份代码连跑两遍，这条断言一次是 1、一次是 0 —— 机器一忙，300ms 的定时器会被推迟，
-  //    睡固定 750ms 就可能拿到"还没写"的**假红**。而"写盘次数"这条断言的**本意**是
-  //    "3 次拖动只合并成 1 次写"，不是"在某个瞬间它已经写了"。
-  //    （它仍然抓得住"每动一下写一次"——那种情况 count 会 > 1，轮询也改变不了。）
+  // ⚠️ **轮询等它发生，而不是睡一个定值**：同一份代码连跑两遍，这条断言一次是 1、一次是 0 ——
+  //    机器一忙，300ms 的定时器会被推迟，睡固定 750ms 就可能拿到"还没写"的**假红**。而这条断言的
+  //    **本意**是"3 次拖动只合并成 1 次写"，不是"在某个瞬间它已经写了"（"每动一下写一次"仍会被抓住）。
   const persistDeadline = Date.now() + 2000
   while (wbSetCalls.length === 0 && Date.now() < persistDeadline) {
     await new Promise((r) => setTimeout(r, 100))
@@ -3907,13 +3763,10 @@ app.whenReady().then(async () => {
   //    断言紧跟在探针之后，见文件末尾。
 
   // —— ④ 会话回滚（plan10 B 批）：右键一条消息 → 回到这条之前 → 可撤销 ——
-  //
-  // ⚠️⚠️ **这里必须用真鼠标**（CDP mousePressed/mouseReleased），不能用 `el.click()`。
-  //    0.13.6 就是这么漏掉一个真 bug 的：菜单容器上挂着 document 的 `mousedown` 关闭监听，
-  //    而 `mousedown` **早于** `click` —— 于是按钮在 mousedown 那一刻就被卸载，
-  //    `click` 永远不会触发（它要求按下与松开落在同一个元素上）。
-  //    用户点下去什么也不发生；而 `el.click()` **只派发 click、不发 mousedown**，
-  //    正好绕过整条竞态 → 断言全绿。
+  // ⚠️⚠️ **必须用真鼠标**（CDP mousePressed/mouseReleased），不能用 `el.click()`：菜单容器上挂着
+  //    document 的 `mousedown` 关闭监听，而 `mousedown` **早于** `click` —— 按钮在 mousedown 那一刻
+  //    就被卸载，`click` 永远不会触发（它要求按下与松开落在同一个元素上）。用户点下去什么都不发生，
+  //    而 `el.click()` **只派发 click、不发 mousedown**，正好绕过整条竞态 → 断言全绿。
   //    **合成事件天生为绿**，这是本项目第二次栽在同一个坑里（第一次是拖拽）。
   let rbInputReady = false
   try {
@@ -4050,13 +3903,10 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 300))
   // —— Markdown 轻编辑（plan7 批 A3 范围②）：三条边界各验一条 ——
-  //
-  // 用真鼠标（理由同上面 ④）：`el.click()` 只发 click、不发 mousedown，
-  // 会把"mousedown 把元素干掉"这类真故障整条绕过去。
-  //
-  // ⚠️ 这一段跑在很后面，而前面几段探针动过工作台布局（分栏/关栏/换位）——
-  //    所以**先自愈地把「资源管理器」栏找回来**，否则 clickFile 点不到东西，
-  //    而失败理由会伪装成"编辑功能坏了"（"前置状态不对"和"功能坏了"长得一样，老坑）。
+  // 用真鼠标（理由同上面 ④）：`el.click()` 只发 click、不发 mousedown，会把"mousedown 把元素干掉"
+  // 这类真故障整条绕过去。
+  // ⚠️ 这一段跑在很后面，而前面几段探针动过工作台布局（分栏 / 关栏 / 换位）—— 所以**先自愈地把
+  //    「资源管理器」栏找回来**，否则 clickFile 点不到东西，失败理由会伪装成"编辑功能坏了"。
   const ensureExplorerRow = async (name) => {
     for (let i = 0; i < 8; i += 1) {
       const has = await win.webContents.executeJavaScript(
@@ -4098,23 +3948,19 @@ app.whenReady().then(async () => {
       explorerReady: ${JSON.stringify(explorerReady)},
       hasPane: !!document.querySelector('.fp'),
       hasModeBtn: !!Array.from(document.querySelectorAll('.fp-mode')).find((b) => (b.textContent || '').includes('编辑')),
-      // ⚠️ 判「在不在编辑态」不能再看 .fp-textarea —— plan13 B2 起编辑区是 Monaco，
-      //    而 Monaco 的 DOM 在**预览**态里也存在（B1 就是只读的它）——
-      //    拿它当判据会得到「永远在编辑态」的假绿。.fp-edit-bar 只在编辑态出现，用它。
-      //    （这段注释在模板字符串里，**不许写反引号** —— 见文件顶部的自检说明。）
+      // ⚠️ 判「在不在编辑态」不能再看 .fp-textarea —— plan13 B2 起编辑区是 Monaco，而 Monaco 的 DOM
+      //    在**预览**态里也存在（B1 就是只读的它），拿它当判据会得到「永远在编辑态」的假绿；用 .fp-edit-bar。
       hasEditBar: !!document.querySelector('.fp-edit-bar')
     }))()
   `)
   console.log('EDIT_PRE=' + JSON.stringify(editPre))
 
-  // 点「编辑」→ 出现编辑栏 + Monaco 编辑器
-  //
-  // ⚠️ **这一段必须先把窗口显示出来**（与下面 iframe 采样同一个理由，见那一段的说明）：
-  //    本进程的窗口一直是 `show: false`（不打扰用户），而 **monaco 的渲染走 rAF + 合成**，
-  //    隐藏窗口里的帧不会被合成 —— 实测症状就是"等了 4.8 秒，一行可见行都没有（高度恒为 0）"，
-  //    接着 `insertText` 无处可去 → 文件不脏 → Ctrl+S 没反应 → 守卫不出现：**9 条连锁红**，
+  // 点「编辑」→ 出现编辑栏 + Monaco 编辑器。
+  // ⚠️ **这一段必须先把窗口显示出来**（与下面 iframe 采样同一个理由）：窗口一直是 `show: false`
+  //    而 **monaco 的渲染走 rAF + 合成**，隐藏窗口里的帧不会被合成 —— 症状是"等了 4.8 秒一行可见行
+  //    都没有"，接着 `insertText` 无处可去 → 文件不脏 → Ctrl+S 没反应 → 守卫不出现：**9 条连锁红**，
   //    而功能一点没坏。`showInactive()` **只显示、不抢焦点**。
-  //    （这条不是猜的：同一份代码连跑 4 次，3 次绿 1 次红，红的都是同一处 —— 典型的渲染竞态。）
+  //    （不是猜的：同一份代码连跑 4 次，3 次绿 1 次红，红的都是同一处 —— 典型的渲染竞态。）
   win.showInactive()
   await new Promise((r) => setTimeout(r, 400))
   const modePos = await centerOf('.fp-mode')
@@ -4137,13 +3983,11 @@ app.whenReady().then(async () => {
   `)
   console.log('EDIT_ON=' + JSON.stringify(editOn))
 
-  // —— 编辑区**必须真的是一块能写东西的地方**（用户 2026-09-12 报：
-  //    「切回编辑它那个窗口缩得很小，而且无法扩大」）——
-  //
-  // 根因是**高度链断在中间**：`.dock-body` 有确定高度，但中间的 `.fp` 是"高度=内容"的盒子，
-  // 于是 `flex: 1` 的 textarea 没有可分配空间 → 塌成最小行数；`resize: none` 又堵死手动。
-  // 所以这里量**两件事**：① 它实际有多高（相对它所在的栏）② 能不能手动放大。
-  // 只量"存在"是不够的 —— 存在但只有两行高，正是用户看到的样子。
+  // —— 编辑区**必须真的是一块能写东西的地方**（用户 2026-09-12 报「切回编辑它那个窗口缩得很小，
+  //    而且无法扩大」）—— 根因是**高度链断在中间**：`.dock-body` 有确定高度，但中间的 `.fp` 是
+  //    "高度=内容"的盒子，于是 `flex: 1` 的 textarea 没有可分配空间 → 塌成最小行数，`resize: none`
+  //    又堵死手动。所以量**两件事**：① 它实际有多高（相对所在的栏）② 能不能手动放大 ——
+  //    只量"存在"是不够的：存在但只有两行高，正是用户看到的样子。
   const editBox = await win.webContents.executeJavaScript(`
     (() => {
       const ta = document.querySelector('.ce-wrap');
@@ -4210,12 +4054,10 @@ app.whenReady().then(async () => {
   for (let i = 0; i < 10 && !taPos; i++) {
     taPos = await findEditorPoint()
     if (!taPos) {
-      // ⚠️ **主动逼一帧**：隐藏或被遮挡的窗口里，Chromium 可能**不做合成** ——
-      //    monaco 的 DOM 都在（`.monaco-editor` 挂上了、28 行也生成了），
-      //    但布局一直没被 flush，量出来的每一行高度就是 **0**。
-      //    `capturePage()` 会强制渲染进程产出一帧（门禁自己的截图就是靠它拿到内容的，
-      //    所以这条路在本项目里是**已知可行**的）。不加这一下，就只能靠"等"，
-      //    而实测是"连跑 4 次红 3 次"——那种看天吃饭的闸，最后一定会被人关掉。
+      // ⚠️ **主动逼一帧**：隐藏或被遮挡的窗口里 Chromium 可能**不做合成** —— monaco 的 DOM 都在
+      //    （`.monaco-editor` 挂上了、28 行也生成了），但布局一直没被 flush，量出来每行高度就是 **0**。
+      //    `capturePage()` 会强制渲染进程产出一帧（门禁自己的截图就是靠它拿到内容的），不加这一下
+      //    就只能靠"等"，而实测是"连跑 4 次红 3 次"—— 那种看天吃饭的闸，最后一定会被人关掉。
       try {
         await win.webContents.capturePage()
       } catch {
@@ -4225,14 +4067,11 @@ app.whenReady().then(async () => {
     }
   }
   // —— 还找不到就**把 monaco 叫醒**（2026-09-13 实测的真凶）——
-  //
-  // 实测证据：失败时 `.view-line` 是 **h:0**（而 host 442 高、28 行都在、`.monaco-editor` 也在、
-  // 既不是 loading 也不是 error）；成功时同一行是 h:16。
-  // 那是 **monaco 的字体测量还没完成**（没量出字体高度，它就把行高算成 0）。
-  // 而它自己的 `automaticLayout: true` 会在**窗口尺寸变化**时重新 layout 并重算度量 ——
-  // 所以这里把窗口尺寸推 1px 再还原，等于戳它一下。
-  //
-  // ⚠️ 这是**环境兜底**，不是给产品打的补丁：真机窗口可见、字体正常加载时不会卡在这个状态；
+  // 实测证据：失败时 `.view-line` 是 **h:0**（而 host 442 高、28 行都在、`.monaco-editor` 也在，
+  // 既不是 loading 也不是 error），成功时同一行是 h:16 —— 那是 **monaco 的字体测量还没完成**
+  // （没量出字体高度，它就把行高算成 0）。它的 `automaticLayout: true` 会在**窗口尺寸变化**时重算
+  // 度量，所以把窗口推 1px 再还原等于戳它一下。
+  // ⚠️ 这是**环境兜底**、不是给产品打的补丁：真机窗口可见、字体正常加载时不会卡在这个状态，
   //    卡住的是"隐藏/离屏窗口 + 首帧还没合成"这个组合（本项目 §4.4 记过同一族的毛病）。
   if (!taPos) {
     const [w0, h0] = win.getSize()
@@ -4245,8 +4084,7 @@ app.whenReady().then(async () => {
       if (!taPos) await new Promise((r) => setTimeout(r, 400))
     }
   }
-  // 找不到就**把现场打出来**：不然只有一句 `EDIT_FOCUS=null`，
-  // 下一个人只会看到"9 条连锁红"，完全不知道该往哪儿看。
+  // 找不到就**把现场打出来**：不然只有一句 EDIT_FOCUS=null，下一个人只看到"9 条连锁红"、不知该往哪儿看。
   if (!taPos) {
     const miss = await win.webContents.executeJavaScript(`
       (() => {
@@ -4323,15 +4161,12 @@ app.whenReady().then(async () => {
   } else if (rbInputReady) {
     /**
      * **环境兜底**（2026-09-13）：拿不到"可见行"的坐标 —— 隐藏窗口里 Chromium 可能不做合成，
-     * monaco 的 DOM 都在（`.monaco-editor` 挂上了、行也生成了），
-     * 但布局没 flush，量出来每一行高度恒为 0（实测连跑 4 次能红 3 次）。
-     *
-     * 这时**直接聚焦输入面**（`.native-edit-context` / `textarea.inputarea`），
-     * 让"打字 → 变脏 → Ctrl+S → 守卫"这条主线**照样测得到**；
-     * 但**大声记下走的不是点击路径** —— 因为"点一下能不能进编辑器"这件事本次**没验到**。
-     *
-     * ⚠️ 这不是把断言改松：`inHost` 仍然是**真量出来的**，
-     *    聚焦失败照样判红；只是不再让一个渲染竞态把后面 8 条也一起拖红。
+     * monaco 的 DOM 都在（`.monaco-editor` 挂上了、行也生成了），但布局没 flush，量出来每行高度
+     * 恒为 0（实测连跑 4 次能红 3 次）。这时**直接聚焦输入面**（`.native-edit-context` /
+     * `textarea.inputarea`），让"打字 → 变脏 → Ctrl+S → 守卫"这条主线照样测得到；
+     * 但**大声记下走的不是点击路径** —— "点一下能不能进编辑器"这件事本次**没验到**。
+     * ⚠️ 这不是把断言改松：`inHost` 仍然是**真量出来的**、聚焦失败照样判红，
+     *    只是不再让一个渲染竞态把后面 8 条也一起拖红。
      */
     const viaDom = await win.webContents.executeJavaScript(`
       (() => {
@@ -4357,10 +4192,8 @@ app.whenReady().then(async () => {
     (() => ({
       hasDirtyBadge: !!document.querySelector('.fp-dirty'),
       hasTabDot: !!document.querySelector('.pane-tab-dirty'),
-      // ⚠️ monaco 虚拟化：DOM 里只有**可见行**。读它反而更贴近"用户实际看到的"；
-      //    权威全文在下面 fsWritePayloads[0].content（写盘那一刻的载荷）里验。
-      //    （这里**绝对不能**写反引号 —— 整段是模板字符串，一个裸反引号就把字符串提前结束，
-      //      而 node --check 只会给出一个和现场毫不相干的 "missing ) after argument list"。）
+      // ⚠️ monaco 虚拟化：DOM 里只有**可见行**，读它反而更贴近"用户实际看到的"；权威全文在下面的
+      //    fsWritePayloads[0].content（写盘那一刻的载荷）里验。（本行在模板串里，注释不许有反引号）
       text: Array.from(document.querySelectorAll('.ce-host .view-line'))
         .map((e) => e.textContent || '')
         .join('')
@@ -4368,11 +4201,9 @@ app.whenReady().then(async () => {
   `)
   console.log('EDIT_DIRTY=' + JSON.stringify(dirtyState))
 
-  // 保存①：**真按 Ctrl+S**（界面上写着的那条承诺）
-  //
-  // ⚠️ 必须真按键：monaco 有自己的 `KeybindingService`，它会**先吃掉**这个组合键 ——
-  //    外面挂 `onKeyDown` 根本收不到。所以这条断言同时也在守
-  //    "Ctrl+S 是绑在 monaco 上注册的，不是绑在某个外面的 div 上"。
+  // 保存①：**真按 Ctrl+S**（界面上写着的那条承诺）。
+  // ⚠️ 必须真按键：monaco 有自己的 `KeybindingService`，它会**先吃掉**这个组合键，外面挂 `onKeyDown`
+  //    根本收不到 —— 所以这条同时也在守"Ctrl+S 是注册在 monaco 上的，不是绑在某个外面的 div 上"。
   fsWritePayloads.length = 0
   if (rbInputReady) {
     await dbg.sendCommand('Input.dispatchKeyEvent', {
@@ -4495,9 +4326,9 @@ app.whenReady().then(async () => {
   `)
 
   // 在设置页期间继续推：一段正文 + 结束。
-  // ⚠️ 这一段是**这条修复的核心**：旧代码里 `chat:done` 收不到 → `markDone` 永不执行
-  //    → 界面里那段字**永远不会被存盘**。所以下面断言的是 **conv:save 的载荷**，
-  //    而不是"切回来能不能看见" —— 后者会被"点会话项重新加载"掩盖（`store.ts:396-405`）。
+  // ⚠️ 这是**这条修复的核心**：旧代码里 `chat:done` 收不到 → `markDone` 永不执行 → 界面里那段字
+  //    **永远不会被存盘**。所以下面断言的是 **conv:save 的载荷**，而不是"切回来能不能看见" ——
+  //    后者会被"点会话项重新加载"掩盖。
   convSaveCalls.length = 0
   win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '切页期间的字' })
   await new Promise((r) => setTimeout(r, 300))
@@ -4534,15 +4365,11 @@ app.whenReady().then(async () => {
   )
 
   // —— plan11 步骤 6：**两条会话同时跑**（并发这个能力的最后一道验收）——
-  //
-  // 计划 §四 第 2 条要求验四件事：
-  //   ① 两条都在跑（侧边栏两个「正在生成」标记）
-  //   ② 切到 A：A 的流在长，**B 的字不串进来**（这就是"切会话串台"的回归门）
-  //   ③ A 结束后 B 仍在跑
-  //   ④ 两条**各自落盘**（P0-1：后台那条跑完必须有人替它存）
-  //
-  // 手段：真键盘往输入框打字 + 回车发送（真输入路径），事件直接推（stub 环境跑不了真模型）。
-  // 判据盯着**界面上的字落在哪条会话**与**conv:save 的载荷**，不盯实现细节。
+  // 计划 §四 第 2 条要求验四件事：① 两条都在跑（侧边栏两个「正在生成」标记）；② 切到 A 时 A 的流在
+  // 长、**B 的字不串进来**（"切会话串台"的回归门）；③ A 结束后 B 仍在跑；④ 两条**各自落盘**
+  // （P0-1：后台那条跑完必须有人替它存）。
+  // 手段：真键盘往输入框打字 + 回车发送（真输入路径），事件直接推（stub 环境跑不了真模型）；
+  // 判据盯着**界面上的字落在哪条会话**与 **conv:save 的载荷**，不盯实现细节。
   const convItems = async () =>
     win.webContents.executeJavaScript(`
       (() => Array.from(document.querySelectorAll('.conv-item')).map((b) => ({
@@ -4670,8 +4497,7 @@ app.whenReady().then(async () => {
   checkTrue('前置：文件开在预览栏里，且有「编辑」入口', editPre.hasPane === true && editPre.hasModeBtn === true, editPre)
   checkTrue('前置：**还没进编辑态**（不然下面"点了才出现"什么也说明不了）', editPre.hasEditBar === false, editPre)
   checkTrue('点「编辑」→ 编辑栏与编辑器都出来了', editOn.hasEditBar === true && editOn.hasEditor === true, editOn)
-  // **阳性对照**：先认清输入面是谁。认不出来的话，下面"打字没生效"就分不清
-  // 是功能坏了、还是探针往一个不存在的地方敲键盘（那样会给出一条极难查的假红）。
+  // **阳性对照**：先认清输入面是谁 —— 认不出来的话，"打字没生效"就分不清是功能坏了还是探针找错了地方。
   checkTrue('认得清 Monaco 的输入面（EditContext 或 textarea.inputarea，二者必居其一）',
     editOn.inputSurface !== null, editOn)
   // 用户 2026-09-12 报的那个"缩得很小、还放不大"—— 判据盯着**实际占多大**与**能不能放大**
@@ -4743,10 +4569,9 @@ app.whenReady().then(async () => {
       (goalPanel?.btnTexts ?? []).some((s) => s.includes('暂停') && s.includes('完成') && s.includes('删除')) &&
       (goalPanel?.btnTexts ?? []).some((s) => s.includes('继续') && s.includes('完成')),
     goalPanel?.btnTexts)
-  // ⚠️ **"目标摆在待办上面"这条没写成断言**（2026-09-12）：
-  //    待办面板在"没有待办"时**自己不占位**，探针跑到那一刻它根本不在 DOM 里 → 几何对比无从判。
-  //    写成"todo 为 null 就放行"只会得到一条**永远绿的假断言**（本项目最反对的那种），
-  //    所以宁可先不写：顺序目前由 JSX 结构保证（`<GoalPanel />` 在 `<TodoPanel />` 之前）。
+  // ⚠️ **"目标摆在待办上面"这条没写成断言**：待办面板在"没有待办"时**自己不占位**，探针跑到那一刻
+  //    它根本不在 DOM 里 → 几何对比无从判；写成"todo 为 null 就放行"只会得到一条**永远绿的假断言**。
+  //    顺序目前由 JSX 结构保证（`<GoalPanel />` 在 `<TodoPanel />` 之前）。
   //    TODO：等有一个"待办非空"的稳定场景时补上真判据。
 
   // —— plan7 F5.1：模型目录（一把 Key 能调多个模型 + 每个模型的高级设置）——
@@ -4765,14 +4590,10 @@ app.whenReady().then(async () => {
     concurrencyResult.aHasOwnText === true, { aHasOwnText: concurrencyResult.aHasOwnText })
 
   // —— plan8 R9：真实用量（只计量、不记钱）——
-  //
-  // 为什么这条要真推 IPC 事件而不是直接看 store：用量从厂商上报 → Provider 解析
-  // → runner 累加 → `chat:done` 带货 → 预加载桥 → store 记账 → 界面渲染，
-  // 中间断任何一环，用户看到的就是"没有数字"。推事件能覆盖**桥之后**的整条链。
-  //
-  // 上文两处 `chat:done` 带的是 `payload: null` —— 那正是"厂商没报用量"那一档
-  // （DeepSeek 之外的多数端点不带 usage）。先确认它**不冒出一个 0**：
-  // 写个假 0 比不显示更坏，用户会以为"这轮不花 token"。
+  // 为什么真推 IPC 事件而不直接看 store：用量从厂商上报 → Provider 解析 → runner 累加 →
+  // `chat:done` 带货 → preload 桥 → store 记账 → 界面渲染，推事件能覆盖**桥之后**的整条链。
+  // 上面两处 `chat:done` 带的是 `payload: null` —— 那正是"厂商没报用量"那一档（DeepSeek 之外的多数
+  // 端点不带 usage）；先确认它**不冒出一个 0**：写个假 0 比不显示更坏，用户会以为"这轮不花 token"。
   const readUsageChip = async () =>
     win.webContents.executeJavaScript(`
       (() => {
@@ -4782,8 +4603,7 @@ app.whenReady().then(async () => {
           total: el.querySelector('.usage-total')?.textContent ?? null,
           last: el.querySelector('.usage-last')?.textContent ?? null,
           saved: el.querySelector('.usage-saved')?.textContent ?? null,
-          // 命中率 / 思考占比（plan8 R9.1 §七①）：两块可能都在、只在一块、或一块都没有
-          // （"一块都没有"正是**厂商没报**那一档 —— 那时不许冒出 0%）
+          // 命中率 / 思考占比：两块可能都在、只在一块、或一块都没有（"都没有"正是**厂商没报**那档，不许冒 0%）
           rates: Array.from(el.querySelectorAll('.usage-rate')).map((n) => n.textContent),
           tier: el.querySelector('.usage-tier')?.textContent ?? null,
           title: el.getAttribute('title') ?? ''
@@ -4795,9 +4615,8 @@ app.whenReady().then(async () => {
   checkTrue('厂商没报用量时，工具栏**不冒出用量牌**（宁可没有，也不写一笔假账）',
     chipNull.total === null, chipNull)
 
-  // 真报一轮：1200 + 340 = 1540 → 显示 1.5k
-  // 缓存/推理都**明确报 0**（模拟"厂商说了：这一轮没命中缓存、也没思考"）——
-  // 它们该显示 0%，而不是被当成"没报"藏起来（plan8 R9.1 §七① 的口径）
+  // 真报一轮：1200 + 340 = 1540 → 显示 1.5k。缓存/推理都**明确报 0**（模拟"厂商说了：这一轮没命中
+  // 缓存、也没思考"）—— 它们该显示 0%，而不是被当成"没报"藏起来（plan8 R9.1 §七① 的口径）。
   win.webContents.send('chat:done', {
     conversationId: 'c1',
     payload: {
@@ -4851,13 +4670,10 @@ app.whenReady().then(async () => {
     savedUsage?.promptTokens === 2000 && savedUsage?.completionTokens === 540,
     savedUsage)
 
-  // 混进一轮**没报缓存字段**的（模拟换到不报这个数的端点）→ 累计命中率变成"不知道"，
-  // 整块**消失**，而不是写一个 0%（那等于替厂商宣布"一点没命中"）。
-  // 宁可没有数字，也不给假数字 —— 这是档位开关也改不了的那条正确性红线。
-  //
-  // ⚠️ payload 里必须是**显式 null**：那才是"厂商没报"在真实链路上的形态
-  // （解析器没报就写 null）。省略键是另一回事 —— 它表示"这份账不含这条信息"，
-  // 累加时会跳过，老数据靠它保持兼容（见 @shared/usage 的 addOptional 表）。
+  // 混进一轮**没报缓存字段**的（模拟换到不报这个数的端点）→ 累计命中率变成"不知道"、整块**消失**，
+  // 而不是写一个 0%（那等于替厂商宣布"一点没命中"）—— 宁可没有数字，也不给假数字。
+  // ⚠️ payload 里必须是**显式 null**：那才是"厂商没报"在真实链路上的形态（解析器没报就写 null）；
+  //    省略键是另一回事 —— 它表示"这份账不含这条信息"，累加时会跳过，老数据靠它保持兼容。
   win.webContents.send('chat:done', {
     conversationId: 'c1',
     payload: {

@@ -3,33 +3,13 @@ import { dirname, join } from 'node:path'
 import type { ChatMessage, ConversationMeta } from '@shared/ipc'
 import type { ConversationsBackend } from './conversations-core'
 
-// 会话存储的**分层磁盘后端**（plan10 A 批）
+// 会话存储的**分层磁盘后端**（plan10 A 批）。布局：`<root>/conversations.json` 只放 meta（列表、白名单只读这份），
+// `<root>/conversations/<id>.json` 放正文 —— 旧版"全部会话连同正文塞一个文件"要每次重写全部、读列表也得先解析全部正文。
 //
-// 布局（分层：把"列表要的"与"正文"分开）：
-//
-//   <root>/conversations.json          ← 只有 meta（列表、白名单只读这一份）
-//   <root>/conversations/<id>.json     ← 正文（一条会话一个文件）
-//
-// 为什么这么分：旧版把**全部会话连同正文**塞进一个文件，于是
-//   ① 每次保存要重写全部会话（O(总量)）② 读列表也要先解析全部正文。
-// 分开之后：列表只读 meta（O(会话数)），保存只写自己那一份。
-//
-// ## 三条硬约束（都有测试钉着）
-//
-// 1. **原子写**：一律"写临时文件 + rename"。读者要么看到旧文件、要么看到新文件，
-//    **永远不会看到半截**。⚠️ 换掉 electron-store 时最容易顺手丢掉的就是这条：
-//    `checkpoints.ts` 的裸 `writeFileSync` 是另一种赌注（坏一个 manifest 只等于少一条
-//    可回滚记录，而且坏文件会被跳过），而**会话正文是用户唯一的原始数据**，赌注不一样。
-// 2. **写序：先正文、后索引**。反过来的话，索引里会短暂出现"messageCount 说有 N 条、
-//    而正文文件还不存在"的状态 —— 崩在中间就变成"点进去空白"。
-// 3. **单个坏文件不拖垮整张表**：某条会话的正文读不出来 → 那条当空处理并留痕，
-//    **不许让整个列表加载失败**（旧版 conf 遇到坏 JSON 会直接抛，那是全列表级故障）。
-//
-// ## 为什么 fs 也是注入的
-//
-// A 批的验收第一条就是**读盘足迹**："列表不得展开任何正文"是**主进程读盘行为**，
-// 渲染层看不见、也不能靠耗时去猜。把 fs 做成可注入的适配器之后，测试可以拿一个
-// **记账的** fs 包住真实 fs —— 真文件、真字节，同时能数清"读了几个文件、读了多少字节"。
+// ⚠️ 三条硬约束（都有测试钉着）：① **原子写**（临时文件 + rename，读者永远看不到半截）—— 换 electron-store 时最容易顺手
+// 丢掉这条；`checkpoints.ts` 的裸 `writeFileSync` 是另一种赌注（坏个 manifest 只少一条记录、坏文件还会被跳过），而
+// **会话正文是用户唯一的原始数据**。② **写序先正文、后索引**（反过来崩在中间就是"点进去空白"）。③ **单个坏文件不拖垮整张表**
+// （正文读不出来就当空处理并留痕，旧版遇坏 JSON 直接抛 = 全列表级故障）。fs 做成可注入，读盘足迹才数得清。
 
 /** 用到的那几个 fs 能力（收窄成接口，便于测试注入记账版） */
 export interface FsAdapter {
@@ -92,10 +72,8 @@ function atomicWrite(fs: FsAdapter, path: string, data: string): void {
 function readJson<T>(fs: FsAdapter, path: string): T | null {
   try {
     if (!fs.existsSync(path)) return null
-    // **先剥 BOM**：`JSON.parse` 遇到开头的 U+FEFF 会直接抛，而文件明明在 ——
-    // 表现为"所有会话一下子都不见了"，且极难查（打开文件看内容是好的）。
-    // 旧库（conf）写的是无 BOM，但用户手改过、或别的编辑器存过一次就会带上。
-    // 这行是**换库时最容易顺手丢掉**的那类兜底：原库默默替我们挡住了。
+    // **先剥 BOM**：`JSON.parse` 遇到开头的 U+FEFF 会直接抛，而文件明明在 —— 表现为"所有会话一下子都不见了"，
+    // 且极难查（打开文件看内容是好的）。旧库（conf）写的是无 BOM，但用户手改过或别的编辑器存过一次就会带上。
     const text = fs.readFileSync(path, 'utf8').replace(/^\uFEFF/, '')
     return JSON.parse(text) as T
   } catch {
@@ -127,9 +105,8 @@ export function createFsConversationsBackend(
     const out: Record<string, ConversationMeta> = {}
     for (const [id, entry] of Object.entries(list)) {
       if (!entry) continue
-      // **兼容未迁移的老文件**：老格式里正文内嵌在 entry.messages 上。
-      // 这里把它剥掉、并用它的长度当 messageCount 兜底 —— 于是"迁移没成功"
-      // 也不会让应用起不来（降级而不是硬失败）。
+      // **兼容未迁移的老文件**：老格式把正文内嵌在 `entry.messages` 上。这里剥掉它、并用它的长度兜 messageCount ——
+      // 于是"迁移没成功"也不会让应用起不来（降级而不是硬失败）。
       const legacy = entry as ConversationMeta & { messages?: ChatMessage[] }
       const { messages, ...meta } = legacy
       out[id] = {
@@ -187,11 +164,9 @@ export function createFsConversationsBackend(
 }
 
 // ── 格式迁移：v1（整表 + 正文内嵌）→ v2（meta 表 + 正文分文件）────────────
-//
-// ⚠️ 这是 A 批**唯一动用户数据**的一步，按 plan10 §2.4 的止损规矩办：
-//   **写齐 → 校验 → 才覆盖索引**，且**先把老文件原样备份一份**。
-//   任何一步失败就**不覆盖索引**、原样保留老文件，让应用以"降级模式"继续跑
-//   （readMetaFile 能容忍老格式）—— 半迁移是最糟的状态，但"能跑"比"跑不起来"强得多。
+// ⚠️ 这是 A 批**唯一动用户数据**的一步，按 plan10 §2.4 的止损规矩办：**写齐 → 校验 → 才覆盖索引**，且先备份老文件。
+// 任何一步失败就**不覆盖索引**、原样保留老文件，让应用以"降级模式"继续跑（readMetaFile 能容忍老格式）——
+// 半迁移是最糟的状态，但"能跑"比"跑不起来"强得多。
 
 export interface MigrationResult {
   migrated: boolean

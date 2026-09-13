@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import type { SkillInfo } from '@shared/ipc'
 
 // 「＋」号拓展面板（P2）：新建任务页与对话页共用的能力入口。
-// 设计原则（用户要求）：初始页面越简洁越好——技能 / 子 Agent 不直接摊在页面上，
-// 收进这里按需选取。后续文件、图片、MCP 也挂这里（当前标为待做）。
+// 用户要求页面尽量简洁 —— 技能 / 子 Agent 收进这里按需选取（文件、图片、MCP 也挂这里）。
 
 export interface PlusMenuProps {
   picked: string[]
   /** 不传则只提供附件能力（对话页的技能由会话创建时决定） */
   onToggle?: (name: string) => void
-  /** 选择文件作为上下文附件 */
   onAttach?: () => void
 }
 
@@ -19,7 +17,7 @@ export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps):
   const boxRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!onToggle) return // 不需要技能列表时不必拉取
+    if (!onToggle) return // 不需要技能列表就不拉取
     void window.api.listSkills().then(setSkills)
   }, [onToggle])
 

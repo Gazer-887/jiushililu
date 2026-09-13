@@ -16,29 +16,19 @@ import ChatView from './views/ChatView'
 import NewSessionView from './views/NewSessionView'
 import SettingsView from './views/SettingsView'
 
-// 三段式布局（P2）：顶栏（面板开关） + 左抽屉（会话/设置） + 主区域（对话） + 右抽屉（工作台）。
-// 主区域永远只负责"对话"，新增能力一律往两侧抽屉挂。
+// 三段式布局（P2）：顶栏 + 左抽屉（会话/设置） + 主区域（对话） + 右抽屉（工作台）——
+// 主区域只负责"对话"，新增能力一律往两侧抽屉挂。
 
 /**
- * **流式订阅挂在这一层，不挂在 ChatView 里**（2026-09-12 修）。
- *
- * 原来它挂在 `ChatView` 的 effect 上，而 `App` rendering 主区域用的是**条件渲染**
- * （`view === 'chat' && <ChatView />`）—— 于是**切到设置页就等于把订阅全解绑**
- *（`ChatView.tsx` 原 79-99 行）。后果有两条，第二条是会卡死人的：
- *
- *   ① 在设置页期间流式吐出来的字**永远看不到**（没人接）；
- *   ② 如果流在那一刻**跑完**了，`chat:done` 就丢了 → `streaming` 永远停在 true
- *      → 回到对话页之后发送键一直是「停止」，**点它也没用**（`stopStreaming` 当时也不清这个标志）。
- *
- * 挂在 App 上之后，订阅的生命周期 = 应用的生命周期，与"正在看哪一页"无关 ——
- * 这也正是流式事件本该有的归属：**它属于这个窗口，不属于某个视图**。
- * （plan11「多会话并发」还要在后面给它加上"按会话分流"，那一步只改这里的落点。）
+ * 流式订阅必须挂这一层、不许挂 `ChatView`：主区域是条件渲染，挂那儿 = 切到设置页就解绑 ——
+ * ① 那期间吐出的字没人接，永远看不到；② 若流恰在那时跑完，`chat:done` 丢失 → `streaming` 停在 true，
+ * 回到对话页后发送键一直是「停止」且**点它也没用**。订阅生命周期 = 应用生命周期，与看哪一页无关。
  */
 function useStreamSubscriptions(): void {
   useEffect(() => {
     const s = (): ReturnType<typeof useAppStore.getState> => useAppStore.getState()
     // plan11：订阅**原样收信封**，落点由 store 按 `conversationId` 分流 ——
-    // 这一层不再"猜"事件属于哪条会话（以前默认就是当前显示的那条，于是切会话就串台）
+    // 不许在这一层"猜"事件属于哪条会话（以前默认当前显示那条，于是切会话就串台）
     const offChunk = window.api.onChatChunk((e) => s().appendChunk(e))
     const offReasoning = window.api.onChatReasoning((e) => s().appendReasoning(e))
     const offDone = window.api.onChatDone((e) => s().markDone(e))
@@ -46,7 +36,7 @@ function useStreamSubscriptions(): void {
     const offTool = window.api.onChatTool((e) => s().pushToolEvent(e))
     const offTodos = window.api.onTodoChanged((e) => s().setTodos(e))
     const offSubagents = window.api.onSubagentChanged((e) => s().setSubagents(e))
-    // 补拉一次：这两份状态存在主进程，界面挂载时不该是空的
+    // 补拉一次：todos/subagents 存在主进程，界面挂载时不该是空的
     const pull = (): void => {
       const activeId = s().activeId
       if (!activeId) return
@@ -59,7 +49,7 @@ function useStreamSubscriptions(): void {
 
     /**
      * 关窗口前的落盘握手（plan11 P0-2）：主进程拦下关闭 → 请这里落盘 → 回执后才真关。
-     * `await` 必须等落盘**全部结束**再回执，否则窗口先关、内容照样丢。
+     * 必须等落盘**全部结束**再回执，否则窗口先关、内容照样丢。
      */
     const offFlush = window.api.onFlushRequest(() => {
       void s()
@@ -99,20 +89,17 @@ export default function App() {
   useEffect(() => {
     void loadSettings()
     void loadConversations()
-    void loadUIPrefs() // 抽屉宽度（plan7 批 A0）
+    void loadUIPrefs()
   }, [loadSettings, loadConversations, loadUIPrefs])
 
-  /** 松手时落盘（拖动过程中只改内存，不写盘） */
+  /** 松手才落盘：拖动过程中只改内存，不写盘 */
   const commit = (patch: Partial<UIPrefs>): void => {
     void persistUIPrefs(patch)
   }
 
-  // 关窗口时**全部**会话落盘（plan11 P0-2）。
-  //
-  // 两条路都留：① 主进程的 flush 握手（可靠，但它等不到回执就 2 秒超时）；
-  // ② `beforeunload` 这里再兜一次（握手超时/异常时的最后一道）。
-  // 只留 ② 是不够的：`beforeunload` 里的异步 IPC **不保证发得出去**（进程即将销毁），
-  // 那正是"关了窗口发现最后一段没了"的经典成因。
+  // 关窗口时**全部**会话落盘（plan11 P0-2）。两条路都留：① 主进程的 flush 握手（可靠，但等不到回执即超时）；
+  // ② `beforeunload` 这里再兜一次。只留 ② 是不够的 —— `beforeunload` 里的异步 IPC **不保证发得出去**
+  // （进程即将销毁），那正是"关了窗口发现最后一段没了"的经典成因。
   useEffect(() => {
     const onBeforeUnload = (): void => {
       void flushAll()
@@ -157,7 +144,7 @@ export default function App() {
         )}
         <Workbench />
       </div>
-      {/* 危险操作确认（plan8 R5）：全局只挂一个，主进程推请求即弹出 */}
+      {/* 危险操作确认（plan8 R5）：全局只挂一个 —— 主进程推请求即弹出 */}
       <ConfirmDialog />
     </div>
   )

@@ -1,12 +1,10 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
-// 日志系统（plan8 R2）——零依赖，写文件 + 控制台，带轮转与敏感信息过滤。
-//
+// 日志系统（plan8 R2）—— 零依赖，写文件 + 控制台，带轮转与敏感信息过滤。
 // 为什么必须有：在此之前全项目只有散落的 console，**出问题无法排查**（盲飞）。
-// 两条铁律（延续 D-013 / NORMS）：
-//   ① 绝不写 API Key 或任何凭据（写入前过 scrub 脱敏）
-//   ② 轮转有上限，不允许日志无限膨胀
+// 两条铁律（延续 D-013 / NORMS）：① 绝不写 API Key 或任何凭据（写盘前必过 scrub）；
+// ② 轮转有上限，不允许日志无限膨胀。
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
@@ -40,8 +38,7 @@ export function scrub(text: string): string {
 /** 初始化：指定日志目录（通常 app.getPath('userData')/logs） */
 export function initLogger(dir: string, level: LogLevel = 'info'): void {
   minLevel = level
-  // 换目录必须重置累计器：它是模块级状态，否则会与新文件的真实大小漂移，
-  // 导致"累计够了但文件还没到上限"→ 轮转被反复跳过（测试抓到过这个 bug）。
+  // 换目录必须重置累计器：它是模块级状态，漂移会让轮转被反复跳过（测试抓到过这个 bug）。
   bytesSinceCheck = 0
   try {
     mkdirSync(dir, { recursive: true })
@@ -54,7 +51,7 @@ export function initLogger(dir: string, level: LogLevel = 'info'): void {
 }
 
 /**
- * 轮转：app.log 超过上限时，依次后移 app.1.log ← app.log，app.2.log ← app.1.log …
+ * 轮转：app.log 超过上限时依次后移（app.1.log ← app.log，app.2.log ← app.1.log …），
  * 超出 MAX_ARCHIVES 的最旧档案删除。全部用重命名/覆盖，逻辑简单可预测。
  *
  * @returns 是否真的执行了轮转（调用方据此决定是否清零字节累计器）
@@ -117,8 +114,7 @@ function write(level: LogLevel, scope: string, message: string, extra?: unknown)
   if (logDir) {
     try {
       appendFileSync(join(logDir, CURRENT_NAME), line + '\n', 'utf8')
-      // 运行期轮转：只累计字节数，累计到上限才真去 statSync + 轮转。
-      // （只在启动时轮转的话，长时间不重启的会话会让日志无限增长。）
+      // 运行期轮转：累计到上限才真去 statSync + 轮转（只在启动时轮转会漏掉长期不重启的会话）
       bytesSinceCheck += Buffer.byteLength(line, 'utf8') + 1
       if (bytesSinceCheck >= MAX_FILE_BYTES) {
         // 轮转成功才清零；没成功（文件其实还没到上限）就保持高位，下次写继续重试

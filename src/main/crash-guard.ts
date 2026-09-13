@@ -2,14 +2,9 @@ import { app, dialog, BrowserWindow } from 'electron'
 import { createLogger } from './log'
 
 // 异常兜底（plan8 R1）：**主进程崩了不能就这么消失**。
-//
-// 在此之前：任何未捕获异常都会让应用直接退出，用户只看到"软件没了"，
-// 我这边拿不到任何线索 —— 这是"能跑就行"与"专业健壮"的分界线之一。
-//
-// 三层兜底：
-//   ① uncaughtException   —— 同步异常
-//   ② unhandledRejection  —— Promise 未处理拒绝
-//   ③ render-process-gone —— 渲染进程崩溃（可自动重载）
+// 在此之前任何未捕获异常都让应用直接退出，用户只看到"软件没了"，排查拿不到任何线索。
+// 三层兜底：uncaughtException（同步异常）/ unhandledRejection（Promise 拒绝）/
+// render-process-gone（渲染进程崩溃，可自动重载）。
 
 const log = createLogger('crash')
 
@@ -75,8 +70,8 @@ export function installCrashGuards(): void {
       url: webContents.getURL()
     })
 
-    // 限流：30 秒内最多自动重载 2 次。超过说明是稳定复现的崩溃，
-    // 再重载只会无限循环 —— 此时停下来告知用户，比死循环体面。
+    // 限流：30 秒内最多自动重载 2 次。超过说明是稳定复现的崩溃，再重载只会无限循环 ——
+    // 此时停下来告知用户，比死循环体面。
     const now = Date.now()
     reloadTimes = reloadTimes.filter((t) => now - t < RELOAD_WINDOW_MS)
     if (reloadTimes.length >= MAX_RELOADS) {

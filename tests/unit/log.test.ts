@@ -123,7 +123,6 @@ describe('日志写入与轮转', () => {
     fillLog(log)
 
     const files = readdirSync(dir).filter((f) => f.endsWith('.log'))
-    // 轮转后应出现档案文件（app.1.log），说明超过上限后被切走
     expect(files).toContain('app.1.log')
     // 当前文件应重新变小（不会继续累加到 1.2MB）
     const currentSize = readFileSync(join(dir, 'app.log'), 'utf8').length

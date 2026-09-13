@@ -48,13 +48,10 @@ describe('trimMessages（历史裁剪）', () => {
     const res = trimMessages(msgs, { contextWindow: 2000, keepRecent: 4 })
     expect(res.trimmed).toBe(true)
     expect(res.droppedCount).toBeGreaterThan(0)
-    // 首条仍是 system
     expect(res.messages[0]!.role).toBe('system')
-    // 第二条是摘要占位
     expect(res.messages[1]!.content).toContain('[历史摘要]')
     // 末尾保留区完整（原末尾 4 条 + system + 摘要）
     expect(res.messages.length).toBe(2 + 4)
-    // 裁剪后 token 显著下降
     expect(estimateMessagesTokens(res.messages)).toBeLessThan(estimateMessagesTokens(msgs))
   })
 
@@ -107,7 +104,6 @@ describe('runAgentLoop 与上下文管理联动', () => {
       }
     })
     expect(result.stopReason).toBe('max-rounds')
-    // 裁剪生效：模型看到的条数远少于累计堆积
     expect(sawCount).toBeLessThan(10)
   })
 })

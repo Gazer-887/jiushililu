@@ -14,9 +14,8 @@ import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
 import { TOKEN_TIER_LIST, type TokenSaverTier } from '@shared/token-tier'
 
 /*
- * 设置分区导航（plan8 R7 形态改造，2026-09-12 用户意见）：
- * 形制对齐 DSH 设置页 —— 左侧分区导航 + 右侧内容，选中项为圆角胶囊高亮。
- * 图标是手写内联 SVG：只为几个图标引一个图标库不划算，且本项目维持零 UI 框架依赖。
+ * 设置分区导航（plan8 R7）：形制对齐 DSH 设置页 —— 左侧分区导航 + 右侧内容，选中项为圆角胶囊高亮。
+ * 图标是手写内联 SVG：为几个图标引一个图标库不划算，且本项目维持零 UI 框架依赖。
  * 分区按**真实存在的能力**划分，不放空条目（将来 P3 生态的 MCP / 技能 / Agent 预设再加）。
  */
 type SectionId = 'general' | 'model' | 'appearance' | 'trouble'
@@ -81,9 +80,8 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
   }
 ]
 
-// 模型行的图标（plan7 F5）：**内联 SVG 手绘，不用 emoji** ——
-// 与项目其它图标同一口径（emoji 会随系统字体变样，也压不住水墨那套黑白灰）。
-// 语义：鲸鱼 = DeepSeek 官方来源；菱形闪光 = 用户自定义；其余是操作图标。
+// 模型行图标**内联 SVG 手绘、不用 emoji**（emoji 会随系统字体变样，也压不住水墨那套黑白灰）。
+// 语义：鲸鱼 = DeepSeek 官方来源；菱形闪光 = 用户自定义。
 function IconWhale(): JSX.Element {
   return (
     <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden focusable="false">
@@ -152,18 +150,18 @@ export default function SettingsView() {
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
-  /** 设置分区：默认落在「通用设置」（最通用的一项在前，与 DSH 一致） */
+  /** 默认落在「通用设置」（最通用的一项在前，与 DSH 一致） */
   const [section, setSection] = useState<SectionId>('general')
-  /** 通用设置：工作区与访问权限档 —— 都存在主进程，与输入框工具栏是同一份数据 */
+  /** 工作区与权限档都存在主进程，与输入框工具栏是同一份数据 */
   const [ws, setWs] = useState<WorkspaceInfo | null>(null)
   const [perm, setPerm] = useState<PermissionPreset>('write')
-  /** 省 token 档位（plan8 R9.1 §七②）：跟权限档一样是"人定的档"，真值在主进程 */
+  /** 省 token 档位：跟权限档一样是"人定的档"，真值在主进程 */
   const [tier, setTier] = useState<TokenSaverTier>('balanced')
-  /** 故障排查区（plan8 R2）：日志目录与最近文件，用于"出问题能查" */
+  /** 故障排查区：日志目录与最近文件，用于"出问题能查" */
   const [logs, setLogs] = useState<LogsInfo | null>(null)
 
   // ── 多模型管理（plan7 F5）──
-  /** 模型列表（含"当前用哪个"与 models.json 的真实路径，都由主进程给真值） */
+  /** 模型列表（含"当前用哪个"与 models.json 的真实路径，真值都由主进程给） */
   const [models, setModels] = useState<ModelsView | null>(null)
   /** 正在编辑哪一条；`null` = 只看列表。`{id: undefined}` = 新增 */
   const [editingModel, setEditingModel] = useState<{ id?: string } | null>(null)
@@ -171,7 +169,6 @@ export default function SettingsView() {
   const [draftName, setDraftName] = useState('')
   /** 编辑中的**模型目录**（F5.1）：一行一个模型，各自带可选的高级设置 */
   const [draftModels, setDraftModels] = useState<ModelEntry[]>([])
-  /** 哪一条在测连接（按钮显示"测试中"） */
   const [modelBusy, setModelBusy] = useState<string | null>(null)
   const [modelNotice, setModelNotice] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -253,13 +250,11 @@ export default function SettingsView() {
     setApiKey('')
     setNotice(null)
   }
-  void reset // 多模型之后「重置」被「取消」取代（重置成当前模型没有意义 —— 表单只在编辑时出现）
+  void reset // 多模型之后「重置」被「取消」取代 —— 表单只在编辑时出现，重置成当前模型没有意义
 
   /**
-   * 保存。
-   *
-   * 多模型之后，"保存"写的是**这一条档案**（新增则创建），不是"全局那一份设置"——
-   * 它是用户此刻在编辑的那个模型，语义上必须是"存进这一条"。
+   * 保存写的是**这一条档案**（新增则创建），不是"全局那一份设置" ——
+   * 多模型之后用户此刻编辑的就是某一条模型，语义上必须"存进这一条"。
    */
   const save = async (): Promise<void> => {
     if (!draft) return
@@ -303,8 +298,7 @@ export default function SettingsView() {
     setTesting(true)
     setNotice(null)
     try {
-      // 编辑既有模型 → 测**它自己**（用它已存的 Key，不必重新填）
-      // 新增中 → 用表单里的值现测（还没入库，没有档案可测）
+      // 编辑既有模型 → 测**它自己**（用它已存的 Key，不必重填）；新增中 → 用表单里的值现测（还没入库，没档案可测）
       const result = editingModel?.id
         ? await window.api.testModel(editingModel.id)
         : await window.api.testConnection({ ...draft, apiKey })
@@ -327,17 +321,15 @@ export default function SettingsView() {
     setPerm(await window.api.setPermission(p))
   }
 
-  /** 选省 token 档位（plan8 R9.1 §七②）。**全局一档** —— 不做会话级覆盖（用户定调） */
+  /** 选省 token 档位：**全局一档**，不做会话级覆盖（用户定调） */
   const chooseTier = async (next: TokenSaverTier): Promise<void> => {
     setTier(await window.api.setTokenTier(next))
   }
 
   // ── 多模型：增删改与"改用这个"（plan7 F5）──
   //
-  // 三条纪律：
-  //   ① **删除先确认**（红线）：确认框里说清它叫什么
-  //   ② **至少要留一个** —— 护栏在主进程，这里只把它的理由原样显示
-  //   ③ 每次改动都 `refreshModels()` 重新拉真值，而不是在本地猜一份（列表就是真值）
+  // 三条纪律：① **删除先确认**（红线），确认框里说清它叫什么；② **至少要留一个** —— 护栏在主进程，
+  // 这里只把它的理由原样显示；③ 每次改动都 `refreshModels()` 重新拉真值，不在本地猜一份（列表就是真值）。
 
   /** 新增端点：连接信息沿用当前设置当模板；**模型目录从空的一条起步** */
   const startCreate = (): void => {
@@ -353,8 +345,8 @@ export default function SettingsView() {
 
   /** 编辑端点：连接信息进表单，**整份模型目录进编辑器**（一行一个模型，各自带高级设置） */
   const startEdit = (p: ModelProfileView): void => {
-    // 表单只负责**连接级**四项（协议 / 地址 / 超时 / 流式）——
-    // 采样、输出上限、上下文窗口那些"模型级"参数归目录里每个模型自己的高级设置（F5.1）
+    // 表单只管**连接级**四项（协议 / 地址 / 超时 / 流式）；采样、输出上限、上下文窗口那些
+    // "模型级"参数归目录里每个模型自己的高级设置（F5.1）。
     setDraft((prev) =>
       prev
         ? {
@@ -454,7 +446,7 @@ export default function SettingsView() {
             </div>
 
             <div className="field-label">访问权限</div>
-            {/* 只留"这句在哪还能改"这一半：前半句是产品口号，每页来一次就成了噪音 */}
+            {/* 只留"这句在哪还能改"这一半：前半句是产品口号，每页来一次就是噪音 */}
             <p className="hint">与输入框工具栏那处是同一个设置，改哪边都生效。</p>
             <div className="choice-list choice-list-fill" role="radiogroup" aria-label="访问权限">
               {PERM_ORDER.map((p) => (
@@ -472,8 +464,7 @@ export default function SettingsView() {
             </div>
 
             <div className="field-label">省 token 档位</div>
-            {/* 用户定调（plan8 R9.1 §七②）：**省 token 不许让模型降智**，
-                所以"能力 vs 省钱"这个取舍摆出来让人选，不替他默认一个激进值 */}
+            {/* **省 token 不许让模型降智**（plan8 R9.1 §七②）：把"能力 vs 省钱"摆出来让人选，不替用户默认一个激进值 */}
             <p className="hint">
               只影响省 token 的手段（工具输出的压缩力度、读文件默认给多少行），
               不会因为选了省档就改数字或藏起厂商没报的东西。
@@ -494,8 +485,7 @@ export default function SettingsView() {
             </div>
 
             <div className="field-label">界面布局</div>
-            {/* 原来那句在教"怎么拖分隔条"——可拖动是直觉操作，双击复位属于彩蛋，
-                不值得占一行浅字；这个标题下真正要给的只有那个按钮 */}
+            {/* 不写"怎么拖分隔条"：可拖动是直觉操作、双击复位是彩蛋，不值得占一行浅字 */}
             <div className="actions">
               <button
                 className="btn-secondary"
@@ -512,9 +502,7 @@ export default function SettingsView() {
             <h2>模型</h2>
 
             {/* ── 模型列表（plan7 F5 多模型管理）──────────────────────────────
-                形态照用户给的那张：标题 + "会自动写进本地 …models.json" + [添加模型]，
-                下面是 图标 / 名字 / 来源 / 三个操作（编辑 · 测试连接 · 删除）。
-                为什么要有"当前用哪个"：列表没有当前态就是一坨——用户看不出正在用谁。
+                为什么要有"当前用哪个"：列表没有当前态就是一坨 —— 用户看不出正在用谁。
                 （路径来自主进程的真值，不硬编码 —— 说得出口就得是真的） */}
             <div className="model-head">
               <div className="model-head-text">
@@ -602,8 +590,7 @@ export default function SettingsView() {
                     onChange={(e) => update('baseURL', e.target.value)}
                   />
                 </label>
-                {/* **模型目录**（plan7 F5.1）：一把 Key 能调的模型都放这儿，
-                    每个模型还能各自展开高级设置 —— 形态照用户给的那张配置页截图 */}
+                {/* **模型目录**（plan7 F5.1）：一把 Key 能调的模型都放这儿，每个还能各自展开高级设置 */}
                 <ModelCatalogEditor
                   models={draftModels}
                   onChange={setDraftModels}
@@ -639,7 +626,7 @@ export default function SettingsView() {
             </label>
 
 
-            {/* 这句承重（会花钱，得先说）—— 只把主语去掉，不删 */}
+            {/* 承重句（会花钱，得先说）—— 只把主语去掉，不删 */}
             <p className="hint">会发起一次真实请求，消耗少量 Token。</p>
 
             <div className="actions">
@@ -661,10 +648,10 @@ export default function SettingsView() {
         )}
 
         {section === 'appearance' && (
-          /* plan7 外观自定义：主题切换（水墨 / 经典），切换即时生效并持久化 */
+          /* 主题切换（水墨 / 经典），切换即时生效并持久化 */
           <div className="settings-section">
             <h2>外观</h2>
-            {/* 原来那句"切换立即生效，重启后保持"是**一切设置**的共性 —— 说了等于没说 */}
+            {/* 不写"切换立即生效，重启后保持"：那是**一切设置**的共性，说了等于没说 */}
             <div className="choice-list" role="radiogroup" aria-label="主题">
               {THEMES.map((t) => (
                 <button
@@ -683,10 +670,10 @@ export default function SettingsView() {
         )}
 
         {section === 'trouble' && (
-          /* plan8 R2：故障排查入口。出问题时用户能一键找到日志，而不是只看到"出错了" */
+          /* 故障排查入口（plan8 R2）：出问题时能一键找到日志，而不是只看到"出错了" */
           <div className="settings-section">
             <h2>故障排查</h2>
-            {/* 承重（隐私 + 怎么用），但一句话说得完 —— 原来两行里有半行是重复的 */}
+            {/* 承重（隐私 + 怎么用），但一句话说得完 */}
             <p className="hint">日志记在本地，已过滤 API Key 等敏感信息；报障时把最近的日志发出来即可。</p>
             <div className="logs-info">
               <span className="logs-path">

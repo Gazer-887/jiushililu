@@ -1,8 +1,6 @@
-// 文本差异（plan13 批 B）—— 单测
-//
-// 这一份测的重点不是"diff 算法对不对"（那是 jsdiff 的事），
-// 而是**我们这一层会不会把行号/块序号算错** —— 因为界面上的"拒绝第 N 处"
-// 直接依赖它，错了就是"点了第 2 处、改了第 3 处"，不报错、只改错。
+// 文本差异（plan13 批 B）—— 单测。
+// 测的不是"diff 算法对不对"（那是 jsdiff 的事），而是**我们这一层会不会把行号/块序号算错** ——
+// 界面上的"拒绝第 N 处"直接依赖它，错了就是"点了第 2 处、改了第 3 处"，不报错、只改错。
 
 import { describe, expect, it } from 'vitest'
 import {
@@ -31,7 +29,6 @@ describe('computeHunks —— 块与行号', () => {
 
   it('**改前的行号从 1 开始，删掉的行号不能串**', () => {
     const r = computeHunks(text('a', 'b', 'c'), text('a', 'B', 'c'))
-    // 上下文 a=1、删 b=2、增 B=2、上下文 c=3
     expect(byNo(r.hunks[0]!.lines)).toEqual([
       'context@1/1',
       'del@2/-',
@@ -56,8 +53,7 @@ describe('computeHunks —— 块与行号', () => {
     const after = text('L1', 'X!', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10', 'Y!', 'L12')
     const r = computeHunks(before, after)
     expect(r.hunks.map((h) => h.index)).toEqual([1, 2])
-    // 第 2 块的起始行 = 改动行(11) − 上下文(3) = 8。
-    // **这一条就是在防"从 1 重数"那个 bug**：写错的话这里会是 1。
+    // 第 2 块起始行 = 改动行(11) − 上下文(3) = 8；**这一条防"从 1 重数"**，写错的话这里会是 1
     expect(r.hunks[1]!.oldStart).toBe(8)
     // 两块不许重叠：第 1 块结束（oldStart+oldLines）要在第 2 块开始之前
     const h1 = r.hunks[0]!
@@ -94,10 +90,8 @@ describe('computeHunks —— 块与行号', () => {
   it('**末行没有换行符时，行号不许错位**（jsdiff 会插一行 `\\ No newline` 标注）', () => {
     const r = computeHunks(text('a', 'b'), text('a', 'B'))
     expect(byNo(r.hunks[0]!.lines)).toEqual(['context@1/1', 'del@2/-', 'add@-/2'])
-    // ⚠️ 先把**前提**钉住（审查指出）：哪天 jsdiff 不再插那个标注行，
-    //    下面那条"没有标注行"就变成恒真的空断言，而没人会知道。
+    // ⚠️ 先钉住**前提**：哪天 jsdiff 不再插那个标注行，"没有标注行"这条就成了恒真空断言而没人知道
     expect(r.rawHunks[0]!.lines).toContain('\\ No newline at end of file')
-    // 标注行不能被当成内容塞进来
     expect(r.hunks[0]!.lines.some((l) => l.text.includes('No newline'))).toBe(false)
   })
 
@@ -187,9 +181,7 @@ describe('canRevertHunks —— 什么时候**不许**逐块退回', () => {
   })
 })
 
-// ── 退回一处改动（plan13 批 B · B4）─────────────────────────────
-//
-// 这组是整个 B4 的命门：**算错了不会报错，只会把文件改坏**。
+// 退回一处改动（plan13 批 B · B4）：这组是整个 B4 的命门 —— **算错了不会报错，只会把文件改坏**，
 // 所以判据一律落在"退完之后文本**具体**长什么样"，而不是"返回了 true"。
 
 /** 造一对"两处相隔很远"的文本（第 2 行和第 15 行各有一处改动） */
@@ -217,8 +209,7 @@ describe('revertHunk —— 退回「第 N 处」', () => {
     const d = computeHunks(before, after)
     expect(d.hunks).toHaveLength(2)
     expect(d.rawHunks).toHaveLength(2)
-    // ⚠️ 判据必须是**顺序全等**，不能是"包含"（审查指出原写法是自证式：
-    //    把所有块都配到 rawHunks[0]、或块内行序被打乱，`toContain` 照样绿）。
+    // ⚠️ 判据必须是**顺序全等**，不能是"包含"：配错块、或块内行序被打乱，`toContain` 照样绿
     for (let i = 0; i < d.hunks.length; i++) {
       const raw = d.rawHunks[i]!.lines.filter((l) => !l.startsWith('\\'))
       const shown = d.hunks[i]!.lines.map(
@@ -306,8 +297,7 @@ describe('revertHunk —— 退回「第 N 处」', () => {
     const r1 = revertHunk(after, d1, 1)
     expect(r1.ok).toBe(true)
     if (!r1.ok) return
-    // 第 2 处那一段**一个字都没被动过**，所以拿旧差异照样对得上 ——
-    // applyPatch 会真去校验上下文行，对得上才写：这正是我们要的安全网。
+    // 第 2 处那段**一个字都没被动过**，拿旧差异照样对得上；applyPatch 会真校验上下文行、对得上才写（这就是安全网）
     const r2 = revertHunk(r1.text, d1, 2)
     expect(r2.ok).toBe(true)
     if (!r2.ok) return
@@ -379,18 +369,14 @@ describe('revertHunk —— 退回「第 N 处」', () => {
   })
 })
 
-// ── 渲染预算与降级（plan13 交叉验证后补）───────────────────────
-//
-// 这两条都是**审查证伪了原声明**之后补的：
-//   · 原写的 `MAX_TOTAL_LINES` 判断在 push **之前**、只看"已装进去的总行数"，
-//     而第一块天然满足 `0 < 4000` → **单块可以任意大**，"预算"形同虚设
-//   · `computeHunks` 没有时间上限 → 48 KB 全文件重写要 **32 秒**、还同步跑在渲染进程
+// 渲染预算与降级（plan13 交叉验证后补）：两条都是**原声明被证伪**才补的 ——
+// ① `MAX_TOTAL_LINES` 的旧判断在 push **之前**、只看"已装进去的总行数"，而第一块天然满足 `0 < 4000`
+//    → **单块可以任意大**，"预算"形同虚设；② `computeHunks` 没有时间上限，48 KB 重写要 32 秒、还同步跑在渲染进程（本机实测）。
 
 describe('重复内容歧义：`applyPatch` 会**向外找**精确匹配，退回必须仍落在正确的地方', () => {
-  // 审查的原话：`applyPatch` 保证"整块能在文件里找到精确匹配"，**不保证在声明的偏移处**。
-  // 今天不发生错位，是因为"声明位置就是差异算出来的位置，且第一次就匹配" ——
-  // 而这条保证靠的是调用方的 mtime 闸，不是 applyPatch 自己。
-  // 所以这一类必须留一张回归网：哪天前提被破坏，就是**静默改错地方**。
+  // `applyPatch` 只保证"整块能在文件里找到精确匹配"，**不保证在声明的偏移处**：今天不错位靠的是
+  // 调用方的 mtime 闸（声明位置就是差异算出来的位置、且第一次就匹配），不是 applyPatch 自己 ——
+  // 前提一破就是**静默改错地方**，所以这一类必须留回归网。
   const cases: [string, string][] = [
     ['dup\nA\nk\ndup\nA\nk\n', 'dup\nB\nk\ndup\nA\nk\n'], // 只改第一处
     ['dup\nA\nk\ndup\nA\nk\n', 'dup\nA\nk\ndup\nB\nk\n'], // 只改第二处
@@ -412,12 +398,9 @@ describe('重复内容歧义：`applyPatch` 会**向外找**精确匹配，退�
 })
 
 describe('渲染预算：单块也不许撑爆（原声明被证伪过）', () => {
-  /**
-   * 造一个"**算得快、但单块很大**"的输入：往一个短文件中间插一大段。
-   * ⚠️ 夹具是实测挑出来的（`n=100, ins=4200` → 60ms、单块 4206 行）：
-   *    不能用"整份重写"那种输入 —— 它虽然也是单块，但要几秒才算得完，
-   *    会先撞上**降级**的超时上限，于是测到的是另一条分支（我自己就踩过一次）。
-   */
+  /** 造一个"**算得快、但单块很大**"的输入（往短文件中间插一大段）。⚠️ 夹具是实测挑的（`n=100, ins=4200` →
+   *  单块 4206 行）：不能用"整份重写"那种输入 —— 它也是单块，但要几秒才算完，会先撞上**降级**的超时上限，
+   *  于是测到的是另一条分支。 */
   const bigInsert = (n: number, ins: number): { before: string; after: string } => {
     const head = Array.from({ length: n }, (_, i) => `L${i}`)
     const mid = Math.floor(n / 2)

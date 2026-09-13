@@ -4,30 +4,17 @@ import { isHtmlFile, workspaceRelToPreviewUrl } from '@shared/html-preview'
 import MessageMarkdown from './MessageMarkdown'
 import CodeEditor, { languageOf } from './CodeEditor'
 
-// 文件预览 + **Markdown 轻编辑**（plan9 W3 抽出；plan7 批 A3 范围②）
+// 文件预览 + Markdown 轻编辑。
 //
-// 编辑器故意**不是 Monaco**：这一批要的是"够改就行"，通用代码编辑器是批 B 的事
-//（语法高亮 / 多光标 / 大文件 / Diff 都在那边）。这里就是一个 textarea + 保存。
-//
-// ## 三条边界（计划里写死的，不写清就会出"丢数据"这类事）
-//
-//   ① **脏标记**：改了没存 → 页签上打点、关页签时**拦住问一句**（不静默丢）。
-//      草稿住在布局的 `tab.content.dirty` 里（不是组件 state）——
-//      切换页签会让本组件**卸载**，存组件里当场就没；存布局里则连**重启都还在**。
-//   ② **外部冲突**：文件可能被 Agent 或别的程序改过 → 保存前比对 mtime，
-//      不一致**不写盘**，给"覆盖 / 重新载入"两个选择，**不做静默覆盖**。
-//   ③ **大文件**：超过预览上限（256KB）的文件**不给编辑** ——
-//      因为读都只读了前一段，保存回去会把没读到的部分**整个冲掉**。
-//
-// ## 保存为什么走 `writeWorkspaceFile`
-//
-// 那是**统一写入服务**：界面与 Agent 走同一条路 → 自动进检查点 →
-// 「文件变更记录」里看得见、退得回（plan7 批 A2 立的地基，这里只是它的消费者）。
+// 三条边界（计划里写死的，不守就会出"丢数据"这类事）：
+//   ① 脏标记：草稿住在布局的 `tab.content.dirty`（不是组件 state）—— 切页签会卸载本组件，
+//      存组件里当场就没；存布局里连重启都还在。改了没存就拦着问一句，不静默丢。
+//   ② 外部冲突：保存前比对 mtime，不一致**不写盘**，给"覆盖 / 重新载入"选择，**不做静默覆盖**。
+//   ③ 大文件：超过预览上限的文件**不给编辑** —— 只读了前一段，存回去会把没读到的部分整个冲掉。
+// 保存走 `writeWorkspaceFile`（统一写入服务）→ 自动进检查点 → 「文件变更记录」里退得回。
 
 interface Props {
-  /** 工作区相对路径 */
   rel: string
-  /** 预览 / 编辑 */
   mode?: 'preview' | 'edit'
   /** 未保存的草稿（来自布局；有它才算"脏"） */
   dirty?: string
@@ -35,12 +22,8 @@ interface Props {
   onDirtyChange?: (dirty: string | undefined) => void
 }
 
-/**
- * 预览的五种状态。
- *
- * 用**判别联合**而不是几个布尔量拼（`isImage` + `isBinary` + `tooLarge` + `error`）——
- * 布尔拼起来会出现"既是图片又是错误"这种非法组合，而联合类型让非法状态**写不出来**。
- */
+/** 用判别联合而不是几个布尔量拼（`isImage` + `isBinary` + `tooLarge` + `error`）——
+ *  布尔拼起来会出现"既是图片又是错误"这种非法组合，联合类型让非法状态**写不出来**。 */
 type View =
   | { kind: 'loading' }
   | { kind: 'text'; content: string; truncated: boolean; mtimeMs?: number }
@@ -78,7 +61,7 @@ export default function FilePreviewPane({
 
     const name = baseName(rel)
 
-    // ① 图片：走**二进制**通道拿 data URL
+    // ① 图片：走二进制通道拿 data URL
     if (imageMimeOf(name)) {
       void window.api.readWorkspaceBinary(rel).then((res) => {
         if (!alive) return
@@ -97,7 +80,7 @@ export default function FilePreviewPane({
       void window.api.readWorkspaceFile(rel).then((res) => {
         if (!alive) return
         if (!res.ok) {
-          // 失效路径**不为空**：文件被删/换了工作区时，页签仍在、只是显错
+          // 失效路径**不为空**：文件被删 / 换了工作区时，页签仍在、只是显错
           return setView({ kind: 'error', message: res.error ?? '读取失败' })
         }
         setView({
@@ -114,7 +97,7 @@ export default function FilePreviewPane({
       }
     }
 
-    // ③ 其余二进制：**降级而不是放弃** —— 给十六进制转储，看文件头就能认出它是什么
+    // ③ 其余二进制：**降级而不是放弃** —— 给十六进制文件头，一眼认出它是什么格式
     void window.api.readWorkspaceBinary(rel).then((res) => {
       if (!alive) return
       if (!res.ok) return setView({ kind: 'error', message: res.error ?? '读取失败' })
@@ -124,23 +107,17 @@ export default function FilePreviewPane({
     return () => {
       alive = false
     }
-    // `dirty` 刻意**不进依赖**：它每次按键都变，进依赖会把文件重读一遍、
-    // 顺带把刚打的字冲掉。切回页签时草稿由组件重新挂载时读取，够用。
+    // `dirty` 刻意不进依赖：它每次按键都变，进了会把文件重读一遍、顺带冲掉刚打的字
+    // （切回页签时草稿靠重新挂载时读取，够用）。
   }, [rel])
 
-  /** 能编辑的前提：是文本，**且没被截断**（边界③ —— 截断的文件保存回去会冲掉后半段） */
+  /** 能编辑的前提：是文本，**且没被截断**（边界③ —— 截断的文件存回去会冲掉后半段） */
   const canEdit = view.kind === 'text' && !view.truncated
   const editing = mode === 'edit' && canEdit
 
-  /**
-   * HTML 的「渲染 / 源码」开关。
-   *
-   * 默认**渲染** —— 跟 Markdown 一个道理：打开一个页面文件，想看的是那个页面。
-   * 换文件时重置：不能带着上一个文件的选择进下一个。
-   *
-   * `previewUrl` 为 null（绝对路径 / 越界写法）时**不给**这个开关 ——
-   * 给一个注定加载不出来的白框，比没有这个按钮更糟。
-   */
+  /** HTML 的「渲染 / 源码」开关：默认**渲染**（打开一个页面文件，想看的是那个页面），
+   *  换文件时重置。`previewUrl` 为 null（绝对路径 / 越界写法）时**不给**这个开关 ——
+   *  给一个注定加载不出来的白框，比没有这个按钮更糟。 */
   const previewUrl = isHtmlFile(rel) ? workspaceRelToPreviewUrl(rel) : null
   const [htmlRender, setHtmlRender] = useState(true)
   useEffect(() => {
@@ -162,10 +139,7 @@ export default function FilePreviewPane({
     onDirtyChange?.(undefined)
   }
 
-  /**
-   * 保存。
-   * `force = true` 走"覆盖"：**不带** mtime 基线，主进程就不做冲突检查（用户明确选了覆盖）。
-   */
+  /** 保存。`force = true` 走"覆盖"：**不带** mtime 基线，主进程就不做冲突检查（用户明确选了覆盖） */
   const save = async (force = false): Promise<void> => {
     if (view.kind !== 'text' || saving) return
     setSaving(true)
@@ -187,7 +161,7 @@ export default function FilePreviewPane({
       }
       setConflict(false)
       setSaveMsg('已保存')
-      // 基线跟着更新，否则下一次保存会自己撞上"文件被改过"（就是自己刚写的）
+      // 基线跟着更新，否则下次保存会撞上"文件被改过"（其实正是自己刚写的）
       setView((v) => (v.kind === 'text' ? { ...v, content: draft, mtimeMs: res.mtimeMs } : v))
       onDirtyChange?.(undefined)
     } finally {
@@ -267,14 +241,11 @@ export default function FilePreviewPane({
                   saveMsg && <span className="fp-msg">{saveMsg}</span>
                 )}
               </div>
-              {/* 编辑区 —— **Monaco**（plan13 B2）。
-                  ⚠️ 三条边界一条都没搬走，它们**从来就不在这个框里**：
-                     ① 脏标记：还是 `value={draft}` + `onChange={onEdit}`（回调里跟磁盘内容比）
-                     ② 冲突：还是 `save()` 里比 mtime，冲突时把选择权交回用户
-                     ③ 截断：`editing` 只在 `canEdit`（= 未截断）时为真，压根到不了这里
-                  换内核时最容易死的恰恰是这层**胶水**，不是编辑器本身。
-                  ⚠️ 草稿必须留在这个组件里（`draft` state），**不许**搬进 monaco 的 model ——
-                     页签一卸载 model 就没了，用户改的字会**静默消失**。 */}
+              {/* ⚠️ 换编辑器内核（plan13 B2）最容易弄丢的是这层**胶水**，不是编辑器本身 ——
+                  三条边界全在这里：① 脏标记靠 `value={draft}` + `onChange` 与磁盘内容比；
+                  ② 冲突靠 `save()` 里比 mtime；③ 截断靠 `editing` 只在未截断时为真。
+                  ⚠️ 草稿必须留在本组件的 `draft` state，**不许**搬进 monaco 的 model ——
+                  页签一卸载 model 就没了，用户改的字会**静默消失**。 */}
               <CodeEditor
                 value={draft}
                 language={languageOf(rel)}
@@ -287,24 +258,13 @@ export default function FilePreviewPane({
               {previewUrl && htmlRender ? (
                 <div className="fp-html-wrap">
                   {/*
-                    ⚠️ **别把这段和上面图片那条红线搞混**（那条是 SVG 专属）：
-
-                    SVG 用 `<img>` 就够 —— 只需要"显示"，img 上下文不执行脚本，
-                    所以**不需要、也不允许**换成 object/iframe。
-
-                    HTML 不一样："渲染一个页面"本身就得有文档上下文，没有 img 版。
-                    既然必须用 frame，就把口子焊死，**两道独立的锁**：
-                      ① `sandbox=""`（空值）—— 不执行脚本、不提交表单、不跳转，
-                         且是**不透明源**（读不到父页，父页也读不到它）
-                      ② 预览响应头里的 CSP —— `script-src 'none'` 断脚本、
-                         `default-src 'none'` 断网络（真源见 src/shared/html-preview.ts）
-                    响应头那条还顺带兜住"属性被误删"的情况 —— 实测里**不带** sandbox 属性的
-                    那一帧同样一行脚本都没跑，就是它挡的。
-
-                    为什么不 `srcdoc`：srcdoc/blob/data 都是本地 scheme，**子文档继承父页策略**，
-                    本应用的 `style-src 'self'` 会把预览里的内联样式全砍掉 ——
-                    实测三种写法渲染出来都是**白色骨架**。所以走自定义协议（真实 scheme，
-                    拿到全新策略容器）。代价在下面那条提示里说清楚，别让人以为坏了。
+                    ⚠️ 别和图片那条红线搞混：SVG 只需"显示"（img 上下文不执行脚本，不许换 object/iframe）；
+                    "渲染一个页面"必须有文档上下文、没有 img 版，所以用 frame 并把口子焊死，**两道独立的锁**：
+                    ① `sandbox=""`（不执行脚本/表单/跳转，且是**不透明源**，父子页互相读不到）；
+                    ② 预览响应头的 CSP（`script-src 'none'` 断脚本、`default-src 'none'` 断网络，
+                    真源见 src/shared/html-preview.ts）—— 它也顺带兜住"属性被误删"：实测不带 sandbox 的那一帧同样没跑脚本。
+                    ⚠️ **不许**改 `srcdoc`/blob/data：本地 scheme 的子文档继承父页策略，本应用 `style-src 'self'`
+                    会把预览里的内联样式全砍掉（实测三种写法都渲染成**白色骨架**）；自定义协议才有全新策略容器。
                   */}
                   <iframe
                     className="fp-html"
@@ -324,9 +284,7 @@ export default function FilePreviewPane({
                   <MessageMarkdown content={draft || view.content} />
                 </div>
               ) : (
-                // 非 Markdown 的文本 → **Monaco**（plan13 批 B）：语法高亮 + 行号 + 大文件能翻。
-                // ⚠️ 这一版只换"看"这一半（只读）；"改"那一半（下面的 textarea）属 B2。
-                //    分开做是有意的：换编辑器内核最容易顺手弄丢的，就是那三条边界。
+                // 非 Markdown 的文本 → Monaco 只读；换编辑器内核最容易弄丢的就是那三条边界
                 <CodeEditor value={draft || view.content} language={languageOf(rel)} readOnly />
               )}
               <div className="fp-size">{formatSize((draft || view.content).length)}</div>
@@ -337,11 +295,8 @@ export default function FilePreviewPane({
 
       {view.kind === 'image' && (
         <div className="fp-image">
-          {/*
-            ⚠️ **安全红线**：只能这样用 `<img src>` 渲染用户文件。
-            SVG 是可执行内容（能带 <script>），而 img 上下文**不执行脚本**。
-            换成 <object> / <iframe> / 内联 SVG 就等于执行工作区里的代码 —— 不许换。
-          */}
+          {/* ⚠️ **安全红线**：只能这样用 `<img src>` 渲染用户文件 —— SVG 是可执行内容（能带 script），
+              而 img 上下文**不执行脚本**；换 `<object>` / `<iframe>` / 内联 SVG 就等于执行工作区的代码。 */}
           <img className="fp-img" src={view.dataUrl} alt={baseName(rel)} />
         </div>
       )}

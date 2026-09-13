@@ -13,10 +13,8 @@ import {
 } from '@shared/html-preview'
 
 /**
- * HTML 沙箱预览（plan7 批 A3 补）——纯逻辑部分。
- *
- * 真渲染与"脚本到底跑没跑"由 `scripts/verify-shot.cjs` 采像素验（那里才看得见结果）；
- * 这里管的是**可判定**的那一半：URL 换算、边界收口、类型白名单、策略字面量。
+ * HTML 沙箱预览（plan7 批 A3 补）—— 纯逻辑部分：URL 换算、越界收口、类型白名单、CSP 字面量。
+ * 真渲染与"脚本到底跑没跑"只能靠 `scripts/verify-shot.cjs` 采像素验，这里管不到。
  */
 
 describe('isHtmlFile', () => {
@@ -125,16 +123,14 @@ describe('预览策略（响应头，比 meta 更硬）', () => {
 })
 
 /**
- * 防"配置漂移"：`frame-src` 那行在前端构建配置里（不 import 本模块），
- * 于是它就成了**第二份事实**—— 一旦有人改了常量忘了配置，预览会静默变成白框。
- * 这条断言把两份钉在一起（改一处不改另一处 = 红）。
+ * 防"配置漂移"：`frame-src` 那行在 `config/electron.vite.config.ts` 里（不 import 本模块），
+ * 是**第二份事实** —— 改了常量忘了配置，预览会静默变白框。这两条断言把两份钉在一起。
  */
 describe('构建配置与常量不许漂移', () => {
   const config = readFileSync(join(process.cwd(), 'config/electron.vite.config.ts'), 'utf8')
 
   it('开发/生产两套 CSP 都放行了预览协议', () => {
-    // 只挑**数组里真写的条目**（注释里也会出现 frame-src 这个词，
-    // 拿 includes 去数会数到注释 —— 那种口径会把"改坏了"和"注释里提了一嘴"混在一起）
+    // 只挑数组里真写的条目 —— 注释里也出现 "frame-src"，拿 includes 数会数进注释
     const entries = config.split('\n').filter((l) => /^\s*"frame-src /.test(l))
     expect(entries.length).toBe(2)
     for (const line of entries) {

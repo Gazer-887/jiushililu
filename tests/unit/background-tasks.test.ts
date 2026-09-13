@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createBackgroundTaskStore, MAX_OUTPUT, MAX_TASKS } from '@main/agent/background-tasks'
 
-// 后台任务注册表（plan7 批 D）：命令能后台跑、输出累积、能查能停。
-// 用 node 自身当"被执行的命令"（跨平台，不依赖 shell 内建）。
+// 后台任务注册表（plan7 批 D）：用 node 自身当"被执行的命令"，跨平台、不依赖 shell 内建。
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 

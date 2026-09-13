@@ -108,8 +108,7 @@ export class AnthropicProvider implements IProvider {
         if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
           cb.onChunk(json.delta.text)
         }
-        // 用量**分两处报**（plan8 R9）：`message_start` 给输入、`message_delta` 给输出。
-        // 两处都收，交给上层累加 —— 只收一处会让账面少一半。
+        // 用量**分两处报**（plan8 R9）：`message_start` 给输入、`message_delta` 给输出；只收一处账面就少一半
         const usage = usageFromAnthropicEvent(json)
         if (usage) cb.onUsage?.(usage)
       } catch {
@@ -156,10 +155,7 @@ export class AnthropicProvider implements IProvider {
     }
   }
 
-  /**
-   * 「获取可用模型」：Anthropic 的 `GET {baseURL}/models`。
-   * 认证头与对话不同（`x-api-key` + `anthropic-version`），不能照抄 OpenAI 那套。
-   */
+  /** 「获取可用模型」：`GET {baseURL}/models`。认证头与对话不同（`x-api-key` + `anthropic-version`），不能照抄 OpenAI 那套 */
   async listModels(req: ProviderRequest) {
     try {
       const res = await fetch(resolveApiUrl(req.settings.baseURL, 'models'), {

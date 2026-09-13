@@ -1,27 +1,10 @@
 /**
- * 目标（Goal）—— **跨轮次存活的长期意图**（plan12）。
+ * 目标（Goal）—— **跨轮次存活的长期意图**（plan12）：待办是"这一轮干什么"、跑完即清，目标是
+ * "要持续达成什么"、跨轮次跨重启存活、只能**显式**标记完成 —— 把目标塞进 todo，会让"这轮干完了"
+ * 与"这件事永远不做了"变成同一件事，那正是用户要分开的。每个目标属于**一条会话**（plan11 的会话
+ * 身份），于是"切回那条会话还看得见它"是自然结果，不必另建一套索引。
  *
- * ## 与「待办」（Todo）的本质区别（这是整个设计的起点）
- *
- * | | 待办 Todo | 目标 Goal |
- * |---|---|---|
- * | 回答的问题 | **这一轮**干什么 | 我要**持续**达成什么 |
- * | 生命周期 | 一轮跑完就清 | 跨轮次、跨重启存活 |
- * | 谁维护 | Agent 用 update_todos 自己刷 | 用户手建 + Agent 可自建 |
- * | 结束方式 | 任务做完自然消失 | **显式**标记完成（或放弃） |
- *
- * 一句话：待办是**过程**，目标是**意图**。把目标塞进 todo 会让"这一轮干完了"
- * 和"这件事永远不做了"变成同一件事 —— 那正是用户要分开的。
- *
- * ## 归属
- *
- * 每个目标属于**一条会话**（plan11 给了我们可靠的身份）。这样"切回那条会话还看得见它"
- * 是自然结果，而不是另建一套索引。
- *
- * ## 本模块的边界
- *
- * **纯逻辑，不 import electron、不碰 IO**：状态机与校验都在这里，可被单测直接 import。
- * 落盘（`main/store/goal.ts`）与界面（输入框上方那条）各自独立。
+ * 纯逻辑：不 import electron、不碰 IO，状态机与校验都在这儿（落盘见 `main/store/goal.ts`）。
  */
 
 /** 目标状态：三种终态之外就只有"在做"与"暂停" */
@@ -29,15 +12,11 @@ export type GoalStatus = 'active' | 'paused' | 'done' | 'dropped'
 
 export interface Goal {
   id: string
-  /** 目标属于哪条会话 */
   conversationId: string
   /** 一句话说清"要达成什么"（**不写步骤** —— 步骤是待办的事） */
   text: string
   status: GoalStatus
-  /**
-   * 怎么算做到（可空）。
-   * 为什么留着：没有判据的"完成"只能凭感觉，而凭感觉的目标最容易变成永不关闭的僵尸。
-   */
+  /** 怎么算做到（可空）：没有判据的"完成"只能凭感觉，最容易变成永不关闭的僵尸 */
   doneWhen?: string
   /** 谁建的：`user` = 用户手写；其它值 = Agent 名（内核可自建） */
   createdBy: string
@@ -45,13 +24,10 @@ export interface Goal {
   updatedAt: number
 }
 
-/** 允许的动作 —— 每一个都对应界面上的一个按钮或一句指令 */
 export type GoalAction = 'pause' | 'resume' | 'complete' | 'reopen' | 'drop' | 'edit'
 
 /**
- * 合法转移表。
- *
- * 只列"从哪能到哪"：不在表里的（比如对已完成的目标再 complete）一律拒绝并说明理由 ——
+ * 合法转移表：只列"从哪能到哪"，不在表里的（如对已完成的目标再 complete）一律拒绝并说明理由 ——
  * 静默接受非法动作会让界面出现"点了没反应"或"状态自己变了"这类最难查的怪象。
  */
 const TRANSITIONS: Record<GoalAction, { from: GoalStatus[]; to: GoalStatus }> = {
@@ -70,9 +46,7 @@ export type GoalResult = { ok: true; goal: Goal } | { ok: false; reason: string 
 /** 目标正文长度上限：它是"一句话意图"，不是任务书 */
 export const GOAL_TEXT_MAX = 200
 
-/**
- * 建一个目标。**文本必须非空**（空白串不算）—— 空目标在界面上就是一条无意义的空行。
- */
+/** 建一个目标：文本必须非空（空白串不算），否则界面上就是一条无意义的空行 */
 export function createGoal(input: {
   id: string
   conversationId: string
@@ -105,10 +79,7 @@ export function createGoal(input: {
   }
 }
 
-/**
- * 对一个目标施加动作。非法转移**返回理由**而不是静默忽略 ——
- * 界面据此说人话（"这条目标已经完成了"），而不是让人对着按钮发愣。
- */
+/** 施加动作：非法转移**返回理由**而不是静默忽略 —— 界面据此说人话，而不是让人对着按钮发愣 */
 export function applyGoalAction(
   goal: Goal,
   action: GoalAction,
@@ -156,8 +127,7 @@ export function openGoals(goals: Goal[]): Goal[] {
 }
 
 /**
- * 排序：**进行中 → 暂停 → 其它**，同组内新的在前。
- * 为什么不在读取时就排好：排序是**展示**的事，存盘顺序保持"创建顺序"更好追溯。
+ * 排序：**进行中 → 暂停 → 其它**，同组内新的在前。存盘保持"创建顺序"（排序是**展示**的事）。
  */
 export function sortGoals(goals: Goal[]): Goal[] {
   const rank: Record<GoalStatus, number> = { active: 0, paused: 1, done: 2, dropped: 3 }
@@ -165,11 +135,9 @@ export function sortGoals(goals: Goal[]): Goal[] {
 }
 
 /**
- * 从盘上读回来时**逐条校验**：坏数据丢掉并计数，**绝不整表崩**。
- *
- * 为什么必须这样：这份文件将来会被手改、被旧版本写、被中断的写截断。
- * 一个坏条目就让整份目标消失，是"静默丢数据"里最不该发生的一种。
- * 调用方拿到 `dropped` 计数后要留痕（日志），不许悄悄吞掉。
+ * 读回来时**逐条校验**：坏数据丢掉并计数，**绝不整表崩** —— 这份文件会被手改、被旧版本写、
+ * 被中断的写截断，一个坏条目让整份目标消失是"静默丢数据"里最不该发生的一种；
+ * 调用方拿到 `dropped` 后要留痕（日志），不许悄悄吞掉。
  */
 export function normalizeGoals(raw: unknown): { goals: Goal[]; dropped: number } {
   if (!Array.isArray(raw)) return { goals: [], dropped: Array.isArray(raw) ? 0 : 1 }

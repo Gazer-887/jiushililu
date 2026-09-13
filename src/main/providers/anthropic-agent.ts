@@ -117,9 +117,8 @@ export async function chatWithToolsAnthropic(
   signal?: AbortSignal
 ): Promise<AgentChatResult> {
   const { system, messages: anthropicMessages } = toAnthropicAgentMessages(messages)
-  // thinking 与 tools 互斥（交叉验证结论）：部分 Anthropic 模型/版本拒收二者同时下发，
-  // 且带 thinking 的 assistant 在续轮必须回带 thinking 块（我们只回放 text/tool_use）。
-  // 工具模式下内核优先保工具能力 → 自动降级思考，并记入设置页提示（P2 UI）。
+  // ⚠️ thinking 与 tools 互斥（交叉验证结论）：部分 Anthropic 模型 / 版本拒收二者同时下发，且带 thinking 的
+  // assistant 续轮必须回带 thinking 块（我们只回放 text/tool_use）。工具模式下内核优先保工具 → 自动降级思考。
   const allowThinking = tools.length === 0
   const budget = allowThinking ? thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens) : null
 
@@ -172,10 +171,8 @@ export function buildAnthropicToolsBody(
 }
 
 /**
- * 流式 + 工具（D-032）：按 SSE 事件类型分发——
- *   content_block_start(tool_use) → 开一个工具调用块
- *   content_block_delta(text_delta) → 文本增量上屏
- *   content_block_delta(input_json_delta) → 工具参数分片累积
+ * 流式 + 工具（D-032）：按 SSE 事件类型分发 —— content_block_start(tool_use) 开一个工具调用块，
+ * content_block_delta(text_delta) 文本增量上屏，content_block_delta(input_json_delta) 工具参数分片累积
  */
 export async function streamWithToolsAnthropic(
   settings: ModelSettings,
@@ -216,11 +213,9 @@ export async function streamWithToolsAnthropic(
         content_block?: { type?: string; id?: string; name?: string; input?: unknown }
         delta?: { type?: string; text?: string; partial_json?: string }
       }
-      // 两处都收：只收一处账面会少一半（输入那半在 message_start 里就报完了）
-      // ⚠️ 这里必须是**合并**，不能是覆盖 —— 原来的 `usage = evtUsage` 会让后到的
-      //    `message_delta`（只报输出）把 `message_start` 报的**输入量抹成 0**：
-      //    账面少一半，而日志里什么都看不出来（2026-09-13 修）。
-      //    合并规则（逐字段取有值的那份）见 `@shared/usage` 的 `mergeUsageHalves`。
+      // 两处都收：只收一处账面会少一半（输入那半在 message_start 里就报完了）。
+      // ⚠️ 这里必须是**合并**而不能是覆盖 —— 原来的 `usage = evtUsage` 会让后到的 `message_delta`（只报输出）
+      // 把 `message_start` 报的**输入量抹成 0**：账面少一半，日志里却什么都看不出来（2026-09-13 修）。
       const evtUsage = usageFromAnthropicEvent(evt)
       if (evtUsage) usage = usage ? mergeUsageHalves(usage, evtUsage) : evtUsage
       if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {

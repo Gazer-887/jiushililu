@@ -10,15 +10,9 @@ import type {
   ConversationMeta
 } from '@shared/ipc'
 
-// 会话存储六个入口的**行为基线**（plan10 步骤 0 立，A 批分层后**必须仍然全绿**）
-//
-// 为什么要先有这张网：A 批要给会话存储**分层**（正文从整表里搬出去），
-// 而计划里原来写着"六个入口行为不变，**现有单测兜底**"——
-// 审查实测发现那句话是空的：`tests/unit/conversations.test.ts` 只测了三个纯函数，
-// **六个入口一条覆盖都没有**。没有网就重构，等于在没护栏的崖边换轮胎。
-//
-// A 批唯一允许改变的，是**读盘足迹**（列表不再碰正文）——
-// 其余每一条语义都必须一模一样。下面每条都写清"为什么它必须如此"。
+// 会话存储六个入口的**行为基线**（plan10 步骤 0 立）：A 批要给会话存储**分层**（正文搬出整表），
+// 除**读盘足迹**（列表不再碰正文）外，六个入口的语义必须一模一样。
+// ⚠️ 别以为 `tests/unit/conversations.test.ts` 兜底 —— 它只测三个纯函数，六个入口零覆盖。
 
 /** 内存 backend：meta 与正文分开存，并分别记账 —— "列表碰不碰正文"要能断言 */
 function memBackend(seed: Record<string, Conversation> = {}): {
@@ -36,11 +30,9 @@ function memBackend(seed: Record<string, Conversation> = {}): {
   const msgs: Record<string, ChatMessage[]> = {}
   for (const [id, c] of Object.entries(seed)) {
     const { messages, ...m } = c
-    // ⚠️ 分层带来的**真实语义变化**：旧版 `messageCount` 是**读的时候现算**的
-    //    （`toMeta` 展开 messages），所以它永远和正文一致；分层之后列表不读正文，
-    //    于是 `messageCount` 必须**落在 meta 里**、由每次保存同步写好。
-    //    这里造种子时也要按同一口径造 —— 不然就是在测一个现实中不存在的状态
-    //    （第一版就是这么红的，测试帮我抓到了这次重构真正改了什么）。
+    // ⚠️ 分层后的**真实语义变化**：旧版 `messageCount` 是读的时候现算的（永远与正文一致），
+    //    分层后列表不读正文，它必须**落在 meta 里**。种子得按同一口径造，
+    //    否则就是在测一个现实中不存在的状态。
     meta[id] = { ...m, messageCount: messages.length }
     msgs[id] = messages
   }
@@ -163,9 +155,8 @@ describe('listConversations（列表）', () => {
   })
 
   it('同一毫秒的时间戳下，顺序仍然**稳定**（两次调用结果一致）', () => {
-    // 注：这里**不**钉"插入序"这种具体顺序 —— 分层后数据源从"整表单文件"变成
-    // "一份份会话文件"，来源顺序**合法地**会变。真正要保住的性质是**确定性**：
-    // 同样的数据、两次调用必须一样（渲染端只按 updatedAt 排序，同毫秒会退化成任意序）。
+    // 这里**不**钉"插入序" —— 分层后数据源从整表单文件变成一份份会话文件，来源顺序**合法地**会变。
+    // 要保的是**确定性**：同数据两次调用必须一致（渲染端只按 updatedAt 排序，同毫秒会退化成任意序）。
     const { backend } = memBackend({
       a: conv({ id: 'a', updatedAt: 500 }),
       b: conv({ id: 'b', updatedAt: 500 }),
@@ -265,9 +256,8 @@ describe('saveConversation（保存正文）', () => {
   })
 
   it('崩在"正文已写、索引没写"之间 → 计数偏旧但**正文是对的**（这条顺序换来的就是这个）', () => {
-    // 分层之后 `messageCount` 是**存**在索引里的，于是它理论上可能与正文不一致。
-    // 这个顺序把不一致的**方向**固定住了：只会"索引偏旧"，永远不会"索引说有、正文没有"。
-    // 而偏旧的计数会在**下一次保存**时自愈。
+    // 分层后 `messageCount` **存**在索引里，理论上可能与正文不一致；这个顺序把不一致的
+    // **方向**钉死了：只会"索引偏旧"，永远不会"索引说有、正文没有"，而偏旧下一次保存自愈。
     const m = memBackend({ a: conv({ id: 'a' }) })
     const crashing: ConversationsBackend = {
       ...m.backend,
@@ -367,8 +357,8 @@ describe('knownWorkspaces（历史工作区白名单）', () => {
 })
 
 describe('读盘足迹：**分层唯一要换来的东西**', () => {
-  // A 批的验收第一条就是这个。旧版"读列表"要先解析全部正文；分层之后
-  // 列表与白名单**不许碰任何正文文件**。这条不是性能优化，是这次重构的**目的本身**。
+  // A 批验收第一条：旧版"读列表"要先解析全部正文，分层之后列表与白名单**不许碰任何正文文件**。
+  // 这不是性能优化，是这次重构的**目的本身**。
   const seeded = {
     a: conv({ id: 'a', messages: [{ role: 'user', content: '正文' }] }),
     b: conv({ id: 'b', messages: [{ role: 'user', content: '正文' }] })
@@ -413,8 +403,7 @@ describe('读盘足迹：**分层唯一要换来的东西**', () => {
     for (const [name, run] of cases) {
       const m = memBackend(seeded)
       run(createConversationsRepo(m.backend))
-      // 写的是"**最多**一遍"：`create` 压根不需要读索引（0 遍是对的，比读一遍更好），
-      // 要抓的是**重复解析同一份索引**（旧实现每次保存读两遍全会话）。
+      // 写的是"**最多**"一遍：`create` 零读也合格，要抓的是**重复解析同一份索引**
       expect(m.stats.metaReads, `${name} 读了 ${m.stats.metaReads} 遍 meta`).toBeLessThanOrEqual(1)
     }
   })

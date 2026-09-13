@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { toolCallDetail } from '@shared/tool-detail'
 
-// 工具调用的「一句人话」（plan7 交互层）——
-// 界面靠它显示「read_file · src/main/index.ts」而不是干巴巴的「执行中…」。
-// 重点：模型给的 JSON **不可靠**，任何解析失败都不能把工具卡片搞崩。
+// 工具调用的「一句人话」（plan7 交互层）：界面显示「read_file · src/main/index.ts」而不是干巴巴的「执行中…」。
+// 重点：模型给的 JSON **不可靠** —— 任何解析失败都不能把工具卡片搞崩。
 
 describe('toolCallDetail（工具调用的"一句人话"）', () => {
   it('按工具取最说明问题的那个字段', () => {

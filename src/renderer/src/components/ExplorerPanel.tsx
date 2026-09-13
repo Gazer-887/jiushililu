@@ -10,25 +10,21 @@ import type { FsEntry } from '@shared/fs-tree'
 import { DRAG_PATH_MIME, formatSize } from '@shared/fs-tree'
 import { useAppStore } from '../store'
 
-// 资源管理器（plan7 批 A 只读 → 批 A2 全功能）：工作区文件树 + 预览 + 写操作。
+// 资源管理器：工作区文件树 + 写操作。
 //
-// 写操作**全部经统一写入服务**（每个操作各开一个检查点轮次）——
-// 所以界面里删掉/改掉的东西，同样出现在「文件变更记录」里、同样退得回。
-//
-// 菜单项与工具栏按本项目**真实具备的能力**筛，不照抄 VSCode。
-// 懒加载：展开哪个目录才查哪个（工作区可能有几千个文件）。
+// 写操作**全部经统一写入服务**（每个操作各开一个检查点轮次）—— 界面里改掉/删掉的东西
+// 同样进「文件变更记录」、同样退得回；工具栏与菜单只筛本项目**真实具备**的能力，不照抄 VSCode；
+// 目录懒加载：展开哪个目录才查哪个。
 
 interface TreeState {
   /** rel → 该层条目；'' 表示根 */
   children: Record<string, FsEntry[]>
-  /** 展开中的目录 rel */
   expanded: Set<string>
-  /** 加载中 / 出错的目录 rel */
   loading: Set<string>
   errors: Record<string, string>
 }
 
-/** 正在就地编辑的那一行（Electron 里 window.prompt 被禁，只能内联输入） */
+/** 正在就地编辑的那一行（Electron 禁 window.prompt，只能内联输入） */
 interface Editing {
   kind: 'new-file' | 'new-dir' | 'rename'
   parentRel: string
@@ -49,7 +45,7 @@ const ICON_PROPS = {
   strokeLinejoin: 'round'
 } as const
 
-/** 工具栏图标（手写内联 SVG，与项目其余图标同一风格） */
+/** 手写内联 SVG（与项目其余图标同风格） */
 const ICONS: { file: ReactNode; dir: ReactNode; refresh: ReactNode; collapse: ReactNode } = {
   file: (
     <svg {...ICON_PROPS} aria-hidden="true">
@@ -88,13 +84,9 @@ export default function ExplorerPanel(): JSX.Element {
   })
   const [workspace, setWorkspace] = useState<string>('')
   const [selected, setSelected] = useState<FsEntry | null>(null)
-  // plan9 W6：**预览不再住在资源管理器里** —— 点文件改为在右侧独立开一栏
-  //（FilePreviewPane）。所以这里的 preview / previewErr / previewHeight 全退役了，
-  // 连带 splitter.ts 里的 resizePreview（那个手柄只服务于"压在树底下"的旧形态）。
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null)
   const [editing, setEditing] = useState<Editing | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
-  /** 拖拽悬停的落点目录（'' = 根） */
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const editRef = useRef<HTMLInputElement>(null)
@@ -124,7 +116,6 @@ export default function ExplorerPanel(): JSX.Element {
     })()
   }, [loadDir])
 
-  // 点空白处 / Esc 关菜单
   useEffect(() => {
     if (!menu) return
     const onDown = (e: MouseEvent): void => {
@@ -151,10 +142,7 @@ export default function ExplorerPanel(): JSX.Element {
     return () => clearTimeout(t)
   }, [notice])
 
-  /**
-   * 新建的落点 = **当前选中的文件夹**（用户要求，对齐 VSCode）。
-   * 选中文件时落进它所在的目录；什么都没选则落根目录。
-   */
+  /** 新建落点 = 当前选中的文件夹（对齐 VSCode）；选中文件则落它所在的目录，没选落根 */
   const newTarget = (): string => {
     if (!selected) return ''
     return selected.kind === 'dir' ? selected.rel : parentOf(selected.rel)
@@ -173,11 +161,8 @@ export default function ExplorerPanel(): JSX.Element {
   }
 
   /**
-   * 点文件 = 在**右侧独立开一栏**预览（plan9 W6）。
-   *
-   * 改造前预览是压在文件树底下的（只有半截高、还得拖手柄调高）；
-   * 现在交给工作台：复用已有的「纯文件栏」，没有就在最右新建一栏 ——
-   * 于是资源管理器那一栏可以安心只当"目录树"用（对齐 DSH 的形态）。
+   * 点文件 = 在**右侧独立开一栏**预览（复用已有的「纯文件栏」，没有就在最右新建一栏）——
+   * 于是资源管理器这一栏可以只当"目录树"用（对齐 DSH 的形态）。
    */
   const openFile = (entry: FsEntry): void => {
     setSelected(entry)
@@ -198,7 +183,7 @@ export default function ExplorerPanel(): JSX.Element {
   const startEdit = (kind: Editing['kind'], parentRel: string, target?: FsEntry): void => {
     setMenu(null)
     setNotice(null)
-    // 目录没展开的话先展开，否则输入框藏在下层看不见
+    // 目录没展开先展开，否则输入框藏在下层看不见
     if (kind !== 'rename' && parentRel && !tree.expanded.has(parentRel)) {
       void loadDir(parentRel)
       setTree((t) => ({ ...t, expanded: new Set(t.expanded).add(parentRel) }))
@@ -326,7 +311,7 @@ export default function ExplorerPanel(): JSX.Element {
           }`}
           style={{ paddingLeft: 8 + depth * 14 }}
           title={e.rel}
-          // 文件行可以**拖进输入框当附件**（目录不行 —— 附件是"一个文件的内容"）
+          // 只有文件行可拖（拖进输入框当附件）；目录不行 —— 附件是"一个文件的内容"
           draggable={e.kind === 'file'}
           onDragStart={(ev) => {
             if (e.kind !== 'file') return
@@ -334,7 +319,7 @@ export default function ExplorerPanel(): JSX.Element {
             ev.dataTransfer.effectAllowed = 'copy'
           }}
           onClick={() => {
-            // 点目录也要**选中**：工具栏的"新建"落到选中的文件夹下
+            // 点目录也要选中：工具栏「新建」落到选中的文件夹下
             setSelected(e)
             if (e.kind === 'dir') void toggleDir(e)
             else openFile(e)

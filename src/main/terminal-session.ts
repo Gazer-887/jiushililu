@@ -8,8 +8,8 @@ import type {
   TerminalStartResult
 } from '@shared/terminal'
 
-// 类型定义在 `@shared/terminal`（纯类型，主进程与界面共用一份口径 —— 渲染层不许 import 本文件，
-// 因为这里 import 了 node:fs）。这里再导出一次，方便主进程侧引用时不用记两个来源。
+// 类型定义在 `@shared/terminal`（纯类型，主进程与界面共用一份口径；渲染层不许 import 本文件 —— 这里
+// import 了 node:fs）。这里再导出一次，省得主进程侧引用时记两个来源。
 export type {
   TerminalChunk,
   TerminalFailReason,
@@ -20,47 +20,29 @@ export type {
 
 // 内置终端的**会话层**（plan14 批 C · C2）—— **真 PTY** 版。
 //
-// ## 为什么是真 PTY（以及为什么推翻了自己第一版）
+// 为什么必须真 PTY：伪终端（常驻 shell + 往 stdin 写整行 + 自己回显）做不到 `Ctrl+C`、Tab 补全、
+// 行内编辑、`vim`/`top`、任何只看 `isatty()` 的工具（进度条、分页、交互确认）；「node-pty = 原生
+// 编译坑」对 Windows x64 已不成立（1.1.0 起是 N-API 预编译），用户据此拍板改用真 PTY。
 //
-// 第一版按 plan7 原文的「`child_process` + 不用 node-pty」写的是**伪终端**：
-// 常驻 shell + 往 stdin 写整行 + 自己回显。那一版能跑命令，但**做不到**：
-// `Ctrl+C`（`\x03` 只是普通字节）、Tab 补全、行内编辑、`vim`/`top`、
-// 任何只看 `isatty()` 的工具（进度条、分页、交互确认）。
+// 会话为什么活在主进程：本项目「**切换页签 = 卸载**」是定死的语义（plan9 §W3），而终端要的是"切走再
+// 切回来，命令还在跑、历史还在" —— 故 pty 进程 + 输出缓冲在主进程，渲染层 xterm 只是**可丢弃的视图**（重挂时按序号重放）。
 //
-// 调研查出「node-pty = 原生编译坑」这条前提**对 Windows x64 已经不成立**
-// （1.1.0 起是 N-API 预编译），用户据此拍板改用真 PTY。
-// **我在 Electron 33 里实测确认**：`require('node-pty')` 零 rebuild 加载成功，
-// 子进程里 `process.stdout.isTTY === true`、`resize(132,40)` 后子进程看到 `columns=132`。
-//
-// ## 会话为什么活在主进程
-//
-// 因为本项目「**切换页签 = 卸载**」是定死的语义（plan9 §W3），而终端的核心体验是
-// "切走再切回来，命令还在跑、历史还在"。所以：**pty 进程 + 输出缓冲都放主进程**，
-// 渲染层的 xterm 只是**一个可丢弃的视图**（重挂时按序号重放）。
-//
-// ## 这一层为什么不 import electron
-//
-// 与 `checkpoints.ts` / `workspace-write.ts` 同样的约束：CI 上没有 Electron 二进制，
-// 碰 electron 的模块**跑不了单测**。而这一层要守的东西（权限门控、cwd 校验、缓冲上限、
-// 序号单调、kill 语义、resize 透传）**全都该被测到** —— 所以 pty 模块也是**注入**的
-// （顺带让单测不必加载原生二进制）。
+// 不 import electron（同 `checkpoints.ts` / `workspace-write.ts`）：CI 上没有 Electron 二进制，碰 electron
+// 的模块跑不了单测，而这里要守的（权限门控 / cwd 校验 / 缓冲上限 / 序号单调 / kill 语义 / resize 透传）
+// 全都该被测到 —— 所以 pty 模块是**注入**的（顺带让单测不必加载原生二进制）。
 
 /** 输出缓冲上限（字符数）。超了从**头部**丢，并置 `truncated` —— 尾部才是刚发生的事情 */
 export const MAX_BUFFER_CHARS = 200 * 1024
 
 /**
- * **在途**流控的水位线（字符数）—— 与"历史缓冲上限"是**两件事**，别混为一谈：
- *   · `MAX_BUFFER_CHARS` 管**已经发生过的历史**（内存占用）；
- *   · 这两条管**还没被界面解析完的在途流量**。
+ * **在途**流控的水位线（字符数）—— 与"历史缓冲上限"是**两件事**：`MAX_BUFFER_CHARS` 管内存占用，
+ * 这两条管**还没被界面解析完的在途流量**。
  *
- * 为什么必须有：xterm 的 `write()` 内部有 `_pendingData` 计数，超过 **50MB**
- * （6.0.0 里已内联成 `5e7`）时**直接 throw** ——
- * `write data discarded, use flow control to avoid losing data`。
- * 不是"变慢"，是**整段丢弃 + 渲染进程里一个未捕获异常**。
- * 官方给的解法就是 ACK 流控：界面每解析完一段回执一次，主进程按"未回执字符数"
- * 暂停 / 恢复 pty 的读取（`IPty.pause()` / `resume()`，typings 第 189/194 行）。
- *
- * 水位取 256KB / 64KB：远低于 50MB 的硬线，又留住滞回区间（避免在阈值上抖动）。
+ * 为什么必须有：xterm 的 `write()` 内部有 `_pendingData` 计数，超过 **50MB**（6.0.0 里内联成 `5e7`）
+ * 时**直接 throw**（`write data discarded, use flow control to avoid losing data`）—— 不是"变慢"，
+ * 是**整段丢弃 + 渲染进程一个未捕获异常**。官方解法就是 ACK 流控：界面每解析完一段回执一次，
+ * 主进程按"未回执字符数"暂停/恢复 pty 读取（`IPty.pause()` / `resume()`）。
+ * 水位取 256KB / 64KB：远低于 50MB 硬线，又留住滞回区间（避免在阈值上抖动）。
  */
 export const HIGH_WATERMARK = 256 * 1024
 export const LOW_WATERMARK = 64 * 1024
@@ -77,14 +59,10 @@ export interface TerminalShell {
 }
 
 /**
- * 挑一个 shell。
- *
- * Windows 选 **PowerShell**（不带 `-NoProfile` 会慢到不可接受：实测裸启动 **5865ms**、
- * 其中 profile 占 5.4–7.5 秒且**期间零输出**；带 `-NoProfile` 只要 307ms）。
- *
- * ⚠️ **但 `-NoProfile` 有代价，必须让用户知道**：用户 profile 里加载的东西
- * （本机实测会加载 conda 并激活环境）**不会生效**，所以终端里的 `python`
- * 可能不是他在自己 PowerShell 里那个。界面文案要写，别让人自己困惑。
+ * 挑一个 shell。Windows 选 **PowerShell** + `-NoProfile`：本机 Windows 实测不带它裸启动 **5865ms**
+ * 且**期间零输出**（profile 占绝大部分），带它只要 307ms。
+ * ⚠️ 但 `-NoProfile` 有代价，**界面文案必须写**：用户 profile 里加载的东西（本机实测会加载 conda
+ * 并激活环境）不生效，终端里的 `python` 可能不是他自己 PowerShell 里那个。
  */
 export function defaultShell(platform: NodeJS.Platform = process.platform): TerminalShell {
   if (platform === 'win32') {
@@ -98,21 +76,12 @@ export function defaultShell(platform: NodeJS.Platform = process.platform): Term
 }
 
 /**
- * 给终端用的环境变量。
- *
- * 说白了就是**继承本机环境 + 补几个"我是终端"的信号**（别把它读成"白名单环境"，
- * 第一版注释写成"不是裸继承"，与实现不符，已改口）。
- *   · `TERM` / `COLORTERM`：告诉程序"我在什么终端里"（没有它很多工具直接降级成纯文本），
- *     只是**描述事实**，不改变程序的判定逻辑。
- *   · **不设 `FORCE_COLOR`**（第一版设过，已撤掉）：真 PTY 下程序自己就是 TTY、本来就有颜色，
- *     再强制一次只会带来副作用 —— `工具 > 文件` 这种重定向到文件的场景也会被染色，
- *     文件里混进 ANSI 转义。与"不做善意越权"是同一条原则。
- *
- * ⚠️ **两条不许做的**：
- *   · **不动 `NO_COLOR`** —— 那是用户的显式信号（"我不要颜色"），尊重它。
- *   · **不设 `PYTHONUNBUFFERED`** 之类会**改变用户程序运行时行为**的开关 ——
- *     那是"善意的越权"，本项目的原则是不做。真正的 buffering 问题在真 PTY 下基本消失
- *     （有 TTY 时程序默认就是行缓冲）。
+ * 给终端用的环境变量：**继承本机环境 + 补几个"我是终端"的信号**（不是白名单环境）。
+ * · `TERM` / `COLORTERM` 只是**描述事实**（没有它很多工具直接降级成纯文本），不改变程序的判定逻辑。
+ * ⚠️ **不设 `FORCE_COLOR`**：真 PTY 下程序自己就是 TTY、本来就有颜色，再强制一次会让重定向到文件的
+ *    场景也被染色（文件里混进 ANSI 转义）。
+ * ⚠️ **不动 `NO_COLOR`**（那是用户"我不要颜色"的显式信号），也**不设 `PYTHONUNBUFFERED`** 之类会改变
+ *    用户程序运行时行为的开关 —— 那是"善意的越权"，本项目不做。
  */
 export function terminalEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
@@ -185,12 +154,9 @@ export interface TerminalSessionStore {
   ack(sessionId: string, chars: number): void
   /**
    * **重对齐**背压（界面重挂 + 重放之后调）：未回执计数清零，必要时恢复 pty。
-   *
-   * 为什么必须有：面板卸载时只退订阅、**不通知主进程**，而主进程照旧往所有窗口推 ——
-   * 那些帧没人回执，`pendingAck` 只增不减，越过水位就把 pty **真按住**了
-   * （实测：Windows 上 `pause()` 生效，暂停 2 秒收 0 字节）。
-   * 重挂时即使重放完全正常，也没有任何东西会把水位压回去 → **终端"活着但永远静止"**。
-   * 所以重放结束必须补一次重对齐。
+   * 为什么必须有：面板卸载时只退订阅、**不通知主进程** —— 那些帧没人回执，`pendingAck` 只增不减，
+   * 越过水位就把 pty **真按住**了（本机 Windows 实测：`pause()` 生效，暂停 2 秒收 0 字节）。
+   * ⚠️ 重挂时即使重放正常，也没有任何东西会把水位压回去 → **终端"活着但永远静止"**，故重放结束必须补这一次。
    */
   resync(sessionId: string): void
   /** 终止会话（连整棵进程树） */
@@ -234,10 +200,9 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
       s.buffered -= dropped?.data.length ?? 0
       s.snap.truncated = true
     }
-    // ⚠️ **单段本身就超限**的兜底：上面的循环刻意保住最后一段（渲染层要有个落点），
-    //    于是一段 4MB 的 `cat` 输出能让 `buffered` 一直超限 —— 缓冲无界增长。
-    //    这里把这一段**从头部截掉**、只留尾部。最坏情况是截断点落在 ANSI 转义中间
-    //    （渲染出几个乱码字符），比内存持续上涨可接受。
+    // ⚠️ **单段本身就超限**的兜底：上面的循环刻意保住最后一段（渲染层要有个落点），于是一段 4MB 的
+    //    `cat` 输出能让 `buffered` 一直超限 —— 缓冲无界增长。这里把这一段**从头部截掉**只留尾部；
+    //    最坏是截断点落在 ANSI 转义中间（渲染出几个乱码字符），比内存持续上涨可接受。
     if (s.buffered > MAX_BUFFER_CHARS) {
       const only = s.snap.chunks[0]
       if (only) {
@@ -300,14 +265,14 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
       return { ok: true, session: session.snap }
     }
 
-    // ②b 切了工作区 → 把旧会话收掉：那个 shell 还停在**上一个项目**的目录里，
+    // ②b 切了工作区 → 收掉旧会话：那个 shell 还停在**上一个项目**的目录里，
     //     留着比收掉更让人困惑（"我明明切了项目，终端还在旧项目里"）
     if (session) {
       teardown()
       session = null
     }
 
-    // ③ cwd 必须存在。不先查的话，报出来的是 `spawn powershell.exe ENOENT` ——
+    // ③ cwd 必须存在：不先查的话报出来的是 `spawn powershell.exe ENOENT` ——
     //    **看着像找不到 shell，其实是找不到目录**，那种文案会把排查方向带偏。
     if (!exists(root)) {
       return { ok: false, reason: 'cwd-missing', message: `工作区不存在或已被移动：${root}` }
@@ -315,13 +280,10 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
 
     const cols = size?.cols && size.cols > 0 ? size.cols : DEFAULT_COLS
     const rows = size?.rows && size.rows > 0 ? size.rows : DEFAULT_ROWS
-    // ⚠️ id **必须唯一**，不能只用时间戳：`restart()` 走的是
-    //    teardown（旧 pty 已为 null 时是纯内存操作，实测 0ms）→ start，
-    //    两次 `Date.now()` 完全可能落在**同一毫秒** → 新旧会话同 id →
-    //    渲染层判定"还是同一个会话"→ 不 reset、不重放、`nextSeq` 停在旧高位 →
-    //    新 shell 的输出从 seq 1 起、被逐帧丢弃：状态栏写"运行中"，屏幕**彻底死寂**。
-    //    间歇性、且主进程侧一切正常（最能带偏排查方向的那种）。自增序号保证唯一，
-    //    时间戳只留作日志可读。
+    // ⚠️ id **必须唯一**，不能只用时间戳：`restart()` 走 teardown（旧 pty 已为 null 时是纯内存操作）→ start，
+    //    两次 `Date.now()` 完全可能落在**同一毫秒** → 新旧会话同 id → 渲染层判定"还是同一个会话"→
+    //    不 reset、不重放、`nextSeq` 停在旧高位 → 新 shell 的输出被逐帧丢弃：状态栏写"运行中"，屏幕**彻底死寂**
+    //    （间歇性、主进程侧一切正常 —— 最能带偏排查方向的那种）。自增序号保证唯一，时间戳只留作日志可读。
     idSeq += 1
     const id = `term-${idSeq}-${now().toString(36)}`
 
@@ -359,17 +321,16 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
     const self: Session = { snap, pty, buffered: 0, pendingAck: 0, paused: false }
     session = self
 
-    // ⚠️ 闭包里**只认 `self`**，不许读外层的 `session`：那个变量会被下一次 `start()` 换掉，
-    //    而旧 pty 在真正死掉之前**仍可能回调**（`teardown()` 发 taskkill 是异步的、pty.kill 也是）。
-    //    读外层变量的话，旧 shell 临终前那段输出会被记成**新会话**的帧 ——
-    //    序号还是"合法"的（新会话紧接着的号），界面无从分辨。这是"错位重放"的最短路径。
+    // ⚠️ 闭包里**只认 `self`**，不许读外层 `session`：那个变量会被下一次 `start()` 换掉，而旧 pty 在真正
+    //    死掉之前**仍可能回调**（teardown 的 taskkill 与 pty.kill 都是异步的）—— 读外层变量会把旧 shell
+    //    临终前那段输出记成**新会话**的帧，且序号还是"合法"的，界面无从分辨。这是"错位重放"的最短路径。
     pty.onData((data) => {
       if (session !== self || self.snap.status !== 'running') return
       emitData(self, data)
     })
     pty.onExit(({ exitCode }) => {
       // ⚠️ 退出码**只在"不是我们杀的"时候有意义**（我们 kill 时拿到的是终止码，不是程序退出码）。
-      //    所以状态由**我们发起的 kill 动作**置位，这里不许覆盖它。
+      //    状态由**我们发起的 kill 动作**置位，这里不许覆盖它。
       if (session !== self || self.snap.status !== 'running') return
       self.snap.exitCode = exitCode
       self.snap.status = 'exited'
@@ -390,8 +351,8 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
     },
 
     write(data) {
-      // ⚠️ 权限档**每次现查**，不能只信 `start()` 那次检查：用户可能在会话跑着的时候
-      //    把档位降到只读。只在启动处拦的话就成了"看着被拦、其实没拦"——比完全不拦更坏。
+      // ⚠️ 权限档**每次现查**，不能只信 `start()` 那次检查：用户可能在会话跑着的时候把档位降到只读，
+      //    只在启动处拦就成了"看着被拦、其实没拦"—— 比完全不拦更坏。
       if (deps.getPermission() === 'read-only') {
         return { ok: false, message: '当前是「只读」权限档：终端不执行任何命令' }
       }
@@ -422,7 +383,7 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
     resync(id) {
       const s = session
       if (!s || s.snap.id !== id) return
-      // 界面刚重放过一屏 —— 此刻"在途"这个概念在这个新视图上已经归零，
+      // 界面刚重放过一屏 —— "在途"这个概念在新视图上已经归零，
       // 不复位的话 pty 会**永远停在暂停上**（没有任何东西会再产生回执）
       s.pendingAck = 0
       if (s.paused) {
@@ -459,9 +420,9 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
     },
 
     restart() {
-      // ⚠️ 权限检查必须在 `teardown()` **之前**：反过来的话，只读档下点「重启终端」
-      //    会先把正在跑的会话杀掉、连缓冲一起丢掉，然后才告诉用户"被拒绝" ——
-      //    用户视角是"点了一下，终端没了"。**拒绝必须无副作用。**
+      // ⚠️ 权限检查必须在 `teardown()` **之前**：反过来的话，只读档下点「重启终端」会先把正在跑的
+      //    会话杀掉、连缓冲一起丢掉，然后才告诉用户"被拒绝" —— 用户视角是"点了一下，终端没了"。
+      //    **拒绝必须无副作用。**
       if (deps.getPermission() === 'read-only') {
         return {
           ok: false,

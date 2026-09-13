@@ -13,11 +13,7 @@ import {
 } from '@shared/fs-tree'
 import { listWorkspaceDir, readWorkspaceFile } from '@main/workspace-fs'
 
-// 工作区文件树（plan7 批 A）
-//
-// 两件事必须钉死：
-//   ① **敏感文件不进列表**（.env / .git 等）—— 文件树里能看见就等于摊在屏幕上
-//   ② **路径越界被拒**（与 Agent 同一道门）
+// 工作区文件树（plan7 批 A）：敏感文件**不进列表**（能看见 = 摊在屏幕上）、路径**越界被拒**（与 Agent 同一道门）。
 
 const dirs: string[] = []
 
@@ -260,7 +256,6 @@ describe('readWorkspaceFile（预览）', () => {
 describe('MAX_ENTRIES 截断保护', () => {
   it('条目过多时标记 truncated（不让界面被超大目录拖死）', async () => {
     const ws = tmpWs()
-    // 造 MAX_ENTRIES + 5 个文件
     for (let i = 0; i < MAX_ENTRIES + 5; i++) {
       writeFileSync(join(ws, `f${String(i).padStart(4, '0')}.txt`), '', 'utf8')
     }

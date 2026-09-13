@@ -5,20 +5,10 @@ import { join, relative } from 'node:path'
 /**
  * 结构性守卫：**流式事件必须带会话身份**（plan11 §2.5）。
  *
- * ## 为什么不是"扫 send 调用里有没有 conversationId"
- *
- * 初稿写的就是那种扫法，审查逐条证明它是**假绿灯**：
- *   ① 初稿把通道名写成 `chat:delta`，真名是 `chat:chunk` → 扫的词根本不匹配；
- *   ② 已经存在包装过的 sender（`confirm.ts` 的 `deps.send`、`index.ts` 那一处）→ 扫 `.send(` 扫不到；
- *   ③ prettier 会把调用折行 → "同一行里看得见 conversationId"这个判据**依赖排版**；
- *   ④ 注释里出现 `conversationId` 就能骗过匹配。
- *
- * 所以改成**结构性**的两条：
- *   A. **主进程里只有一个文件**能引用流式通道常量（`main/chat-emitter.ts`），
- *      而那个文件把 `conversationId` 在**构造时闭包捕获** —— 漏带 id 在结构上不可能发生；
- *   B. `main/ipc.ts` 里**一个裸 `.send(` 都不许有**（全部走 emitter）。
- *
- * 这两条都是"数一数、比一比"，**不依赖排版、注释、换行**，可判定。
+ * ⚠️ 不许换成"扫 `.send(` 调用里有没有 conversationId"那种写法 —— 它是**假绿灯**：通道名写错就匹配不上、
+ * 包装过的 sender 扫不到、判据随 prettier 折行而变、注释里出现关键词就能骗过。
+ * 只认两条不依赖排版的可判定条件：① 主进程里只有 `main/chat-emitter.ts` 能引用流式通道常量
+ * （它构造时闭包捕获 `conversationId`，漏带 id 在结构上不可能）；② `main/ipc.ts` 里一个裸 `.send(` 都不许有。
  */
 
 const ROOT = process.cwd()
@@ -42,13 +32,10 @@ const EMITTER = 'src/main/chat-emitter.ts'
 
 /**
  * **豁免**：进程级通道不进信封（它们本来就跨会话可见 —— plan11 §2.3 的取舍）。
- * 豁免要写在这里、写明白，不许靠"扫不到"蒙混过去。
- *
- * ⚠️ 每一条**必须带理由注释**（下面有一条断言盯着这件事，注释不许省）。
- * 理由本身也写在 `src/main/chat-emitter.ts` 的「例外」那一节里 —— 两处呼应。
+ * ⚠️ 每一条**必须带理由注释**（下面有断言盯着，删了会红），理由在 `main/chat-emitter.ts` 的「例外」一节也有一份。
  */
 const EXEMPT_CONSTS = [
-  // bg:changed —— "系统里在跑什么后台命令"跨会话可见，不属于任何一条会话
+  // bg:changed —— "后台在跑什么命令"跨会话可见，不属于任何一条会话
   'IPC.bgChanged',
   // terminal:data —— 终端是**这个工作区**的终端，不是"某条对话的终端"（plan7 批 C）
   'IPC.terminalData',
@@ -98,8 +85,7 @@ describe('流式事件必须带会话身份（plan11 §2.5 结构性守卫）', 
       .split('\n')
       .map((line, i) => ({ n: i + 1, line: line.trim() }))
       .filter((x) =>
-        // ⚠️ 匹配的是**属性定义**（`onChatChunk:`），不是调用（`onChatChunk(`）——
-        //    第一版写成 `\(` 结果一个都没扫到，是下面的"防空转"断言把**我自己**抓出来的
+        // ⚠️ 匹配的是**属性定义**（`onChatChunk:`）而非调用（`onChatChunk(`）—— 写成 `\(` 会一个都扫不到，靠下面的"防空转"断言兜住
         /on(ChatChunk|ChatReasoning|ChatDone|ChatError|ChatTool|TodoChanged|SubagentChanged|CheckpointChanged|ConfirmRequest)\s*:/.test(
           stripComments(x.line)
         )
@@ -120,8 +106,7 @@ describe('流式事件必须带会话身份（plan11 §2.5 结构性守卫）', 
   })
 
   it('守卫不是空转：被扫的文件都存在且有内容', () => {
-    // 本项目踩过"文件被改名/挪走 → 守卫读不到 → 静默通过"的坑，
-    // 所以这里先断言入口本身是实的（空文件/读不到都得先炸）
+    // ⚠️ 文件被改名/挪走 → 守卫读不到 → 静默全绿；所以先断言入口本身是实的（读不到或为空都得先炸）
     for (const rel of ['src/main/ipc.ts', 'src/preload/index.ts', EMITTER]) {
       expect(read(rel).length, `${rel} 读不到或为空 —— 上面的断言会全部静默变绿`).toBeGreaterThan(500)
     }
@@ -132,20 +117,14 @@ describe('流式事件必须带会话身份（plan11 §2.5 结构性守卫）', 
     expect(STREAM_CONSTS.length).toBeGreaterThan(EXEMPT_CONSTS.length)
   })
 
-  /**
-   * ⚠️ 这一条是**补实**原守卫的（plan14 的审查指出）：原注释承诺"豁免要写明白，
-   * 不许靠扫不到蒙混过去"，但 `EXEMPT_CONSTS` 其实**没有任何机械效果** ——
-   * 不进 `STREAM_CONSTS` 的常量本来就扫不到，一个字不改它也会绿。
-   * 于是补两条真的：
-   *   ① 每个豁免项**旁边必须写理由**（注释不许省）
-   *   ② 清单里的常量串**必须真出现在 `ipc.ts` 里**（改名/打错字后守卫静默失效）
-   */
+  /** ⚠️ `EXEMPT_CONSTS` 本身**没有机械效果**（不进 `STREAM_CONSTS` 的常量本来就扫不到，一个字不改也会绿），
+   *  豁免不许靠"扫不到"蒙混、必须有机械抓手：① 每个豁免项**旁边必须写理由**；
+   *  ② 清单里的常量串**必须真出现在 `ipc.ts` 里**（改名/打错字后守卫静默失效）。 */
   it('**每个豁免项旁边都写了理由**（不许只写个常量名）', () => {
     const lines = readFileSync(__filename, 'utf8').split('\n')
     const missing = EXEMPT_CONSTS.filter((c) => {
       const i = lines.findIndex((l) => l.includes(`'${c}'`))
       if (i < 0) return true
-      // 它自己那行、或上面两行里要有注释
       return ![lines[i - 1], lines[i - 2], lines[i], lines[i + 1]].some(
         (l) => l !== undefined && l.includes('//')
       )
@@ -156,9 +135,7 @@ describe('流式事件必须带会话身份（plan11 §2.5 结构性守卫）', 
   it('**清单里的通道常量必须真的存在**（防改名/打错字后守卫静默失效）', () => {
     const ipcSrc = read('src/shared/ipc.ts')
     const all = [...STREAM_CONSTS, ...EXEMPT_CONSTS]
-    // ⚠️ 注意查的是**属性名**（`chatChunk:`）而不是 `IPC.chatChunk` ——
-    //    常量在 ipc.ts 里是裸属性名，`IPC.` 前缀只在**使用处**出现。
-    //    （这一版我第一稿就写错了：查全名 → 12 条全"找不到"，是这条断言自己把我抓住的。）
+    // ⚠️ 查的是**属性名**（`chatChunk:`）而非 `IPC.chatChunk` —— 常量在 ipc.ts 里是裸属性名、前缀只在使用处出现，查全名会 12 条全"找不到"
     const missing = all.filter((c) => {
       const name = c.replace(/^IPC\./, '')
       return !new RegExp(`\\b${name}\\s*:`).test(ipcSrc)

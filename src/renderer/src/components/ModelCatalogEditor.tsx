@@ -3,21 +3,9 @@ import type { ModelSettings, ReasoningEffort } from '@shared/ipc'
 import { entryLabel, type ModelEntry } from '@shared/models'
 
 /**
- * **模型目录编辑器**（plan7 F5.1）—— 形态照用户给的配置页截图：
- *
- * ```
- * 模型目录                    [恢复默认模型]  [获取可用模型]
- * 已自定义模型目录
- *   [模型 ID____________] [显示名称______]  >  🗑
- *   [模型 ID____________] [显示名称______]  >  🗑
- *   [添加模型]
- * ```
- *
- * 行内 `>` 展开 = **这个模型自己的高级设置**（只存改过的字段，其余跟随端点默认）。
- *
- * 两条纪律：
- *   ① **至少要留一个模型** —— 全删光就等于"一条空连接"，删最后一个直接拦住并说明
- *   ② 模型 ID 是**给厂商看的**，一字不差；显示名是**给人看的**，可以随便起
+ * **模型目录编辑器**（plan7 F5.1）。行内 `>` 展开 = 该模型自己的高级设置，只存改过的字段。
+ * ① **至少要留一个模型** —— 全删光 = "一条空连接"，删最后一个直接拦住并说明。
+ * ② 模型 ID 是**给厂商看的**，一字不差；显示名是**给人看的**，随便起。
  */
 
 const num = (v: string): number => (v === '' ? 0 : Number(v))
@@ -135,8 +123,8 @@ export default function ModelCatalogEditor({
       models.map((m) => {
         if (m.id !== id) return m
         const merged = { ...(m.settings ?? {}), ...next }
-        // 值被清空（undefined）= 回到"跟随端点默认"：把这个键**删掉**，
-        // 而不是留一个 undefined —— 留 undefined 会让 JSON 里出现空洞、也让"改过没有"变得说不清
+        // 清空（undefined）= 回到"跟随端点默认"：把这个键**删掉**而不是留 undefined，
+        // 留 undefined 会让 JSON 里出现空洞、也让"改过没有"说不清
         for (const k of Object.keys(merged) as Array<keyof typeof merged>) {
           if (merged[k] === undefined) delete merged[k]
         }
@@ -171,7 +159,7 @@ export default function ModelCatalogEditor({
         setPicked(null)
         return
       }
-      // 已有的不重复列出来（用户不该在候选里再选一次已经加过的）
+      // 已有的不重复列（用户不该在候选里再选一次已加过的）
       const have = new Set(models.map((m) => m.model))
       const fresh = res.models.filter((m) => !have.has(m))
       if (fresh.length === 0) {
@@ -282,7 +270,7 @@ export default function ModelCatalogEditor({
                 key={m}
                 className="mc-chip"
                 onClick={() => {
-                  // 点一下就"加进目录"（导入按钮是给"全都要"的人用的）
+                  // 点一下即"加进目录"（导入按钮是给"全都要"的人用的）
                   onChange([...models, { id: `m-${Date.now().toString(36)}`, model: m }])
                   setPicked(picked.filter((x) => x !== m))
                 }}

@@ -4,10 +4,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCheckpointStore } from '@main/store/checkpoints'
 
-// 检查点落盘层集成测试（plan8 R4）
-//
-// 这组测试回答的是产品问题：**Agent 把文件改坏了，双击回滚能不能真的退回去？**
-// 用真实临时目录 + 真实文件，不走 mock —— 因为要验证的正是"真的读写对了"。
+// 检查点落盘层集成测试（plan8 R4）—— 回答的产品问题：**Agent 把文件改坏了，双击回滚能不能真的退回去？**
+// 用真实临时目录 + 真实文件、不走 mock：要验的正是"真的读写对了"。
 
 const dirs: string[] = []
 
@@ -17,7 +15,6 @@ function tmp(prefix: string): string {
   return d
 }
 
-/** 造一个"工作区 + 仓库"的组合 */
 function setup(): { ws: string; store: ReturnType<typeof createCheckpointStore> } {
   const ws = tmp('jsl-ws-')
   const store = createCheckpointStore(tmp('jsl-ckpt-'))
@@ -176,10 +173,7 @@ describe('中断场景：manifest 增量落盘 → 中断的轮次也能回滚',
 })
 
 describe('列表与保留策略', () => {
-  /**
-   * 建一轮并**产生一个改动** —— list() 会过滤掉"没改任何文件"的轮次
-   * （真机实测后补：每轮对话都建检查点，纯闲聊那轮没改动，不过滤会刷屏）。
-   */
+  /** 建一轮并**产生一个改动** —— `list()` 会过滤"没改任何文件"的轮次（否则纯闲聊轮次刷屏面板） */
   function runWithChange(
     store: ReturnType<typeof createCheckpointStore>,
     ws: string,
@@ -204,7 +198,6 @@ describe('列表与保留策略', () => {
 
   it('**没改文件的轮次不进列表**（否则纯闲聊会把面板刷屏）', () => {
     const { ws, store } = setup()
-    // 三轮：两轮纯聊天（无改动）+ 一轮真写了文件
     store.finish(store.begin(ws, '内核默认'))
     const real = runWithChange(store, ws, '内核默认', 'notes.md')
     store.finish(store.begin(ws, '内核默认'))
@@ -219,14 +212,12 @@ describe('列表与保留策略', () => {
 
   it('**同一毫秒内开多轮也要有确定顺序**（CI 在 Linux 上抓出的不稳定）', () => {
     const { ws, store } = setup()
-    // at 只有毫秒精度，连续 begin 极易落在同一毫秒 → 单靠 at 排序会退化成任意顺序。
-    // 这条测试不等时间流逝，直接连开 5 轮 —— 用 seq 保证顺序确定。
+    // at 只有毫秒精度，连续 begin 极易落在同一毫秒 → 单靠 at 排序会退化成任意顺序；这里不等时间，靠 seq 定序。
     const ids: string[] = []
     for (let i = 0; i < 5; i++) ids.push(runWithChange(store, ws, `agent-${i}`, `f${i}.txt`))
 
     const list = store.list()
     expect(list).toHaveLength(5)
-    // 最新的在最前，且顺序完全等于创建顺序的倒序（确定，不依赖运气）
     expect(list.map((m) => m.runId)).toEqual([...ids].reverse())
   })
 
@@ -347,11 +338,8 @@ describe('健壮性：坏数据不致命', () => {
   })
 })
 
-// ── 回滚前的自动备份（plan13 批 B）：「退错了还能再退」──────────────
-//
-// 这条补的是一个真实的丢数据路径：回滚是"把现在的内容换成别的"，
-// 而 Agent 那一版内容**只存在于磁盘上** —— 回滚一覆盖就永远没了。
-// 所以回滚前先把当前内容另存一轮，让"回滚"本身也变成可逆动作。
+// ── 回滚前的自动备份（plan13 批 B）：「退错了还能再退」——补的是真实丢数据路径：
+// 回滚是"把现在的内容换成别的"，而 Agent 那版内容只存在于磁盘上，一覆盖就永远没了，故回滚前先另存一轮。
 
 describe('回滚前的自动备份（退错了还能再退）', () => {
   it('回滚 → 回到改前；**再回滚那份自动备份 → Agent 改后的内容回来了**', () => {
@@ -458,8 +446,7 @@ describe('回滚一个**还在跑**的轮次之后，它必须继续留快照（
     write(ws, 'b.txt', 'B1')
     store.record(runId, ws, 'b.txt', join(ws, 'b.txt'))
 
-    // 旧实现这里会静默失效：`rollback` 把这一轮从内存登记里摘掉了，
-    // 于是 `record` 第一句 `active.get(runId)` 拿不到 → 直接 return → 快照没了
+    // ⚠️ 旧实现这里静默失效：`rollback` 把这一轮从内存登记摘掉 → `record` 取不到 → 快照没了
     const after = store.get(runId)
     expect(after?.changes.map((c) => c.rel).sort()).toEqual(['a.txt', 'b.txt'])
   })
@@ -485,7 +472,6 @@ describe('清理上限（prune）', () => {
     store.prune()
     // 跑着的那一轮不许被清掉（它的 manifest 还得能读回来）
     expect(store.get(running)).not.toBeNull()
-    // 最旧的那些 done 轮次应当被清掉
     expect(store.get(doneIds[0]!)).toBeNull()
   })
 })
@@ -506,10 +492,8 @@ describe('回滚后再次回滚（幂等性）', () => {
   })
 })
 
-// ── 读快照正文（plan13 批 B · B3）：Diff 视图的取数侧 ──────────────
-//
-// 这组测的是"看差异"这件事**看得对**、且**看的时候不会把文件弄坏**。
-// （Diff 视图是纯读的，所以这里同时断言"读完之后磁盘内容一个字没变"。）
+// ── 读快照正文（plan13 批 B · B3）：Diff 视图取数侧 —— 要"看得对"，且**看的时候不会把文件弄坏**
+// （纯读，故同时断言"读完之后磁盘内容一个字没变"）。
 
 /** 与 checkpoints.ts 的 MAX_SNAPSHOT_BYTES 保持一致 */
 const SNAPSHOT_CAP = 256 * 1024

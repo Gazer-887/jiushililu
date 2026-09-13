@@ -1,12 +1,7 @@
-// 文本差异 —— 纯逻辑层（plan13 批 B · B3/B4）
+// 文本差异的纯逻辑层（plan13 批 B · B3/B4），也是全项目**唯一的 diff 真相源**。
 //
-// 为什么单独抽一层：**"看到几处改动"与"能退回哪几处"必须是同一份数据**。
-// 若界面用一套算法渲染、回滚用另一套算法定位，块序号就会对不上 ——
-// 用户点了"第 2 处"，改掉的却是第 3 处。这种错位不会报错，只会默默改错文件。
-// 所以本模块是全项目**唯一的 diff 真相源**：界面渲染它、逐块回滚也用它。
-//
-// 抽成纯函数还有一个实际好处：CI 上没有 Electron 二进制，碰 electron 的代码测不了；
-// 而这里的每一条边界（空文件、只有末行没换行、超大文件）都能直接单测。
+// 为什么必须唯一：界面渲染与逐块回滚若各用一套算法，块序号就会错位 —— 用户点"第 2 处"
+// 却改掉第 3 处，且不报错。抽成纯函数还顺带可单测（CI 无 Electron 二进制）。
 
 import { applyPatch, reversePatch, structuredPatch, type StructuredPatchHunk } from 'diff'
 
@@ -24,10 +19,7 @@ export interface DiffLine {
 }
 
 export interface DiffHunk {
-  /**
-   * 块序号，**从 1 开始**。
-   * 界面上的"第 N 处"与"拒绝第 N 处"用的都是它 —— 这就是那个唯一真相源。
-   */
+  /** 块序号，**从 1 开始** —— 界面上的"第 N 处"与退回用的都是它（唯一真相源） */
   index: number
   /** 改前起始行（1 基） */
   oldStart: number
@@ -45,18 +37,13 @@ export interface DiffResult {
   hunks: DiffHunk[]
   /**
    * jsdiff 的**原生块**，与 `hunks` **按下标一一对应**（截断方式也一致）。
-   *
-   * 为什么两套都要留着：`hunks` 是给界面看的（带行号、带类型），
-   * 但**退回**必须用原生块 —— 只有它保留了 jsdiff 认识的全部细节
-   * （例如"文件末尾没有换行符"这种标注行，我在转成 `hunks` 时把它丢了 ——
-   *  那是对的，因为它没有行号；但拿它去写盘就会写错最后一个换行）。
-   * 用同一份 diff 的两种视图，"看到第 N 处"与"退回第 N 处"才不会分岔。
+   * 退回必须用它：只有它保留了 jsdiff 认识的全部细节（例如"文件末尾没有换行符"那种标注行，
+   * 转 `hunks` 时已丢弃 —— 它没有行号，但拿它去写盘会写错最后一个换行）。
    */
   rawHunks: StructuredPatchHunk[]
   /**
-   * 因超出渲染预算而**只返回了前几块** —— 界面必须如实说出来，不能假装这就是全部。
-   *
-   * ⚠️ 注意：截断**只影响 `hunks` / `rawHunks` 这两个数组**，`added` / `removed` / `totalHunks`
+   * 超出渲染预算，**只返回了前几块** —— 界面必须如实说出来，不能假装这就是全部。
+   * ⚠️ 截断**只影响 `hunks` / `rawHunks` 这两个数组**：`added` / `removed` / `totalHunks`
    * 依然是**全量**统计 —— 否则界面会拿"＋201"冒充"实际 ＋230"，那是在骗用户。
    */
   truncated: boolean
@@ -68,10 +55,8 @@ export interface DiffResult {
   identical: boolean
   /**
    * **因为太大/太慢而放弃逐行差异**（不是"内容相同"，也不是"显示被截断"）。
-   *
-   * 判据只有一条：jsdiff 超时或超出编辑长度上限 → 它返回 `undefined`。
-   * 这时 `hunks` 是空的，但**`identical` 也是 false** —— 界面必须**先看这个标志**，
-   * 否则会把"算不动"说成"完全一致"（那是在骗人），或者把"改动太大"说成"文件读不到"。
+   * 判据只有一条：jsdiff 超时或超出编辑长度上限 → 返回 `undefined`；此时 `hunks` 空但 **`identical` 也是 false**。
+   * ⚠️ 界面必须**先看这个标志**，否则会把"算不动"说成"完全一致"（骗人）、或把"改动太大"说成"文件读不到"。
    */
   degraded: boolean
 }
@@ -80,29 +65,18 @@ export interface DiffResult {
 const CONTEXT_LINES = 3
 
 /**
- * **算差异的时间预算**（毫秒）。
- *
- * 为什么必须有（独立审查实测出来的，不是我拍脑袋加的）：
- * jsdiff 的 Myers 算法是 **O(编辑距离 × 长度)** —— 全文重写是最坏输入。
- * 实测耗时：2000 行 0.65s → 4000 行 3.1s → 8000 行 12.8s → 12000 行 **32.4s**（都在 48 KB 内！）。
- * 而它**同步跑在渲染进程**：面板一打开，整个界面就僵死（连 IPC 回调都进不来）。
- * 更糟的是 256KB 的读上限**完全挡不住** —— 48 KB 就够瘫了。
- *
- * 而"整份重写一个文件"（换实现 / 重新格式化 / 重新生成 lockfile）是 Agent 的**常见动作**。
- *
- * ⚠️ 这条上限的意思不是"超过就不算"，而是**"超过就承认算不动"**（`degraded`）。
- * 而且它**只把最坏情况从几十秒压到 0.8 秒**：这个函数目前仍同步跑在渲染进程，
- * 那 0.8 秒内界面是卡住的。彻底解决要把计算挪到主进程（门禁/界面都只收结果），
- * 已记入 plan13 的后续项 —— 那时 800 这个数就可以放宽回去。
+ * **算差异的时间预算**（毫秒）。jsdiff 的 Myers 是 **O(编辑距离 × 长度)**，而"整份重写一个文件"
+ * 正是 Agent 的常见动作 —— 实测（Windows / Node，48 KB 内）12000 行要 32.4s；它**同步跑在渲染进程**，
+ * 面板一开界面就僵死（连 IPC 回调都进不来），256KB 读上限拦不住。
+ * ⚠️ 超限不是"超过就不算"，是"超过就承认算不动"（`degraded`）；它只把最坏情况压到 0.8s（仍会卡），
+ * 彻底解决要把计算挪到主进程（见 plan13 后续项）。
  */
 const DIFF_TIMEOUT_MS = 800
 
 /**
  * **编辑长度上限**的一条硬闸（与超时互为兜底）。
- *
- * ⚠️ jsdiff 在超时/超长时**返回 `undefined` 而不是抛错** ——
- * 所以调用处必须先判它，否则下面读 `patch.hunks` 会直接 TypeError。
- * 这个坑我自己实测过（`timeout:100` → 101ms 后返回 `undefined`）。
+ * ⚠️ jsdiff 在超时/超长时**返回 `undefined` 而不是抛错** —— 调用处不判它，
+ * 下面读 `patch.hunks` 就会直接 TypeError。
  */
 const MAX_EDIT_LENGTH = 12000
 
@@ -114,27 +88,23 @@ const PATCH_OPTIONS = {
 } as const
 
 /**
- * 渲染预算：块数与总行数各一条上限。
- *
- * 为什么必须有：一次大重构可以产出上千个块、几万行改动 —— 全部塞进 DOM 会把
- * 面板卡死（这个面板是常驻右侧抽屉，卡的是整个界面）。
- * 超预算时**只截断显示**，不改变 diff 结果本身。
+ * 渲染预算：块数与总行数各一条上限。必须有 —— 一次大重构能产出上千块、几万行改动，
+ * 全塞进 DOM 会把面板卡死（这面板是常驻右侧抽屉，卡的是整个界面）。
+ * 超预算**只截断显示**，不改变 diff 结果本身。
  */
 export const MAX_HUNKS = 200
 export const MAX_TOTAL_LINES = 4000
 
 /**
  * 计算差异。
- *
  * @param before 改前文本（文件原本不存在时传空串）
  * @param after  改后文本（文件已被删除时传空串）
  */
 export function computeHunks(before: string, after: string): DiffResult {
   const patch = structuredPatch('before', 'after', before, after, '', '', PATCH_OPTIONS)
 
-  // ⚠️ **必须判这一下**：jsdiff 在超时或超出编辑长度上限时返回 `undefined`（**不抛错**）。
-  //    不判的话，下面读 `patch.hunks` 会直接 TypeError —— 而那是"卡死"变成"崩"，
-  //    比原来更糟。降级要**如实说出来**（degraded），不能伪装成"没有改动"。
+  // ⚠️ **必须判这一下**：jsdiff 在超时或超长时返回 `undefined`（**不抛错**），不判就是"卡死"变
+  //    "崩"（下面读 `patch.hunks` 直接 TypeError）。降级要**如实说出来**（degraded），不许伪装成"没有改动"。
   if (!patch) {
     return {
       hunks: [],
@@ -179,20 +149,16 @@ export function computeHunks(before: string, after: string): DiffResult {
         oldNo++
         newNo++
       }
-      // `\ No newline at end of file` 这类标注行直接丢弃：
-      // 它没有行号、也不是内容，留在 lines 里会让"第 N 行"全部错位。
-      // （真要写盘时用的是 jsdiff 自己的 hunk 对象，不经过这里，所以不影响正确性。）
+      // `\ No newline at end of file` 这类标注行直接丢弃：它没有行号、也不是内容，留着会让"第 N 行"错位
+      // （写盘用的是 jsdiff 原生 hunk，不经过这里，故不影响正确性）
     }
 
-    // ⚠️ 计数**无条件累加**（要遍历全部块），只有"装进数组"受预算限制 ——
-    //    否则截断后的加减行数就成了假数字。
+    // ⚠️ 计数**无条件累加**（要遍历全部块），只有"装进数组"受预算限制 —— 否则截断后的加减行数是假数字。
     addedTotal += added
     removedTotal += removed
 
-    // ⚠️ 预算必须在 push 之前**把这一块自己也算进去**（审查证伪过这个声明）：
-    //    原写法只看"已装进去的总行数"，而第一块天然满足 `0 < 4000` ——
-    //    于是一个 8000 行的巨块照进不误，`truncated` 还是 false。
-    //    "渲染预算"号称防卡死，实际上只防"块数多"，不防"单块巨大"。
+    // ⚠️ 预算必须**把这一块自己也算进去**（审查证伪过旧写法）：只看"已装进去的总行数"时，
+    //    一个 8000 行的巨块照进不误、`truncated` 还是 false —— 只防了"块数多"，不防"单块巨大"。
     if (hunks.length < MAX_HUNKS && totalLines + lines.length <= MAX_TOTAL_LINES) {
       totalLines += lines.length
       hunks.push({
@@ -218,9 +184,8 @@ export function computeHunks(before: string, after: string): DiffResult {
     totalHunks: patch.hunks.length,
     added: addedTotal,
     removed: removedTotal,
-    // ⚠️ 判"两侧一样"要看 **jsdiff 算出来的块数**，不是"我们装进数组的块数"！
-    //    否则"唯一那一块因为太大被预算挡掉"时，`hunks` 是空的 → 会被说成"完全一致"，
-    //    而实际上它改动巨大 —— 那是**把算不动说成没改动**，正是最不能犯的错。
+    // ⚠️ 判"两侧一样"要看 **jsdiff 算出来的块数**，不是"装进数组的块数"！否则唯一那一块
+    //    因太大被预算挡掉时 `hunks` 是空的 → 被说成"完全一致"，而它改动巨大 —— 最不能犯的错。
     identical: patch.hunks.length === 0,
     degraded: false
   }
@@ -236,12 +201,9 @@ export function summarizeDiff(result: DiffResult): string {
 }
 
 /**
- * 差异能不能**逐块退回**。
- *
- * 判据只有一条：**两侧都必须是完整原文**。
- * 截断过的文本算出来的块，其行号与内容对不上真实文件 ——
- * 拿它去写盘就会把大文件砍成截断长度（数据丢失）。这正是 `FilePreviewPane`
- * 那条"截断的文件不给编辑"的同一条原则，在这里必须同样守住。
+ * 差异能不能**逐块退回**：判据只有一条 —— **两侧都必须是完整原文**。
+ * 截断过的文本算出来的块，行号与内容对不上真实文件，拿去写盘会把大文件砍成截断长度（数据丢失）。
+ * 同 `FilePreviewPane` 那条"截断的文件不给编辑"。
  */
 export function canRevertHunks(opts: {
   truncated: boolean
@@ -249,8 +211,7 @@ export function canRevertHunks(opts: {
   hasBefore: boolean
   hasAfter: boolean
 }): boolean {
-  // created：改前文件压根不存在 —— 它没有"改前的那几行"可还原。
-  // 这种文件只能整份退回（= 删掉），不能逐块。
+  // created：改前文件压根不存在，没有"改前的那几行"可还原 —— 只能整份退回（= 删掉）
   if (opts.kind === 'created') return false
   if (opts.truncated) return false
   if (!opts.hasBefore || !opts.hasAfter) return false
@@ -265,23 +226,18 @@ export type RevertHunkOutcome =
   | { ok: false; reason: RevertHunkFailReason }
 
 /**
- * 把「第 N 处」退回 —— 算出**应用之后的完整文本**，落盘由调用方负责。
- *
- * 为什么这一层只算不写：写盘必须走**统一写入服务**（含写前快照），那是主进程的事。
- * 保持纯函数才能直接单测 —— 而"退回算得对不对"正是最该测的那件事
- * （算错了不是报错，是**默默改坏文件**）。
- *
- * ⚠️ 前提（调用方保证，见 `canRevertHunks` 与 `checkpoint:revert-hunk` 的 mtime 校验）：
- *    `current` 必须**还是**算差异时的那一份文本。变过的话 `applyPatch` 会返回 false
- *    （它不会瞎改），但更早那一层就该把它拦下来，别让用户白点一次。
+ * 把「第 N 处」退回 —— 只算出**应用之后的完整文本**，落盘由调用方走**统一写入服务**（含写前快照）。
+ * 保持纯函数才能直接单测，而"退回算得对不对"正是最该测的：算错了不是报错，是**默默改坏文件**。
+ * ⚠️ 前提由调用方保证（见 `canRevertHunks` 与 `checkpoint:revert-hunk` 的 mtime 校验）：
+ *    `current` 必须**还是**算差异时的那一份文本 —— 变过的话 `applyPatch` 返回 false（它不会瞎改），
+ *    但更早那一层就该拦下来，别让用户白点一次。
  */
 export function revertHunk(current: string, result: DiffResult, hunkIndex: number): RevertHunkOutcome {
   const raw = result.rawHunks[hunkIndex - 1]
   if (!raw) return { ok: false, reason: 'no-such-hunk' }
 
-  // jsdiff 的 `reversePatch` 收的是**整个 patch**（不是单个块），
-  // 所以先把目标块单独包成一个 patch 再反转 —— 反转出来的"旧侧"
-  // 正好是当前文本里的那一块，`applyPatch` 才认得出来。
+  // jsdiff 的 `reversePatch` 收的是**整个 patch**（不是单个块），故先把目标块单独包成一个 patch
+  // 再反转 —— 反转出来的"旧侧"正好是当前文本里的那一块，`applyPatch` 才认得出来。
   const single = {
     oldFileName: undefined,
     newFileName: undefined,

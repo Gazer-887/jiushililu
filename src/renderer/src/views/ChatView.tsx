@@ -6,11 +6,10 @@ import InputConsole from '../components/InputConsole'
 import TodoPanel from '../components/TodoPanel'
 import GoalPanel from '../components/GoalPanel'
 
-// 对话页（D-032：单一通道）——不再有"对话/Agent 模式"开关：
-// 用不用工具由模型自己决定；界面负责**让过程可见**（工具执行卡片）。
+// 对话页（D-032：单一通道）——用不用工具由模型自己决定，界面只负责让过程可见（工具执行卡片）。
 // 输入框为控制台形态（InputConsole）：模型/权限/进度/拓展/发送全在框内。
 
-/** 附件内容 → 上下文块（放在用户输入之前，标明是资料而非指令） */
+/** 附件 → 上下文块：置前并声明是资料，防被当成指令执行 */
 function composeWithAttachments(text: string, attachments: Attachment[]): string {
   if (attachments.length === 0) return text
   const blocks = attachments
@@ -30,27 +29,20 @@ export default function ChatView() {
   const rollbackNotice = useAppStore((s) => s.rollbackNotice)
   const rollbackTo = useAppStore((s) => s.rollbackTo)
   const undoRollback = useAppStore((s) => s.undoRollback)
-  /** 消息右键菜单（回到这条之前）；null = 关着 */
+  /** 消息右键菜单；null = 关着 */
   const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null)
 
-  /**
-   * 消息右键菜单的容器。**必须用它判"点在不在菜单里"** —— 见下面 effect 的注释。
-   */
+  /** 菜单容器：判「点在不在菜单里」全靠它 —— 用法与原因见下面 effect */
   const menuRef = useRef<HTMLDivElement>(null)
 
-  // 点空白 / Esc 关菜单（与资源管理器、工作台页签同一套习惯，不另铺一层遮罩）
+  // 点空白 / Esc 关菜单（不铺遮罩，与资源管理器、工作台页签同一习惯）
   useEffect(() => {
     if (!menu) return
     const onDown = (e: MouseEvent): void => {
-      // ⚠️ **必须判"点在不在菜单里"**：document 上的 `mousedown` 早于 `click`，
-      //    无条件关菜单会把按钮**在 mousedown 那一刻就卸载掉** —— 而 `click` 要求
-      //    mousedown 与 mouseup 落在**同一个元素**上，于是 click 永远不会发生，
-      //    菜单看着好好的、点下去什么也不发生。
-      //    （这就是 0.13.6 用户报的"回滚失败"：请求压根没发出去，主进程日志里一条都没有。）
-      //
-      // ⚠️ 而这个 bug **合成 click 测不出来**：`el.click()` 只派发 click、不发 mousedown，
-      //    正好绕过整条竞态 —— 与拖拽那次"合成事件天生为绿"是同一个病。
-      //    所以 verify-shot 里的菜单交互已改成**真鼠标**（CDP mousePressed/mouseReleased）。
+      // ⚠️ **必须判"点在不在菜单里"**：document 的 `mousedown` 早于 `click`，无条件关菜单会在
+      //    mousedown 那一刻就卸载按钮 —— 而 `click` 要求 mousedown/mouseup 同元素，于是它永不发生：
+      //    菜单看着好好的、点下去没反应（0.13.6 用户报的"回滚失败"，请求压根没发出去）。
+      //    合成 click 也测不出（`el.click()` 不发 mousedown，绕过整条竞态）→ verify-shot 已改用真鼠标（CDP）。
       if (menuRef.current?.contains(e.target as Node)) return
       setMenu(null)
     }
@@ -71,17 +63,15 @@ export default function ChatView() {
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
   const [input, setInput] = useState('')
-  /** 思考块是否展开（默认展开：流式期能看见它在想什么，这才是"过程可见"） */
+  /** 思考块展开态；默认展开 —— 流式期看得见它在想什么才叫"过程可见" */
   const [showReasoning, setShowReasoning] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
-  // 「文件拖进会话」的落点 = 整块会话区（不是只有输入框那一小块）
+  // 拖拽落点 = 整块会话区，不只是输入框那一小块
   const viewRef = useRef<HTMLDivElement>(null)
 
   const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
 
-  // 流式与工具事件订阅**不在这里** —— 它挂在 `App` 上（见 `App.tsx` 的 `useStreamSubscriptions`）。
-  // 原因：这里是**条件渲染**（`view === 'chat' && <ChatView />`），订阅挂在这儿意味着
-  // "切到设置页 = 把订阅全解绑" —— 会丢字，还会因为收不到 `chat:done` 而**卡在生成中**。
+  // 流式/工具订阅不在这里（挂 `App`，见 `App.tsx` 的 useStreamSubscriptions）：此处是条件渲染，挂这等于切页就解绑 —— 丢字且卡在生成中
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -89,10 +79,7 @@ export default function ChatView() {
 
   const tokens = useMemo(() => usedTokens(messages), [messages])
 
-  /**
-   * 过程块插在哪条消息之前：**最后一条助手消息**（过程 → 结论，阅读顺序才对）。
-   * 没有助手消息时（刚进会话）退到"最后一条之前"，保证它不会凭空消失。
-   */
+  /** 过程块插在最后一条助手消息之前（过程 → 结论，阅读顺序才对）；没有助手消息时退到最后一条之前 */
   const insertAt = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i]!.role === 'assistant') return i
@@ -100,12 +87,7 @@ export default function ChatView() {
     return Math.max(0, messages.length - 1)
   })()
 
-  /**
-   * 过程块（思考 + 工具活动）—— 渲染在**最后一条助手消息之前**。
-   *
-   * 为什么不堆在最下面：这些是发生在报告**之前**的过程，堆到末尾会把报告挤出视野 ——
-   * 一轮跑十几个工具时，界面几乎全被卡片占满、真正的结论反而看不见（用户实测反馈）。
-   */
+  /** 过程块（思考 + 工具活动）。**不许堆在最下面** —— 它发生在报告之前，堆末尾会把结论挤出视野（工具一多界面全是卡片） */
   const processBlock = (
     <>
       {reasoning && (
@@ -136,7 +118,6 @@ export default function ChatView() {
               </span>
               <span className="tool-name">{e.name}</span>
               <span className="tool-desc">
-                {/* 执行中显示"在干什么"（入参摘要），结束后显示结果摘要 */}
                 {e.phase === 'start' ? (e.detail || '执行中…') : (e.summary ?? e.detail ?? '')}
               </span>
             </div>
@@ -169,19 +150,14 @@ export default function ChatView() {
       )}
 
       <div className="chat-messages">
-        {/*
-          空对话**不显示任何文案**（用户 2026-09-12：「进入对话的背景干净最好，字一个都不要」）。
-          与首屏的分工：首屏是"门面"（有文案/水印），进入对话后是"工作面"（留白，专注内容）。
-        */}
+        {/* 空对话不显示任何文案（用户 2026-09-12）；首屏是门面、进入对话后是工作面，留白专注内容 */}
         {messages.map((m, i) => (
           <Fragment key={i}>
-            {/* 过程块插在最后一条助手消息**之前**：过程 → 结论，阅读顺序才对 */}
             {i === insertAt && processBlock}
             <div
               className={`msg msg-${m.role}`}
-              // 右键消息 = 入口（plan10 B 批 ④）：回到这条之前。
-              // 「这条」对用户与助手消息都成立 —— 回滚到某条**助手**消息之前，
-              // 正好是"删掉这个回答、只留我的问题"，可以直接重问。
+              // 右键 = 回到这条之前（plan10 B 批 ④）。对用户与助手消息都成立：滚到某条助手消息
+              // 之前，正好是"删掉这个回答、只留我的问题"，可以直接重问。
               onContextMenu={(e) => {
                 e.preventDefault()
                 setMenu({ x: Math.min(e.clientX, window.innerWidth - 220), y: Math.min(e.clientY, window.innerHeight - 90), index: i })
@@ -202,8 +178,7 @@ export default function ChatView() {
         {/* 没有消息时（刚进会话）过程块自己挂在末尾 —— 否则它会凭空消失 */}
         {messages.length === 0 && processBlock}
 
-        {/* 回滚之后的提示条：**必须再声明一次作用域**（用户会担心"文件是不是也退了"），
-            并给一个撤销入口 —— 回滚只移游标不删数据，撤销是零成本的 */}
+        {/* 回滚之后的提示条：必须再声明一次作用域（用户会担心"文件是不是也退了"）并给撤销入口 —— 回滚只移游标不删数据，撤销零成本 */}
         {rollbackNotice && (
           <div className="rb-bar">
             <span className="rb-text">
@@ -216,11 +191,10 @@ export default function ChatView() {
         )}
 
         {streamError && <div className="chat-error">{streamError}</div>}
-        {/* 落盘失败独立一条：切会话 / 点停止 / 关窗口那一刻最常发生，不能被 streamError 的清空带走
-            （样式复用 .chat-error，不新增类 —— 免得又多一处"JSX 里有、样式表里没有"的死类） */}
+        {/* 落盘失败独立一条：切会话 / 点停止 / 关窗口那一刻最常发生，不能被 streamError 的清空带走。
+            样式复用 .chat-error —— 不新增类，免得又多一处"JSX 里有、样式表里没有"的死类 */}
         {saveError && <div className="chat-error">{saveError}</div>}
-        {/* 并发提醒（plan11 §2.3）：**只提醒一次，可关掉，不拦** ——
-            两个会话同时改同一个工作区会互相覆盖，这是用法层面的风险，知情权在用户手里 */}
+        {/* 并发提醒（plan11 §2.3）：只提醒一次、可关掉、不拦 —— 两个会话同改一个工作区会互相覆盖，风险属用法层面，知情权在用户手里 */}
         {concurrencyNotice && (
           <div className="cc-bar">
             <span className="cc-text">{concurrencyNotice}</span>
@@ -232,8 +206,7 @@ export default function ChatView() {
         <div ref={bottomRef} />
       </div>
 
-      {/* 消息右键菜单：一条命令，放在消息旁边而不是统一塞进某个面板里。
-          样式复用工作台那份（`.wb-menu` + `.wb-pick`），不另造一套。 */}
+      {/* 右键菜单只有一条命令，就近放在消息旁；样式复用工作台那份（`.wb-menu` + `.wb-pick`），不另造一套 */}
       {menu && (
         <div className="wb-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
           <button
@@ -250,10 +223,9 @@ export default function ChatView() {
       )}
 
       <div className="chat-input">
-        {/* **目标**（跨轮次的长期意图）摆在待办**上面** —— 形态对齐 DSH。
-            两者分开摆、各自说清：目标是「要持续达成什么」，待办是「这一轮干什么」（plan12） */}
+        {/* **目标**（跨轮次的长期意图）摆在待办上面，形态对齐 DSH —— 两者语义之分见 GoalPanel（plan12） */}
         <GoalPanel />
-        {/* 待办清单在输入框**上方**（用户 2026-09-12 意见，形制对齐 DSH）；清单为空时自己隐藏 */}
+        {/* 待办清单在输入框**上方**（用户 2026-09-12 意见，形制对齐 DSH） */}
         <TodoPanel />
         <InputConsole
           value={input}

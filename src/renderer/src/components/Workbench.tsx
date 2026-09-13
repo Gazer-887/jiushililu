@@ -4,25 +4,19 @@ import { useAppStore } from '../store'
 import Pane from './Pane'
 import PaneChooser from './PaneChooser'
 
-// 工作台（plan9 W3 多栏渲染 → W5 拖拽）。
+// 工作台（plan9 W3 多栏渲染 → W5 拖拽）：`panes` 是水平栏数组，栏内各有页签列表。
 //
-// 布局模型：`panes` 是一个**水平栏数组**，栏内各自还有页签列表。
-// 宽度分配走 `allocate()` 纯函数（三级收缩见 plan9 §W5）：
-//   · 前 n−1 栏用存下来的**期望宽**，**末栏吃余量**
-//   · 总宽就是外层分隔条控制的 `dockWidth`（那条边调整的是整体）
-//   · 算出来的宽度**只用于渲染，绝不写回**（写回会让"窗口缩小再放大"不可逆）
-//
-// 保留 `.dock` / `.dock-body` 两个类名：前者是容器（验证脚本按它量宽度），
-// 后者是栏内容区（脚本按它量滚动）—— 改名就得同时改验证脚本，这是本项目的既有教训。
+// 宽度分配走 `allocate()` 纯函数（三级收缩见 plan9 §W5）：前 n−1 栏用存下来的**期望宽**，
+// **末栏吃余量**；算出来的宽度**只用于渲染、绝不写回**（写回会让"窗口缩小再放大"不可逆）。
+// ⚠️ 保留 `.dock` / `.dock-body` 两个类名：验证脚本按前者量宽度、按后者量滚动，改名必须同时改脚本。
 
 /** 栏与栏之间留的缝，**必须等于** workbench.ts 的 PANE_GAP（分配时算进去了） */
 const GAP_PX = 4
 
 /**
- * 栏间分隔条：夹在第 `index` 栏与第 `index+1` 栏之间，**控制第 index 栏**。
- *
- * 为什么分隔条只有 n−1 条：宽度数组也只存 n−1 个（末栏吃余量），一一对应。
- * 最外那条边（对话 ｜ 工作台）仍由 App 里原有的 Splitter 管 —— 它调的是**总宽**。
+ * 栏间分隔条：夹在第 `index` 与 `index+1` 栏之间，**控制第 index 栏**。
+ * 只有 n−1 条 —— 宽度数组也只存 n−1 个（末栏吃余量）。最外那条边（对话｜工作台）
+ * 由 App 原有的 Splitter 管，它调的是**总宽**。
  */
 function PaneDivider({
   index,
@@ -34,7 +28,7 @@ function PaneDivider({
   index: number
   layout: WorkbenchLayout
   sizes: WorkbenchSizes
-  /** **屏幕上真实渲染出来的**宽度 —— 拖拽必须基于它，不能基于"存下来的期望宽" */
+  /** **屏幕上真实渲染出来的**宽度 —— 拖拽必须基于它，不能基于存下来的期望宽 */
   widths: number[]
   available: number
 }): JSX.Element {
@@ -46,8 +40,7 @@ function PaneDivider({
     e.preventDefault()
     const el = ref.current
     if (!el) return
-    // Pointer capture：监听挂在手柄**自身**上，鼠标再快也不会丢事件，
-    // 也不用往 document 上挂全局监听（参照实现的做法，见 plan9 §W0-A7）。
+    // Pointer capture：监听挂在手柄**自身**上，鼠标再快也不丢事件，不必往 document 上挂全局监听（plan9 §W0-A7）。
     // 用 try 包住：合成事件里 pointerId 不对应真实指针时这里会抛 NotFoundError，
     // 而"拖不动"比"抓不到指针"严重得多 —— 抓不到也要让后面的监听照常工作。
     try {
@@ -57,10 +50,8 @@ function PaneDivider({
     }
     const startX = e.clientX
     /**
-     * ⚠️ 起点必须是**渲染宽度**，不是 `sizes.paneWidths[index]`。
-     *
-     * 两者经常不等：期望宽是新栏的默认值（320），而实际被 `allocate` 压到 178。
-     * 若用期望宽当起点，用户拖 30px 会看到栏**跳到 235** —— 手感完全错位。
+     * ⚠️ 起点必须是**渲染宽度**，不是 `sizes.paneWidths[index]`：期望宽是新栏的默认值，
+     * 实测常被 `allocate` 压小一大截。若用期望宽当起点，用户拖一点点栏就**跳** —— 手感完全错位。
      */
     const startW = widths[index] ?? PANE_DEFAULT
     const mins = layout.panes.map((p) => p.min)
@@ -114,17 +105,15 @@ export default function Workbench(): JSX.Element | null {
   const wbOpenTab = useAppStore((s) => s.wbOpenTab)
   const setWbRowWidth = useAppStore((s) => s.setWbRowWidth)
 
-  // 换位拖拽态：进组件 state，**不学**参照实现的模块级变量
-  //（中途重渲染会让模块级变量残留，见 plan9 §W0-B5）
+  // 换位拖拽态进组件 state，**不学**参照实现的模块级变量（中途重渲染会让它残留，plan9 §W0-B5）
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dropAt, setDropAt] = useState<number | null>(null)
 
   const rowRef = useRef<HTMLDivElement>(null)
   const [rowWidth, setRowWidth] = useState(dockWidth)
 
-  // 量**真实的可用宽**，而不是直接用 dockWidth。
-  // 原因：`.dock` 有 1px 左边框，按 dockWidth 分配会让栏宽之和比容器多 1px，
-  // 被 `overflow:hidden` 悄悄裁掉 —— 少 1px 用户看不出来，但几何断言会失真。
+  // 量**真实的可用宽**，不用 dockWidth：`.dock` 有 1px 左边框，按 dockWidth 分配会让
+  // 栏宽之和比容器多 1px，被 `overflow:hidden` 悄悄裁掉 —— 用户看不出，但几何断言会失真。
   useEffect(() => {
     const el = rowRef.current
     if (!el) return
@@ -139,7 +128,7 @@ export default function Workbench(): JSX.Element | null {
     return () => ro.disconnect()
   }, [dockOpen])
 
-  // 收起时整块不渲染 —— 注意这行必须在**所有 hook 之后**（否则违反 hook 调用顺序）
+  // 收起时整块不渲染 —— 必须在**所有 hook 之后**（否则违反 hook 调用顺序）
   if (!dockOpen) return null
 
   const count = layout.panes.length
@@ -152,13 +141,13 @@ export default function Workbench(): JSX.Element | null {
 
   const onDragStart = (index: number, e: ReactDragEvent): void => {
     setDragFrom(index)
-    // 用 dataTransfer 捎带下标：不必依赖模块级变量，React 里更干净
+    // 用 dataTransfer 捎带下标，不依赖模块级变量
     e.dataTransfer.setData('text/plain', String(index))
     e.dataTransfer.effectAllowed = 'move'
   }
   const onDragOver = (index: number, e: ReactDragEvent): void => {
     if (dragFrom === null) return
-    e.preventDefault() // 不 preventDefault 就不会触发 drop
+    e.preventDefault() // 不 preventDefault 就不触发 drop
     e.dataTransfer.dropEffect = 'move'
     setDropAt(index)
   }
@@ -169,10 +158,9 @@ export default function Workbench(): JSX.Element | null {
     setDragFrom(null)
     setDropAt(null)
     if (from === null || from === index) return
-    // 换位：**宽度留在列上、内容跟着走**。
-    //   （有意与参照实现不同：它连宽度一起换。我们的栏宽数组只存前 n−1 栏、
-    //     末栏吃余量，长度与"栏"不是一一对应，做不到"宽度跟着内容"。
-    //     反过来说，"列宽不变、内容换过去"也更符合"我把这栏挪到那边"的直觉。）
+    // 换位：**宽度留在列上、内容跟着走**（有意与参照实现不同，它连宽度一起换）：
+    // 我们的栏宽数组只存前 n−1 栏、末栏吃余量，长度与"栏"不一一对应，做不到"宽度跟着内容"；
+    // 而"列宽不变、内容换过去"也更贴"我把这栏挪到那边"的直觉。
     setWorkbench(movePane(layout, from, index), sizes)
     void persistWorkbench()
   }
@@ -185,8 +173,7 @@ export default function Workbench(): JSX.Element | null {
     <aside className="dock open" style={{ width: dockWidth }}>
       <div ref={rowRef} className={`wb-row ${fit.overflow ? 'wb-overflow' : ''}`}>
         {count === 0 ? (
-          // 空工作台：默认布局就是空的（与"工作台默认收起"一致），
-          // 展开后直接给开窗菜单，而不是悄悄塞一个资源管理器
+          // 空工作台：展开后直接给开窗菜单，**不**悄悄塞一个资源管理器（默认布局本就是空的）
           <div className="wb-empty">
             <div className="wb-empty-title">工作台是空的</div>
             <div className="wb-empty-desc">选一个面板打开，之后可以再 ＋ 开新的一栏。</div>

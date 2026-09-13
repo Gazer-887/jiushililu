@@ -93,11 +93,9 @@ describe('Anthropic tool_use 翻译器', () => {
     const { system, messages: translated } = toAnthropicAgentMessages(messages)
     expect(system).toBe('内核规则')
     expect(translated).toHaveLength(3)
-    // assistant：tool_use ×2
     const assistant = translated[1]!
     expect(assistant.role).toBe('assistant')
     expect(assistant.content.filter((b) => b.type === 'tool_use')).toHaveLength(2)
-    // 两条 tool 结果合并进一条 user
     const toolResultMsg = translated[2]!
     expect(toolResultMsg.role).toBe('user')
     const results = toolResultMsg.content.filter((b) => b.type === 'tool_result')

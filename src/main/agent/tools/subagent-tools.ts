@@ -1,10 +1,8 @@
 import type { AgentTool } from '@shared/agent'
 
 // 子代理派发工具（plan7 批 D / plan6 V2）—— 让主代理能把**独立子任务并行**派出去。
-//
-// 为什么要有这个工具：scheduler 早就写好了（并发上限 + 单代理预算 + 独立上下文 + 白名单门控），
-// 但**没有任何入口能触发它** —— 于是"子代理"在界面上永远是一片空白。
-// 接上这个工具之后，"谁在跑"才有东西可看。
+// 为什么要有它：scheduler 早就写好了（并发上限 + 单代理预算 + 独立上下文 + 白名单门控），
+// 却**没有任何入口能触发** —— 于是"子代理"在界面上永远是一片空白；接上它，"谁在跑"才有东西可看。
 
 /** 单次派发的作业数上限（并发上限是 3，一次派太多只会在队列里占着） */
 export const MAX_JOBS = 6
@@ -17,10 +15,7 @@ export interface SubagentDispatchJob {
   task: string
 }
 
-/**
- * 派发口（依赖倒置，同 TodoReporter / WriteRecorder）：
- * 工具层不碰 registry 与模型通道 —— 那些在 runner 里，由它注入实现。
- */
+/** 派发口（依赖倒置，同 TodoReporter / WriteRecorder）：工具层不碰 registry 与模型通道 —— 由 runner 注入实现 */
 export interface SubagentDispatcher {
   /** 派发并等结果；返回值是给模型看的汇总文本（校验失败也用人话回） */
   dispatch(jobs: SubagentDispatchJob[]): Promise<string>

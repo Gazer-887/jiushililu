@@ -2,10 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { describeKind, type CheckpointRun, type CheckpointRunMeta } from '@shared/checkpoint'
 import DiffView from './DiffView'
 
-// 文件变更记录（plan8 R4）：把 Agent 每一轮的写入留痕摊开，支持一键回滚。
+// 文件变更记录：把 Agent 每一轮的写入留痕摊开，支持整轮或单文件回滚。
 //
-// 为什么这个面板重要：Agent 已经能改真实文件了，但在此之前**改坏退不回**。
-// 这里补的就是那个"退"—— 用户看到改了哪些、能选中某轮或某个文件退回去。
+// 补上的是"改坏退不回"这个缺口 —— 看得见改了哪些，也退得回。
 
 function fmtTime(ms: number): string {
   const d = new Date(ms)
@@ -19,13 +18,10 @@ export default function ChangesPanel(): JSX.Element {
   const [detail, setDetail] = useState<CheckpointRun | null>(null)
   const [confirmKey, setConfirmKey] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  /** 正在看差异的那个文件（`null` = 没展开）。看完不收起来会一直占着面板高度 */
+  /** 正在看差异的那个文件（`null` = 没展开）；看完不收起来会一直占着面板高度 */
   const [diffTarget, setDiffTarget] = useState<{ runId: string; rel: string } | null>(null)
-  /**
-   * 差异视图的刷新令牌。
-   * 回滚会**改掉磁盘内容**，而 DiffView 的依赖只有 (runId, rel) —— 不给它一个变化的 key，
-   * 它就会继续显示回滚前算出来的差异（"看着还有改动，其实已经退回去了"，会把人骗到）。
-   */
+  /** 差异视图的刷新令牌：回滚会改掉磁盘内容，而 DiffView 的依赖只有 (runId, rel) ——
+   *  不给它一个变化的 key，它会继续显示回滚前算出的差异（"看着还有改动，其实已经退回去了"）。 */
   const [diffNonce, setDiffNonce] = useState(0)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -39,7 +35,7 @@ export default function ChangesPanel(): JSX.Element {
 
   useEffect(() => {
     void reload()
-    // 一轮运行改了文件后主进程会推事件，面板据此刷新（无需手动点刷新）
+    // 一轮改了文件后主进程推事件，面板据此刷新（无需手动点刷新）
     return window.api.onCheckpointChanged(() => void reload())
   }, [reload])
 
@@ -71,7 +67,7 @@ export default function ChangesPanel(): JSX.Element {
       })
       await reload()
       setDetail(await window.api.getCheckpoint(runId))
-      setDiffNonce((n) => n + 1) // 内容被改过了，差异视图必须重算（见 diffNonce 说明）
+      setDiffNonce((n) => n + 1) // 内容被改过，差异视图必须重算（见 diffNonce）
     } catch (err) {
       setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
     } finally {
@@ -80,13 +76,9 @@ export default function ChangesPanel(): JSX.Element {
     }
   }
 
-  /**
-   * 二次确认：回滚会删掉本轮新建的文件，不能一点就走。
-   *
-   * `confirmLabel` 存在的理由（审查指出）：对**新建**的文件来说，"回滚"的真实含义是
-   * **把文件删掉**，而确认按钮上写着"确认回滚"——用户根本看不出这一步会删东西。
-   * 同一个动作，后果不一样，就该在按下去之前说清。
-   */
+  /** 二次确认：回滚会删掉本轮新建的文件，不能一点就走。
+   *  `confirmLabel` 的理由：对**新建**文件来说，"回滚"的真实含义是**把文件删掉**，
+   *  而确认按钮写着"确认回滚"——用户看不出这一步会删东西，所以后果不同就得换文案。 */
   const ConfirmButton = ({
     k,
     label,
@@ -175,7 +167,7 @@ export default function ChangesPanel(): JSX.Element {
                           <span className="ck-file-size">
                             {c.kind === 'modified' ? `${c.beforeBytes} B` : '—'}
                           </span>
-                          {/* 看清楚**改成了什么样**，再决定退不退 —— B3 只读展示，退回在 B4 */}
+                          {/* 先看清改成了什么样，再决定退不退 */}
                           <button
                             className="ck-btn"
                             disabled={busy}

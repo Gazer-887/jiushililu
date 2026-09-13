@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../store'
 import type { ConversationMeta } from '@shared/ipc'
 
-// 侧边栏（P2）：新建任务入口 + 按工作区分组的会话历史 + 左下角齿轮设置。
-// 显隐由顶栏控制（open 受控）；品牌名在顶栏，这里不再重复。
+// 侧边栏（P2）：新建任务 + 按工作区分组的会话历史 + 齿轮设置。显隐由顶栏控制（open 受控），品牌名在顶栏不重复。
 // 交互参考：opencode 的新建流程、WorkBuddy 的分组历史（去掉专家/连接器等花哨项）。
 
 interface Group {
@@ -12,7 +11,7 @@ interface Group {
   items: ConversationMeta[]
 }
 
-/** 分组（与主进程同一套规则：组内按更新时间倒序） */
+/** 与主进程同一套分组规则：组内按更新时间倒序 */
 function groupConversations(list: ConversationMeta[]): Group[] {
   const map = new Map<string, ConversationMeta[]>()
   for (const c of list) {
@@ -38,10 +37,7 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
   const renameConversation = useAppStore((s) => s.renameConversation)
   const removeConversation = useAppStore((s) => s.removeConversation)
   const setView = useAppStore((s) => s.setView)
-  /**
-   * **正在跑的会话集合**（plan11）：当前那条看顶层的 `streaming`，
-   * 后台那几条看各自存档里的 `streaming` —— 两边合起来才是"谁在跑"的全貌。
-   */
+  /** **正在跑的会话集合**（plan11）：当前那条看顶层 `streaming`，后台那几条看各自存档里的 —— 合起来才是"谁在跑"的全貌 */
   const runtimes = useAppStore((s) => s.runtimes)
   const activeStreaming = useAppStore((s) => s.streaming)
   const runningIds = new Set<string>([
@@ -57,7 +53,6 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
 
   const groups = groupConversations(conversations)
 
-  // 点击别处关闭三点菜单
   useEffect(() => {
     if (!menuFor) return
     const onDown = (e: MouseEvent): void => {
@@ -133,8 +128,7 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
                     ) : (
                       <span className="conv-title">{c.title}</span>
                     )}
-                    {/* 「这条会话正在跑」（plan11）：并发之后一眼看出**哪几条**在生成 ——
-                        不看这个标记，用户会以为切走的那条已经停了 */}
+                    {/* 并发下要一眼看出**哪几条**在生成（plan11）—— 没有这个标记，用户会以为切走的那条已经停了 */}
                     {runningIds.has(c.id) && (
                       <span className="conv-running" title="这条会话正在生成">
                         正在生成

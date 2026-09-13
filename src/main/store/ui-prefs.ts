@@ -14,14 +14,10 @@ import {
 import { emptyLayout, emptySizes, sanitizeLayout, sanitizeSizes } from '@shared/workbench'
 
 // 界面布局偏好持久化（plan7 批 A0）：左右抽屉的宽度；plan9 起再加**工作台分栏布局**。
-//
-// 为什么单独一个 store 而不是塞进 settings：
-//   ① settings 的 schema 是模型配置（BaseURL/Key/温度…），掺进布局字段会让它职责变模糊
-//   ② settings 有 zod 校验与"测试连接"等逻辑，布局偏好不该被那套流程牵连
-//   ③ 布局偏好写入频繁（拖拽结束才写一次，但仍比设置频繁），分开存互不干扰
-//
-// ⚠️ plan9 §W2：本文件是**三层校验的最后一层**，也是**手改 config.json 的唯一防线**。
-//    渲染端与 IPC 都可能被绕过（直接改盘上文件），所以读回来的东西一律重新 sanitize。
+// 为什么单独一个 store：① settings 的 schema 是模型配置，掺进布局字段会让职责变模糊；② settings 有 zod 校验与
+// "测试连接"那套流程，布局偏好不该被牵连；③ 布局偏好写入更频繁（拖拽结束写一次），分开存互不干扰。
+// ⚠️ plan9 §W2：本文件是**三层校验的最后一层**，也是**手改 config.json 的唯一防线** —— 渲染端与 IPC 都可能被
+// 绕过（直接改盘上文件），所以读回来的东西一律重新 sanitize。
 
 interface StoredPrefs {
   sidebarWidth?: number
@@ -35,11 +31,8 @@ interface StoredPrefs {
 const store = new Store<StoredPrefs>({ name: 'ui-prefs' })
 
 /**
- * 读回时一律夹回合法区间 / 过一遍 sanitize。
- *
- * 存档可能被手改坏，也可能跨版本（宽度范围改过、布局格式改过）。
- * 分栏布局与栏宽**必须同源**：栏宽数组的长度要等于 `panes.length − 1`，
- * 对不上就整组回默认（workbench.ts 里那条自愈不变量）。
+ * 读回时一律夹回合法区间 / 过一遍 sanitize —— 存档可能被手改坏，也可能跨版本（宽度范围改过、布局格式改过）。
+ * 分栏布局与栏宽**必须同源**：栏宽数组的长度要等于 `panes.length − 1`，对不上就整组回默认（workbench.ts 的自愈不变量）。
  */
 export function getUIPrefs(): UIPrefs {
   const workbench = sanitizeLayout(store.store.workbench)
@@ -58,9 +51,7 @@ export function getUIPrefs(): UIPrefs {
 }
 
 /**
- * 只接受合法值；非法值忽略（不让坏数据进盘）。
- *
- * 分栏布局走 `sanitizeLayout` **再**落盘 —— 不是"原样存、读时再修"：
+ * 只接受合法值；非法值忽略（不让坏数据进盘）。分栏布局走 `sanitizeLayout` **再**落盘 —— 不是"原样存、读时再修"：
  * 存的时候就清洗，盘上永远只有合法数据，出问题时少一层怀疑对象。
  */
 export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
@@ -93,11 +84,8 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
 }
 
 /**
- * 恢复默认（供"恢复默认布局"按钮与双击分隔条复位用）。
- *
- * plan9 §W2：**必须把分栏布局一并复位** —— 否则这个按钮对工作台是空操作，
- * 用户点了没反应（两份独立审查都点了这一条）。
- * 默认布局 = **空**（不自动开栏），与现状「工作台默认收起」一致。
+ * 恢复默认（供"恢复默认布局"按钮与双击分隔条复位用）。plan9 §W2：**必须把分栏布局一并复位** —— 否则这个按钮
+ * 对工作台是空操作、用户点了没反应（两份独立审查都点了这一条）。默认布局 = **空**（不自动开栏），与现状一致。
  */
 export function resetUIPrefs(): UIPrefs {
   store.set('sidebarWidth', SIDEBAR_DEFAULT)

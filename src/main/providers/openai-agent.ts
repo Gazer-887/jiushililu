@@ -73,10 +73,7 @@ export async function chatWithToolsOpenAI(
   }
 }
 
-/**
- * 流式 + 工具（D-032 核心）：文本增量实时回调，工具调用参数分片累积。
- * 一条通道同时承担"聊天"与"干活"——由模型自己决定这轮要不要调工具。
- */
+/** 流式 + 工具（D-032 核心）：文本增量实时回调、工具调用参数分片累积；一条通道同时承担"聊天"与"干活" */
 export async function streamWithToolsOpenAI(
   settings: ModelSettings,
   apiKey: string,
@@ -101,9 +98,7 @@ export async function streamWithToolsOpenAI(
   const acc = new ToolCallAccumulator()
   let text = ''
   /**
-   * 这一轮的用量（plan8 R9）。
-   *
-   * ⚠️ **主循环这条才是真正花钱的**（一次对话可能调好几轮模型，每轮都消耗 token）——
+   * 这一轮的用量（plan8 R9）。⚠️ **主循环这条才是真正花钱的**（一次对话可能调好几轮模型）——
    * 上游只在**最后一个 chunk** 报 usage（且必须显式请求 `stream_options.include_usage`），
    * 所以每个 chunk 都要试着取一次；厂商不报就留 null，上层据此退回估算并**标注**。
    */

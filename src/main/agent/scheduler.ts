@@ -10,11 +10,8 @@ import type { TokenPolicy } from '@shared/token-tier'
 import type { AgentDefinition } from './loader'
 
 // 子代理调度器（plan6 D3/D5）：并发上限 + 单代理预算，独立上下文执行，结果带名字回流。
-//
-// plan7 批 D 追加：**运行事件**（onJobEvent）。
-// 起因：右栏「任务」页签要显示"谁在跑、跑了几轮、结果如何"，
-// 而光有最终的结果数组不够 —— 中间那段时间界面是一片空白。
-// 故在开始/结束/失败三个点各报一次，让"进行中"这件事在界面上成立。
+// plan7 批 D 追加 onJobEvent：右栏「任务」页签要显示"谁在跑、跑了几轮"，光有最终结果数组不够 ——
+// 中间那段时间界面是一片空白，故在开始 / 结束 / 失败三个点各报一次。
 
 export interface SubagentJobResult {
   name: string
@@ -87,8 +84,7 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           tools: opts.tools,
           maxRounds: opts.maxRoundsPerAgent,
           chat: opts.chatFactory(def),
-          // 子代理跟主代理**同一个档位**：否则土豪档用户派个子代理时，
-          // 子代理那边还在压 —— 用户看到的省钱行为跟自己的设置对不上，最难解释
+          // 子代理跟主代理**同一个档位**：否则用户看到的省钱行为跟自己的设置对不上，最难解释
           ...(opts.policy ? { policy: opts.policy } : {})
         })
         results[index] = {

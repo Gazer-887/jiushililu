@@ -15,10 +15,7 @@ import {
   type FileChange
 } from '@shared/checkpoint'
 
-// 检查点纯逻辑（plan8 R4）
-//
-// 这一层的价值在于：回滚的对错全在"记什么、还什么"两件判断上，
-// 而这两件事都能脱离文件系统验证。故这里逐条钉死，不依赖真实磁盘。
+// 检查点纯逻辑（plan8 R4）：回滚对错全在"记什么、还什么"两件判断上，可脱离文件系统验证，故这里逐条钉死。
 
 const mod = (rel: string, bytes = 10, backup = '0.bin'): FileChange => ({
   rel,
@@ -228,7 +225,7 @@ describe('compareRunsNewestFirst（新的在前，且必须是全序）', () => 
     const b = mk({ runId: 'bbb', at: 500, seq: 1 })
     const r1 = [a, b].sort(compareRunsNewestFirst).map((m) => m.runId)
     const r2 = [b, a].sort(compareRunsNewestFirst).map((m) => m.runId)
-    expect(r1).toEqual(r2) // 两种输入顺序得到同一结果
+    expect(r1).toEqual(r2)
   })
 
   it('缺 seq 的历史数据不炸（按 0 处理）', () => {

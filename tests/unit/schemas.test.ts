@@ -81,8 +81,8 @@ describe('chatMessagesSchema（发给模型的那份）', () => {
   })
 })
 
-// 存盘那一份**刻意与上面不共用上限**：一个是"一次请求发多少"，一个是"一条会话能有多长"。
-// 共用 200 的后果是**超过 200 条消息之后保存永久失败**，而且静默。
+// 存盘那份**刻意与上面不共用上限**（一个是"一次请求发多少"，一个是"一条会话能有多长"）
+// —— 共用的后果是**超过 200 条消息后保存永久失败**，而且静默。
 describe('storedMessagesSchema（落盘的那一份）', () => {
   const msg = (i: number): { role: 'user'; content: string } => ({
     role: 'user',
@@ -123,10 +123,8 @@ describe('storedMessagesSchema（落盘的那一份）', () => {
       { role: 'user' as const, content: '帮我看看这段代码' },
       { role: 'assistant' as const, content: '' } // ← 刚按下发送、还没吐字
     ]
-    // 先说清"为什么要有这条门"：**旧的单一 schema 会把它整个拒掉** ——
-    // 修之前 conv:save 用的就是 chatMessagesSchema，于是这几条路必然保存失败。
+    // **旧的单一 schema 会把它整个拒掉**：修之前 conv:save 用的就是 chatMessagesSchema
     expect(chatMessagesSchema.safeParse(streaming).success).toBe(false)
-    // 而两条约束分开之后，真实路径是通的：
     const res = storedMessagesSchema.safeParse(normalizeHistory(streaming))
     expect(res.success).toBe(true)
     if (res.success) {
@@ -139,7 +137,7 @@ describe('storedMessagesSchema（落盘的那一份）', () => {
   it('**两个 schema 不许再合并回去**（合并 = 长会话永久存不上）', () => {
     // 形状一样、上限刻意不同。合并回去的那一刻，下面两条会同时变红。
     const long = Array.from({ length: 300 }, (_, i) => msg(i))
-    expect(chatMessagesSchema.safeParse(long).success).toBe(false) // 发给模型：仍然拦
-    expect(storedMessagesSchema.safeParse(long).success).toBe(true) // 落盘：应当放行
+    expect(chatMessagesSchema.safeParse(long).success).toBe(false)
+    expect(storedMessagesSchema.safeParse(long).success).toBe(true)
   })
 })

@@ -13,10 +13,7 @@ import {
 } from '@shared/splitter'
 
 // 分隔条纯逻辑（plan7 批 A0）
-//
-// 要盯的是「拖到极限会不会把界面搞坏」：
-// 抽屉自身有 min/max，但**窄窗口下真正的风险是把主区域挤没** ——
-// 所以上限还要受 MAIN_RESERVE 约束。这组测试主要钉这个。
+// ⚠️ 风险不在抽屉自己被拖坏，而在**窄窗口下把主区域挤没** —— 故上限还要受 MAIN_RESERVE 约束。
 
 describe('clampWidth（夹到合法区间）', () => {
   it('在区间的原样返回', () => {
@@ -100,7 +97,7 @@ describe('computeWidth 的窄窗保护（重点）', () => {
 
   it('窗口够宽时走抽屉自身上限（主区域约束不生效）', () => {
     const w = computeWidth({
-      pointerX: 900, // 往最右拖
+      pointerX: 900,
       containerLeft: 0,
       containerRight: 900,
       side: 'left',
@@ -113,7 +110,7 @@ describe('computeWidth 的窄窗保护（重点）', () => {
 
   it('窗口变窄后，左抽屉上限被主区域约束压下来', () => {
     const w = computeWidth({
-      pointerX: 900, // 往最右拖
+      pointerX: 900,
       containerLeft: 0,
       containerRight: 600,
       side: 'left',

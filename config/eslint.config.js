@@ -1,4 +1,3 @@
-// ESLint 扁平配置。位于 config/ 子目录，package.json 的 lint 脚本用 --config 指回。
 const js = require('@eslint/js')
 const tseslint = require('typescript-eslint')
 

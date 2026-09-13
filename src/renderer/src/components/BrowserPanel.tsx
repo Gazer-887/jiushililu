@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { BrowserState } from '@shared/ipc'
 
-// 浏览器面板（P2 右抽屉）：**真浏览器**（主进程的 WebContentsView），不是 iframe 占位。
+// 浏览器面板：**真浏览器**（主进程 WebContentsView），不是 iframe 占位。
 //
-// 关键：原生视图浮在窗口之上，不参与 DOM 布局——所以这里要
-// ① 用 ResizeObserver 把本区域的位置尺寸同步给主进程
-// ② 面板不可见时通知主进程把视图摘掉（否则它会挡住整个界面）
+// 原生视图浮在窗口之上、不参与 DOM 布局，所以必须：① 用 ResizeObserver 把本区域的位置尺寸
+// 同步给主进程；② 本组件卸载时通知主进程摘掉视图（否则它留在窗口上挡住整个界面）。
 
 export default function BrowserPanel(): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -18,7 +17,6 @@ export default function BrowserPanel(): JSX.Element {
   })
   const [addr, setAddr] = useState('')
 
-  // 订阅主进程的状态推送
   useEffect(() => {
     void window.api.getBrowserState().then((s) => {
       setState(s)
@@ -32,7 +30,6 @@ export default function BrowserPanel(): JSX.Element {
     })
   }, [])
 
-  // 视图显隐 + 区域同步
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
@@ -52,7 +49,6 @@ export default function BrowserPanel(): JSX.Element {
     return () => {
       ro.disconnect()
       window.removeEventListener('resize', sync)
-      // 面板卸载 → 摘掉原生视图（否则它留在窗口上遮挡界面）
       void window.api.setBrowserVisible(false)
     }
   }, [])
@@ -95,7 +91,7 @@ export default function BrowserPanel(): JSX.Element {
         />
       </div>
 
-      {/* 原生浏览器视图由主进程按这块区域定位并覆盖上来 */}
+      {/* 原生视图由主进程按这块区域定位覆盖上来（所以这里本身是空的） */}
       <div ref={hostRef} className="bp-host">
         {!state.url || state.url === 'about:blank' ? (
           <div className="bp-empty">

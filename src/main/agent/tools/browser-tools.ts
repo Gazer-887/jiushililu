@@ -1,14 +1,10 @@
 import type { AgentTool } from '@shared/agent'
 import { getBrowserAdapter } from '../browser-bridge'
 
-// 浏览器工具（P2）：让 Agent **直接操控内置浏览器**——与用户在右抽屉里看到的是同一个页面。
-//
-// 与 fetch_url 的分工：
-//   fetch_url   → 一次性抓取静态 HTML（快，但拿不到 JS 渲染后的内容）
-//   browser_*   → 真实浏览器操作（能拿到渲染结果、能点击输入、能带上登录态）
-//
-// 依赖倒置：本模块**不 import electron**，通过 browser-bridge 拿注入进来的适配器
-// （真实实现在 src/main/browser.ts，由 main/index.ts 在启动时装配）。
+// 浏览器工具（P2）：让 Agent **直接操控内置浏览器** —— 与用户在右抽屉里看到的是同一个页面。
+// 与 fetch_url 的分工：fetch_url 一次性抓静态 HTML（快，但拿不到 JS 渲染结果）；
+// browser_* 走真实浏览器（拿得到渲染结果、能点击输入、能带上登录态）。
+// 依赖倒置：本模块**不 import electron**，适配器经 browser-bridge 注入（实现在 src/main/browser.ts）。
 
 const MAX_READ = 20000
 

@@ -1,13 +1,10 @@
 /**
  * HTML 预览协议（主进程侧）。
  *
- * 分工：**路径"长什么样"** 由 `@shared/html-preview` 定（纯逻辑、可单测），
- * 本文件只做两件主进程才能做的事：
- *   ① 在 app ready **之前**把协议注册成 standard + secure（顺序错了协议就是个死链）
- *   ② 从**工作区**把文件读出来，配上断网/断脚本的响应头下发
- *
- * 为什么必须走主进程：渲染进程不许 import electron（CI 无二进制），
- * 更不许自己去读文件系统 —— 读盘这条线只有主进程一条，边界也就只有一处。
+ * 路径"长什么样"由 `@shared/html-preview` 定（纯逻辑、可单测）；这里只做两件主进程才能做的事：
+ * ① app ready **之前**把协议注册成 standard + secure（顺序错了协议就是个死链）；
+ * ② 从**工作区**读文件，配上断网/断脚本的响应头 —— 读盘这条线只有主进程一条，边界也就只有一处
+ *    （渲染进程不许 import electron，更不许自己读文件系统）。
  */
 import { protocol } from 'electron'
 import { readFile } from 'node:fs/promises'
@@ -21,9 +18,8 @@ import {
 import { resolveInsideWorkspace } from './agent/guard'
 
 /**
- * ⚠️ 必须在 `app.whenReady()` **之前**调用。
- * 迟了协议拿不到 standard/secure 语义，URL 解析会退化成不透明路径
- * （相对路径的图片也就跟着解析不了）。
+ * ⚠️ 必须在 `app.whenReady()` **之前**调用：迟了协议拿不到 standard/secure 语义，
+ * URL 解析退化成不透明路径（相对路径的图片也跟着解析不了）。
  */
 export function registerPreviewScheme(): void {
   protocol.registerSchemesAsPrivileged([

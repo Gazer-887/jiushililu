@@ -1,43 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
 
-// Monaco 封装（plan13 批 B）—— **按需加载**：只有真正要显示编辑器时，才把 monaco 拉进来。
+// Monaco 封装（plan13 批 B）—— **按需加载**：渲染层主 chunk 已达数百 kB，monaco 若打进去会再多出数 MB，
+// 而那是**每次启动**都要付的代价，可绝大多数会话根本不看代码。
 //
-// ## 为什么"按需"是硬要求，不是顺手优化
-//
-// 实测基线（2026-09-13）：渲染层主 chunk 是 **784 kB**。
-// monaco 若被打进主 chunk，会直接多出**几 MB** —— 而那是**每次启动**都要付的代价，
-// 可绝大多数会话根本不看代码。所以它必须是"打开文件时才拉"的独立 chunk。
-//
-// ## Worker 为什么必须这么配（这一节是实测推出来的，不是抄的）
-//
-// ① 生产态 CSP（`config/electron.vite.config.ts` 的 `CSP_PROD`）里**没有 `worker-src`** →
-//    回落到 `default-src 'self'` → **只允许同源 Worker**。
-//    这就否掉了"走 CDN loader"那条路（`@monaco-editor/react` 默认从 CDN 拉，
-//    既跨源、又离线直接死），也否掉了任何用 `blob:` 造 Worker 的写法。
-// ② Vite 的 `?worker` 后缀会把 worker 打成**独立 chunk**，并用 `new Worker(new URL(...))`
-//    在**同源**位置加载 —— 正好落在那条策略允许的范围内。
-// ③ 语言 worker（json / css / html / ts）**按需给**：只有对应语言的文件才需要它们。
-//
-// ⚠️ **这一条要真机验证过才算数**：`file://` 协议下 `'self'` 的语义与 http 不同，
-// 理论可行不等于实际可行 —— 所以 B1 的验收里有一条"Worker 真的起来了"的实测断言。
+// Worker 必须这么配（实测推出来的，不是抄的）：
+// ① 生产态 CSP（`config/electron.vite.config.ts`）**没有 `worker-src`** → 回落 `default-src 'self'`，
+//    即**只允许同源 Worker** —— 这否掉了"走 CDN loader"（`@monaco-editor/react` 默认从 CDN 拉，既跨源、离线直接死）
+//    和任何用 `blob:` 造 Worker 的写法。
+// ② Vite 的 `?worker` 后缀把 worker 打成独立 chunk，用 `new Worker(new URL(...))` 在**同源**位置加载 —— 正落在允许范围内。
+// ③ 语言 worker（json / css / html / ts）按需给：只有对应语言的文件才需要它们。
+// ⚠️ `file://` 下 `'self'` 语义与 http 不同，理论可行不等于实际可行 —— 所以验收里有一条"Worker 真的起来了"的实测断言。
 
 type Monaco = typeof import('monaco-editor')
 
-/** 单例：整个应用只加载一次 monaco（Vite 也会把它切成独立 chunk，只拉一次） */
+/** 单例：整个应用只加载一次 monaco（Vite 也会把它切成独立 chunk） */
 let monacoPromise: Promise<Monaco> | null = null
 
 function loadMonaco(): Promise<Monaco> {
   if (!monacoPromise) {
     monacoPromise = (async () => {
-      // ⚠️ 顺序有意义：**先注册 Worker 工厂，再 import 主模块**。
-      //    反过来的话，monaco 会用自己的默认逻辑去找 worker（在打包环境下必然找不到），
-      //    症状是"编辑器能显示、但语法高亮/校验一直转圈"—— 不报错，只是永远出不来。
+      // ⚠️ **先注册 Worker 工厂，再 import 主模块**：反过来的话 monaco 会用自己的默认逻辑去找 worker
+      //    （打包环境下必然找不到），症状是"编辑器能显示、但高亮/校验一直转圈"—— 不报错，只是永远出不来。
       const [editorWorker, jsonWorker, cssWorker, htmlWorker, tsWorker] = await Promise.all([
-        // ⚠️ **路径不能带 `esm/vs/` 前缀**（2026-09-13 实测踩到）：
-        //    monaco 0.56 的 `package.json` 里写着 `"./*": "./esm/vs/*.js"` ——
-        //    子路径**自动**映射进 `esm/vs/`，所以写 `monaco-editor/esm/vs/…` 会被解析成
-        //    `esm/vs/esm/vs/…`（不存在）→ 构建期直接报 Rollup resolve 失败。
-        //    正确写法就是下面这样（`monaco-editor/<相对 esm/vs 的路径>`）。
+        // ⚠️ **路径不能带 `esm/vs/` 前缀**：monaco 0.56 的 `package.json` 写着 `"./*": "./esm/vs/*.js"`，
+        //    子路径**自动**映射进 `esm/vs/` —— 再写一遍会被解析成 `esm/vs/esm/vs/…`（不存在），
+        //    构建期直接报 Rollup resolve 失败。正确写法就是下面这样。
         import('monaco-editor/editor/editor.worker.js?worker'),
         import('monaco-editor/language/json/json.worker.js?worker'),
         import('monaco-editor/language/css/css.worker.js?worker'),
@@ -75,10 +62,8 @@ function loadMonaco(): Promise<Monaco> {
 }
 
 /**
- * 按文件扩展名推断语言 id。
- *
- * 不猜、也不求全：认不出来就 `plaintext`（照样有行号、选区、查找，只是不高亮）——
- * 把不认识的后缀硬映射成某个语言，会让编辑器给出**错误的**语法校验，比不高亮更坏。
+ * 按文件扩展名推断语言 id：认不出来就 `plaintext`（照样有行号、选区、查找，只是不高亮）。
+ * 不许把不认识的后缀硬映射成某个语言 —— 那会让编辑器给出**错误的**语法校验，比不高亮更坏。
  */
 export function languageOf(rel: string): string {
   const name = rel.split(/[\\/]/).pop() ?? rel
@@ -122,18 +107,14 @@ export function languageOf(rel: string): string {
 }
 
 interface Props {
-  /** 当前文本（受控） */
   value: string
-  /** 用哪个语言高亮（不知道就 `plaintext`） */
   language?: string
   readOnly?: boolean
   onChange?: (next: string) => void
   /**
    * Ctrl/Cmd+S（plan13 B2）。
-   *
-   * ⚠️ 为什么不让父组件自己在外面接 `onKeyDown`：monaco 有自己的 `KeybindingService`，
-   * 它会**先把**这个组合键吃掉 —— 外面那个监听器根本收不到。
-   * 所以必须用它自己的 `addCommand` 注册（这也是唯一 100% 生效的接法）。
+   * ⚠️ 不许让父组件自己在外面接 `onKeyDown`：monaco 有自己的 `KeybindingService`，会**先**把这个组合键
+   * 吃掉，外面那个监听器根本收不到 —— 必须用它自己的 `addCommand` 注册。
    */
   onSave?: () => void
 }
@@ -152,7 +133,6 @@ export default function CodeEditor({
   const hostRef = useRef<HTMLDivElement>(null)
   /** 编辑器实例（保存下来才能在卸载时 dispose —— 不 dispose 会漏 Worker 与监听器） */
   const editorRef = useRef<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null)
-  /** monaco 模块本身（改语言要用它的 `setModelLanguage`） */
   const monacoRef = useRef<Monaco | null>(null)
   /** 最新的 value：它每敲一个字都变，但**不能**进 effect 依赖（否则每次按键都重建编辑器） */
   const valueRef = useRef(value)
@@ -161,18 +141,16 @@ export default function CodeEditor({
   useEffect(() => {
     onChangeRef.current = onChange
   }, [onChange])
-  /** 同上：`onSave` 也得走 ref，否则注册进 monaco 的那一个是首渲染的那个 */
+  /** 同上：`onSave` 也得走 ref，否则注册进 monaco 的是首渲染那一个 */
   const onSaveRef = useRef(onSave)
   useEffect(() => {
     onSaveRef.current = onSave
   }, [onSave])
   /**
-   * **程序化灌内容期间为 true** —— 这是边界②的命门。
-   *
-   * monaco 的 `setValue` **也会**触发 `onDidChangeModelContent`。
-   * 不区分的话，"外部把内容换掉（换文件 / 重新载入 / 回滚后刷新）"会被当成
-   * "用户敲了字"，回灌给父组件 → 父组件据此更新草稿 → 磁盘文本反过来盖掉用户输入。
-   * （事件是同步派发的，所以 try/finally 就够，不需要等到某个 tick 之后。）
+   * **程序化灌内容期间为 true**。
+   * monaco 的 `setValue` **也会**触发 `onDidChangeModelContent` —— 不区分的话，"外部把内容换掉
+   * （换文件 / 重新载入 / 回滚后刷新）"会被当成"用户敲了字"回灌父组件 → 磁盘文本反过来盖掉用户输入。
+   * （事件是同步派发的，`try/finally` 就够。）
    */
   const syncingRef = useRef(false)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -188,8 +166,8 @@ export default function CodeEditor({
         if (!alive || !hostRef.current) return
         monacoRef.current = monaco
 
-        // ⚠️ 这里的 `language` / `readOnly` 是**首次渲染**的值（依赖为空，见 effect 末尾）。
-        //    "初值用第一次的，后续变化就地施加"是有意设计 —— 它们各自的 effect 在下面。
+        // ⚠️ 这里的 `language` / `readOnly` 是**首次渲染**的值（依赖为空）：初值用第一次的，
+        //    后续变化由下面各自的 effect 就地施加 —— 这是有意设计，不是漏了依赖。
         const editor = monaco.editor.create(hostRef.current, {
           value: valueRef.current,
           language,
@@ -199,17 +177,11 @@ export default function CodeEditor({
           scrollBeyondLastLine: false,
           fontSize: 12,
           /**
-           * **显式给行高，别让它自己去量**（2026-09-13 实测出来的坑）。
-           *
-           * 不指定时 monaco 会"测量字体信息"来推算行高；而**测量没完成时它给出的行高是 0** ——
-           * 症状极其隐蔽：`.view-line` 数量正常（28 行都在）、容器高度正常（442）、
-           * `.monaco-editor` 也挂上了，**就是每一行的 rect 高度是 0**。
-           * 隐藏/离屏窗口里这个状态可能一直不结束 —— 实测门禁连跑 4 次红 3 次，
-           * 而红的是后面 9 条（打字没生效 → 文件不脏 → Ctrl+S 没反应 → 守卫不出现），
-           * 长得跟真回归一模一样。为此我先后试过"等久一点 / 关后台节流 / 戳窗口尺寸"，**都没治住**。
-           *
-           * 显式指定行高一举三得：① 躲开这个竞态 ② 更贴近老 textarea 的 `line-height: 1.6`
-           * （12 × 1.6 ≈ 19，用户看到的行距不变）③ "一屏能看到几行"从此是确定的。
+           * **显式给行高，别让它自己去量**。
+           * 不指定时 monaco 靠"测量字体信息"推算行高，而**测量没完成时它给出的行高是 0** ——
+           * 症状极隐蔽：行数、容器高度、`.monaco-editor` 都正常，**就是每一行的 rect 高度是 0**，
+           * 隐藏/离屏窗口里可能一直不结束（门禁上表现为一串完全像真回归的失败）。
+           * 显式指定一举三得：躲开竞态、贴近老 textarea 的行距、一屏能看到几行从此确定。
            */
           lineHeight: 19,
           renderWhitespace: 'selection',
@@ -217,10 +189,9 @@ export default function CodeEditor({
         })
         editorRef.current = editor
 
-        // 内容变化 → 回调（**只在这里**接一次；value 的后续同步走下面那个 effect）
-        // ⚠️ 走 `onChangeRef`，**不能**直接用闭包里的 `onChange`：这个 effect 依赖为空，
-        //    直接闭包捕获的会是**首次渲染那一个**函数 —— 父组件后来传的新回调（带着新的
-        //    rel / 新的磁盘基线）永远进不来，"脏标记"就会拿旧基准去比。
+        // 内容变化 → 回调（只在这里接一次；value 的后续同步走下面那个 effect）。
+        // ⚠️ 走 `onChangeRef`，**不能**直接用闭包里的 `onChange`：这个 effect 依赖为空，闭包捕获的会是
+        //    **首次渲染那一个**函数 —— 父组件后来传的新回调（带新的 rel / 磁盘基线）永远进不来。
         editor.onDidChangeModelContent(() => {
           if (syncingRef.current) return // 我们灌进去的，不是用户敲的（见 syncingRef 说明）
           onChangeRef.current?.(editor.getValue())
@@ -245,13 +216,9 @@ export default function CodeEditor({
       editorRef.current = null
       monacoRef.current = null
     }
-    // ⚠️ 依赖**故意为空**。monaco 实例是重资产（Worker + 监听器 + model），
-    //    重建一次的代价是**丢撤销栈、丢光标、丢滚动位置**，还会闪一下。
-    //    所以 `value` / `language` / `readOnly` 的后续变化**都不重建**，
-    //    分别由下面三个 effect 就地施加：
-    //      · value    → setValue（带回声屏蔽）
-    //      · language → setModelLanguage
-    //      · readOnly → updateOptions
+    // ⚠️ 依赖**故意为空**：monaco 实例是重资产（Worker + 监听器 + model），重建一次的代价是
+    //    **丢撤销栈、丢光标、丢滚动位置**还会闪一下 —— 所以 value / language / readOnly 的后续变化
+    //    都不重建，分别由下面三个 effect 就地施加（setValue / setModelLanguage / updateOptions）。
     //    （这里不写 eslint-disable —— 本项目没装 react-hooks 插件，写了反而会因为"规则不存在"报错。）
   }, [])
 
@@ -277,8 +244,8 @@ export default function CodeEditor({
     if (!editor || state !== 'ready') return
     valueRef.current = value
     if (editor.getValue() === value) return // 自己敲出来的回灌，不动
-    // `setValue` 会**清空撤销栈并把光标归位** —— 所以只在"外部真的换了内容"时才走。
-    // 灌的时候必须屏蔽 onDidChangeModelContent：那是我们在写，不是用户在敲。
+    // `setValue` 会**清空撤销栈并把光标归位**，所以只在"外部真的换了内容"时才走；
+    // 灌的时候必须屏蔽内容变化回调 —— 那是我们在写，不是用户在敲。
     syncingRef.current = true
     try {
       editor.setValue(value)
@@ -292,9 +259,8 @@ export default function CodeEditor({
   }
 
   return (
-    // 编辑态加 `ce-fill`：那一套「有确定高度 + 能手动拖大」的承诺原先长在 textarea 上
-    // （用户 2026-09-12 报过"缩得很小还放不大"），换内核时必须**原样搬过来**，
-    // 否则就是悄悄把一个用户报过的 bug 又放了回去。
+    // 编辑态必须带 `ce-fill`：那套「有确定高度 + 能手动拖大」的承诺原先长在 textarea 上，
+    // 换内核时得**原样搬过来** —— 否则等于把用户报过的"缩得很小还放不大"又放回去。
     <div className={readOnly ? 'ce-wrap' : 'ce-wrap ce-fill'}>
       <div ref={hostRef} className="ce-host" />
       {state === 'loading' && <div className="ce-loading">编辑器加载中…</div>}

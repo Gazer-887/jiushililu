@@ -2,10 +2,7 @@ import { useState } from 'react'
 import { useAppStore } from '../store'
 import { statsLine, todoStats, type TodoStatus } from '@shared/todo'
 
-// 待办清单面板（plan7 批 D 提前落地 —— 2026-09-12 用户意见：
-// 「待办/任务栏做成跟 DSH 一样的输入框上方」）。
-//
-// 形态对齐 DSH：输入框**上方**的独立卡片，可折叠，标题右侧一句统计。
+// 待办清单面板（plan7 批 D）：输入框**上方**的独立卡片，可折叠、标题右侧一句统计（形态对齐 DSH）。
 // 清单为空时整个面板不渲染 —— 没有活在建的时候，界面不该多占一块地方。
 
 const MARK: Record<TodoStatus, string> = {

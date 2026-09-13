@@ -4,10 +4,7 @@ import { normalizeTodos, todoStats, type TodoItem } from '@shared/todo'
 // 待办清单工具（plan7 批 D 提前落地）。界面在输入框上方显示这份清单，
 // 让"Agent 干到哪一步了"这件事**可见**，而不是只看得到零散的工具调用。
 
-/**
- * 汇报口（依赖倒置，同 WriteRecorder / browser-bridge 的做法）：
- * 工具层只管"清单变了"，至于谁消费（IPC 推送 / 单测断言）它不关心。
- */
+/** 汇报口（依赖倒置，同 WriteRecorder / browser-bridge）：工具层只管"清单变了"，消费者（IPC 推送 / 单测）它不关心 */
 export interface TodoReporter {
   update(todos: TodoItem[]): void
 }

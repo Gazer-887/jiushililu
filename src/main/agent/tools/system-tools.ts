@@ -7,10 +7,8 @@ import type { BackgroundTaskStore } from '../background-tasks'
 import { resolveInsideWorkspace } from '../guard'
 
 // 系统类工具（P1 工具层补全）：列目录 / 文本搜索 / 命令执行。
-// 边界纪律：
-//  - 前三者只在 workspaceRoot 内活动，跳过依赖与构建产物目录
-//  - run_command 是高危工具：**内核默认工具集不含它**，自定义 Agent 显式声明才会下发；
-//    执行限时 30s、输出截断 1MB、cwd 锁定工作区
+// 前三者只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
+// ⚠️ run_command 是高危工具：**内核默认工具集不含它**，自定义 Agent 显式声明才下发（限时 30s、输出上限 1MB、cwd 锁工作区）。
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist', '.workbuddy'])
 const MAX_LIST_ENTRIES = 500
@@ -23,11 +21,8 @@ function shouldSkipDir(name: string): boolean {
 }
 
 /**
- * 危险操作确认钩子（plan8 R5）：由调用方注入「是否允许执行这条命令」。
- * 与检查点的 beforeWrite 同样用回调注入 —— 工具层不需要知道确认从哪来
- * （主进程弹窗 / 测试里直接给答案），也让 CI 无 Electron 时照样能测。
- *
- * 不传 = 不确认（保持旧行为，测试与 CLI 场景需要）。
+ * 危险操作确认钩子（plan8 R5）：注入式回调 —— 工具层不需要知道确认从哪来（主进程弹窗 / 测试直接给答案），
+ * 也让 CI 无 Electron 时照样能测。不传 = 不确认（保持旧行为，测试与 CLI 场景需要）。
  */
 export type CommandConfirm = (command: string) => Promise<boolean>
 
@@ -172,9 +167,8 @@ function buildSystemTools(
       const command = typeof args['command'] === 'string' ? args['command'] : ''
       if (command.trim().length === 0) return '错误：command 不能为空'
 
-      // 逐次确认（plan8 R5）：命令是任意文本，危险与否无法靠静态规则判全 ——
-      // 与其猜，不如把原文摊给用户看一眼。拒绝时返回明确的错误文本（模型能读懂并改道）。
-      // **后台同样确认** —— 安全不因为"后台"打折（用户 2026-09-12 敲定的边界之一）。
+      // 逐次确认（plan8 R5）：命令是任意文本，静态规则判不全危险与否 —— 与其猜，不如把原文摊给用户看一眼。
+      // **后台同样确认**（用户 2026-09-12 敲定的边界之一）—— 安全不因为"后台"打折。
       if (confirm) {
         const allowed = await confirm(command)
         if (!allowed) {
@@ -197,13 +191,8 @@ function buildSystemTools(
           command,
           { cwd: workspaceRoot, timeout: 30000, maxBuffer: MAX_COMMAND_OUTPUT, windowsHide: true },
           (error, stdout, stderr) => {
-            // plan8 R9.1：**这里不再砍尾**。
-            //
-            // 以前是 `stdout.slice(0, 8000)` —— 保留**开头**，而错误与结论在**末尾**：
-            // 于是"输出太长"时，用户看到的永远是没有结论的那半截（这是排错最要命的形状，
-            // dsh 那份插件 README 把它列为反面教材）。
-            // 现在原样交回（上限由 `maxBuffer` 兜底 1MB），由 `loop.ts` 那一处统一做
-            // 「头 + 尾 + 中段带行号采样 + 报错现场保护」——**形状只在一处决定**。
+            // plan8 R9.1：**这里不再砍尾**。以前是 `stdout.slice(0, 8000)` 保留**开头**，而错误与结论在**末尾** ——
+            // "输出太长"时用户永远看不到有结论的那半截。现在原样交回（上限由 maxBuffer 兜底），形状只在 loop.ts 一处决定。
             const out = stdout.toString()
             const errText = stderr.toString()
             if (error) {

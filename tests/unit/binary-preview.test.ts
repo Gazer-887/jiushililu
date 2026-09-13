@@ -2,10 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { MAX_IMAGE_BYTES, hexDump, imageMimeOf } from '@shared/fs-tree'
 
 // 二进制预览的纯逻辑（plan7 批 A3）
-//
-// 两件事值得钉住：
-//   ① 哪些扩展名算图片（判错 = 用户看到乱码，或者图片显示不出来）
-//   ② 十六进制转储的**格式**（它是"降级展示"，格式乱了就没法用来辨认文件类型）
+// ① 哪些扩展名算图片（判错 = 用户看到乱码，或者图片显示不出来）
+// ② 十六进制转储的**格式** —— 它是"降级展示"，格式乱了就没法用来辨认文件类型
 
 describe('imageMimeOf（按扩展名判图片）', () => {
   it('常见图片格式都能认出来', () => {
@@ -43,8 +41,7 @@ describe('hexDump（十六进制转储）', () => {
   it('每行 16 字节：偏移 + 十六进制 + ASCII 栏', () => {
     const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
     const out = hexDump(bytes)
-    // 别把空格的**具体个数**写进断言 —— 那种断言改一下对齐就碎，而且碎掉时看不出到底哪里错了。
-    // 钉结构：偏移开头、十六进制在中间、ASCII 栏结尾。
+    // 别钉空格的**具体个数** —— 改一下对齐就碎，且碎掉时看不出错在哪；钉结构就好
     expect(out.startsWith('00000000  ')).toBe(true)
     expect(out).toContain('89 50 4e 47 0d 0a 1a 0a')
     expect(out.endsWith('|.PNG....|')).toBe(true)

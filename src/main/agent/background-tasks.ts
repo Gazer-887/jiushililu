@@ -4,14 +4,11 @@ import { killProcessTree, spawnOptsForGroupKill } from '../process-tree'
 
 // 后台任务注册表（plan7 批 D 后半 —— 右栏「任务」页签的"后台任务"区）。
 //
-// 为什么要有它：`run_command` 是 `exec` + 30s 超时的**同步**执行 ——
-// 跑构建、起 dev server、下大文件都会撞超时，模型只能干等。
-// 这里给命令一个"后台跑"的形态：立刻返回 id，输出持续累积，随时可查可停。
+// 为什么要有它：`run_command` 是 `exec` + 30s 超时的**同步**执行 —— 跑构建、起 dev server、
+// 下大文件都会撞超时，模型只能干等；这里给命令一个"后台跑"的形态：立刻返回 id，随时可查可停。
 //
-// 三条边界（2026-09-12 与用户敲定）：
-//   ① 窗口/会话结束时**跟着终止** —— 留一堆没人管的进程是隐患（与 R5 的 abortAll 同一口径）
-//   ② 后台命令**仍需逐次确认** —— 安全不能因为"后台"就打折（确认在工具层做）
-//   ③ 输出**内存累积 + 上限截断**，不落盘
+// 三条边界（2026-09-12 与用户敲定）：① 窗口 / 会话结束时**跟着终止**（留一堆没人管的进程是隐患，同 R5 abortAll）；
+// ② 后台命令**仍需逐次确认**（确认在工具层做，安全不因"后台"打折）；③ 输出**内存累积 + 上限截断**，不落盘。
 
 /** 单条任务保留的输出上限（内存里存着，别把进程撑爆） */
 export const MAX_OUTPUT = 64 * 1024
@@ -30,21 +27,11 @@ export interface BackgroundTaskStore {
   kill(id: string): boolean
   /** 全部终止（窗口关闭时调用 —— 边界①） */
   killAll(): void
-  /**
-   * 订阅状态变化。**只通知"变了"这个事实**，具体数据由调用方自己 list() ——
-   * 避免把可能很大的 output 塞进事件里。
-   */
+  /** 只通知"变了"这个事实，数据由调用方自己 list() —— 别把可能很大的 output 塞进事件里 */
   onChange(cb: () => void): () => void
 }
 
-/**
- * 杀进程树 —— **实现搬到了 `src/main/process-tree.ts`**（plan14 C1）。
- *
- * 搬家的理由：终端要杀的是**同一类东西**（shell 拉起的整棵树），
- * 两处各写一套的下场本项目刚吃过（"两套判据迟早分岔"）。
- * 原来这里的注释（"杀掉 shell 并不杀掉它拉起的子进程 → 会变孤儿、端口继续占着"）
- * 连同 Windows 的 `/T /F` 与 POSIX 的进程组杀法一并搬了过去，语义**没变**。
- */
+/** 实现在 `src/main/process-tree.ts`（plan14 C1）—— 终端与后台任务共用一份：两套判据迟早分岔（踩过） */
 const killTree = killProcessTree
 
 export function createBackgroundTaskStore(): BackgroundTaskStore {
@@ -106,12 +93,7 @@ export function createBackgroundTaskStore(): BackgroundTaskStore {
       tasks.set(id, task)
 
       // shell: true —— 与前台 run_command 同一种执行语义（管道、&& 照常）
-      //
-      // ⚠️ `spawnOptsForGroupKill` **不是装饰**：POSIX 下只有 `detached: true` 才让子进程
-      //    成为**进程组组长**，而 `killProcessTree` 的 POSIX 分支靠 `process.kill(-pid)`
-      //    杀整组。不加它的话那个负号会 ESRCH、退化成"只杀 shell 自己"——
-      //    孙进程（`npm run dev` 拉起的那些）就留成孤儿了。
-      //    Windows 下它是无害的（配合 `windowsHide` 不弹窗口，真正干活的是 `taskkill /T`）。
+      // ⚠️ `spawnOptsForGroupKill` **不是装饰**：POSIX 下少了 `detached: true`，孙进程就留成孤儿（见 process-tree.ts）
       const child = spawn(command, { ...spawnOptsForGroupKill(cwd), shell: true })
       children.set(id, child)
 

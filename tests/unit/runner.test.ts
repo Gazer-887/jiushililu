@@ -6,9 +6,8 @@ import type { ModelSettings } from '@shared/ipc'
 import type { AgentRuntimeContext } from '@main/agent/runner'
 import { createCheckpointStore } from '@main/store/checkpoints'
 
-// runner 集成测试 —— 补上"工具 schema 是否真的下发给模型"这条链路的覆盖。
-// 起因（D-030）：交叉验证发现 runner 曾把空数组当工具清单传给模型，而 loop 测试注入
-// mock chat 绕过了 runner，无人断言 schema 真的传下去了 → 静默回归无人发现。
+// runner 集成测试：唯一断言"工具 schema 真下发给模型"这条链路的地方。
+// ⚠️ loop 测试注入 mock chat 会绕过 runner —— 只在那儿断言，这条链路静默回归无人发现。
 
 const openaiSpy = vi.fn(async () => ({ text: '完成', toolCalls: [] }))
 const anthropicSpy = vi.fn(async () => ({ text: '完成', toolCalls: [] }))
@@ -82,11 +81,8 @@ describe('runAgent（工具链路集成）', () => {
   })
 
   it('【回归】提示词必须带「做事纪律」——禁止不查就答（真机实测后补）', async () => {
-    // 起因（2026-09-12 真机验收）：用户问「看看工作区里有什么文件」，
-    // 模型**没调工具**、直接答「目前是空的」，恰巧目录真空所以"对了"——
-    // 但那是运气：若有文件它会编一个假列表，且语气笃定，用户看不出来。
-    // 核因是提示词缺纪律，不是架构问题（模型确实会自主调工具）。
-    // 本测试守住这条纪律不被后续重构丢掉。
+    // ⚠️ 真机实测：问「有哪些文件」时模型会**不调工具直接编**一个假列表，且语气笃定。
+    // 纪律靠提示词兜住 —— 后续重构删掉它，不会有别的测试变红。
     const ctx = makeCtx()
     await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '看看有哪些文件' }] })
 

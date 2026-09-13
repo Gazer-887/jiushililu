@@ -5,21 +5,14 @@ import { createLogger } from '../log'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { trimMessages, type TrimOptions } from './context'
 
-// Agent 主循环（plan6 → P1；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，
-// 直到模型给出最终答案或预算耗尽。
-// 缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停；contextWindow 控上下文裁剪。
-//
-// plan8 R9.1：工具结果在**回灌那一处**过一道窗口化 —— 这里是**唯一**的入口，
-// 所以也是唯一需要挂的地方（挂两处迟早会漏一处，这是本项目踩过的老坑）。
+// Agent 主循环（plan6；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，直到出最终答案或预算耗尽。
+// 缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停；contextWindow 控历史裁剪。
+// plan8 R9.1：窗口化只挂在**结果回灌这一处** —— 它是唯一入口，挂两处迟早漏一处（踩过）。
 
 /**
- * **自己管好输出的工具**：不给窗口化再加工。
- *
- * - `read_file` 已经按行窗口给了、末尾如实告知了 —— 再压一次等于二次伤害
- *   （把"第 1–200 行"再砍成"头 60 尾 40"，而模型明确要的就是那 200 行）。
- * - 前辈实现里也有同款豁免（"read 工具输出永不处理"），不是我们独有。
- *
- * 判据写在**工具名**上而不是"看输出像不像"，因为"像不像"迟早会判错。
+ * **自己管好输出的工具**：不给窗口化再加工 —— `read_file` 已按行窗口给过并如实告知，
+ * 再压一次等于把「第 1–200 行」砍成「头 60 尾 40」，而模型要的正是那 200 行。
+ * 判据挂在**工具名**上而不是"看输出像不像"——"像不像"迟早会判错。
  */
 const SELF_MANAGED_TOOLS = new Set(['read_file'])
 
@@ -32,34 +25,25 @@ export interface AgentLoopOptions {
   maxRounds?: number
   /** 上下文窗口（token）；给了才启用历史裁剪 */
   contextWindow?: number
-  /**
-   * 模型通道（注入式依赖）：
-   * streaming=true 时实现方应把文本增量喂给 onText；返回累积后的完整结果。
-   */
+  /** 模型通道（注入式依赖）：streaming 时把文本增量喂给 onText，返回累积后的完整结果 */
   chat(messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult>
   /** 文本增量回调（流式上屏）；不传则忽略 */
   onText?: (delta: string) => void
   /**
-   * 是否启用工具输出窗口化（plan8 R9.1）。默认 **开**。
-   *
-   * 为什么要有个开关：这套东西的效果**必须能被 A/B 量出来**（同一段任务开/关各跑一遍，
-   * 比厂商真报的 usage 与成败率）—— 没有开关的优化只能靠信仰。
-   * 另外它也是排查手段：怀疑"模型没看见原文"时，先关掉它再复现一次。
+   * 是否启用工具输出窗口化（plan8 R9.1），默认**开**。留开关是为了效果能被 A/B 量出来
+   * （同一段任务开/关各跑一遍比 usage）；排查"模型没看见原文"时也靠它先关掉再复现。
    */
   toolWindow?: boolean
   /**
-   * 省 token 档位解析出来的开关（plan8 R9.1 §七②）。
-   * **调用方只给 policy，不认识档位名** —— 加档 / 改取值都只动 `@shared/token-tier`。
-   * 不给 = 平衡档（与改造前一致）。
+   * 省 token 档位解析出的开关（plan8 R9.1 §七②）。**调用方只给 policy、不认识档位名**，
+   * 加档 / 改取值只动 `@shared/token-tier`；不给 = 平衡档（与改造前一致）。
    */
   policy?: TokenPolicy
   /** 工具执行生命周期（界面显示"正在读 xx / 完成 / 失败"） */
   onToolEvent?: (evt: ToolEvent) => void
   /**
-   * 工具输出被窗口化时回调（plan8 R9.1）。
-   *
-   * 存在的理由：压缩**不许静默**。界面那条痕是内存态、会随重挂载丢，
-   * 所以还得有一条能事后追的（主进程日志由调用方接上）。
+   * 工具输出被窗口化时回调（plan8 R9.1）。压缩**不许静默**：界面那条痕是内存态、
+   * 会随重挂载丢，所以还得有一条能事后追的（主进程日志由调用方接上）。
    */
   onToolWindowed?: (info: { name: string; beforeTokens: number; afterTokens: number; reason: string }) => void
 }
@@ -98,9 +82,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   /**
    * 省 token 档位（§七②）：不给就是平衡档。
    *
-   * ⚠️ `toolWindow: false` 仍然**压过**档位 —— 它和档位不是一回事：
-   * 那是校准脚本要的"**这一轮**强行原样"（一次实验），
-   * 而档位是"**用户长期**要不要省"（一个偏好）。混成一个会让人分不清"为什么没压"。
+   * ⚠️ `toolWindow: false` **压过**档位 —— 两者不是一回事：那是校准脚本要的"**这一轮**强行原样"
+   * （一次实验），档位是"**用户长期**要不要省"（一个偏好）；混成一个就说不清"为什么没压"。
    */
   const policy = opts.policy ?? resolvePolicy(DEFAULT_TOKEN_TIER)
   /** 窗口化总开关：档位说关就关（土豪档），或被校准时强行关掉 */
@@ -121,14 +104,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       const trim = trimMessages(messages, trimOpts)
       sent = trim.messages
       /**
-       * ⚠️ **前缀稳定的已知破坏点**（plan8 R9.1 §七④）。
-       *
-       * 折叠会在**中间**插一条「[历史摘要]」，而前缀缓存要求"开头一模一样" ——
-       * 从这条摘要往后，**缓存全部失效**（本轮输入 token 会明显偏高）。
-       *
-       * 这是**值得的代价**：不折叠就会撞上下文上限，厂商直接回"超出上下文"、**整轮作废**。
-       * 但它必须是**知情的代价** —— 所以在这里留痕。将来做 §七⑤ 阈值校准时，
-       * 这一行日志正是"为什么这轮 token 突然跳高"的答案。
+       * ⚠️ **前缀稳定的已知破坏点**（plan8 R9.1 §七④）：折叠会在**中间**插一条「[历史摘要]」，
+       * 而前缀缓存要求"开头一模一样" —— 从摘要往后**缓存全部失效**（本轮输入 token 明显偏高）。
+       * 这是**值得的代价**（不折叠就撞上下文上限、整轮作废），但必须是**知情的代价**，故在此留痕。
        */
       if (trim.trimmed) {
         log.info('历史已折叠：前缀缓存将从摘要处失效', { 折叠条数: trim.droppedCount, 轮次: rounds })
@@ -156,8 +134,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     for (const tc of res.toolCalls) {
       const tool = toolMap.get(tc.name)
-      // 带上「这一步在干什么」（从入参提取）——
-      // 否则界面只能显示干巴巴的「执行中…」，用户看不出它在读哪个文件、跑哪条命令
+      // 带上「这一步在干什么」（从入参提取），否则界面只能显示干巴巴的「执行中…」
       opts.onToolEvent?.({
         id: tc.id,
         name: tc.name,
@@ -176,21 +153,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         }
       }
 
-      // 窗口化（plan8 R9.1）：输出去大时留头尾 + 中段按行号采样 + 报错现场保护，
-      // 双门控不过就**原样放行**（`windowToolOutput` 自己保证"不压也不亏"）。
+      // 窗口化（plan8 R9.1）：留头尾 + 中段按行号采样 + 报错现场保护；双门控不过就原样放行
       let saved = 0
       if (windowEnabled && !SELF_MANAGED_TOOLS.has(tc.name)) {
-        // 档位（§七②）只调**三个数**：进判断的门槛、相对门、绝对预算。
-        // 头/尾行数、采样条数、单行掐断那些**不随档位变** —— 它们决定的是"压缩的形状"，
-        // 而三条共同红线（不静默 / 不压报错现场 / 不伪造）正挂在那上面，不该跟着档位松紧。
+        // 档位（§七②）只调**三个数**：进判断的门槛、相对门、绝对预算 ——
+        // 头尾行数、采样条数不随档位变，三条红线（不静默 / 不压报错现场 / 不伪造）正挂在它们上。
         const w = windowToolOutput(output, {
           toolName: tc.name,
           minBytes: policy.minBytes,
           keepRatioMax: policy.keepRatioMax,
           maxTokens: policy.maxTokens
         })
-        // **静默是禁止的**：每一次成形都要留下痕迹（界面 + 主进程日志两处）。
-        // 只在"确实够大、值得一记"时报（`small` = 这条输出压根没进入判断，报它等于刷日志）
+        // **静默是禁止的**：每次成形都要留痕（界面 + 主进程日志两处）。
+        // `small` = 压根没进判断，报它等于刷日志
         if (w.reason !== 'small') {
           opts.onToolWindowed?.({
             name: tc.name,

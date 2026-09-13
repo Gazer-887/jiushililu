@@ -3,15 +3,12 @@ import { copyFile, mkdir, rename as renameFs, stat, writeFile } from 'node:fs/pr
 import { basename, dirname, extname, join, relative } from 'node:path'
 import { resolveInsideWorkspace } from './agent/guard'
 
-// 工作区统一写入服务（plan7 批 A2 的前置 —— 全功能资源管理器的地基）——
+// 工作区统一写入服务（plan7 批 A2 的前置 —— 全功能资源管理器的地基）。
 //
-// 为什么非要有这一层：**界面与 Agent 必须走同一条写入路径**。
-// 改版前的检查点快照挂在 file-tools 那个工具上，界面若自己 writeFile 就**绕过检查点**：
-// 用户用文件树删掉一个文件，回滚面板里什么都没记，**退不回来** —— 那正是 plan1 补上的承诺。
-//
-// 现在把「写前快照 + 落盘」收进服务，两边共用：谁写都留痕，谁都退得回。
-//
-// 本模块**不 import electron**：回收站能力从外面注入（否则不可单测 —— CI 无 Electron 二进制）。
+// 为什么非要有这一层：**界面与 Agent 必须走同一条写入路径**。检查点快照原先只挂在 file-tools
+// 那个工具上，界面若自己 writeFile 就**绕过检查点** —— 用户用文件树删掉一个文件，回滚面板里
+// 什么都没记、**退不回来**（那正是 plan1 补上的承诺）。收进服务后：谁写都留痕，谁都退得回。
+// 本模块**不 import electron**：回收站能力从外面注入（否则 CI 上跑不了单测）。
 
 export interface WorkspaceWriteHooks {
   /**
@@ -68,10 +65,8 @@ export function createWorkspaceWriter(
     async rename(rel, nextRel) {
       const from = absOf(rel)
       const to = absOf(nextRel)
-      // 源与目标**都要**快照：
-      //   · 源会消失 → 快照记成 modified，回滚时把内容写回原位
-      //   · 目标可能被覆盖 → 原本不存在则记成 created，回滚时删掉它
-      // 两条合起来，回滚后正好回到 rename 之前的样子。
+      // 源与目标**都要**快照：源会消失（记 modified → 回滚写回原位），目标可能被覆盖
+      // （原本不存在则记 created → 回滚删掉它）。两条合起来，回滚后正好回到 rename 之前。
       hooks.beforeChange?.(rel, from)
       hooks.beforeChange?.(nextRel, to)
       await mkdir(dirname(to), { recursive: true })
@@ -90,8 +85,7 @@ export function createWorkspaceWriter(
       const wanted = absOf(rel)
       const info = await stat(sourceAbs)
       if (!info.isFile()) throw new Error('目前只支持拖入文件（文件夹请逐个拖入）')
-      // **不覆盖**已有文件：同名时自动加序号。
-      // 拖同一个文件两次是很常见的动作，静默覆盖会让人白白丢掉原有内容。
+      // **不覆盖**已有文件：同名时自动加序号 —— 拖同一个文件两次很常见，静默覆盖会白白丢内容
       const to = await uniquePath(wanted)
       const finalRel = to === wanted ? rel : relative(workspaceRoot, to).replace(/\\/g, '/')
       hooks.beforeChange?.(finalRel, to)

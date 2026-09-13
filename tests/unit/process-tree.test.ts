@@ -1,13 +1,8 @@
-// 杀进程树单测（plan14 批 C · C1 抽出来的共享实现）
-//
-// 这一份要守两件不同的事，所以分两组：
-//   ① **分支对不对**（Windows 走 taskkill 且不许缺 `/T`）—— 注入 spawn 验，快而确定
-//   ② **孤儿真的死没死** —— 这一条必须**起真进程**：开一个父进程，让它再拉一个**孙进程**
-//      每 150ms 往文件里追加一行；杀掉父进程的树之后，**看文件还长不长**。
-//      不长 = 树真的死了；还长 = 留了孤儿（而"留孤儿"正是这个函数存在的唯一理由）。
-//
-// ⚠️ ② 的意义：本项目实测过"只杀 shell 不带 `/T`"会留下孙进程继续吐输出。
-//    那种 bug 用假的 child 是**验不出来**的 —— 假 child 根本没有孙进程。
+// 杀进程树单测（plan14 批 C · C1 抽出来的共享实现）—— 两组：
+//   ① **分支对不对**（Windows 必须走 taskkill 且带 `/T`）—— 注入 spawn 验，快而确定
+//   ② **孤儿真的死没死** —— 起真进程（父 → 孙），杀树之后看日志文件还长不长。
+// ⚠️ ② 必须起真进程：实测"只杀 shell 不带 `/T`"会留孙进程继续吐输出，
+//    而假 child 根本没有孙进程 —— 那种 bug 用假的验不出来。
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -84,8 +79,7 @@ describe('分支：Windows 走 taskkill，且**不许缺 /T**', () => {
       }
     })
     expect(spawned).toHaveLength(0) // 不 spawn taskkill
-    // ⚠️ **负号才是这条测试的意义**：丢了它 = 只杀 shell 自己、孙进程留成孤儿。
-    //    （旧版本这里只断言了"没 spawn taskkill" —— 把负号去掉它也照样绿。）
+    // ⚠️ **负号才是这条测试的意义**：丢了它 = 只杀 shell 自己、孙进程留成孤儿（旧版只断言"没 spawn taskkill"，去掉负号照样绿）
     expect(killed).toEqual([[-4321, 'SIGTERM']])
   })
 
@@ -114,8 +108,7 @@ describe('起进程的选项：POSIX 下要能按进程组杀', () => {
   })
 
   it('POSIX 必须 detached —— 否则 `process.kill(-pid)` 会 ESRCH（"以为杀了整棵树、其实只杀了自己"）', () => {
-    // 两个平台的值都写下来（注入 platform）—— 否则在 Windows CI/开发机上
-    // 这条断言只在"自己那一支"里打转，POSIX 那支从未被验证过（审查 B 指出的 S4）
+    // 两个平台都注入：否则在 Windows 开发机上这条断言只在"自己那一支"里打转，POSIX 那支从未被验证过
     for (const p of ['linux', 'darwin'] as NodeJS.Platform[]) {
       expect(spawnOptsForGroupKill('/tmp', p).detached).toBe(true)
     }
@@ -149,7 +142,6 @@ describe('真进程：**孙进程必须跟着一起死**（否则就是留孤儿
       stdio: 'ignore'
     })
 
-    // 等孙进程真的跑起来并且已经在写
     await sleep(900)
     const before = existsSync(log) ? statSync(log).size : 0
     expect(before, '孙进程没写东西 —— 这条测试的前提不成立，下面的断言无意义').toBeGreaterThan(0)

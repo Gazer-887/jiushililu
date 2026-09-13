@@ -1,18 +1,11 @@
-// 逐处退回 · **全链路**单测（plan13 批 B · B4）
+// 逐处退回 · **全链路**单测（plan13 批 B · B4）。
 //
-// ## 这一份补的是什么洞（值得写下来）
-//
-// 三道闸原先长在 `src/main/ipc.ts` 的 handler 里，而 handler import 了 electron ——
-// CI 上没有 Electron 二进制就**跑不了**，于是整段逻辑一条测试都没有。
-// 独立审查的原话：**"把 mtime 阀删掉，所有测试仍然全绿。"**
-// 而那道阀是整批里唯一防"点了第 2 处、改掉第 N 处"的东西 —— 一道没人看着的闸等于没有闸。
-//
-// 抽到 `src/main/revert-flow.ts` 之后（依赖全部注入），这里就能用**真实临时目录**端到端跑：
-//   读快照 → 算差异 → 退一处 → 走**统一写入服务**落盘 → 再回读磁盘核对。
-// 判据刻意落在三件事上（都不是"返回了 ok"）：
-//   ① **磁盘上的内容真的变成了"退完那一处"的样子**（写错文本、写回原样、写空，全部会红）
-//   ② **这次退回自己留下了一轮检查点**，而且**回滚它能拿回 Agent 那一版**（"退错了还能再退"）
-//   ③ 被拦下的每一种情形，**文件一个字都没被碰过**
+// 为什么必须抽出来测：三道闸原先长在 `src/main/ipc.ts` 的 handler 里，而 handler import 了
+// electron —— CI 上没有 Electron 二进制就跑不了，整段逻辑一条测试都没有（"把 mtime 阀删掉，
+// 所有测试仍然全绿"）；而那道阀是唯一防"点了第 2 处、改掉第 N 处"的东西。抽到
+// `src/main/revert-flow.ts` 并注入依赖后，才能用**真实临时目录**端到端跑。
+// 判据不落在"返回了 ok"：① 磁盘内容真的变成退完那一处的样子；② 这次退回自己留下一轮检查点、
+// 回滚它能拿回 Agent 那一版；③ 被拦下的每种情形，文件一个字都没被碰过。
 
 import {
   existsSync,
@@ -72,9 +65,7 @@ function pair(): { before: string; after: string } {
 interface Harness {
   ws: string
   store: CheckpointStore
-  /** 那一轮"Agent 改文件"的轮次 id */
   runId: string
-  /** 每一次走写入服务时开的轮次（按顺序） */
   writeRuns: string[]
   deps: RevertDeps
   /** 当前磁盘 mtime（用来当"界面看到时"的基线） */
@@ -172,18 +163,15 @@ describe('逐处退回 · 全链路（真实文件 + 真实检查点 + 统一写
       expectedMtimeMs: h.mtime()
     })
 
-    // ① 写入服务确实开了一轮
     expect(h.writeRuns).toHaveLength(1)
     const wRunId = h.writeRuns[0]!
     expect(h.store.get(wRunId)?.changes.map((c) => c.rel)).toEqual(['a.txt'])
 
-    // ② 那一轮的快照 `beforeBytes` 应当等于 **Agent 改后那一版**的大小
-    //    （写前快照 = 即将被覆盖的内容）——不是"改前"那一版
+    // 写前快照 = 即将被覆盖的内容，所以 `beforeBytes` 是 **Agent 改后那一版**的大小，不是"改前"那版
     const wChange = h.store.get(wRunId)?.changes[0]
     expect(wChange?.kind).toBe('modified')
     expect(wChange?.beforeBytes).toBe(Buffer.byteLength(after, 'utf8'))
 
-    // ③ 回滚它 → Agent 那一版原样回来
     const report = h.store.rollback(wRunId)
     expect(report.failed).toEqual([])
     expect(read(h.ws, 'a.txt')).toBe(after)
@@ -232,8 +220,7 @@ describe('逐处退回 · 被拦下的情形：**文件一个字都不许被碰*
   it('**差 0.5 毫秒也要拒**（审查指出：留 1ms 容差就留了一个"退错块"的窄窗口）', async () => {
     const { before, after } = pair()
     const h = harness({ before, after })
-    // 原实现用 `Math.abs(diff) > 1` —— 这条会**绿着通过**（于是就成了静默退错的窗口）。
-    // 现在改成精确比较：不同的值一律拒。
+    // ⚠️ 留 1ms 容差就是留一个"退错块"的静默窗口（容差写法会让这条绿着通过），所以必须精确比较、不同值一律拒
     await expectRefused(h, { hunkIndex: 1, expectedMtimeMs: h.mtime() + 0.5 }, 'changed-on-disk')
   })
 
@@ -279,7 +266,6 @@ describe('逐处退回 · 被拦下的情形：**文件一个字都不许被碰*
       }
     )
     expect(r).toEqual({ ok: false, reason: 'lossy-encoding' })
-    // 磁盘上仍是那份 ASCII 改动（没被碰）
     expect(readFileSync(join(ws, 'gbk.txt'), 'utf8')).toBe('ASCII 改动\n')
   })
 
@@ -386,10 +372,8 @@ describe('逐处退回 · 被拦下的情形：**文件一个字都不许被碰*
 })
 
 describe('samePath —— 工作区判据（路径等价性）', () => {
-  // ⚠️ **别用 `'D:\\a\\b'` 这种硬编码 Windows 路径写断言**（CI 教我的一课）：
-  //    在 Linux 上 `\\` **不是**路径分隔符、只是普通字符，于是 `'D:\a\b\'` 与 `'D:\a\b'`
-  //    真的是两个不同的路径 —— 本地（Windows）全绿、CI（ubuntu）红一条。
-  //    要验"尾部分隔符不算区别"就用**本平台真实的分隔符**去构造。
+  // ⚠️ 别用 `'D:\\a\\b'` 这种硬编码 Windows 路径写断言（CI 教我的一课）：Linux 上 `\` 不是路径分隔符、
+  //    只是普通字符，`'D:\a\b\'` 与 `'D:\a\b'` 是两个不同路径 —— 本地全绿、CI 红一条；要验"尾部分隔符不算区别"就用**本平台真实的分隔符**（`base + sep`）去构造。
   const base = join(tmpdir(), 'jsl-same-path')
 
   it('同一个路径的不同写法算同一个（尾部分隔符不算区别）', () => {

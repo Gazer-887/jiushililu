@@ -14,12 +14,9 @@ import {
   type FsAdapter
 } from '@main/store/conversations-fs'
 
-// 分层磁盘后端（plan10 A 批）：布局 / 原子写 / **读盘足迹** / 格式迁移
-//
-// 这一批第一次动**磁盘格式**，所以测试的重点不是"功能对不对"，而是三件更硬的事：
-//   ① 分层到底换来了什么 —— **列表不许碰任何正文文件**（读盘足迹，字节级）
-//   ② 动用户数据的那一步（格式迁移）**失败时不许留半迁移状态**
-//   ③ 换掉 electron-store 之后，它原先默默兜住的**原子写**还在不在
+// 分层磁盘后端（plan10 A 批）：布局 / 原子写 / **读盘足迹** / 格式迁移。
+// 本批第一次动**磁盘格式**，重心不是"功能对不对"，而是三件硬事：
+// ① 列表**不许碰任何正文文件**（字节级读盘足迹）② 格式迁移失败**不许留半迁移状态** ③ 换掉 electron-store 后它原先默默兜住的**原子写**还在不在
 
 const roots: string[] = []
 
@@ -82,7 +79,6 @@ describe('布局：meta 与正文分开落盘', () => {
     }
     expect(metaRaw.schemaVersion).toBe(CONVERSATIONS_SCHEMA_VERSION)
     expect(Object.keys(metaRaw.conversations)).toEqual([c.id])
-    // 关键：索引里**不许再有正文**
     expect(metaRaw.conversations[c.id]).not.toHaveProperty('messages')
     expect(metaRaw.conversations[c.id]!.messageCount).toBe(1)
 
@@ -191,12 +187,8 @@ describe('原子写：换掉 electron-store 之后必须守住的性质', () => 
 
 describe('读盘足迹：**分层唯一要换来的东西**', () => {
   // plan10 §六 第 1 条验收：列表不许展开任何正文。
-  //
-  // ⚠️ **判据改过一次**（我自己跑出来的）：初稿写的是"读的字节 < 会话总量的 1/100"，
-  //    结果 200×50 时实测 45KB / 3.9MB ≈ 1.16% —— 不是实现不达标，是**那个比例本身不成立**：
-  //    它取决于"每条会话有多少消息"，消息越少比例越大，1/100 只是个拍脑袋的数。
-  //    **真正要证明的性质是"列表的代价不随正文增长"**，而那个性质不需要阈值：
-  //    把正文翻一倍，列表读的字节**应当一个都不多**。这比任何比例都硬。
+  // ⚠️ 不用"读的字节 < 会话总量的 1/100"这类比例当判据 —— 它取决于"每条会话有多少消息"，消息越少比例越大，是拍脑袋的数；
+  //    真正要证的是**列表代价不随正文增长**：正文翻倍，列表读的字节应当一个都不多（这比任何比例都硬）。
   it('**正文涨了 5 倍，列表读的字节一个都不多**（这才叫不随正文增长）', () => {
     const root = tmpRoot()
     const real = createFsConversationsBackend(root)
@@ -214,9 +206,8 @@ describe('读盘足迹：**分层唯一要换来的东西**', () => {
       }
     }
 
-    // 两次用**同样位数**的条数（20 → 99）：这样索引的字节**应当完全一致**。
-    // 位数若是 20 → 200，索引会各自多一个字符（60 条就是 +60 字节）——
-    // 那是 `messageCount` 这个数字本身变长了，**不是**在跟着正文涨。
+    // 两次用**同样位数**的条数（20 → 99），索引字节应当完全一致；位数一变（20 → 200）索引会因
+    // `messageCount` 本身变长而多字符 —— 那不是跟着正文涨，别当成回归
     seed(20)
     const first = countingFs()
     createConversationsRepo(createFsConversationsBackend(root, first.fs)).listConversations()
@@ -255,7 +246,7 @@ describe('读盘足迹：**分层唯一要换来的东西**', () => {
     const repo = createConversationsRepo(createFsConversationsBackend(root, fs))
     const list = repo.listConversations()
 
-    // ① 访问过的文件**恰好只有**索引文件（这一条是categorical的，不靠比例）
+    // ① 访问过的文件**恰好只有**索引文件（这一条是定性的，不靠比例）
     expect(reads).toEqual([metaFilePath(root)])
     // ② 顺手一道粗门槛：抓"哪天把正文又并回索引去了"这种灾难级回退
     expect(bytes()).toBeLessThan(totalBytes / 20)
@@ -356,10 +347,8 @@ describe('格式迁移 v1 → v2（**A 批唯一动用户数据的一步**）', 
     writeLegacy(root, { a: legacyConv('a', [msg(1)]) })
     const before = readFileSync(metaFilePath(root), 'utf8')
 
-    // 注入一个"写正文就炸"的 fs。
-    // ⚠️ 判据必须是 `<root>/conversations/` **目录下**的路径：原子写先落到 `.tmp`，
-    //    只按 `.json` 结尾去判会**判不到**（第一版就是这么漏的）。
-    //    而 `<root>/conversations.json` 那个索引文件也在 must-throw 之外 —— 它本来就不该被拦。
+    // 注入一个"写正文就炸"的 fs。⚠️ 判据必须是 `<root>/conversations/` **目录下**的路径 ——
+    // 原子写先落 `.tmp`，只按 `.json` 结尾去判会**判不到**；索引文件本就不该被拦，不在 must-throw 内。
     const convDir = join(root, 'conversations') + sep
     const failing: FsAdapter = {
       ...nodeFsAdapter,
@@ -390,10 +379,9 @@ describe('格式迁移 v1 → v2（**A 批唯一动用户数据的一步**）', 
   })
 })
 
-// 用量账本（plan8 R9 / R9.1）：它跟会话一起落盘，所以判据都在这儿
-//
-// 为什么账本要写进**会话索引**而不是另开一个文件：界面上那块牌写的是"本会话累计"，
-// 它必须与这条会话同生共死（删会话就没了），另开文件迟早会出现"会话没了账还在"。
+// 用量账本（plan8 R9 / R9.1）：它跟会话一起落盘，所以判据都在这儿。
+// 账本写进**会话索引**而不是另开文件 —— 界面上那块牌写的是"本会话累计"，必须与这条会话同生共死；
+// 另开文件迟早会出现"会话没了账还在"。
 describe('用量账本：落盘 / 只长不缩 / 缺字段', () => {
   it('给了用量 → 写进 meta；重开一遍还能读到（不是只在内存里亮一下）', () => {
     const root = tmpRoot()

@@ -1,31 +1,14 @@
 /**
- * **流式事件的唯一发送口**（plan11 §2.1 / §2.5）。
+ * **流式事件的唯一发送口**（plan11 §2.1 / §2.5）：把 `conversationId` 在**构造时**闭包捕获，此后这个对象
+ * 只能"带着身份"发 —— "漏带 id"不是"要小心"，而是**发不出来**。（"每次 send 都别忘了带 id"这种靠人记的
+ * 约定审查已证明守不住：提前返回的分支最容易被漏。）
+ * 两条守卫（`tests/unit/stream-envelope.test.ts`）：① 主进程里只有本文件能引用流式通道常量；
+ * ② `main/ipc.ts` 里一个裸 `.send(` 都不许有。
  *
- * ## 为什么要有这个文件
- *
- * 并发的前提是"每条事件都知道自己属于哪一轮跑"。做法有两种：
- *
- * - ❌ **靠人记**：每次 `webContents.send(channel, payload)` 都别忘了带上 `conversationId`。
- *   审查已经证明这种"约定"守不住 —— 现有 10 处发送里有 4 处是**提前返回**的
- *   （"已在跑 / 没配模型 / 没存 Key"），最容易被漏的恰恰是这些不常走的分支。
- * - ✅ **靠结构**：把 `conversationId` 在**构造时**闭包捕获，之后这个对象只能"带着身份"发。
- *   于是"漏带 id"不是"要小心"，而是**发不出来**。
- *
- * 配套两条守卫（`tests/unit/stream-envelope.test.ts`，可判定、不依赖排版）：
- *   ① 主进程里**只有本文件**能引用流式通道常量（其它文件出现即红）；
- *   ② `main/ipc.ts` 里**一个裸 `.send(` 都不许有**。
- *
- * ## 例外（**都要在这儿写明白**，不许让它们靠"扫不到"蒙混过去）
- *
- * 有些通道是**进程级**状态 —— 它们本来就跨会话可见，塞进"某条会话"的信封里没有意义：
- *
- * - `bg:changed`（后台命令清单，plan11 §2.3 的取舍）："系统里在跑什么命令"不属于任何一条会话。
- * - `terminal:data` / `terminal:state`（内置终端，plan7 批 C）：终端是**这个工作区的终端**，
- *   不是"某条对话的终端" —— 用户在终端里敲命令跟他当前开着哪条会话无关。
- *   载荷里带 `sessionId`（会话身份用工作区这一层表达），渲染端靠它区分帧属于谁。
- *
- * 这两条的豁免同时登记在 `tests/unit/stream-envelope.test.ts` 的 `EXEMPT_CONSTS` 里，
- * 并且那里有一条断言盯着"**每个豁免项旁边都写了理由**"。
+ * **例外**（进程级通道，理由必须写在这儿，不许靠"扫不到"蒙混）：`bg:changed` 是"系统里在跑什么命令"，
+ * `terminal:data` / `terminal:state` 是**这个工作区**的终端 —— 它们本来就跨会话可见，塞进某条会话的信封里
+ * 没有意义（终端载荷带 `sessionId` 供渲染端分辨帧）。豁免登记在测试的 `EXEMPT_CONSTS`，那里有断言
+ * 盯着"**每个豁免项旁边都写了理由**"。
  */
 import type { WebContents } from 'electron'
 import { IPC, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
@@ -54,15 +37,10 @@ export interface ChatEmitter {
   subagents(list: SubagentJobEvent[]): void
   checkpoint(runId: string): void
   /**
-   * 收尾，**带上本轮真实用量**（plan8 R9）—— 界面据此显示"这轮花了多少"。
-   * `null` = 厂商没报（界面显示占用估算，不假装知道精确值）。
-   *
-   * `avoided`（plan8 R9.1）= 本轮工具输出窗口化**省下的估算 token**（没省就是 0）。
-   * 它跟 `usage` 是两笔账（本地估算 vs 厂商真值），所以**分开传**，界面也分开显示。
-   *
-   * `tier`（plan8 R9.1 §七②）= **这一轮用的省 token 档位**。
-   * 用户定调第 4 条：**计量必须记下这轮用的哪一档** —— 否则事后按档位比数字时，
-   * 根本说不清"这个数是在哪档下跑出来的"。
+   * 收尾，**带上本轮真实用量**（plan8 R9）：`null` = 厂商没报（界面显示占用估算，不假装知道精确值）。
+   * `avoided`（R9.1）= 本轮工具输出窗口化省下的估算 token：它与 `usage` 是两笔账（本地估算 vs 厂商
+   * 真值），故**分开传**；`tier` = 这一轮用的省 token 档位 —— 用户定调第 4 条：计量必须记下这轮用的哪一档，
+   * 否则事后按档位比数字时说不清"这个数是在哪档下跑出来的"。
    */
   done(usage: TokenUsage | null, avoided?: number, tier?: TokenSaverTier): void
   error(message: string): void
@@ -73,9 +51,7 @@ export interface ChatEmitter {
 }
 
 /**
- * 造一个"绑定到某条会话 + 某个窗口"的发送器。
- *
- * `conversationId` 只在这里出现一次（进闭包），之后所有发送自动带上它。
+ * 造一个"绑定到某条会话 + 某个窗口"的发送器：`conversationId` 只在这里进闭包，之后所有发送自动带上它。
  */
 export function createChatEmitter(win: WebContents, conversationId: string): ChatEmitter {
   const send = <T>(channel: StreamChannel, payload: T): void => {

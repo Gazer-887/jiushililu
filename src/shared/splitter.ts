@@ -1,8 +1,5 @@
-// 布局分隔条（plan7 批 A0）—— 纯逻辑层
-//
-// 为什么抽出来：拖拽涉及「怎么算新宽度」和「能拖到多宽」两件事，
-// 都是纯计算，抽出来就能单测（CI 无 Electron 二进制，碰 electron 的代码测不了）。
-// 与 checkpoint.ts 同样的分层思路。
+// 布局分隔条（plan7 批 A0）—— 纯逻辑层。
+// 抽出来是为了能单测：CI 无 Electron 二进制，碰 electron 的代码测不了（与 checkpoint.ts 同思路）。
 
 import type { WorkbenchLayout, WorkbenchSizes } from './workbench'
 
@@ -16,10 +13,9 @@ export const DOCK_DEFAULT = 360
 export const DOCK_MIN = 280
 export const DOCK_MAX = 640
 
-/** 主区域无论如何都要留下的最小宽度（保底，别让对话区被拖没） */
+/** 主区域保底宽度：别让对话区被拖没 */
 export const MAIN_RESERVE = 320
 
-/** 主题（当前两套：经典蓝 / 水墨黑白灰+红） */
 export type ThemeName = 'classic' | 'ink'
 
 export const THEMES: Array<{ id: ThemeName; label: string; desc: string }> = [
@@ -29,10 +25,7 @@ export const THEMES: Array<{ id: ThemeName; label: string; desc: string }> = [
 
 /**
  * 界面布局偏好（主进程与渲染进程共用同一口径）。
- *
- * 注：工作台的**分栏布局**也挂在这里（同属"界面偏好"、同一个存档文件），
- * 但它的模型与全部运算都在 `workbench.ts` —— 本文件仍然只管「**单个**抽屉的宽度」。
- * 别把多栏逻辑往这儿塞（plan9 §二 已把归属定死）。
+ * 工作台**分栏布局**的模型与运算都在 `workbench.ts`，本文件只管「**单个**抽屉的宽度」——别把多栏逻辑往这儿塞（plan9 §二 已定归属）。
  */
 export interface UIPrefs {
   sidebarWidth: number
@@ -44,15 +37,12 @@ export interface UIPrefs {
   workbenchSizes: WorkbenchSizes
 }
 
-/** 主题合法性校验（存档/入参都可能被改坏） */
+/** 存档/入参都可能被改坏 */
 export function sanitizeTheme(t: unknown): ThemeName {
   return t === 'ink' ? 'ink' : 'classic'
 }
 
-/**
- * 把宽度夹到 [min, max] 区间内。
- * 非有限值（NaN / Infinity，鼠标事件偶尔会给出）一律回落到 min，避免把布局搞坏。
- */
+/** 非有限值（NaN / Infinity，鼠标事件偶尔会给）一律回落到 min，避免把布局搞坏 */
 export function clampWidth(width: number, min: number, max: number): number {
   if (!Number.isFinite(width)) return min
   if (max < min) return min // 容器太窄时的兜底：优先保证下限可用
@@ -60,13 +50,8 @@ export function clampWidth(width: number, min: number, max: number): number {
 }
 
 /**
- * 按鼠标位置算新宽度。
- *
- * - 左抽屉：宽度 = 指针 x − 容器左边
- * - 右抽屉：宽度 = 容器右边 − 指针 x
- *
- * **上限还要看主区域**：不能只按抽屉自身的 max 夹，否则窄窗口下会把主区域挤没。
- * 所以真正的上限是 `min(抽屉自身 max, 容器宽 − MAIN_RESERVE)`。
+ * 按鼠标位置算新宽度：左抽屉 = 指针 x − 容器左边，右抽屉 = 容器右边 − 指针 x。
+ * 上限不能只按抽屉自身的 max 夹，否则窄窗口下会把主区域挤没 —— 真正的上限是 `min(自身 max, 容器宽 − MAIN_RESERVE)`。
  */
 export function computeWidth(opts: {
   pointerX: number
@@ -91,7 +76,7 @@ export function computeWidth(opts: {
   return clampWidth(raw, min, effectiveMax)
 }
 
-/** 从存储读回的宽度也要夹一次（存档可能被手改坏，或跨版本换了范围） */
+/** 存档可能被手改坏，或跨版本换了范围 */
 export function sanitizeStoredWidth(
   stored: number | undefined,
   fallback: number,
@@ -102,7 +87,6 @@ export function sanitizeStoredWidth(
   return clampWidth(stored, min, max)
 }
 
-// 注：原先这里有一套「文件预览区高度拖拽」的常量与纯函数（PREVIEW_MIN/MAX/DEFAULT、
-// resizePreview）—— 它们只服务于"预览压在文件树底下、拖手柄调高"的旧形态。
-// plan9 W6 把预览改成在**右侧独立成栏**之后，那个手柄不存在了，故整套删除
-//（栏宽改由 workbench.ts 的 allocate / clampPaneWidth 负责，横向而非纵向）。
+// 注：旧的「文件预览区高度拖拽」（PREVIEW_MIN/MAX/DEFAULT、resizePreview）已删——
+// 它只服务于"预览压在文件树底下、拖手柄调高"的旧形态；plan9 W6 预览改成右侧独立成栏后手柄不存在了，
+// 栏宽改由 workbench.ts 的 allocate / clampPaneWidth（横向）负责。

@@ -2,10 +2,8 @@ import type { AgentMessage } from '@shared/agent'
 import { estimateMessageTokens, estimateTokens } from '@shared/tokens'
 
 // 上下文管理（P1 收官件之一）：长对话逼近上下文窗口时的历史裁剪。
-// 三层策略（对应检索分级 L0 的思路）：
-//   1. 只裁中段——system 与末尾 keepRecent 条永远保留（必要时向前扩到配对 assistant）
-//   2. 裁掉的旧消息汇总成一条[历史摘要]占位，保住要点、释放大头
-//   3. 估算口径见 @shared/tokens（主/渲染共用同一份算法）
+// 只裁中段 —— system 与末尾 keepRecent 条永远保留，裁掉的旧消息合成一条[历史摘要]占位（保住要点、释放大头）。
+// 裁剪是**确定性**的、不调模型：摘要由模型在后续轮次自然补全（P1 保持零副作用）。
 
 export { estimateTokens }
 
@@ -33,10 +31,7 @@ export interface TrimResult {
   droppedCount: number
 }
 
-/**
- * 需要时裁剪历史：保留开头的 system 与末尾 keepRecent 条，中段合并为一条摘要占位。
- * 不做模型调用（摘要由模型在后续轮次自然补全），只做确定性裁剪——P1 保持零副作用。
- */
+/** 保留开头 system 与末尾 keepRecent 条，中段合并为一条摘要占位；不调模型，只做确定性裁剪 */
 export function trimMessages(messages: AgentMessage[], opts: TrimOptions): TrimResult {
   const threshold = opts.thresholdRatio ?? 0.75
   const keepRecent = Math.max(1, opts.keepRecent ?? 6)

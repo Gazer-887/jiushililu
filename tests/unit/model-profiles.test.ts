@@ -18,13 +18,9 @@ import {
 } from '@shared/models'
 
 /**
- * 模型档案（plan7 F5 / F5.1：**端点 + 模型目录**）—— 纯逻辑部分。
- *
- * 要盯住的四件事：
- *   ① **老数据不许丢**（两种历史形状都要能读进来，参数一个不少）
- *   ② **不许出现"没有模型可用"**（端点空 / 目录空 / activeModelId 过期，全都要兜住）
- *   ③ **有效设置 = 端点默认 ⊕ 模型覆盖**（只存改过的字段，改了端点默认所有模型跟着变）
- *   ④ **读盘容错**（坏条目按条丢掉并计数，绝不整表崩 —— 那会让人以为 Key 也跟着没了）
+ * 模型档案（plan7 F5 / F5.1：端点 + 模型目录）—— 纯逻辑部分。
+ * 四条不变量：老数据两种历史形状都要读进来且参数不丢；任何情况不许出现"没有模型可用"；
+ * 有效设置 = 端点默认 ⊕ 模型覆盖（只存改过的字段）；坏条目只丢并计数，整表崩 = 让人以为 Key 也没了。
  */
 
 const NOW = 1_700_000_000_000
@@ -115,9 +111,9 @@ describe('有效设置 = 端点默认 ⊕ 该模型的高级设置', () => {
   it('**只覆盖写了的字段**，其余仍跟随端点默认（这正是不做全量复制的原因）', () => {
     const entry = { ...p.models[0], settings: { maxTokens: 8192, supportsImages: true } }
     const s = settingsOf(p, entry)
-    expect(s.maxTokens).toBe(8192) // 覆盖了
+    expect(s.maxTokens).toBe(8192)
     expect(s.supportsImages).toBe(true)
-    expect(s.contextWindow).toBe(131072) // 没写 → 端点默认
+    expect(s.contextWindow).toBe(131072)
     expect(s.timeoutMs).toBe(30_000)
   })
 
@@ -146,14 +142,12 @@ describe('迁移①：老的"单模型设置" → 端点 + 一条目录（参数
       stream: false
     })
     const p = profileOf(old, NOW, { name: 'DeepSeek-V4 Flash' })
-    // 连接级
     expect(p.providerType).toBe(old.providerType)
     expect(p.baseURL).toBe(old.baseURL)
     expect(p.timeoutMs).toBe(90_000)
     expect(p.stream).toBe(false)
-    // 模型级
     expect(p.models).toHaveLength(1)
-    expect(settingsOf(p, p.models[0])).toEqual(old) // ★ 一个字段都不少
+    expect(settingsOf(p, p.models[0])).toEqual(old) // 一个字段都不少
     expect(p.activeModelId).toBe(p.models[0].id)
   })
 

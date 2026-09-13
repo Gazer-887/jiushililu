@@ -1,4 +1,4 @@
-# electron-builder 打包配置（位于 config/，package.json 的 dist 脚本用 --config 指回）
+# electron-builder 打包配置（package.json 的 dist 脚本用 --config 指回本文件）。
 # 产物进 dist/（已 gitignore）。P5 再补：代码签名、自动更新（electron-updater）。
 
 appId: com.gazer.jiushililu
@@ -7,8 +7,8 @@ productName: 九十里路
 directories:
   output: dist
 
-# 打包内容：正面包含构建产物（防 .gitignore 类过滤误伤），排除源码/本机目录；
-# 生产依赖 node_modules 由 electron-builder 自动裁剪保留（zod 在 devDeps 会被 vite 打进 bundle，无需外置）。
+# 打包内容：正面列出构建产物（防 .gitignore 类过滤误伤），排除源码与本机目录；
+# 生产依赖由 electron-builder 自动裁剪（zod 在 devDeps，已被 vite 打进 bundle，无需外置）；
 # 图标走 extraResources 放到 asar 外（窗口图标用 process.resourcesPath 取）。
 files:
   - 'out/**'
@@ -21,29 +21,19 @@ files:
   - '!{README.md,AGENTS.md,CLAUDE.md,.gitattributes,.npmrc,.prettierrc.json}'
   - '!{NOTEBOOK,PLAN,DIARY,.workbuddy,.github}/**'
 
-# 原生模块（node-pty，plan7 批 C 的终端）**必须放在 asar 外面**：
-# `.node` / `conpty` / `winpty-agent.exe` 是由操作系统直接加载的二进制，
-# 打进 asar 之后 Node 的 `process.dlopen` 找不到它们 —— 症状是"开发态一切正常、
-# 打包版一打开终端就报模块加载失败"。这类"只有打包版才坏"的坑本项目踩过多次
-# （CSP 那条也是同形），所以这里显式解包，并由 `scripts/verify-asar.cjs` 那类检查兜底。
+# ⚠️ 原生二进制（node-pty 的 .node / conpty.dll / winpty-agent.exe）**必须解包到 asar 外**：
+# 它们是操作系统直接加载的，打进 asar 后 Node 的 `process.dlopen` 找不到 —— 症状是"开发态
+# 一切正常、打包版一开终端就报模块加载失败"（`scripts/verify-asar.cjs` 有对应检查兜底）。
 asarUnpack:
   - '**/node_modules/node-pty/**'
   - '**/*.node'
 
-# ⚠️ **必须关掉默认的"为 Electron ABI 重编原生模块"**（2026-09-13 实测踩到）。
-#
-# 默认值 `true` 会让 electron-builder 对每个原生依赖跑一遍 `node-gyp rebuild`。
-# 实测后果：本机没有 Visual Studio 工具链，直接打包失败 ——
-#   `Error: Could not find any Visual Studio installation to use`
-#   `⨯ node-gyp failed to rebuild 'D:\…\node_modules\node-pty'  failedTask=build`
-#
-# 为什么关掉是**安全**的（不是"为了省事"）：
-#   · node-pty 1.1.0 走 **N-API（Node-API）预编译**，而 N-API 的 ABI **跨 Node/Electron 版本稳定** ——
-#     这正是"零 rebuild 直接可用"的原因，本批在 Electron 33 里实测过（`require('node-pty')` 直接成功、
-#     子进程 `isTTY === true`、`resize` 生效）；
-#   · 反过来说，**重编只会引入风险**：要么要求用户的机器装一套 VS 工具链，
-#     要么产出一个与预编译行为不同的二进制。
-#   · 代价是：将来若引入**非 N-API** 的原生模块，这一条必须重新评估（那种模块确实需要按 ABI 重编）。
+# ⚠️ 必须关掉"为 Electron ABI 重编原生模块"（2026-09-13 实测踩到）：默认 true 会对每个原生依赖
+# 跑 node-gyp rebuild，而本机没有 Visual Studio 工具链 → 打包直接失败（`Could not find any
+# Visual Studio installation to use` / `node-gyp failed to rebuild … node-pty`）。
+# 关掉是安全的：node-pty 1.1.0 走 N-API 预编译，ABI 跨 Node/Electron 稳定（Electron 33 实测
+# 零 rebuild 直接可用）；重编只会引入风险（要求用户装 VS 工具链，或产出行为不同的二进制）。
+# ⚠️ 代价：将来引入**非 N-API** 的原生模块时，这一条必须重新评估。
 npmRebuild: false
 
 extraResources:

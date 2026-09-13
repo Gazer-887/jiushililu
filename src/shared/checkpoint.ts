@@ -1,19 +1,17 @@
-// 检查点与回滚 —— 纯逻辑层（plan8 R4）
+// 检查点与回滚的纯逻辑层（plan8 R4；文件读写那半在 checkpoints.ts）。
 //
-// 为什么单独抽一层：回滚的正确性全在"记什么、还什么"这两件判断上，
-// 而这两件事都能用纯函数表达。抽出来就能单测（CI 无 Electron 二进制，
-// 碰 electron 的代码测不了）。文件读写那半在 checkpoints.ts。
+// 抽出来是为了可单测 —— 回滚的正确性全在"记什么、还什么"的判断上，而 CI 无 Electron 二进制。
 
-/** 变更类型：本轮之前文件**不存在** = created；存在 = modified */
+/** 以**本轮开始前**该文件是否存在为准 */
 export type ChangeKind = 'created' | 'modified'
 
 export interface FileChange {
-  /** 工作区相对路径（统一 `/` 分隔，跨平台一致） */
+  /** 工作区相对路径，统一 `/` 分隔（见 normalizeRel） */
   rel: string
   kind: ChangeKind
-  /** 写之前的字节数（created 恒为 0） */
+  /** 写之前的字节数；created 恒为 0 */
   beforeBytes: number
-  /** 备份文件名（相对 run 目录）；created 无内容可备份，为 null */
+  /** 备份文件名（相对 run 目录）；created 无可备份，为 null */
   backup: string | null
 }
 
@@ -22,10 +20,7 @@ export interface CheckpointRun {
   /** 开始时间（毫秒时间戳） */
   at: number
   /**
-   * 同一进程内的自增序号，用于**同毫秒创建的轮次之间确定先后**。
-   * 为什么需要：`at` 只有毫秒精度，同一毫秒内开两轮时 `at` 相同，
-   * 「新的在前」就退化成任意顺序（CI 在 Linux 上抓出过这个不稳定）。
-   * 历史数据可能没有该字段，故可选。
+   * 同进程内自增，用于**同毫秒创建的两轮定先后**：`at` 只有毫秒精度，同毫秒时「新的在前」会退化成任意顺序（CI 在 Linux 上抓出过）。历史数据可能没有，故可选。
    */
   seq?: number
   /** 工作区绝对路径 */
@@ -33,18 +28,13 @@ export interface CheckpointRun {
   /** 哪个 Agent 干的（内核默认 / 子代理名） */
   agent: string
   /**
-   * 这一轮属于**哪条会话**（plan11）。
-   * 并发之后必须可查："这轮是谁跑的"决定它该出现在哪条会话的变更列表里，
-   * 也是出事时唯一能追溯的线索。历史数据（本字段之前生成的）可能没有，故可选。
+   * 属于**哪条会话**（plan11）：并发下"这轮是谁跑的"决定它出现在哪条会话的变更列表里，也是出事时唯一的追溯线索。历史数据可能没有，故可选。
    */
   conversationId?: string
   changes: FileChange[]
   /**
-   * 运行状态。
-   * `running` 表示这轮**没正常收尾**（应用崩溃 / 用户中止 / 断电）。
-   * 这种情况下 manifest 依然是可用的 —— 因为它是**增量落盘**的，
-   * 且快照一律发生在写文件**之前**，故"快照了但没写"也只是无害的多余备份。
-   * 用户仍可回滚这轮已发生的改动（这正是中断场景下最需要的能力）。
+   * `running` = 这轮**没正常收尾**（崩溃 / 中止 / 断电）。此时 manifest 仍可用：它**增量落盘**，
+   * 且快照一律发生在写文件**之前**（"快照了但没写"只是无害的多余备份），用户仍可回滚这轮已发生的改动。
    */
   status: 'running' | 'done'
   /** 已回滚时间；未回滚为 undefined */
@@ -55,15 +45,11 @@ export interface CheckpointRun {
 export interface CheckpointRunMeta {
   runId: string
   at: number
-  /** 同进程内自增序号，用于同毫秒时的先后判定（见 compareRunsNewestFirst） */
+  /** 同进程内自增序号，同毫秒时的先后判定（见 compareRunsNewestFirst） */
   seq?: number
   workspace: string
   agent: string
-  /**
-   * 这一轮属于**哪条会话**（plan11）。
-   * 并发之后必须可查："这轮是谁跑的"决定它该出现在哪条会话的变更列表里，
-   * 也是出事时唯一能追溯的线索。历史数据的 manifest 里可能没有，故可选。
-   */
+  /** 属于哪条会话（plan11）；理由见 `CheckpointRun.conversationId`。老 manifest 可能没有 */
   conversationId?: string
   status: 'running' | 'done'
   fileCount: number
@@ -72,23 +58,15 @@ export interface CheckpointRunMeta {
   rolledBackAt?: number
 }
 
-/**
- * 归一化相对路径：反斜杠转正斜杠、去掉开头的 `./`。
- * 保证同一个文件无论模型怎么写路径，都归一到同一个键（否则去重会失效）。
- */
+/** 反斜杠转正斜杠、去掉开头 `./` —— 不归一的话同一文件会因写法不同而重复记录（去重失效） */
 export function normalizeRel(rel: string): string {
   return rel.replace(/\\/g, '/').replace(/^\.\//, '')
 }
 
 /**
- * 记录一次写前快照 —— **核心规则：同一文件只记第一次**。
- *
- * 为什么这条最重要：一轮里模型可能对同一文件写 3 次。
- * 回滚要还原的是**这一轮开始前**的样子，也就是写第 1 次之前的状态。
- * 若每次都覆盖备份，回滚会把文件还原成"写第 2 次之前"——那是模型自己的中间产物，
- * 不是用户原本的文件。**这是本模块最容易写错的地方，故单测专门覆盖。**
- *
- * @returns 新增后的数组；若该路径已记录，原样返回（不覆盖备份）
+ * 记录一次写前快照 —— **核心规则：同一文件只记第一次**。一轮里模型可能对同一文件写多次，而回滚
+ * 要还原的是这一轮**开始前**的样子（覆盖备份就会还原成模型自己的中间产物）—— 本模块最容易写错处。
+ * @returns 新增后的数组；该路径已记录则原样返回（不覆盖备份）
  */
 export function upsertChange(changes: FileChange[], next: FileChange): FileChange[] {
   const rel = normalizeRel(next.rel)
@@ -96,7 +74,7 @@ export function upsertChange(changes: FileChange[], next: FileChange): FileChang
   return [...changes, { ...next, rel }]
 }
 
-/** 备份文件名：用序号而非路径，绕开 Windows 非法字符/保留名/长路径 */
+/** 文件名用序号而非路径 —— 绕开 Windows 非法字符 / 保留名 / 长路径 */
 export function backupName(index: number): string {
   return `${index}.bin`
 }
@@ -129,12 +107,8 @@ export function toMeta(run: CheckpointRun): CheckpointRunMeta {
 }
 
 /**
- * 轮次排序：新的在前。
- *
- * 三级比较缺一不可：
- *   ① `at` 毫秒时间戳（跨会话也正确）
- *   ② `seq` 进程内自增（**同毫秒**创建时靠它定先后；CI 抓出过不稳定的坑）
- *   ③ `runId` 字符串比较（最终兜底，保证**全序**——排序结果与输入顺序无关）
+ * 轮次排序：新的在前。三级比较缺一不可 —— `at` 跨会话也正确、`seq` 定**同毫秒**的先后
+ * （CI 抓出过不稳定）、`runId` 字符串比较兜底保证**全序**（结果与输入顺序无关）。
  */
 export function compareRunsNewestFirst(a: CheckpointRunMeta, b: CheckpointRunMeta): number {
   if (b.at !== a.at) return b.at - a.at
@@ -148,15 +122,13 @@ export function describeKind(kind: ChangeKind): string {
   return kind === 'created' ? '新建' : '修改'
 }
 
-/** 回滚要做的动作 */
 export type RollbackAction =
   | { rel: string; op: 'restore'; backup: string }
   | { rel: string; op: 'delete' }
 
 /**
- * 计划回滚动作（纯函数，不落盘）：
- * - modified → 把备份内容写回去
- * - created  → 删掉这个文件（本轮之前它不存在，删掉才是"还原"）
+ * 计划回滚动作（纯函数，不落盘）：modified → 写回备份；created → 删除文件
+ * （本轮之前它不存在，删掉才是"还原"）。
  */
 export function planRollback(changes: FileChange[]): RollbackAction[] {
   const actions: RollbackAction[] = []
@@ -171,9 +143,8 @@ export function planRollback(changes: FileChange[]): RollbackAction[] {
 }
 
 /**
- * 从 manifest 里挑出指定文件（不传 rel 则全选）。
- * **两侧都做归一**：存储侧的 rel 正常都是归一的，但若来自旧版本写入或人工编辑的
- * manifest，可能带反斜杠 —— 那时单侧归一就会"匹配不上"，回滚静默无事发生。
+ * 从 manifest 里挑出指定文件（不传 rel 则全选）。**两侧都做归一** —— 旧版本写入或人工编辑的
+ * manifest 可能带反斜杠，那时单侧归一就会"匹配不上"，回滚静默无事发生。
  */
 export function selectChanges(changes: FileChange[], rel?: string): FileChange[] {
   if (rel === undefined) return changes
@@ -181,22 +152,20 @@ export function selectChanges(changes: FileChange[], rel?: string): FileChange[]
   return changes.filter((c) => normalizeRel(c.rel) === target)
 }
 
-/** 回滚结果报告（界面展示"还原了几个 / 删了几个 / 哪几个失败"） */
 export interface RollbackReport {
   runId: string
-  /** 已还原（原本就存在的文件，内容写回） */
+  /** 已还原（原本就存在，内容写回） */
   restored: string[]
-  /** 已删除（本轮新建的文件，回滚 = 删掉） */
+  /** 已删除（本轮新建，回滚 = 删掉） */
   deleted: string[]
   failed: { rel: string; reason: string }[]
-  /** 因路径不安全而拒绝处理的条目 */
+  /** 路径不安全、被拒绝处理 */
   rejected: string[]
 }
 
 /**
- * 防御性校验：manifest 里的 rel 必须是**相对路径且不逃逸**。
- * 回滚会按 rel 拼绝对路径再写文件 —— 若 manifest 被篡改含 `../../`，
- * 就会写到工作区外。落盘前必须挡住。
+ * 防御性校验：manifest 里的 rel 必须是**相对路径且不逃逸** —— 回滚会按 rel 拼绝对路径再写文件，
+ * manifest 被篡改含 `../../` 就会写到工作区外。
  */
 export function isSafeRel(rel: string): boolean {
   const r = normalizeRel(rel)
@@ -229,21 +198,18 @@ export interface CheckpointSides {
   beforeBytes: number
   afterBytes: number
   /**
-   * 任一侧被截断（超过 256KB 读上限）。
-   *
-   * ⚠️ 界面**必须**说明"内容不完整"，并**禁止逐块退回** ——
-   * 拿半个文件算出来的差异去写盘，等于把大文件砍成截断长度（数据丢失）。
-   * 这与 `FilePreviewPane` 那条"截断的文件不给编辑"是同一条原则。
+   * 任一侧被截断（超 256KB 读上限）。
+   * ⚠️ 界面**必须**说明"内容不完整"并**禁止逐块退回** —— 拿半个文件算出的差异去写盘等于把大文件
+   * 砍到截断长度（数据丢失）。同 `FilePreviewPane` 那条"截断的文件不给编辑"。
    */
   truncated: boolean
   /**
-   * 任一侧**不是合法 UTF-8**（GBK / 二进制）→ 界面必须说明"逐处退回会损坏它"。
-   * 与 `truncated` 同理：这类文件只给整份退回（那走的是字节拷贝，安全）。
+   * 任一侧**不是合法 UTF-8**（GBK / 二进制）→ 界面必须说明"逐处退回会损坏它"，这类文件只给整份退回（走字节拷贝，安全）。
    */
   lossy: boolean
-  /** 当前文件 mtime（逐块退回时的冲突基线，防"用户点拒绝的同时 Agent 正在写"）；文件不在则无 */
+  /** 当前文件 mtime（逐块退回的冲突基线，防"用户点拒绝的同时 Agent 正在写"）；文件不在则无 */
   mtimeMs?: number
-  /** 这一轮是否还没收尾 —— `running` 时 Agent 可能**正在**写这些文件 */
+  /** 这一轮还没收尾 —— `running` 时 Agent 可能**正在**写这些文件 */
   runStatus: 'running' | 'done'
 }
 
@@ -277,22 +243,17 @@ export type RevertFailReason =
   | 'missing-current'
   | 'truncated'
   /**
-   * **这个文件不是合法 UTF-8**（GBK 文本 / 二进制）。
-   *
-   * 为什么必须拦（独立审查实测）：退回会把**整份文本**按 UTF-8 重写回磁盘，
-   * 而有损解码出来的字符再编码回去 **不等于原字节** ——
-   * 实测一个 GBK 文件只改了一行，退一次之后**没被改的那几行也一起烂掉**
-   * （13 字节 → 32 字节）。这是**不可逆**的损坏，只能整份退回。
+   * **不是合法 UTF-8**（GBK 文本 / 二进制）。
+   * ⚠️ 独立审查实测：退回把**整份文本**按 UTF-8 重写，而有损解码的字符再编码回去**不等于原字节** ——
+   * GBK 文件只改一行、退一次后没被改的那几行也一起烂掉（13 字节 → 32 字节），**不可逆**，只能整份退回。
    */
   | 'lossy-encoding'
   /** 界面看到的那一份已经**不是**磁盘上的这一份了（Agent 刚改过 / 用户自己编辑过） */
   | 'changed-on-disk'
   /**
-   * **这一轮属于另一个工作区**。
-   *
-   * 为什么必须拦：检查点目录是全局的（`userData/checkpoints`），列表里会有别的工作区的轮次；
-   * 而 rel 是**相对路径** —— 拿当前工作区去拼，就会读到/写到**同名的另一个文件**，
-   * 而且 mtime 阀拦不住（它就是那个文件的当前状态）。这是唯一会"静默改错文件"的路径。
+   * **这一轮属于另一个工作区**。检查点目录是全局的（`userData/checkpoints`），列表里会有别的工作区的轮次；
+   * rel 是**相对路径**，拿当前工作区去拼就会读写**同名的另一个文件**，mtime 阀也拦不住 ——
+   * 这是唯一会"静默改错文件"的路径。
    */
   | 'other-workspace'
   | 'no-such-hunk'
@@ -306,10 +267,8 @@ export interface RevertHunkInput {
   hunkIndex: number
   /**
    * 界面读到"当前内容"时的 mtime。
-   *
-   * **这条参数是安全阀，不是优化**：块序号只在"两侧内容与算差异时一致"的前提下才有效。
-   * 文件若在用户看差异的这段时间被改过（Agent 在跑 / 用户自己编辑），
-   * 主进程**必须拒绝**并让用户重看一遍 —— 否则就是"点了第 2 处、改掉第 N 处"。
+   * **安全阀，不是优化**：块序号只在"两侧内容与算差异时一致"的前提下才有效 —— 文件在用户看差异期间
+   * 被改过（Agent 在跑 / 用户自己编辑）时主进程**必须拒绝**，否则"点第 2 处、改掉第 N 处"。
    */
   expectedMtimeMs: number
 }

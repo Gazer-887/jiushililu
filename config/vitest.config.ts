@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
 
-// npm 脚本一律从项目根运行，故用 process.cwd() 锚定根目录
+// npm 脚本一律从项目根运行，故用 process.cwd() 锚定根目录（比 __dirname 稳）
 const r = (p: string): string => resolve(process.cwd(), p)
 
 export default defineConfig({

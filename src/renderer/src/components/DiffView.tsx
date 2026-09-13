@@ -14,30 +14,17 @@ import {
   type CheckpointSidesResult
 } from '@shared/checkpoint'
 
-// 文件差异（plan13 批 B · B3 看 / B4 退）——「这一轮到底把这个文件改成了什么样」。
+// 文件差异（B3 看 / B4 退）：「这一轮到底把这个文件改成了什么样」。
 //
-// ## 为什么是"统一视图"而不是并排（这个决定值得写下来）
-//
-// Monaco 有现成的 DiffEditor，并排更漂亮。这里没用它，两个理由：
-//
-// ① **块序号必须是唯一的真相源**。用户要"退回第 2 处"时，那个"第 2 处"必须是
-//    我们能精确应用的那一块。Monaco 自带一套切块算法、jsdiff 另一套 ——
-//    两套一起用，高亮的块和按钮对应的块**迟早对不上**，而且是静默对不上：
-//    界面上看着点了第 2 处，写盘的却是第 3 处的内容。所以 diff 只有一份来源
-//    （`@shared/text-diff`），渲染和退回都用它。
-// ② 这个面板是**窄抽屉**。并排视图在窄栏里每侧只剩几十个字符，读起来比统一视图更差。
-//
-// ## B4 的退回为什么不在这里算完就写
-//
-// 界面**只负责说"退第几处"**，真正的读取、算差异、写盘全在主进程做，理由有两条：
-//   · 写盘必须走**统一写入服务**（那样这次退回自己也会留下检查点 —— "退错了还能再退"）；
-//   · 主进程用**同一个** `@shared/text-diff` 重算一遍差异，块序号才对得上。
-// 界面顺手算的那份只用来**显示**，不参与写盘 —— 这一点很关键，别把它当成写入依据。
+// 用统一视图而非并排：① 块序号必须唯一真相源 —— Monaco 与 jsdiff 各有一套切块算法，并用会让
+// 高亮的块与按钮对应的块**静默**对不上（点第 2 处、写盘的却是第 3 处）；② 窄抽屉里并排更难读。
+// 退回**不在这里算完就写**：界面只说"退第几处"，读取/算差异/写盘全在主进程 —— 写盘要走统一写入服务
+// （这次退回自己也留检查点），主进程再用**同一个** `@shared/text-diff` 重算，块序号才对得上；
+// 界面顺手算的那份只用来**显示**，不许当写入依据。
 
 interface Props {
   runId: string
   rel: string
-  /** 收起（清空选择） */
   onClose: () => void
 }
 
@@ -48,7 +35,7 @@ type Loaded =
 
 export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
   const [state, setState] = useState<Loaded>({ phase: 'loading' })
-  /** 退回过一次就 +1：内容和 mtime 都变了，必须重新取一次两侧 */
+  /** 退回过一次就 +1（内容和 mtime 都变了，必须重新取一次两侧） */
   const [reloadToken, setReloadToken] = useState(0)
   /** 正在等确认的那一处（`null` = 没有） */
   const [confirmHunk, setConfirmHunk] = useState<number | null>(null)
@@ -65,8 +52,7 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
         setState({ phase: 'failed', reason: describeSidesFailure(res.reason) })
         return
       }
-      // created：改前文件不存在 → 拿空串当"改前"，于是整份都是新增行。
-      // after === null：这轮改完之后文件又被删了 → 整份都是删除行。
+      // 改前不存在（created）或改后又被删（after === null）都拿空串兜底 → 整份变新增行 / 删除行
       const before = res.before ?? ''
       const after = res.after ?? ''
       setState({ phase: 'ready', sides: res, diff: computeHunks(before, after) })
@@ -77,7 +63,7 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
     }
   }, [runId, rel, reloadToken])
 
-  /** 退回某一处：界面只说"退第几处"，怎么退由主进程决定（见文件头说明） */
+  /** 退回某一处：界面只说"退第几处"，怎么退由主进程决定（见文件头） */
   const doRevert = async (hunkIndex: number): Promise<void> => {
     if (state.phase !== 'ready') return
     const mtimeMs = state.sides.mtimeMs
@@ -130,16 +116,12 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
   }
 
   const { sides, diff } = state
-  /**
-   * "算不出来 / 没得显示" —— 两种情况都要和"内容相同"分开：
-   *   · `degraded`：jsdiff 超时或编辑长度超限，**它自己放弃了**
-   *   · `hunks` 空但 `identical` 假：块算出来了，但唯一那一块大过渲染预算被挡掉
-   * 两者都**不是**"没有改动"，所以不能走 `.df-none` 那句"完全一致"。
-   */
+  /** 「算不出来 / 没得显示」必须与「内容相同」分开：`degraded` = jsdiff 超时或编辑长度超限、
+   *  它自己放弃了；`hunks` 空但 `identical` 假 = 块算出来了、但唯一那块大过渲染预算被挡掉。
+   *  两者都**不是**"没有改动"，所以不能落到"完全一致"那句。 */
   const tooBig = !diff.identical && diff.hunks.length === 0
-  // 除了 `canRevertHunks` 那几条（created / 截断 / 缺一侧），这里还有两条**同源**的否决：
-  //   · `sides.lossy` —— 不是合法 UTF-8，整份重写会损坏它（不可逆）
-  //   · `tooBig`       —— 压根没有可用的块
+  // 除 `canRevertHunks` 那几条（created / 截断 / 缺一侧）外，这里还有两条同源否决：
+  // `sides.lossy`（不是合法 UTF-8，整份重写会损坏它、不可逆）与 `tooBig`（压根没有可用的块）。
   const revertible =
     canRevertHunks({
       truncated: sides.truncated,
@@ -165,7 +147,7 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
         </button>
       </div>
 
-      {/* 这一轮还没收尾 —— Agent 可能正在写这些文件，此刻看到的内容可能正在变 */}
+      {/* 这一轮还没收尾 —— Agent 可能正在写这些文件，此刻看到的内容正在变 */}
       {sides.runStatus === 'running' && (
         <div className="df-warn">
           这一轮还没跑完，Agent 可能正在改这些文件 —— 现在看到的不是最终结果。
@@ -223,9 +205,8 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
               actions={
                 revertible ? (
                   <HunkRevert
-                    // ⚠️ `busy` **要排在前面**：写盘那段时间里 `confirmHunk` 还挂着，
-                    //    按"先看 confirmHunk"排序的话确认按钮会一直是可点的 ——
-                    //    连点两下就是两次请求带同一个 mtime 基线（多一条轮次 + 一条惊悚提示）。
+                    // ⚠️ `busy` 必须排在前面：写盘期间 `confirmHunk` 还挂着，先看它按钮会一直可点 ——
+                    //    连点两下 = 两次请求带同一个 mtime 基线（多一条轮次 + 一条惊悚提示）。
                     state={busy ? 'busy' : confirmHunk === h.index ? 'confirming' : 'idle'}
                     onAsk={() => {
                       setConfirmHunk(h.index)
@@ -241,9 +222,8 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
         </>
       )}
 
-      {/* 不能逐处退回时，把**为什么**说清楚 —— 只给一个灰按钮最招人恨。
-          文案里点名那个真按钮叫「回滚」：面板那一栏上写的就是它，
-          只说"整份退回"会让用户找不到该点哪个。 */}
+      {/* 不能逐处退回时要说清**为什么** —— 只给一个灰按钮最招人恨。文案点名真按钮叫「回滚」：
+          面板那一栏上写的就是它，只说"整份退回"用户找不到该点哪个。 */}
       {!diff.identical && !tooBig && !revertible && (
         <div className="df-note">
           {sides.kind === 'created'
@@ -261,7 +241,7 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
   )
 }
 
-/** 一处的"退回"按钮：点一下不直接写盘，先就地确认一次（与回滚同一个规矩） */
+/** 一处的「退回」按钮：点一下不直接写盘，先就地确认一次（与回滚同一规矩） */
 function HunkRevert({
   state,
   onAsk,
@@ -303,10 +283,9 @@ function Hunk({
   confirming: boolean
   actions: ReactNode
 }): JSX.Element {
-  // ⚠️ 确认那一刻，这一行要回答的是**"点下去会发生什么"**，不是"改动是什么" ——
-  //    plan13 §三② 把它写成了硬要求：纯新增块显示"在第 N 行插入 M 行"、
-  //    纯删除块显示"删掉第 X–Y 行"，描述的**都不是退回后的结果**，
-  //    而这两种恰恰最容易被误解（用户以为"插入"是退回后的动作）。
+  // ⚠️ 确认那一刻要回答的是**"点下去会发生什么"**、不是"改动是什么"（plan13 硬要求）：
+  //    非确认态的「在第 N 行插入 M 行」「删掉第 X–Y 行」描述的是改动本身，
+  //    最容易被误解成退回后的结果 —— 所以确认态改用「退回后：…」措辞。
   const range = confirming
     ? hunk.oldLines === 0
       ? `退回后：把新插入的 ${hunk.newLines} 行删掉`

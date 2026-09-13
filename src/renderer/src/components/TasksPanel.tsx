@@ -3,16 +3,11 @@ import type { SubagentJobEvent } from '@shared/agent'
 import { statusText } from '@shared/background'
 import { useAppStore } from '../store'
 
-// 右栏「任务」页签（plan7 批 D —— 2026-09-12 用户意见：
-// 「任务管理可以改为子代理和后台任务查看，也是跟 DSH 学的」）。
-//
-// 两块：
-//   ① 子代理运行记录 —— 谁在跑、跑了几轮、结果如何（同一批次内就地更新）
-//   ② 后台任务 —— 命令在后台跑到哪了、输出是什么、能一键终止
-//
-// 空态说明"怎么才会有"，比一句"暂无数据"有用得多。
+// 右栏「任务」页签（plan7 批 D，2026-09-12 用户意见：任务管理改为子代理 + 后台任务查看，学 DSH）。
+// 两块：① 子代理运行记录（谁在跑、几轮、结果，同一批次内就地更新）② 后台任务（进度、输出、一键终止）。
+// 空态要说明"怎么才会有" —— 比一句"暂无数据"有用得多。
 
-/** 子代理一行状态：进行中 / 已完成（几轮 · 几秒）/ 失败 */
+/** 一行状态文本：进行中 / 已完成（几轮 · 几秒）/ 失败 */
 function jobStatus(j: SubagentJobEvent): string {
   if (j.phase === 'start') return '进行中'
   const secs = j.endedAt ? ((j.endedAt - j.startedAt) / 1000).toFixed(1) : '?'
@@ -25,8 +20,7 @@ export default function TasksPanel(): JSX.Element {
   const bgTasks = useAppStore((s) => s.backgroundTasks)
 
   useEffect(() => {
-    // 挂载时各拉一次（记录都在主进程），之后靠推送。
-    // plan11：子代理事件**按会话**归属 —— 只拉当前会话那一份
+    // 挂载时各拉一次（记录都在主进程），之后靠推送。plan11：子代理事件**按会话**归属 —— 只拉当前会话那份
     const activeId = useAppStore.getState().activeId
     if (activeId) {
       void window.api
@@ -87,7 +81,7 @@ export default function TasksPanel(): JSX.Element {
         </div>
       )}
 
-      {/* ── 后台任务（plan7 批 D）── */}
+      {/* ── 后台任务 ── */}
       <div className="tasks-head tasks-head-gap">
         <span className="tasks-title">后台任务</span>
         <span className="tasks-sub">

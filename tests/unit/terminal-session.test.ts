@@ -1,16 +1,8 @@
-// 终端会话层单测（plan14 批 C · C2，**真 PTY 版**）
+// 终端会话层单测（plan14 批 C · C2，真 PTY 版）。
 //
-// 这一层守的东西全都该被测到，而且都能在 CI 上测（它不 import electron）：
-//   ① 只读档**在启动处**就被拒（plan7 批 C 的验收原文）
-//   ② cwd 不存在时给**人话**（不是 `spawn xxx ENOENT` 那种把人带偏的文案）
-//   ③ 输出缓冲超限从头部丢、并置 `truncated`
-//   ④ **序号单调** —— "切走再切回不重不漏"的唯一依据
-//   ⑤ kill 的状态**由我们置位**，不被退出码覆盖
-//   ⑥ 切工作区 → 旧会话收掉、新会话在新目录起
-//   ⑦ resize 真的透传给 pty（不传的话 vim/进度条会画错）
-//
-// 大部分用例用**假 pty**（可控、快、且**不必加载原生二进制**）；最后一条用真 node-pty
-// 做端到端 —— 那一条同时也是"CI 到底能不能构建原生模块"的早期警报。
+// 本层不 import electron，所以整套都能在 CI 上跑；大部分用例用**假 pty**（可控、快、
+// 不必加载原生二进制），只有最后一条用真 node-pty 端到端 —— ⚠️ 那一条同时也是
+// "CI 到底能不能构建原生模块"的早期警报：原生模块构建失败只会红它一条。
 
 import { describe, expect, it } from 'vitest'
 import {
@@ -23,12 +15,7 @@ import {
   type TerminalPermission
 } from '@main/terminal-session'
 
-/**
- * 假 pty。
- *
- * ⚠️ pid 用一个**不可能存在的巨大值**：Windows 分支会真的去 spawn
- * `taskkill /pid <pid> /T /F`，随便挑个小数字有**误杀真实进程**的风险。
- */
+/** 假 pty。⚠️ pid 必须是**不可能存在的巨大值**：Windows 分支会真的 `taskkill /pid <pid> /T /F`，挑个小数字有误杀真实进程的风险。 */
 class FakePty implements PtyLike {
   pid = 999999
   writes: string[] = []
@@ -61,11 +48,9 @@ class FakePty implements PtyLike {
   resume(): void {
     this.resumeCount += 1
   }
-  /** 测试用：喂一段输出 */
   feed(d: string): void {
     this.dataCb?.(d)
   }
-  /** 测试用：模拟进程自己退出 */
   exit(code: number): void {
     this.exitCb?.({ exitCode: code })
   }
@@ -208,9 +193,8 @@ describe('启动：幂等 / cwd / 尺寸 / 环境', () => {
     expect(b.session.workspaceRoot).toBe('D:/ws-b')
     expect(calls[1]!.opts.cwd).toBe('D:/ws-b')
     expect(ptys).toHaveLength(2)
-    // ⚠️ 断言**可观察的状态**，不是"`child.kill()` 有没有被调用"：
-    //    Windows 分支走 `taskkill /T /F`（按 pid），**根本不碰 `kill()`** ——
-    //    第一版我就是那么断言的，于是用例红了而实现是对的。
+    // ⚠️ 只许断言**可观察的状态**：Windows 分支走 `taskkill /T /F`（按 pid），根本不碰 `kill()` ——
+    //    断言"`child.kill()` 被调用过"会把正确的实现判红。
     expect(a.session.status).toBe('killed')
   })
 })
@@ -317,8 +301,7 @@ describe('会话身份：旧 pty 的迟到输出不许记到新会话头上', ()
 
 describe('会话 id：**必须唯一**（毫秒时间戳会撞号，撞了界面就认不出"换了会话"）', () => {
   it('时间被冻在同一毫秒时，restart 出来的新会话 id 仍与旧的不同', () => {
-    // 为什么这条非有不可：`restart()` = teardown（旧 pty 已为 null 时是纯内存操作、0ms）→ start，
-    // 两次取时间戳完全可能同毫秒 → 新旧同 id → 渲染层判定"还是同一个会话"→
+    // 为什么非有不可：`restart()` 后两次取时间戳可能同毫秒 → 新旧同 id → 渲染层当作"同一个会话"→
     // 不重放、`nextSeq` 停在旧高位 → 新 shell 的输出被逐帧丢弃（屏幕死寂但状态是"运行中"）。
     const { store } = setup({ now: () => 1_700_000_000_000 })
     const a = store.start()
@@ -336,7 +319,7 @@ describe('背压（ACK 流控）：xterm 顶到 50MB 会**抛异常丢数据**�
     store.start()
     const p = ptys[0]!
     const id = store.current()!.id
-    const piece = 'x'.repeat(64 * 1024) // 64KB 一片
+    const piece = 'x'.repeat(64 * 1024)
 
     for (let i = 0; i < 5; i++) p.feed(piece) // 320KB > 256KB 高水位
     expect(p.pauseCount).toBe(1) // 只暂停一次，不是每片都暂停
@@ -400,8 +383,7 @@ describe('背压（ACK 流控）：xterm 顶到 50MB 会**抛异常丢数据**�
   })
 
   it('resync（重放后的重对齐）→ 未回执清零并恢复 pty，之后能重新计数', () => {
-    // 场景：切走页签期间没人回执（订阅退了、主进程照旧推）→ 水位越线把 pty 按住 →
-    // 切回来只有重放、没有任何回执 → 不复位就**永远静止**。
+    // 场景：切走页签期间没人回执（订阅退了、主进程照旧推）→ 水位越线按住 pty；切回来只有重放、没有回执 → 不复位就**永远静止**。
     const { store, ptys } = setup()
     store.start()
     const p = ptys[0]!
@@ -523,8 +505,7 @@ describe('shell 与环境变量（每一条都是"不做就会踩"的）', () =>
     expect(env.TERM).toBe('xterm-256color')
     expect(env.COLORTERM).toBe('truecolor')
     expect(env.PATH).toBe('/x') // 原有环境要保留
-    // 真 PTY 下程序自己就是 TTY、本来就有颜色；再强制一次只会让
-    // `工具 > 文件` 这种重定向场景也带 ANSI 转义 —— 属于"善意的越权"，不做。
+    // 真 PTY 下程序本来就是 TTY；再强制 FORCE_COLOR 只会让重定向场景也带 ANSI 转义（"善意的越权"，不做）
     expect(env.FORCE_COLOR).toBeUndefined()
   })
 
@@ -557,11 +538,9 @@ describe('真 node-pty 端到端（同时也是"CI 能不能构建原生模块"�
     store.onData((_id, c) => {
       buf += c.data
     })
-    // 判据：`JSL_PTY_42` 这个串**只可能由 shell 执行产生**。
-    // 敲进去的原文是 `JSL_PTY_$((6*7))` —— bash 与 PowerShell 都会把 `$((6*7))` 算成 42，
-    // 而**一行回显/重绘无论怎么拼都拼不出 `JSL_PTY_42`**（原文里根本没有那两个字符）。
-    // 顺带这也是跨平台的：不依赖"回显与执行输出恰好相邻"（Windows conpty 与 Linux tty
-    // 的回显形态不同，相邻性在 Linux 上不成立）。
+    // 判据：敲的是 `JSL_PTY_$((6*7))`，bash 与 PowerShell 都会算出 42，而**回显无论怎么拼都拼不出
+    // `JSL_PTY_42`**（原文里没这两个字符）—— 收到 42 才证明背后是真 shell，不是只把命令行回显了。
+    // 这也绕开了"回显与执行输出恰好相邻"：Windows conpty 与 Linux tty 回显形态不同，相邻性在 Linux 上不成立。
     expect(store.write('echo JSL_PTY_$((6*7))\r').ok).toBe(true)
 
     const deadline = Date.now() + 8000

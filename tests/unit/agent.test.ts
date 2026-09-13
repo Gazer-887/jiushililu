@@ -46,10 +46,7 @@ describe('resolveInsideWorkspace（路径越界防护）', () => {
   })
 })
 
-/**
- * 测试助手：file-tools 现在接受**统一写入服务**（plan7 批 A2 —— 界面与 Agent 共用一条写入路径）。
- * 这里包一层，免得每处都重复建 writer；trash 默认是个 no-op。
- */
+/** file-tools 走统一写入服务（plan7 批 A2）：包一层免得每处重复建 writer，trash 默认 no-op */
 function fileTools(root: string, hooks: Partial<WorkspaceWriteHooks> = {}) {
   return createFileTools(createWorkspaceWriter(root, { trash: async () => {}, ...hooks }))
 }
@@ -69,11 +66,9 @@ describe('file-tools（文件读写工具）', () => {
     expect(readFileSync(join(dir, 'notes/hello.txt'), 'utf8')).toBe('你好，九十里路')
   })
 
-  // ── plan8 R9.1：`read_file` 是"可寻址的窗口读取"，不是"全文倾倒" ──
-  //
-  // 为什么这几条必须存在：改之前的上限是 **1MB ≈ 262k token**（实测），
-  // 也就是说"读一个文件就能吃掉大半个上下文窗口"，而且模型**不知道自己看全了没有**。
-  // 这几条钉住的正是那三件事：窗口大小、行号可寻址、"被截了要说出来"。
+  // plan8 R9.1：`read_file` 是"可寻址的窗口读取"，不是全文倾倒 ——
+  // 旧实现一次能灌进 1MB 量级原文（吃大半个上下文窗口），且模型**不知道自己看全了没有**；
+  // 下面钉住窗口大小、行号可寻址、"被截了要说出来"这三件事。
   it('长文件默认只给前 200 行，且**末尾如实说明还有多少行、下一段怎么取**', async () => {
     const lines = Array.from({ length: 500 }, (_, i) => `第 ${i + 1} 行的内容`)
     await write.execute({ path: 'long.txt', content: lines.join('\n') })
@@ -82,7 +77,6 @@ describe('file-tools（文件读写工具）', () => {
     expect(out.split('\n').filter((l) => /^\d+\|/.test(l))).toHaveLength(200)
     expect(out).toContain('200|第 200 行的内容')
     expect(out).not.toContain('201|')
-    // 这三条是"告知"的全部要点：总数、给到哪、怎么继续
     expect(out).toContain('文件共 500 行')
     expect(out).toContain('第 1–200 行')
     expect(out).toContain('后面还有 300 行')
@@ -123,11 +117,10 @@ describe('file-tools（文件读写工具）', () => {
   })
 
   it('**单次读取有绝对预算**（2000 行 × 2000 字符的极端输入不许一次灌进上下文）', async () => {
-    // 极端形状：每行 1500 个汉字（不到单行掐断线 2000，所以不会被掐）
+    // 每行 1500 汉字（不到单行掐断线 2000，掐不住它）× 60 行 ≈ 9 万汉字：卡的是单次总预算
     const line = '汉'.repeat(1500)
     await write.execute({ path: 'huge.txt', content: Array.from({ length: 60 }, () => line).join('\n') })
     const out = await read.execute({ path: 'huge.txt', limit: 2000 })
-    // 原文 ≈ 60 × 1500 = 9 万汉字 ≈ 9 万 token；单次读取必须收在预算内
     expect(out).toContain('已达单次上限')
     expect(out).toContain('继续读用 offset=')
     const bodyTokens = out.split('\n').reduce((n, l) => n + l.length, 0)
@@ -142,8 +135,7 @@ describe('file-tools（文件读写工具）', () => {
 
   it('脏参数（字符串 / 0 / 负数 / 空对象 / null）**回落到默认值**，不炸也不报错', async () => {
     await write.execute({ path: 'clean.txt', content: 'a\nb\nc\nd' })
-    // 语义定死在这里：模型给的垃圾参数**不是错误**（它多半只是想"从头读"），
-    // 归一成"从第 1 行、默认行数"最省事；真报错只会让它再花一轮来纠正自己。
+    // 垃圾参数**不是错误**（模型多半只是想"从头读"）：归一成"第 1 行 + 默认行数"，真报错只会多烧一轮
     for (const bad of ['abc', 0, -5, {}, null, undefined]) {
       const out = await read.execute({ path: 'clean.txt', offset: bad })
       expect(out).toContain('1|a')
@@ -263,7 +255,6 @@ describe('runAgentLoop（主循环）', () => {
     expect(result.stopReason).toBe('completed')
     expect(result.output).toBe('你好！我是九十里路内核。')
     expect(result.rounds).toBe(1)
-    // 首条消息 = system + user
     expect(calls[0]![0]!.role).toBe('system')
     expect(calls[0]![1]!.content).toBe('你好')
   })
@@ -293,7 +284,6 @@ describe('runAgentLoop（主循环）', () => {
     expect(result.stopReason).toBe('completed')
     expect(result.output).toBe('密码是 42。')
     expect(result.rounds).toBe(2)
-    // 第二轮模型看到的最后一条是 tool 结果
     expect(seen[1]!.role).toBe('tool')
     expect(seen[1]!.content).toContain('密码是 42')
   })
@@ -361,8 +351,7 @@ describe('runAgentLoop（主循环）', () => {
 })
 
 describe('write_file 与检查点的接缝（plan8 R4）', () => {
-  // 这条规则是回滚正确性的基石：**快照必须发生在写入之前**。
-  // 顺序若反了，快照存下的就是"已被改过的内容"，回滚等于没退。
+  // **快照必须发生在写入之前**：顺序反了，快照存下的就是"已被改过的内容"，回滚等于没退
   it('beforeChange 在文件真正落盘**之前**被调用，且拿到的是原内容', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jsl-rec-'))
     mkdirSync(dir, { recursive: true })
@@ -371,7 +360,6 @@ describe('write_file 与检查点的接缝（plan8 R4）', () => {
     const seen: { rel: string; existing: string | null }[] = []
     const tools = fileTools(dir, {
       beforeChange: (rel, abs) => {
-        // 钩子被调用时，磁盘上还应该是**旧内容**
         seen.push({ rel, existing: existsSync(abs) ? readFileSync(abs, 'utf8') : null })
       }
     })

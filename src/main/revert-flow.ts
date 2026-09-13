@@ -10,23 +10,14 @@ import type { CheckpointStore } from './store/checkpoints'
 
 // 逐处退回（plan13 批 B · B4）—— 把"三道闸"从 IPC handler 里搬出来，让它**可单测**。
 //
-// ## 为什么要单独抽这一层
-//
-// 这段逻辑守的是"往用户的文件里写东西"这件事，而它原本长在 `src/main/ipc.ts` 的 handler 里。
-// handler import 了 electron —— CI 上没有 Electron 二进制，**跑不了** ——
-// 于是整段逻辑（mtime 安全阀、`created`/截断两道挡、块序号对齐、写的是不是算出来的文本）
-// **一条测试都没有**。
-//
-// 独立审查原话：**"把那道 mtime 阀删掉，所有测试仍然全绿。"**
-// 而那道阀是整批里唯一防"点了第 2 处、改掉第 N 处"的东西 —— 一道没人看着的闸，
-// 等于没有闸。抽到这里之后依赖全部注入，就能用**真实临时目录**端到端测
-// （见 `tests/unit/revert-flow.test.ts`）。
+// 这段逻辑守的是"往用户的文件里写东西"，原先长在 import 了 electron 的 `src/main/ipc.ts` handler 里
+// —— CI 上没有 Electron 二进制、跑不了，于是整段逻辑（mtime 安全阀、`created`/截断两道挡、
+// 块序号对齐）**一条测试都没有**，而那道 mtime 阀是唯一防"点了第 2 处、改掉第 N 处"的东西
+// （审查原话："把它删掉，所有测试仍然全绿"）。抽出来后依赖全部注入，可用**真实临时目录**端到端测。
 
 export interface RevertDeps {
   store: CheckpointStore
   /**
-   * 当前工作区根。
-   *
    * ⚠️ 必须和"那一轮自己记下的工作区"一致，否则拒绝 —— 见下面 `other-workspace`。
    * 检查点目录是全局的（`userData/checkpoints`），列表里会有**别的工作区**的轮次；
    * 拿当前工作区去拼那些轮次的 rel，会读到同名的**另一个文件**。
@@ -55,13 +46,9 @@ export function samePath(a: string, b: string): boolean {
 
 /**
  * 把「第 N 处」退回。**顺序就是安全顺序，别调换**：
- *
- *  ① 入参与路径（越界 / 缺字段一律先挡住）
- *  ② 轮次与文件在不在那一轮的记录里
- *  ③ **工作区一致性** —— 不一致就拒绝（否则会写进另一个工作区的同名文件）
- *  ④ 快照侧可用性（`created` 没有改前内容；备份可能已被清理）
- *  ⑤ 当前侧可用性 + **mtime 安全阀**（块序号只在两侧内容与算差异时一致的前提下有效）
- *  ⑥ 算差异 → 退 → 写盘（走统一写入服务）
+ * ① 入参与路径（越界 / 缺字段先挡住）→ ② 轮次与文件在不在那一轮的记录里 → ③ **工作区一致性**
+ * （不一致就拒绝，否则会写进另一个工作区的同名文件）→ ④ 快照侧可用性（`created` 没有改前内容、
+ * 备份可能已被清理）→ ⑤ 当前侧可用性 + **mtime 安全阀** → ⑥ 算差异 → 退 → 写盘（走统一写入服务）。
  */
 export async function revertOneHunk(
   deps: RevertDeps,
@@ -90,8 +77,8 @@ export async function revertOneHunk(
     return { ok: false, reason: snap.reason === 'created' ? 'created' : 'backup-missing' }
   }
   if (snap.truncated) return { ok: false, reason: 'truncated' }
-  // **有损解码**：这个文件不是合法 UTF-8 → 退回会把整份内容按 UTF-8 重写，
-  // 没被退的那几行也会一起烂掉，而且**不可逆**（见 RevertFailReason.lossy-encoding）
+  // **有损解码**：文件不是合法 UTF-8 → 退回会把整份内容按 UTF-8 重写，没被退的那几行也一起烂掉，
+  // 而且**不可逆**（见 RevertFailReason.lossy-encoding）
   if (snap.lossy) return { ok: false, reason: 'lossy-encoding' }
 
   // ⑤ 当前侧 + mtime 安全阀
@@ -99,11 +86,10 @@ export async function revertOneHunk(
   if (!cur) return { ok: false, reason: 'missing-current' }
   if (cur.truncated === true) return { ok: false, reason: 'truncated' }
   if (cur.lossy === true) return { ok: false, reason: 'lossy-encoding' }
-  // ⚠️ **精确比较，不留容差**（审查指出）：这里两边是**同一个 double**
-  //    （界面上看到的就是这里读出来、经 JSON 无损往返过的值），所以任何差异都意味着
-  //    "文件被改过"。留 1ms 容差只换来一个窄窗口 —— 恰好落在那一瞬间的一次写入，
-  //    会让块序号指向**另一块**，而 `applyPatch` 会在它自己声明的偏移处找到精确匹配
-  //    → **静默退错**。（"保存"那条留容差是另一回事：它比的是"编辑器打开时"的历史值。）
+  // ⚠️ **精确比较，不留容差**（审查指出）：两边是**同一个 double**（界面看到的就是这里读出来、
+  //    经 JSON 无损往返过的值），所以任何差异都意味着"文件被改过"。留 1ms 容差只换来一个窄窗口
+  //    —— 恰好落在那一瞬间的写入会让块序号指向**另一块**，而 `applyPatch` 会在它自己声明的偏移处
+  //    找到精确匹配 → **静默退错**。（「保存」那条留容差是另一回事：它比的是编辑器打开时的历史值。）
   if (cur.mtimeMs === undefined || cur.mtimeMs !== expectedMtimeMs) {
     return { ok: false, reason: 'changed-on-disk' }
   }

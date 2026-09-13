@@ -78,10 +78,8 @@ describe('normalizeHistory（存盘前的消息规整）', () => {
   const u = (content: string): ChatMessage => ({ role: 'user', content })
   const a = (content: string): ChatMessage => ({ role: 'assistant', content })
 
-  // 这一组钉的是一条**真实的数据丢失渠道**：
-  // 渲染端按下发送时会立刻塞一条 `{role:'assistant', content:''}` 的占位（流式往上长），
-  // 而落盘校验要求 content ≥1 字符 —— 于是"流式没吐字就切会话 / 点停止 / 关窗口"
-  // 保存必然被拒；调用方又是 `void persistActive()`，界面上一个字都没有。
+  // 这一组钉的是一条**真实的数据丢失渠道**：流式占位（content:''）过不了落盘校验，
+  // "没吐字就切会话 / 点停止 / 关窗口"会让整次保存被拒 —— 而调用方是 `void persistActive()`，界面一个字都不提示。
   it('丢掉末尾的"流式占位"（这条以前会让整次保存被拒）', () => {
     const out = normalizeHistory([u('你好'), a('你好，'), a('')])
     expect(out).toHaveLength(2)

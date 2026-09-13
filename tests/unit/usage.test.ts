@@ -22,14 +22,11 @@ import {
 } from '../../src/main/providers/usage-parsers'
 
 /**
- * 用量（plan8 R9）。
+ * 用量（plan8 R9）。① 真实 usage 优先、估算必须标出来（混着不标 = 用户把两笔账当一回事）；
+ * ② 认不出来就 null，绝不硬编 0 —— 0 会被下游当成"真的没用量"，显示成"这轮不花钱"；
+ * ③ 两协议的形状不同：OpenAI 在最后一个 chunk、Anthropic 分两处报。
  *
- * 三条要盯住的：
- *   ① **真实 usage 优先、估算要标出来**（混在一起不标注 = 用户把两笔账当一回事）
- *   ② **认不出来就 null，绝不硬编 0** —— 0 会被下游当成"真的没用量"，一路显示成"这轮不花钱"
- *   ③ 两个协议的 usage 形状不同（OpenAI 在最后一个 chunk、Anthropic 分两处报），解析器各认各家的
- *
- * ⚠️ 这里**没有**"费用"用例：用户定调"不用记钱，计量就好"，那盘单价算术已删（见 usage.ts 顶注）。
+ * ⚠️ 这里没有"费用"用例：用户定调"不用记钱，计量就好"，单价算术已删（见 usage.ts 顶注）。
  */
 
 const rec = (p: number, c: number, estimated = false): UsageRecord => ({
@@ -158,10 +155,7 @@ describe('Anthropic 的 usage 解析（**分两处报**：message_start 给输�
 })
 
 /**
- * 缓存命中 / 推理用量（plan8 R9.1 §七①）。
- *
- * 这一组用例的**依据是真机实测**，不是文档抄来的字段名 —— 见下面的 `REAL_DEEPSEEK_USAGE`。
- * 当初"凭记忆写字段名"的教训：字段错了**不报错**，只是永远解析不出东西（最难查的那类 bug）。
+ * 缓存命中 / 推理用量（plan8 R9.1 §七①）。⚠️ 字段名一律依据**真机实测**，不许凭记忆写 —— 写错了不报错，只是永远解析不出东西（最难查的那类 bug）。
  */
 const REAL_DEEPSEEK_USAGE = {
   prompt_tokens: 2210,
@@ -192,8 +186,7 @@ describe('缓存命中与推理量：真机实测样本回归', () => {
 
   it('**没报就是 null**（明确的"未知"）—— 绝不是补 0，也不是"省掉这个键"', () => {
     const u = usageFromOpenAIChunk({ usage: { prompt_tokens: 100, completion_tokens: 10 } })
-    // 为什么不能省掉键：省掉的含义是"这份账不含这条信息"，累加时会被静默跳过，
-    // 于是"没报"被偷偷记成 0 —— 那正是要防的假数字（见 addOptional 那张表）
+    // 不能省掉键：省掉 = "这份账不含这条信息"，累加时被静默跳过 → "没报"被偷偷记成 0（要防的假数字）
     expect(u?.cachedPromptTokens).toBeNull()
     expect(u?.reasoningTokens).toBeNull()
   })
@@ -294,8 +287,7 @@ describe('累加与合并时的可选计数', () => {
   })
 
   it('第一轮就报 0 命中 → 累计**是 0 而不是未知**（真渲染门禁抓出来的那个缺陷）', () => {
-    // 曾经把 undefined 和 null 一起当"未知"，于是 `addUsage(空账, 报了0)` = 未知，
-    // 界面从此再不显示命中率 —— 功能等于没做，而单测当时还是绿的
+    // ⚠️ 曾把 undefined 与 null 一起当"未知" → addUsage(空账, 报了0) = 未知，界面从此再不显示命中率
     const first = addUsage(emptyUsage(), {
       promptTokens: 1200,
       completionTokens: 340,
@@ -322,9 +314,8 @@ describe('累加与合并时的可选计数', () => {
 })
 
 /**
- * Anthropic 把 usage **分两处报**（`message_start` 给输入、`message_delta` 给输出），
- * 主循环必须把两半**合**起来 —— 这一组是 2026-09-13 修掉一个真实缺陷后补的：
- * 原来那句 `usage = evtUsage` 是**覆盖**，后到的 `message_delta` 会把输入量抹成 0。
+ * Anthropic 把 usage 分两处报（`message_start` 给输入、`message_delta` 给输出），主循环必须合两半。
+ * ⚠️ 原来那句 `usage = evtUsage` 是**覆盖**，后到的 `message_delta` 会把输入量抹成 0。
  */
 describe('Anthropic 的两半合一份', () => {
   const start = (): TokenUsage => {
@@ -357,8 +348,7 @@ describe('Anthropic 的两半合一份', () => {
 })
 
 /**
- * 形状探针（`describeUsageShape`）：核对厂商字段名时用的那把尺。
- * 它是纯函数，所以可以直接钉住行为 —— 探针本身错了，后面所有"按实测写"的字段名就全跟着错。
+ * 形状探针（`describeUsageShape`）：核对厂商字段名用的那把尺 —— 探针本身错了，后面所有"按实测写"的字段名就全跟着错，所以它是纯函数、可直接钉住行为。
  */
 describe('usage 形状探针', () => {
   it('拍平成键路径，嵌套只走两层（`prompt_tokens_details.cached_tokens` 正好两层）', () => {
@@ -393,11 +383,7 @@ describe('usage 形状探针', () => {
 })
 
 /**
- * **接线守卫**：上面那些用例测的是纯函数，测不到"主循环到底调没调它"。
- *
- * 这是本项目踩过的坑（`stream-envelope` 那组守卫就是同一个道理）：
- * 纯函数全绿、调用点却把它换成了别的东西 —— 测试一点反应都没有。
- * 所以这里直接读源码断言那一句，**改回覆盖式合并就红**。
+ * **接线守卫**：上面测的是纯函数，测不到"主循环到底调没调它"（同 `stream-envelope` 那组守卫的道理）—— 纯函数全绿、调用点被换成别的，测试没反应，所以直接读源码钉住那一句。
  */
 describe('接线守卫：Anthropic 主循环真的在合并两半', () => {
   const src = readFileSync('src/main/providers/anthropic-agent.ts', 'utf8')

@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { isExternallyOpenable, isInternalUrl } from '@main/url-guard'
 
-// 导航守卫（plan8 R3）——安全关键逻辑，判定错一个就等于防线失守，故逐条断言。
-//
-// 背景：这两条守卫此前**完全缺失**，后果是
-//   ① target="_blank" 外链弹出无地址栏的 Electron 窗口（钓鱼）
-//   ② 主窗口可被导航到任意网站（应用被替换）
+// 导航守卫（plan8 R3）——安全关键逻辑，判定错一条就等于防线失守，故逐条断言。
+// 失守后果：target="_blank" 外链弹出无地址栏的 Electron 窗口（钓鱼）；主窗口被导航到任意网站（应用被替换）。
 
 const DEV = 'http://localhost:5173'
 

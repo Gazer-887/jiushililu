@@ -9,16 +9,10 @@ import {
 } from '@main/store/conversations-core'
 import { createFsConversationsBackend } from '@main/store/conversations-fs'
 
-// 会话回滚（plan10 B 批 · ④）——**追加 + 游标**那套形态的语义
-//
-// 这一批的形态选择是三方独立收敛的结论：正文**只追加、从不裁剪**，
-// `meta.messageCount` 充当**游标**（可见长度）。于是：
-//   · 回滚     = 移游标 —— **一条数据都不删**
-//   · 撤销回滚 = 把游标移回末尾 —— **零成本**
-//   · 「保留策略（留几轮）」这个问题**直接消失**（不复制历史就没有膨胀）
-//
-// 下面钉的就是这套语义的每一条边界，尤其是"**什么时候尾巴会作废**"——
-// 那是唯一一处会真的丢东西的地方，必须写在测试里说清楚。
+// 会话回滚（plan10 B 批 · ④）：正文**只追加、从不裁剪**，`meta.messageCount` 充当**游标**（可见长度）。
+// 于是回滚 = 移游标（**一条数据都不删**）、撤销回滚 = 游标移回末尾（零成本），
+// 「保留策略（留几轮）」这个问题直接消失（不复制历史就没有膨胀）。
+// 下面钉的是这套语义的每条边界，尤其是"**什么时候尾巴会作废**"—— 唯一一处会真丢东西的地方。
 
 const roots: string[] = []
 afterEach(() => {
@@ -96,7 +90,6 @@ describe('rollbackConversation（回到某条之前）', () => {
     expect(out.meta.messageCount).toBe(4)
     expect(out.total).toBe(8)
     expect(out.canUndo).toBe(true)
-    // **关键**：数据没删
     expect(m.log()).toHaveLength(8)
   })
 
@@ -165,7 +158,6 @@ describe('回滚之后继续说话：**尾巴何时作废**（唯一会真丢东
     const repo = createConversationsRepo(m.backend)
     repo.rollbackConversation('c', 4)
 
-    // 用户在回滚后的 4 条之上继续说：多了一条用户消息 + 一条（空的）助手占位
     const next = [...eightTurns.slice(0, 4), u('换个问法'), a('')]
     repo.saveConversation('c', next)
 
@@ -180,7 +172,6 @@ describe('回滚之后继续说话：**尾巴何时作废**（唯一会真丢东
     const visible = [...eightTurns.slice(0, 4), u('新问题'), a('')]
     repo.saveConversation('c', visible)
 
-    // 助手消息逐段长出来
     repo.saveConversation('c', [...visible.slice(0, -1), a('前半段')])
     repo.saveConversation('c', [...visible.slice(0, -1), a('前半段后半段')])
 
@@ -199,15 +190,13 @@ describe('回滚之后继续说话：**尾巴何时作废**（唯一会真丢东
   })
 
   it('🐞 **回滚之后哪怕发生一次"原样保存"，尾巴也必须还在**（0.13.6 的真 bug）', () => {
-    // 症状：回滚看着是成功的，点「撤销」却什么都没发生。
-    // 根因：四种对账情形里"等长"被划进了"追加"那一档，于是回滚后**任何一次保存**
-    //（切会话 / 点停止 / 关窗口都会触发）都会把日志写成可见的那份 —— **尾巴当场被抹掉**。
+    // 0.13.6 真 bug：回滚看着成功、点「撤销」却毫无反应 —— 根因是"等长"被划进了"追加"那一档，
+    // 于是回滚后**任何一次保存**（切会话 / 点停止 / 关窗口都会触发）都把日志写成可见的那份，**尾巴当场被抹掉**。
     const m = memBackend(metaOf(), eightTurns)
     const repo = createConversationsRepo(m.backend)
     repo.rollbackConversation('c', 4)
     const visible = repo.getConversation('c')!.messages
 
-    // 原样保存一次（这正是切会话/关窗口时会发生的事）
     repo.saveConversation('c', visible)
 
     expect(m.log()).toHaveLength(8) // ← 尾巴还在（修之前这里是 4）
@@ -256,7 +245,6 @@ describe('回滚走真磁盘（重启之后依然成立）', () => {
     expect(reopened.getConversation(c.id)!.messages).toHaveLength(4)
     expect(reopened.listConversations()[0]!.messageCount).toBe(4)
 
-    // 撤销也要活得下来
     reopened.undoRollback(c.id)
     const again = createConversationsRepo(createFsConversationsBackend(root))
     expect(again.getConversation(c.id)!.messages).toEqual(eightTurns)

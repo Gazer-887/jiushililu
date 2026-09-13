@@ -1,56 +1,29 @@
 /**
- * 模型档案（plan7 F5 / F5.1）—— **端点 + 模型目录**。
+ * 模型档案（plan7 F5）—— **端点 + 模型目录**：一把 Key 通常能调好几个模型，若做成"一档一模型"，
+ * 用户得为每个模型重填地址与 Key；有效设置 = 端点默认 ⊕ 模型级覆盖（`settingsOf`），故
+ * `ModelEntry.settings` **只存改过的字段** —— 全量复制会长出"端点默认改了、模型没跟着变"的不一致。
  *
- * ## 为什么是"端点 → 多个模型"（而不是"一个档案 = 一个模型"）
- *
- * 实测需求（用户 2026-09-12 晚，附配置页截图）：
- * **一把 API Key 通常能调好几个模型**（agnes-image-2.5-flash / agnes-video-2.5-flash / agnes-3.0-flash…）。
- * 做成"一个档案一个模型"的话，用户得为每个模型重填一遍地址与 Key —— 那是没必要的折磨。
- *
- * 所以：
- *   · `ModelProfile` = **端点**（一条连接：地址 + 协议 + 一把 Key + 连接级默认）
- *   · 它下面挂一串 `ModelEntry`（**模型目录**），每条 = 一个模型 ID + 显示名 + **自己的高级设置**
- *
- * ## 有效设置 = 端点默认 ⊕ 该模型的高级设置
- *
- * `settingsOf(profile, entry)` 负责合成。`ModelEntry.settings` **只存改过的字段**
- * （`Partial`）：全量复制会让"端点默认改了、模型没跟着变"这种不一致到处长出来，最难查。
- *
- * ## 本模块的边界
- *
- * **纯逻辑**：不 import electron、不碰 IO、不认识 Key 的密文。
- * 落盘（`main/store/models.ts`）与界面各自独立。
- *
- * ## 红线（AGENTS.md / D-013）
- *
- * **API Key 一个字节都不进 `models.json`** —— 仍按"端点 id → 密文"存 settings.json（safeStorage）。
+ * 纯逻辑（不 import electron / 不碰 IO / 不认识 Key 密文，落盘见 `main/store/models.ts`）。
+ * ⚠️ API Key 一个字节都不进 `models.json`：仍按"端点 id → 密文"存 settings.json（AGENTS.md / D-013）。
  */
 import type { ModelSettings, ProviderType } from './ipc'
 
 /** 来源标签：界面显示"内置来源 / 用户自定义"（不参与任何逻辑判断） */
 export type ModelSource = 'deepseek' | 'custom'
 
-/**
- * 一个**模型**（挂在端点下面）。
- * 注意 `settings` 是**覆盖项**，不是完整设置 —— 见文件头的说明。
- */
+/** 一个**模型**（挂在端点下）：`settings` 是**覆盖项**不是完整设置 —— 见文件头 */
 export interface ModelEntry {
   id: string
-  /** 厂商的模型 ID，一字不差（如 `agnes-image-2.5-flash`） */
+  /** 厂商的模型 ID，一字不差 */
   model: string
   /** 显示名（可空 = 用 model 当显示名） */
   name?: string
-  /** 这个模型**自己的**高级设置（只存改过的字段） */
   settings?: Partial<ModelSettings>
 }
 
 /**
- * **从 baseURL 推来源标签**（深度求索 / 自定义）。
- *
- * 为什么是"推"而不是"存一个用户选的值"：来源是**端点地址的函数**，不是用户的偏好 ——
- * 存下来就会过期（本项目的真事：老数据升级时把每个端点都标成了"深度求索"，
- * 连用户自己加的 agnes 端点也顶着这个标签 ✗）。**推导出来的东西不会撒谎。**
- * 认不出来一律算自定义 —— 宁可不标品牌，也不要标错品牌。
+ * 从 baseURL 推来源标签：来源是**地址的函数**、不是用户偏好 —— 存下来就会过期
+ * （老数据升级时曾把用户自加的 agnes 端点也标成"深度求索"）。认不出来一律算自定义。
  */
 export function sourceOfBaseURL(baseURL: string): ModelSource {
   const url = baseURL.toLowerCase()
@@ -58,44 +31,39 @@ export function sourceOfBaseURL(baseURL: string): ModelSource {
   return 'custom'
 }
 
-/** 来源标签给人看的字（界面只读这一个函数，别在各处各写一遍三元表达式） */
+/** 界面只读这一个函数，别在各处各写一遍三元表达式 */
 export function sourceLabel(source: ModelSource): string {
   return source === 'deepseek' ? '深度求索' : '自定义'
 }
 /** 一个**端点**：一条连接 + 它的模型目录 */
 export interface ModelProfile {
   id: string
-  /** 端点显示名（如 "Agnes AI"） */
   name: string
   source: ModelSource
   providerType: ProviderType
   baseURL: string
   /** 连接级默认：超时；单个模型可用 `settings.timeoutMs` 覆盖 */
   timeoutMs: number
-  /** 连接级默认：流式 */
   stream: boolean
-  /** ★ 模型目录（至少一条 —— 端点没有模型等于没法用） */
+  /** 模型目录，至少一条 —— 端点没有模型等于没法用 */
   models: ModelEntry[]
-  /** 这个端点当前选中的模型 */
   activeModelId: string
   createdAt: number
   updatedAt: number
 }
 
-/** 端点 id / 模型条目的 id 形状（长度封顶，避免被塞进超长串当键用） */
+/** id / 显示名的长度上限 —— 封顶，免得超长串被当键用 */
 export const PROFILE_NAME_MAX = 60
 
-/** 端点当前选中的模型条目（`activeModelId` 过期时落到第一条 —— 绝不允许"选不中任何模型"） */
+/** 端点当前选中的条目；`activeModelId` 过期时落到第一条 —— 绝不允许"选不中任何模型" */
 export function activeEntry(profile: ModelProfile): ModelEntry | null {
   if (profile.models.length === 0) return null
   return profile.models.find((m) => m.id === profile.activeModelId) ?? profile.models[0]
 }
 
 /**
- * 合成**有效设置**（内核认识的那份 `ModelSettings`）。
- *
- * 顺序：端点级（协议 / 地址 / 超时 / 流式）→ 模型级覆盖项。
- * 没写进 `entry.settings` 的字段一律取端点默认 —— 于是"改端点默认，所有模型跟着变"是自然结果。
+ * 合成**有效设置**：端点级（协议 / 地址 / 超时 / 流式）→ 模型级覆盖项；
+ * 没写进 `entry.settings` 的一律取端点默认（于是"改端点默认、所有模型跟着变"是自然结果）。
  */
 export function settingsOf(profile: ModelProfile, entry: ModelEntry): ModelSettings {
   const over: Partial<ModelSettings> = entry.settings ?? {}
@@ -105,7 +73,7 @@ export function settingsOf(profile: ModelProfile, entry: ModelEntry): ModelSetti
     model: entry.model,
     timeoutMs: profile.timeoutMs,
     stream: profile.stream,
-    // 下面这些只有"模型级"的默认值（用户没配就是"跟随厂商默认"）
+    // 这些只有模型级默认值；没配即"跟随厂商默认"
     temperature: over.temperature ?? null,
     topP: over.topP ?? null,
     topK: over.topK ?? null,
@@ -117,15 +85,13 @@ export function settingsOf(profile: ModelProfile, entry: ModelEntry): ModelSetti
   }
 }
 
-/** 显示名：用户没写就用模型 ID（列表里不留空白） */
+/** 用户没写名就用模型 ID（列表里不留空白） */
 export function entryLabel(entry: ModelEntry): string {
   const name = (entry.name ?? '').trim()
   return name.length > 0 ? name : entry.model
 }
 
-/**
- * 新建/改造一个模型条目。空 model 直接拒绝（那是"没有模型"）。
- */
+/** 新建/改造一个模型条目；空 `model` 直接拒绝（那是"没有模型"） */
 export function makeEntry(input: { id: string; model: string; name?: string; settings?: Partial<ModelSettings> }): ModelEntry {
   return {
     id: input.id,
@@ -165,10 +131,7 @@ export function createProfile(input: {
   }
 }
 
-/**
- * 把一份**老的**单模型设置包成端点（迁移入口）。
- * 老档案里"模型级"的字段搬进 `models[0].settings`，连接级的留在端点 —— **参数一个不丢**。
- */
+/** 老的单模型设置 → 端点（迁移入口）：模型级字段搬进 `models[0].settings` —— 参数一个不丢 */
 export function profileOf(
   settings: ModelSettings,
   now: number,
@@ -178,7 +141,7 @@ export function profileOf(
   return createProfile({
     id: opts?.id ?? 'default',
     name: opts?.name ?? settings.model,
-    // 来源**从地址推**（不是猜的、也不是存在这儿的固定值）
+    // 来源从地址推，见 sourceOfBaseURL
     source: opts?.source ?? sourceOfBaseURL(settings.baseURL),
     providerType: settings.providerType,
     baseURL: settings.baseURL,
@@ -221,10 +184,7 @@ export function canDeleteProfile(profiles: ModelProfile[], id: string): { ok: bo
   return { ok: true }
 }
 
-/**
- * 能不能删一个**模型条目**：端点里至少要留一条。
- * （端点是连接、模型是内容：把内容删空 ≠ 连接没了，但同样没法用。）
- */
+/** 能不能删一个模型条目：端点里至少要留一条（内容删空 ≠ 连接没了，但同样没法用） */
 export function canDeleteEntry(profile: ModelProfile, entryId: string): { ok: boolean; reason?: string } {
   if (!profile.models.some((m) => m.id === entryId)) return { ok: false, reason: '这个模型不存在（可能已经被删过了）' }
   if (profile.models.length <= 1) {
@@ -257,10 +217,7 @@ export interface ModelsView {
   filePath: string
 }
 
-/**
- * 保存一个**端点**（不是"一个模型"）：连接信息 + 整份模型目录。
- * `apiKey` 为空串 = 保留已存的那把不动（与 `settings:save` 同一约定）。
- */
+/** 保存**端点**（不是"一个模型"）：`apiKey` 空串 = 保留已存的那把不动（同 `settings:save`） */
 export interface ModelSaveInput {
   id?: string
   name: string
@@ -321,13 +278,9 @@ function normalizeEntry(raw: unknown, fallbackId: string): ModelEntry | null {
 }
 
 /**
- * 读盘容错：**逐条校验**，坏条目丢掉并计数；**同时认两种形状**。
- *
- * - **新形状**：带 `models: []` 的端点
- * - **老形状**（0.13.16 及以前）：扁平的一条 = 一个模型 → 就地升级成"端点 + 一条目录"
- *   （用 `profileOf`，与迁移同一条代码路径 ⇒ 不会出现"两套升级逻辑各写一遍"的漂移）
- *
- * 幂等：升级结果本身就是新形状，再读一次不会重复搬。
+ * 读盘容错：逐条校验，坏条目丢掉并计数；**同时认两种形状** —— 新形状带 `models: []`，
+ * 老形状（0.13.16 及以前）是扁平的一条 = 一个模型，就地走 `profileOf` 升级成"端点 + 一条目录"
+ * （与迁移同一代码路径，避免两套升级逻辑漂移）。幂等：升级结果即新形状，再读不会重复搬。
  */
 export function normalizeProfiles(raw: unknown): { profiles: ModelProfile[]; dropped: number } {
   if (!Array.isArray(raw)) return { profiles: [], dropped: 1 }
@@ -351,8 +304,7 @@ export function normalizeProfiles(raw: unknown): { profiles: ModelProfile[]; dro
     }
     seen.add(id)
     const createdAt = num(p.createdAt, 0)
-    // ⚠️ **不信盘里的 source**：它是地址的函数，老数据里存错过（全被标成深度求索）→ 读时重推一次
-    // （sourceOfBaseURL 是纯的，重推不会破坏用户任何设置 —— 它本来也不是用户能改的东西）
+    // ⚠️ 不信盘里的 source：它是地址的函数，老数据存错过（全被标成深度求索）→ 读时重推
     const source: ModelSource = sourceOfBaseURL(baseURL)
     const provider = providerType as ProviderType
 
@@ -403,7 +355,7 @@ export function normalizeProfiles(raw: unknown): { profiles: ModelProfile[]; dro
       entries.push(entry)
     }
     if (entries.length === 0) {
-      // 端点一条模型都没有 = 没法用 → 整条丢掉（并计数，让人知道发生了什么）
+      // 端点一条模型都没有 = 没法用 → 整条丢掉并计数
       dropped++
       continue
     }

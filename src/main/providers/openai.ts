@@ -17,17 +17,15 @@ export function buildOpenAIChatBody(
     max_tokens: settings.maxTokens,
     stream
   }
-  // 流式必须**显式请求** usage（plan8 R9）：不写这句，最后一个 chunk 里根本没有 usage ——
-  // 那这一轮就永远拿不到真实用量，只能靠估算
+  // 流式必须**显式请求** usage（plan8 R9）：不写这句最后一个 chunk 里根本没有 usage，这轮就永远拿不到真实用量
   if (stream) body['stream_options'] = { include_usage: true }
   // 采样三兄弟：留空（null）不发，跟随厂商默认
   if (settings.temperature != null) body['temperature'] = settings.temperature
   if (settings.topP != null) body['top_p'] = settings.topP
   // top_k：官方 OpenAI 忽略未知参数；多家兼容端点（智谱/GLM 等）支持，按需填
   if (settings.topK != null) body['top_k'] = settings.topK
-  // 思考强度方言：OpenAI 系是 reasoning_effort（low/medium/high）；
-  // DeepSeek 同名兼容（官方示例另带 thinking 开关，若实测不生效再补发）。
-  // 'max' 是 DeepSeek 词表，发给 OpenAI 可能 400——取值依厂商支持。
+  // 思考强度方言：OpenAI 系叫 reasoning_effort（low/medium/high），DeepSeek 同名兼容；'max' 是 DeepSeek 词表，
+  // 发给 OpenAI 可能 400 —— 取值依厂商支持
   if (settings.reasoningEffort !== 'default') body['reasoning_effort'] = settings.reasoningEffort
   return body
 }
@@ -70,8 +68,7 @@ export class OpenAICompatibleProvider implements IProvider {
         const json = JSON.parse(data) as OpenAIChunk
         const delta = json.choices?.[0]?.delta?.content
         if (delta) cb.onChunk(delta)
-        // **流式的 usage 在最后一个 chunk**（且必须显式请求 stream_options.include_usage，见 buildOpenAIChatBody）
-        // 空 choices 的那一帧就是它 —— 不解析的话这一轮用量就彻底丢了
+        // **流式的 usage 在最后一个 chunk**（且必须显式请求，见 `buildOpenAIChatBody`）；空 choices 那一帧就是它
         const u = usageFromOpenAIChunk(json)
         if (u) cb.onUsage?.(u)
       } catch {
@@ -114,10 +111,7 @@ export class OpenAICompatibleProvider implements IProvider {
     }
   }
 
-  /**
-   * 「获取可用模型」：OpenAI 兼容协议的标准端点 `GET {baseURL}/models`。
-   * 返回体约定是 `{ data: [{ id }] }`（少数实现直接给数组，两种都认）。
-   */
+  /** 「获取可用模型」：`GET {baseURL}/models`；返回体约定 `{ data: [{ id }] }`（少数实现直接给数组，两种都认） */
   async listModels(req: ProviderRequest) {
     try {
       const res = await fetch(resolveApiUrl(req.settings.baseURL, 'models'), {

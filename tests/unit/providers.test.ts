@@ -66,8 +66,7 @@ describe('buildOpenAIChatBody', () => {
       temperature: 0.3,
       max_tokens: 1024,
       stream: true,
-      // 流式**必须**显式请求 usage（plan8 R9）：不写这句，最后一个 chunk 里根本没有 usage，
-      // 这一轮就永远拿不到真实用量、只能靠估算
+      // 流式**必须**显式请求 usage（plan8 R9）：不写这句，最后一个 chunk 里没有 usage，真实用量只能靠估算
       stream_options: { include_usage: true }
     })
   })

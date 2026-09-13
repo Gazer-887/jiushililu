@@ -33,22 +33,13 @@ import {
 import { maskKey } from './mask'
 import { createProvider } from '../providers'
 
-// 端点的落盘（plan7 F5 / F5.1：**端点 + 模型目录**）。
-//
-// 文件就是 `userData/models.json`（设置页会把这个真实路径显示给用户）。
+// 端点的落盘（plan7 F5 / F5.1：**端点 + 模型目录**）。文件就是 `userData/models.json`（设置页把真实路径显示给用户）。
 // ⚠️ **Key 不在这里**：按"端点 id → 密文"存在 settings.json（见 store/settings.ts）。
 //
-// ## 内核与界面只看见"当前这一个模型"
-//
-// `getSettingsView()` 这些老名字语义没变 —— 只是从"读设置里那一份"变成
-// "读**当前端点的当前模型**"。于是 Agent 主循环、Provider 适配、其它设置页代码全都不用改。
-//
-// ## 迁移（唯一会动到用户已存配置的一步，所以最谨慎）
-//
-// 两种历史形状都要认：
-//   ① 0.13.16 之前：**扁平**的一条 = 一个模型（`normalizeProfiles` 就地升级）
-//   ② 更早：settings.json 里的单模型设置 + 一把 Key（`ensureMigrated` 包成第一个端点）
-// ⚠️ 动盘之前**先备份** models.json → models.json.bak-<时间戳>：Key 的归属搞错代价最高。
+// 内核与界面只看见"当前这一个模型"：`getSettingsView()` 这些老名字语义没变，只是从"读设置里那一份"变成"读**当前端点的
+// 当前模型**"，于是 Agent 主循环、Provider 适配、其它设置页代码全都不用改。
+// 迁移（唯一会动用户已存配置的一步，最谨慎）：① 0.13.16 之前**扁平**的一条 = 一个模型（`normalizeProfiles` 就地升级）；
+// ② 更早：settings.json 的单模型 + 一把 Key（`ensureMigrated` 包成第一个端点）。⚠️ 动盘前**先备份** models.json.bak-<时间戳>。
 
 interface StoredModels {
   profiles?: unknown
@@ -262,10 +253,7 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
   return getSettingsView()
 }
 
-/**
- * 输入框那个"快速切模型"：先看名字能不能对上目录里已有的模型（对上就切过去），
- * 对不上就**改当前模型条目的模型 ID**（"同一条连接上换个名字"这种用法）。
- */
+/** 输入框那个"快速切模型"：名字能对上目录里已有的模型就切过去，对不上就**改当前模型条目的模型 ID**（同一连接换个名字） */
 export function setModel(model: string): SettingsView {
   const active = getActiveEntry()
   if (!active) return getSettingsView()
@@ -388,9 +376,7 @@ export function profileForTest(id: string): { settings: ModelSettings; apiKey: s
 }
 
 /**
- * 「获取可用模型」：问厂商这个端点能调哪些模型。
- *
- * 失败必须**给人话**（Key 没填 / 地址不对 / 该端点不提供模型列表），
+ * 「获取可用模型」：问厂商这个端点能调哪些模型。⚠️ 失败必须**给人话**（Key 没填 / 地址不对 / 该端点不提供列表），
  * 绝不静默返回空数组 —— 那会让用户以为"这个端点没有模型"。
  */
 export async function listAvailableModels(id: string): Promise<{ ok: boolean; message: string; models: string[] }> {

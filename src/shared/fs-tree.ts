@@ -1,8 +1,5 @@
-// 工作区文件树 —— 纯逻辑层（plan7 批 A）
-//
-// 抽出来的是"列目录时哪些该跳过、怎么排序、大小怎么显示"这三件判断。
-// 它们与文件系统无关（只吃名字和类型），所以能单测：
-// CI 无 Electron 二进制，碰 electron 的代码测不了（沿用既有的分层惯例）。
+// 工作区文件树 —— 纯逻辑层（plan7 批 A）：跳过谁 / 怎么排序 / 大小怎么显示这三件判断都在这儿，
+// 只吃名字与类型、不碰文件系统，故可单测（CI 无 Electron 二进制，碰 electron 的代码测不了）。
 
 /** 目录展开时默认跳过的项（与 Agent 的 search_files 保持同一套约定） */
 export const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist', 'dist-artifacts'])
@@ -15,60 +12,44 @@ export interface FsEntry {
   /** 工作区相对路径，统一 `/` 分隔（跨平台一致，也与检查点清单同一口径） */
   rel: string
   kind: 'file' | 'dir'
-  /** 文件字节数；目录不带 */
+  /** 目录不带 */
   size?: number
 }
 
-/** 列一层目录的结果 */
 export interface FsListResult {
   ok: boolean
   /** 该层条目（已排序、已过滤） */
   entries: FsEntry[]
-  /** 是否有条目被 MAX_ENTRIES 截断 */
   truncated?: boolean
   error?: string
 }
 
-/** 读文件用于预览的结果 */
 export interface FsReadResult {
   ok: boolean
   rel: string
   content: string
-  /** 是否因超限被截断（只给前一段）—— 明确告知，不假装读全了 */
+  /** 只给前一段 —— 明确告知，不假装读全了 */
   truncated?: boolean
   size: number
   /**
-   * 修改时间（毫秒）—— **编辑要用的冲突基线**。
-   *
-   * 保存时把它带回去，主进程比对：对不上说明文件在"打开之后、保存之前"被改过
-   * （Agent 或别的程序），于是**不做静默覆盖**，让用户选（覆盖 / 重新载入）。
-   * 缺了它，编辑就只能在"盲写"和"永远冲突"之间二选一。
+   * 修改时间（毫秒）—— **编辑的冲突基线**：保存时带回主进程比对，对不上说明文件
+   * 在"打开之后、保存之前"被改过（Agent 或别的程序）→ **不做静默覆盖**，让用户选；
+   * 缺了它，编辑就只能在"盲写"与"永远冲突"之间二选一。
    */
   mtimeMs?: number
   /**
-   * **这份内容不是无损读出来的** —— 原文不是合法 UTF-8（GBK 文本 / 二进制）。
-   *
-   * 为什么要有这个标志（plan13 批 B，独立审查实测）：`content` 是 `buf.toString('utf8')` 的
-   * 结果，坏字节会被换成 U+FFFD，而**再编码回去不等于原字节** ——
-   * 所以"读进来再整份写回去"这个动作对这类文件是**不可逆损坏**。
-   * 逐处退回（会把整份文本按 UTF-8 重写）必须靠它挡住。
+   * **不是无损读出来的**：原文非法 UTF-8（GBK 文本 / 二进制），坏字节会被换成 U+FFFD，
+   * 再编码回去 ≠ 原字节 —— 所以"读进来再整份写回去"对这类文件是**不可逆损坏**；
+   * 逐处退回（会把整份文本按 UTF-8 重写）必须靠它挡住。（plan13 批 B 独立审查实测）
    */
   lossy?: boolean
   error?: string
 }
 
 /**
- * 是否跳过该项。
- *
- * 两条规则：
- *   ① 命中跳过名单的目录（node_modules / .git / 产物目录）——
- *      它们是噪音且量极大，列出来只会淹没真正的工作文件
- *   ② **所有点开头的项**（.gitignore / .env / .vscode …）——
- *      注意这里有个真实风险：`.env` 常常含密钥，在文件树里列出来并允许预览
- *      等于把它摊在屏幕上（AGENTS.md 有"凭证不入 AI 可读路径"的红线精神）
- *
- * 但"根目录"不适用第 ② 条：工作区根下若真有点开头的文件，用户有权看到。
- * 由调用方传 rootLevel=true 区分。
+ * 是否跳过该项：命中跳过名单的目录（噪音且量极大），以及**所有点开头的项** —— `.env` 常含密钥，
+ * 列进文件树并允许预览等于把它摊在屏幕上（AGENTS.md"凭证不入 AI 可读路径"的红线精神）；
+ * 根目录不适用后者（用户有权看到隐藏文件），由调用方传 rootLevel 区分。
  */
 export function shouldSkipEntry(name: string, kind: 'file' | 'dir', rootLevel = false): boolean {
   if (kind === 'dir' && SKIP_DIRS.has(name)) return true
@@ -77,8 +58,8 @@ export function shouldSkipEntry(name: string, kind: 'file' | 'dir', rootLevel = 
 }
 
 /**
- * 排序：**目录在前**，同类型按名称排（中文用 localeCompare，否则按内码排会很乱）。
- * 目录在前是文件管理器的通用约定——用户找目录的频率远高于找文件。
+ * 排序：**目录在前**，同类型按名称排（中文必须用 localeCompare，按内码排会很乱）。
+ * 目录在前是文件管理器的通用约定 —— 用户找目录的频率远高于找文件。
  */
 export function sortEntries(entries: FsEntry[]): FsEntry[] {
   return [...entries].sort((a, b) => {
@@ -108,21 +89,13 @@ const TEXT_EXT = new Set([
 ])
 
 /**
- * 「文件树 → 输入框」拖拽时携带路径用的**自定义 MIME 类型**。
- *
- * 为什么不用 `text/plain`：拖到别的落点（编辑器 / 终端 / 浏览器地址栏）时，
- * 纯文本会被当成"一段文字"贴进去，而这里携带的是一条**工作区相对路径**。
- * 自定义类型只有我们自己认，误伤面为零。
- *
- * 生产端（文件树）与消费端（输入框）**必须用同一个常量** ——
- * 字符串各写一份的话，改了一边会静默失效（不报错，只是拖过去没反应）。
+ * 「文件树 → 输入框」拖拽携带路径用的自定义 MIME 类型。不用 `text/plain`：拖到别的落点会被当成
+ * "一段文字"贴进去，而这里携带的是**工作区相对路径**；自定义类型只有我们自己认，误伤面为零。
+ * ⚠️ 生产端（文件树）与消费端（输入框）必须共用这一个常量 —— 各写一份字符串会改一边静默失效。
  */
 export const DRAG_PATH_MIME = 'application/x-jiushililu-path'
 
-/**
- * 是否按文本预览。**没有扩展名的也给**（Makefile / LICENSE / .gitignore 这类很常见），
- * 真正的二进制有扩展名占比极高，所以这个白名单够用；误判的最坏结果是显示乱码，不影响数据。
- */
+/** 没有扩展名的也给（Makefile / LICENSE 这类很常见）；误判最坏是乱码，不动数据 */
 export function isTextPreviewable(name: string): boolean {
   const dot = name.lastIndexOf('.')
   if (dot <= 0) return true // 无扩展名（或点开头）→ 给预览
@@ -132,21 +105,15 @@ export function isTextPreviewable(name: string): boolean {
 // ── 二进制预览（plan7 批 A3）────────────────────────────────────────────
 
 /**
- * 图片预览的体积上限：超过就**只给元信息**，不给数据。
- *
- * 为什么必须有：图片要经 IPC 传给渲染端，而 data URL 是 base64——
- * 内存占用约为原文件的 1.33 倍，还要走一次结构化克隆。
- * 几十 MB 的图会直接把界面卡住，所以宁可明确告知"图太大，用系统查看器打开"。
+ * 图片预览的体积上限：超过就**只给元信息**。data URL 是 base64（内存约原文件 1.33 倍）
+ * 且还要走一次结构化克隆，几十 MB 的图会直接卡住界面，宁可明说"图太大，用系统查看器打开"。
  */
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 /**
- * 能直接渲染的图片类型（扩展名 → MIME）。
- *
- * ⚠️ **安全红线（不是性能优化）**：SVG 也在列表里，但它是**可执行内容**——能带 `<script>`。
- * 只允许通过 `<img src="data:...">` 渲染：**img 上下文不执行脚本**。
- * **禁止**用 `<object>` / `<iframe>` / 内联 SVG 渲染工作区里的文件 ——
- * 那等于把工作区里的代码执行在我们的界面里。
+ * 能直接渲染的图片类型（扩展名 → MIME）。⚠️ **安全红线**：SVG 是可执行内容（能带 `<script>`），
+ * 只许经 `<img src="data:...">` 渲染（img 上下文不执行脚本）；**禁止** `<object>` / `<iframe>` /
+ * 内联 SVG —— 那等于把工作区里的代码执行在我们的界面里。
  */
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -172,21 +139,18 @@ export interface FsBinaryResult {
   ok: boolean
   rel: string
   size: number
-  /** 图片才给：`data:` URL（受 `MAX_IMAGE_BYTES` 约束） */
+  /** 图片才给（受 `MAX_IMAGE_BYTES` 约束） */
   dataUrl?: string
   /** 非图片二进制：前若干字节的十六进制转储 —— **降级而不是放弃** */
   hexHead?: string
-  /** 超过体积上限：只给元信息，**明确告知**而不是假装能显示 */
+  /** 超过上限：只给元信息，明说而不是假装能显示 */
   tooLarge?: boolean
   error?: string
 }
 
 /**
- * 十六进制转储（hexdump 的样子）—— 非图片二进制的降级展示。
- *
- * 为什么值得做：用户点开一个 `.so` / `.db` / 无扩展名的文件时，
- * 「暂不支持预览」是一句废话；而**看文件头**往往就能认出它是什么。
- *
+ * 十六进制转储（hexdump 的样子）—— 非图片二进制的降级展示：用户点开一个 `.so` / `.db` 时，
+ * 「暂不支持预览」是句废话，而**看文件头**往往就能认出它是什么。
  * 纯函数（只吃 `Uint8Array`，不碰 fs），所以能单测。
  */
 export function hexDump(bytes: Uint8Array, maxBytes = 256, perLine = 16): string {
