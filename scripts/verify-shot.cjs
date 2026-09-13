@@ -456,6 +456,19 @@ let wsStub = { ...WS_STUB_DEFAULT }
 /** 下一次「选择目录」的结果（null = 取消，对齐真实对话框的默认行为）；断言段先置值再点 */
 let wsPickNext = null
 const wsResetCalls = []
+// ── 存储位置桩（plan10 C 批）：与工作区桩同一套"有状态 + 断言段先置值"的手法 ──
+const STORAGE_STUB_DEFAULT = {
+  current: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu',
+  custom: false,
+  pendingDir: null,
+  pendingKind: null,
+  lastEvent: null
+}
+let storageStub = { ...STORAGE_STUB_DEFAULT }
+let storagePickNext = null
+let storagePickCalls = 0
+const storageResetCalls = []
+const storageUndoCalls = []
 /** 让下一次 `system:set` 回一个**载荷没要的值**：只有这样才能证明界面跟着返回值走，而不是乐观更新 */
 let systemForceNextSet = null
 const makeTermSnapshot = () => ({
@@ -683,6 +696,32 @@ const STUBS = {
     return { ...wsStub }
   },
   'workspace:reveal': () => undefined,
+  // ── 存储位置桩（plan10 C 批）：同样有状态 —— pending 写入/撤销/回退都要看"状态跟着走" ──
+  'storage:get': () => ({ ...storageStub }),
+  'storage:pick': () => {
+    storagePickCalls += 1
+    if (!storagePickNext) return { canceled: true }
+    const res = storagePickNext
+    storagePickNext = null
+    if (res.canceled) return { canceled: true }
+    if (!res.ok) return { ok: false, reason: res.reason }
+    storageStub = res.info
+    return { ok: true, info: { ...storageStub } }
+  },
+  'storage:reset': () => {
+    storageResetCalls.push(Date.now())
+    storageStub = {
+      ...storageStub,
+      pendingDir: storageStub.custom ? 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu' : null,
+      pendingKind: storageStub.custom ? 'restore' : null
+    }
+    return { ok: true, info: { ...storageStub } }
+  },
+  'storage:undo-pending': () => {
+    storageUndoCalls.push(Date.now())
+    storageStub = { ...storageStub, pendingDir: null, pendingKind: null }
+    return { ok: true, info: { ...storageStub } }
+  },
   'conv:list': () => [
     {
       id: 'c1',
@@ -3731,36 +3770,57 @@ app.whenReady().then(async () => {
   // 还原：别把"手动配置"留给后面的段落
   netStub = { ...netStub, proxyMode: 'system', proxyRules: '', hasCredentials: false, effective: 'PROXY 127.0.0.1:7897; DIRECT', applied: true, error: null }
 
+  // ── 区块读取辅助：从某个 .field-label 切到下一个 .field-label 之间（⚠️ 它们的父元素是整个
+  // settings-section，不切片的话 querySelector 会读到别的区块的路径/徽标 —— plan10 C 批实测踩中） ──
+  const readSection = (label, buttonNames) => `
+    (() => {
+      const body = document.querySelector('.settings-body');
+      const labels = Array.from(body.querySelectorAll('.field-label'));
+      const label = labels.find((l) => l.textContent.trim() === ${JSON.stringify(label)});
+      if (!label) return { found: false };
+      const section = label.parentElement;
+      const all = Array.from(section.children);
+      const start = all.indexOf(label);
+      let end = all.length;
+      for (let i = start + 1; i < all.length; i++) {
+        if (all[i].classList && all[i].classList.contains('field-label')) { end = i; break; }
+      }
+      const scope = all.slice(start, end);
+      // ⚠️ querySelectorAll 只查后代不查自身 —— hint 是 <p class="hint"> 本身就是切片成员，必须连自身一起查
+      const q = (sel) =>
+        scope.map((el) => {
+          const self = el.matches && el.matches(sel) ? [el] : [];
+          return [...self, ...Array.from(el.querySelectorAll(sel))];
+        }).flat();
+      const btn = (name) => q('button').find((b) => b.textContent.trim() === name) ?? null;
+      const shape = (b) => (b ? { disabled: b.disabled } : null);
+      const buttons = {};
+      for (const name of ${JSON.stringify(buttonNames)}) buttons[name] = shape(btn(name));
+      const paths = q('.logs-path').map((e) => e.textContent.trim());
+      return {
+        found: true,
+        path: paths[0] ?? null,
+        paths,
+        badge: q('.logs-count')[0]?.textContent?.trim() ?? null,
+        pendingText: paths.find((t) => t.indexOf('下次启动') >= 0) ?? null,
+        buttons,
+        hints: q('.hint').map((p) => p.textContent.trim())
+      };
+    })()
+  `
+
   // ── 工作区默认落点（plan7 批 F4）：三键齐 + 恢复内置默认有真退路 + 文案说清"只影响新任务" ──
   // 这条设置的全部语义就两句话：新任务默认在这个目录进行；老会话各自绑定当时的工作区，改这里不影响它们
   {
-    const wsRead = () =>
-      sevalRaw(`
-        (() => {
-          const body = document.querySelector('.settings-body');
-          const labels = Array.from(body.querySelectorAll('.field-label'));
-          const wsLabel = labels.find((l) => l.textContent.trim() === '工作区');
-          const section = wsLabel ? wsLabel.parentElement : null;
-          const buttons = section ? Array.from(section.querySelectorAll('button')) : [];
-          const btn = (name) => buttons.find((b) => b.textContent.trim() === name) ?? null;
-          const shape = (b) => (b ? { disabled: b.disabled } : null);
-          return {
-            found: !!wsLabel,
-            path: section?.querySelector('.logs-path')?.textContent?.trim() ?? null,
-            badge: section?.querySelector('.logs-count')?.textContent?.trim() ?? null,
-            pickBtn: shape(btn('选择目录…')),
-            resetBtn: shape(btn('恢复内置默认')),
-            openBtn: shape(btn('打开目录')),
-            hints: section ? Array.from(section.querySelectorAll('.hint')).map((p) => p.textContent.trim()) : []
-          };
-        })()
-      `)
+    const wsRead = async () =>
+      await sevalRaw(readSection('工作区', ['选择目录…', '恢复内置默认', '打开目录']))
     const wsInit = await wsRead()
     checkTrue('工作区行有三键：选择目录… / 恢复内置默认 / 打开目录；内置默认档下「恢复内置默认」禁用（空操作按钮不装可用）',
       // ⚠️ checkTrue 对 cond 做 === true 严判：末位不能落在对象上（truthy 对象不等于 true），包一层 Boolean
       Boolean(
-        wsInit.found && wsInit.pickBtn && wsInit.pickBtn.disabled === false &&
-          wsInit.resetBtn && wsInit.resetBtn.disabled === true && wsInit.openBtn
+        wsInit.found && wsInit.buttons['选择目录…'] && wsInit.buttons['选择目录…'].disabled === false &&
+          wsInit.buttons['恢复内置默认'] && wsInit.buttons['恢复内置默认'].disabled === true &&
+          wsInit.buttons['打开目录']
       ),
       wsInit)
     checkTrue('文案写明「新任务默认在这个目录进行」与「不影响」已有会话（这项设置的全部语义）',
@@ -3782,7 +3842,7 @@ app.whenReady().then(async () => {
     const wsCustom = await wsRead()
     checkTrue('选目录后：路径与徽标变成自定义档、「恢复内置默认」解锁（默认落点改了要看得见）',
       wsCustom.path === 'D:\\ws_f4_custom' && wsCustom.badge === null &&
-        wsCustom.resetBtn && wsCustom.resetBtn.disabled === false,
+        wsCustom.buttons['恢复内置默认'] && wsCustom.buttons['恢复内置默认'].disabled === false,
       wsCustom)
 
     await sevalRaw(`
@@ -3797,10 +3857,121 @@ app.whenReady().then(async () => {
     const wsBack = await wsRead()
     checkTrue('恢复内置默认后：徽标与路径回到内置档、按钮再禁用（选错目录必须有单程退路才算完整）',
       wsBack.path === 'D:\\jsllworkplace_for_test' && wsBack.badge === '内置默认' &&
-        wsBack.resetBtn && wsBack.resetBtn.disabled === true,
+        wsBack.buttons['恢复内置默认'] && wsBack.buttons['恢复内置默认'].disabled === true,
       wsBack)
     checkTrue('workspace:reset 真被调过且只调一次（状态变化只能来自主进程桩，不是界面乐观更新）',
       wsResetCalls.length === 1, { calls: wsResetCalls.length })
+  }
+
+  // ── 存储位置（plan10 C 批）：三键齐 + pending 待生效提示可撤销 + 回退语义 + lastEvent 提示条 ──
+  // ⚠️ 桩变量是门禁侧的，React 不知道它变了 —— 状态变化必须**通过一次 IPC 调用**（点按钮 → 桩返回新值 → setState）驱动
+  {
+    const stRead = async () =>
+      await sevalRaw(readSection('存储位置', ['更改…', '恢复默认位置', '打开目录', '撤销']))
+    const stInit = await stRead()
+    checkTrue('存储位置行有三键：更改… / 恢复默认位置 / 打开目录；默认位置档下「恢复默认位置」禁用',
+      Boolean(
+        stInit.found && stInit.buttons['更改…'] && stInit.buttons['更改…'].disabled === false &&
+          stInit.buttons['恢复默认位置'] && stInit.buttons['恢复默认位置'].disabled === true &&
+          stInit.buttons['打开目录']
+      ),
+      stInit)
+    checkTrue('文案写明「下次启动时迁移生效」与「原目录保留」（迁移只在启动时做 + 有回退点，两项语义缺一不可）',
+      stInit.hints.some((t) => t.indexOf('下次启动时迁移生效') >= 0) &&
+        stInit.hints.some((t) => t.indexOf('原目录保留') >= 0),
+      stInit.hints)
+
+    // 第一段 pick：桩返回"已自定义档 + 最近迁移成功"（模拟已在新目录跑了一段时间）
+    storagePickNext = {
+      ok: true,
+      info: {
+        current: 'D:\\jsl-data-new',
+        custom: true,
+        pendingDir: null,
+        pendingKind: null,
+        lastEvent: { kind: 'ok', text: '数据已迁移到 D:\\jsl-data-new（6 个文件；原目录原样保留）', at: '2026-09-14T00:00:00Z' }
+      }
+    }
+    await sevalRaw(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('.settings-body button'))
+          .find((b) => b.textContent.trim() === '更改…');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const stCustom = await stRead()
+    checkTrue('自定义档：路径与徽标切换、「恢复默认位置」解锁（数据搬没搬家要看得见）',
+      stCustom.path === 'D:\\jsl-data-new' && stCustom.badge === '自定义' &&
+        stCustom.buttons['恢复默认位置'] && stCustom.buttons['恢复默认位置'].disabled === false,
+      stCustom)
+    checkTrue('最近一次迁移结果以提示条展示（启动时发生的事，回到设置页必须看得见）',
+      stCustom.hints.some((t) => t.indexOf('数据已迁移到') >= 0),
+      stCustom.hints)
+
+    // 第二段 pick：桩返回"pending 换新目录"—— 驱动 React 渲染待生效提示条
+    storagePickNext = {
+      ok: true,
+      info: {
+        current: 'D:\\jsl-data-new',
+        custom: true,
+        pendingDir: 'E:\\jsl-data-newer',
+        pendingKind: 'migrate',
+        lastEvent: null
+      }
+    }
+    await sevalRaw(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('.settings-body button'))
+          .find((b) => b.textContent.trim() === '更改…');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const stPending = await stRead()
+    checkTrue('选目录后：出现「下次启动将迁移到」待生效提示 + 「撤销」按钮（点了没反应是这种设置的大忌）',
+      // ⚠️ checkTrue 对 cond 做 === true 严判：末位落在对象上（truthy 但不 === true）必挂，包一层 Boolean
+      Boolean(
+        stPending.pendingText !== null && stPending.pendingText.indexOf('下次启动将迁移到') >= 0 &&
+          stPending.pendingText.indexOf('E:\\jsl-data-newer') >= 0 && stPending.buttons['撤销']
+      ),
+      stPending)
+
+    // 撤销 pending
+    await sevalRaw(`
+      (() => {
+        const section = Array.from(document.querySelectorAll('.settings-body .field-label'))
+          .find((l) => l.textContent.trim() === '存储位置')?.parentElement;
+        const btn = section ? Array.from(section.querySelectorAll('button')).find((b) => b.textContent.trim() === '撤销') : null;
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const stUndone = await stRead()
+    checkTrue('撤销后 pending 提示条消失（改主意必须是一条完整的路）',
+      stUndone.pendingText === null && !stUndone.buttons['撤销'],
+      stUndone)
+
+    // 回退默认（自定义档 → storage:reset → pendingKind = restore）
+    await sevalRaw(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('.settings-body button'))
+          .find((b) => b.textContent.trim() === '恢复默认位置');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const stRestore = await stRead()
+    checkTrue('自定义档点「恢复默认位置」后：出现「下次启动将迁回默认目录」提示（回退=反向迁移，同一台机器两个方向）',
+      stRestore.pendingText !== null && stRestore.pendingText.indexOf('下次启动将迁回默认目录') >= 0,
+      stRestore)
+    checkTrue('storage:pick / storage:undo-pending / storage:reset 真被调过（状态变化只能来自主进程桩）',
+      storagePickCalls === 2 && storageUndoCalls.length === 1 && storageResetCalls.length === 1,
+      { picks: storagePickCalls, undos: storageUndoCalls.length, resets: storageResetCalls.length })
   }
 
   // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）

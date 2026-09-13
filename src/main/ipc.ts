@@ -14,6 +14,8 @@ import {
   type TestResult,
   type AgentRunResult,
   type WorkspaceInfo,
+  type StorageLocationInfo,
+  type StorageWriteResult,
   type Conversation,
   type ConversationMeta,
   type SkillInfo,
@@ -152,6 +154,7 @@ import { resolveInsideWorkspace } from './agent/guard'
 import { sendToAll } from './window-registry'
 import { statSync } from 'node:fs'
 import { getWorkspaceInfo, resetWorkspaceRoot, setWorkspaceRoot } from './store/workspace'
+import { clearPendingDataDir, getStorageLocationInfo, requestRestoreToDefault, setPendingDataDir } from './store/data-location'
 import {
   NotARepoError,
   gitCommit,
@@ -631,6 +634,20 @@ export function registerIpcHandlers(deps: {
     if (!allowed.includes(path)) return
     await shell.openPath(path)
   })
+
+  // 存储位置（plan10 C 批）：这里只做「读配置 + 记 pending」——迁移/回退本体在**下次启动**由
+  // bootstrap-data-dir 执行（数据正在被读写的进程不能自己搬自己）。canceled = 用户关了目录框。
+  ipcMain.handle(IPC.storageGet, (): StorageLocationInfo => getStorageLocationInfo())
+  ipcMain.handle(IPC.storagePick, async (e): Promise<StorageWriteResult> => {
+    const win = BrowserWindow.fromWebContents(e.sender) ?? undefined
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true }
+    return setPendingDataDir(result.filePaths[0]!)
+  })
+  ipcMain.handle(IPC.storageReset, (): StorageWriteResult => requestRestoreToDefault())
+  ipcMain.handle(IPC.storageUndoPending, (): StorageWriteResult => clearPendingDataDir())
 
 
   ipcMain.handle(IPC.convList, (): ConversationMeta[] => listConversations())

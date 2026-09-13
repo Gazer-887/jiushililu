@@ -73,6 +73,11 @@ const api: ApiBridge = {
   setKnownWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceSetKnown, path),
   resetWorkspace: () => ipcRenderer.invoke(IPC.workspaceReset),
   revealWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceReveal, path),
+  // 存储位置（plan10 C 批）
+  getStorageLocation: () => ipcRenderer.invoke(IPC.storageGet),
+  pickStorageDir: () => ipcRenderer.invoke(IPC.storagePick),
+  resetStorageLocation: () => ipcRenderer.invoke(IPC.storageReset),
+  undoStoragePending: () => ipcRenderer.invoke(IPC.storageUndoPending),
   listConversations: () => ipcRenderer.invoke(IPC.convList),
   getConversation: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
   createConversation: (input: ConversationCreateInput) => ipcRenderer.invoke(IPC.convCreate, input),

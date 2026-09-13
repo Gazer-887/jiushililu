@@ -71,6 +71,26 @@ export interface WorkspaceInfo {
   custom: boolean
 }
 
+/** 存储位置（plan10 C 批）：应用自身数据（会话/设置/检查点等）的落点，可迁移到自定义目录 */
+export interface StorageLocationInfo {
+  /** 当前生效的数据目录（= userData） */
+  current: string
+  /** 是否自定义（非默认 AppData 目录） */
+  custom: boolean
+  /** 已保存、下次启动迁移生效的目标目录；null = 无待办迁移 */
+  pendingDir: string | null
+  /** pending 语义：'migrate' 换新目录 / 'restore' 回默认 */
+  pendingKind: 'migrate' | 'restore' | null
+  /** 最近一次迁移/回退事件（启动时发生，设置页提示条显示） */
+  lastEvent: { kind: 'ok' | 'error'; text: string; at: string } | null
+}
+
+/** 存储位置写入结果：ok 带最新信息 / reason 是可直接显示的人话 / canceled 用户取消了目录框 */
+export type StorageWriteResult =
+  | { ok: true; info: StorageLocationInfo }
+  | { ok: false; reason: string }
+  | { canceled: true }
+
 /** 访问权限档（D-032：能力归模型、**权限归人**）—— 唯一由用户定的档位，接 P1 白名单门控 */
 export type PermissionPreset = 'read-only' | 'write' | 'full-access'
 
@@ -250,6 +270,11 @@ export const IPC = {
   // 恢复内置默认工作区（plan7 批 F4）：选了自定义目录后得有一条回内置的路，否则默认落点成了单程票
   workspaceReset: 'workspace:reset',
   workspaceReveal: 'workspace:reveal',
+  // ── 存储位置（plan10 C 批）：应用数据落点可配 + 启动时迁移 ──
+  storageGet: 'storage:get',
+  storagePick: 'storage:pick',
+  storageReset: 'storage:reset',
+  storageUndoPending: 'storage:undo-pending',
   convList: 'conv:list',
   convGet: 'conv:get',
   convCreate: 'conv:create',
@@ -459,6 +484,11 @@ export interface ApiBridge {
   /** 恢复内置默认工作区（plan7 批 F4）：**只影响新任务** —— 已创建的会话各自绑定当时的工作区，不动 */
   resetWorkspace(): Promise<WorkspaceInfo>
   revealWorkspace(path: string): Promise<void>
+  // 存储位置（plan10 C 批）
+  getStorageLocation(): Promise<StorageLocationInfo>
+  pickStorageDir(): Promise<StorageWriteResult>
+  resetStorageLocation(): Promise<StorageWriteResult>
+  undoStoragePending(): Promise<StorageWriteResult>
   listConversations(): Promise<ConversationMeta[]>
   getConversation(id: string): Promise<Conversation | null>
   createConversation(input: ConversationCreateInput): Promise<Conversation>

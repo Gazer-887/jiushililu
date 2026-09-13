@@ -1,3 +1,6 @@
+// ⚠️ 数据目录引导必须是**第一个** import（plan10 §2.4 P0-6）：五个 electron-store 在各自模块顶层
+// 构造时就锁死 userData 路径 —— setPath 与迁移必须发生在它们之前。见 bootstrap-data-dir.ts 头注。
+import { getBootstrapOutcome, releaseBootstrapLock } from './bootstrap-data-dir'
 import { app, BrowserWindow, Menu, powerSaveBlocker, session, shell } from 'electron'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -57,14 +60,23 @@ if (!gotTheLock) {
   // 已有实例在跑：本进程什么也不做，安静退出（不是崩溃，所以不打 ERROR）
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    // ⚠️ 必须取**主窗口**，不能取任意窗口（2026-09-13）：用户双击图标时意图是"回到我的工作台"，
-    //    若把浮在上面的**设置窗口**叫到前面，看起来就像主窗口丢了。
-    const win = getMainWindow()
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.focus()
-  })
+  // 数据目录锁（plan10 C 批，与上面这把是**两把不同的锁**）：拿不到说明有另一个实例
+  // 正用着这个数据目录（不同 userData 却指向同一自定义目录的场景，R13 那把锁挡不住）——
+  // 这不是"让位给已有窗口"，是**拒绝启动并说明原因**（plan8 R13 补记的判据区分）。
+  const lockFailed = getBootstrapOutcome().lockFailed
+  if (lockFailed) {
+    console.error(`[data-dir] 无法锁定数据目录，应用退出：${lockFailed}`)
+    app.exit(1)
+  } else {
+    app.on('second-instance', () => {
+      // ⚠️ 必须取**主窗口**，不能取任意窗口（2026-09-13）：用户双击图标时意图是"回到我的工作台"，
+      //    若把浮在上面的**设置窗口**叫到前面，看起来就像主窗口丢了。
+      const win = getMainWindow()
+      if (!win) return
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    })
+  }
 }
 
 // HTML 预览协议：**必须赶在 ready 之前**注册（迟了就只是个普通死链）
@@ -512,6 +524,8 @@ app.whenReady().then(async () => {
 
   app.on('window-all-closed', teardownAll)
   app.on('before-quit', teardownAll)
+  // 数据目录锁正常释放（崩溃时锁文件留在盘上，下次启动靠 pid 存活检测自愈）
+  app.on('will-quit', () => releaseBootstrapLock())
 })
 
 app.on('window-all-closed', () => {

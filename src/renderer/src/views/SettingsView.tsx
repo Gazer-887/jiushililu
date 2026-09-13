@@ -4,6 +4,7 @@ import type {
   PermissionPreset,
   ProviderType,
   SettingsSaveInput,
+  StorageLocationInfo,
   WorkspaceInfo
 } from '@shared/ipc'
 import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
@@ -171,6 +172,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const [section, setSection] = useState<SectionId>('general')
   /** 工作区与权限档都存在主进程，与输入框工具栏是同一份数据 */
   const [ws, setWs] = useState<WorkspaceInfo | null>(null)
+  /** 存储位置（plan10 C 批）：应用数据落点，真值在主进程（含待生效迁移与最近一次迁移结果） */
+  const [storage, setStorage] = useState<StorageLocationInfo | null>(null)
   const [perm, setPerm] = useState<PermissionPreset>('write')
   /** 省 token 档位：跟权限档一样是"人定的档"，真值在主进程 */
   const [tier, setTier] = useState<TokenSaverTier>('balanced')
@@ -229,6 +232,10 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
       .catch(() => setWs(null))
     void window.api.getPermission().then(setPerm)
     void window.api.getTokenTier().then(setTier)
+    void window.api
+      .getStorageLocation()
+      .then(setStorage)
+      .catch(() => setStorage(null))
   }, [])
 
   // 系统集成（plan7 批 F1）：进「通用设置」时取一次真值。依赖 section 而不是空数组，
@@ -421,6 +428,35 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     setWs(await window.api.resetWorkspace())
   }
 
+  // ── 存储位置（plan10 C 批）：写 pending、下次启动迁移生效；结果人话直显 ──
+  const pickStorage = async (): Promise<void> => {
+    const res = await window.api.pickStorageDir()
+    if ('canceled' in res) return
+    if (res.ok) {
+      setStorage(res.info)
+      setNotice({ ok: true, text: '已保存，将在下次启动时迁移数据并生效' })
+    } else {
+      setNotice({ ok: false, text: res.reason })
+    }
+  }
+
+  const resetStorage = async (): Promise<void> => {
+    const res = await window.api.resetStorageLocation()
+    if ('canceled' in res) return
+    if (res.ok) {
+      setStorage(res.info)
+      setNotice({ ok: true, text: '已保存，下次启动时数据将迁回默认目录' })
+    } else {
+      setNotice({ ok: false, text: res.reason })
+    }
+  }
+
+  const undoStoragePending = async (): Promise<void> => {
+    const res = await window.api.undoStoragePending()
+    if ('canceled' in res) return
+    if (res.ok) setStorage(res.info)
+  }
+
   const choosePerm = async (p: PermissionPreset): Promise<void> => {
     setPerm(await window.api.setPermission(p))
   }
@@ -554,6 +590,53 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                 className="btn-secondary"
                 disabled={!ws}
                 onClick={() => ws && void window.api.revealWorkspace(ws.path)}
+              >
+                打开目录
+              </button>
+            </div>
+
+            <div className="field-label">存储位置</div>
+            {/* plan10 C 批：应用自身数据（会话/设置/检查点等）的落点。改的是"数据搬到哪"，
+                与上面"Agent 干活的边界"（工作区）是两件事。迁移只在启动时做，避免边用边搬 */}
+            <p className="hint">会话、设置、检查点等应用数据保存在这里。更改后将在下次启动时迁移生效。</p>
+            <p className="hint">只迁移应用自身数据；浏览器缓存留在原处自动重建。迁移后原目录保留作为回退。</p>
+            <div className="logs-info">
+              <span className="logs-path">{storage?.current ?? '加载中…'}</span>
+              {storage && !storage.custom && <span className="logs-count">默认位置</span>}
+              {storage?.custom && <span className="logs-count">自定义</span>}
+            </div>
+            {/* 待生效迁移：用户选了新目录（或要回默认）但还没重启 —— 必须显式提醒，否则"点了没反应" */}
+            {storage?.pendingDir && (
+              <div className="logs-info">
+                <span className="logs-path">
+                  {storage.pendingKind === 'restore'
+                    ? '下次启动将迁回默认目录'
+                    : `下次启动将迁移到：${storage.pendingDir}`}
+                </span>
+                <button className="btn-secondary" onClick={() => void undoStoragePending()}>
+                  撤销
+                </button>
+              </div>
+            )}
+            {/* 最近一次启动时的迁移结果（成功提示 / 失败原因）。at 只精确到"发生过"，不抢 notice 的戏 */}
+            {storage?.lastEvent && (
+              <p className="hint" style={storage.lastEvent.kind === 'error' ? { color: 'var(--danger)' } : undefined}>
+                {storage.lastEvent.kind === 'error' ? '迁移失败：' : '已完成：'}
+                {storage.lastEvent.text}
+              </p>
+            )}
+            <div className="actions">
+              <button className="btn-secondary" onClick={() => void pickStorage()}>
+                更改…
+              </button>
+              {/* 与工作区同款纪律：默认档下"恢复默认"是空操作，禁用比点了没反应诚实 */}
+              <button className="btn-secondary" disabled={!storage?.custom} onClick={() => void resetStorage()}>
+                恢复默认位置
+              </button>
+              <button
+                className="btn-secondary"
+                disabled={!storage}
+                onClick={() => storage && void window.api.revealWorkspace(storage.current)}
               >
                 打开目录
               </button>
