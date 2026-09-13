@@ -92,6 +92,13 @@ const api: ApiBridge = {
   getSystem: () => ipcRenderer.invoke(IPC.systemGet),
   setSystem: (patch: Partial<SystemSettings>) => ipcRenderer.invoke(IPC.systemSet, patch),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
+  // ── 源代码管理（plan16）──
+  getGitStatus: () => ipcRenderer.invoke(IPC.gitStatus),
+  getGitDiff: (rel: string) => ipcRenderer.invoke(IPC.gitDiff, rel),
+  gitStage: (rels: string[]) => ipcRenderer.invoke(IPC.gitStage, rels),
+  gitUnstage: (rels: string[]) => ipcRenderer.invoke(IPC.gitUnstage, rels),
+  gitCommit: (message: string) => ipcRenderer.invoke(IPC.gitCommit, message),
+  onGitChanged: (cb) => subscribe(IPC.gitChanged, () => cb()),
   attachFile: () => ipcRenderer.invoke(IPC.attachFile),
   attachPath: (pathOrRel) => ipcRenderer.invoke(IPC.attachPath, pathOrRel),
   polishPrompt: (text: string) => ipcRenderer.invoke(IPC.promptPolish, text),

@@ -9,6 +9,7 @@ import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
 import type { AskRequest, AskResult } from './ask'
 import type { SystemSettings, SystemView } from './system'
+import type { GitChange } from './git-status'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
 
@@ -83,6 +84,39 @@ export interface Attachment {
 export interface GitInfo {
   branch: string
   dirty: boolean
+}
+
+/**
+ * 源代码管理面板的完整视图（plan16）。
+ *
+ * 与主进程 `readGitStatus` 一一对应 —— 界面**不做增量推断**（自己猜哪条新增了），
+ * 每次都拿整份重画。理由：git 状态有多个来源（Agent 改文件、终端跑命令、外面编辑器改），
+ * 增量推断必漏，漏了就是"改了却不显示"这种最难查的假账。
+ */
+export interface GitStatusView {
+  branch: string
+  changes: GitChange[]
+  /** 领先上游多少条提交（`↑ N`）。没有上游分支时为 0 —— 不是错误，本地分支本来就可以没上游 */
+  ahead: number
+}
+
+/** 非仓库 / 未装 git 时，面板要**说清原因**而不是空白 —— 空面板会被读成"没改动" */
+export interface GitStatusResult {
+  ok: boolean
+  view: GitStatusView | null
+  /** 失败原因（原样带 git 的 stderr，用户要能照着去查） */
+  message?: string
+}
+
+/** 一次写操作（暂存 / 取消暂存 / 提交）的结果。失败时 `message` 是 **git 的原话**，界面照着显示 */
+export interface GitOpResult {
+  ok: boolean
+  message?: string
+}
+
+/** 提交结果：成功给一行摘要（回显"提交到哪了"），失败给原因 */
+export interface GitCommitResult extends GitOpResult {
+  summary: string
 }
 
 export interface BrowserState {
@@ -227,6 +261,14 @@ export const IPC = {
   systemGet: 'system:get',
   systemSet: 'system:set',
   gitInfo: 'git:info',
+  // ── 源代码管理（plan16）：变更列表 / 暂存 / 提交 ──
+  gitStatus: 'git:status',
+  gitDiff: 'git:diff',
+  gitStage: 'git:stage',
+  gitUnstage: 'git:unstage',
+  gitCommit: 'git:commit',
+  /** Git 状态变化的广播（进程级，不混用 `settings:changed`）：写操作 / 工作区文件变更 / 终端跑完命令后发 */
+  gitChanged: 'git:changed',
   attachFile: 'attach:file',
   /** 按**路径**取附件：文件树拖入 / 系统拖入共用这一条，只差"路径从哪来" */
   attachPath: 'attach:path',
@@ -427,6 +469,16 @@ export interface ApiBridge {
   getSystem(): Promise<SystemView>
   setSystem(patch: Partial<SystemSettings>): Promise<SystemView>
   getGitInfo(): Promise<GitInfo | null>
+  // ── 源代码管理（plan16）──
+  /** 完整状态（分支 + 变更列表 + 待推送计数）。**非 Git 仓库不是错误** —— 走 `ok:false` + `message` 说清原因 */
+  getGitStatus(): Promise<GitStatusResult>
+  /** 某文件「工作区 vs HEAD」的差异原文（unified 格式）。空串 = 该文件没有可显示的差异 */
+  getGitDiff(rel: string): Promise<string>
+  gitStage(rels: string[]): Promise<GitOpResult>
+  gitUnstage(rels: string[]): Promise<GitOpResult>
+  gitCommit(message: string): Promise<GitCommitResult>
+  /** Git 状态变了（自己提交完 / Agent 改了文件 / 终端跑了 git 命令）—— 面板据此**重拉**，不靠定时器猜 */
+  onGitChanged(cb: () => void): () => void
   /** **回到第 `toIndex` 条消息之前**（plan10 B 批 ④）：走 R5 确认桥，用户拒绝 → 返回 `null`。⚠️ **正在生成回复时拒绝** —— 流式没结束就回滚等于在动的数据上做手术。 */
   rollbackConversation(id: string, toIndex: number): Promise<ConversationRollbackResult | null>
   /** 撤销上一次回滚（把被裁掉的尾巴接回来；不需要确认 —— 它是**恢复**，不是破坏） */

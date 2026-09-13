@@ -5092,3 +5092,261 @@ body[data-resizing] {
   min-height: 0;
   overflow-y: auto;
 }
+
+/* ── 源代码管理面板（plan16）────────────────────────────────── */
+
+.scm-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-height: 0;
+}
+
+.scm-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.scm-title {
+  font-size: var(--fs-md);
+  color: var(--text);
+  /* 分支名可能很长（带斜杠），不能让它把「刷新」挤出面板 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-count {
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.scm-btn {
+  font-size: var(--fs-sm);
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scm-btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.scm-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.scm-btn-primary {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.scm-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+.scm-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-8);
+  resize: vertical;
+}
+
+.scm-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+/* 按钮禁用了就得说清为什么 —— 否则用户只会以为按钮坏了 */
+.scm-why {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.scm-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.scm-group-head {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  padding-top: var(--sp-4);
+}
+
+.scm-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.scm-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius-sm);
+}
+
+.scm-line:hover {
+  background: var(--accent-soft);
+}
+
+.scm-check {
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+
+.scm-check:disabled {
+  cursor: default;
+}
+
+.scm-kind {
+  flex: none;
+  min-width: 18px;
+  text-align: center;
+  font-size: var(--fs-xs);
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.scm-kind-added,
+.scm-kind-untracked {
+  color: var(--ok);
+  border-color: var(--ok-border);
+  background: var(--ok-soft);
+}
+
+.scm-kind-deleted {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.scm-kind-modified {
+  color: var(--warn-deep);
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+}
+
+.scm-rel {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  /* 路径长是常态（嵌套目录），整条省略而不是换行 —— 换行会让"一行一条"的节奏散掉 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-rel:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.scm-empty {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  padding: var(--sp-16) var(--sp-12);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  line-height: var(--lh-normal);
+}
+
+.scm-diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.scm-diff-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-4) var(--sp-6);
+  background: var(--bg);
+}
+
+.scm-diff-rel {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-diff-empty {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  padding: var(--sp-8);
+  line-height: var(--lh-normal);
+}
+
+/* 差异必须能横向滚动且**不撑破面板**：长行是常态（格式化后的一整行 JSON 能有几千字符） */
+.scm-diff-body {
+  margin: 0;
+  padding: var(--sp-6) 0;
+  max-height: 320px;
+  overflow: auto;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  font-family: var(--mono, monospace);
+}
+
+.scm-d-line {
+  padding: 0 var(--sp-8);
+  white-space: pre;
+  color: var(--text);
+}
+
+.scm-d-add {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.scm-d-del {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.scm-d-meta {
+  color: var(--accent);
+}
+
+.scm-d-file {
+  color: var(--muted);
+}

@@ -467,6 +467,70 @@ const FAKE_BG_TASKS = [
 let openSettingsWinStub = () => Promise.resolve({ ok: true })
 let closeSettingsWinStub = () => true
 
+// ── 源代码管理（plan16）的桩：必须是**有状态的** ──
+// 返回固定值的桩验不了这条链路：要验的是「勾选 → 这条进『已暂存』组 → 提交 → 列表清空」，
+// 也就是**第二次拉到的和第一次不一样**。固定值桩会让每一步都"看起来对"，却一条也没真验到。
+// ⚠️ 契约副本：真源是 `src/main/store/git-info.ts` + `src/shared/git-status.ts`
+//    （stage 后 X 位从 ' ' 变 'M'/'A'；未跟踪 add 之后是 `A ` 不是 `M `；commit 后列表清空、ahead +1）。
+let gitBroadcast = () => 0
+let gitMode = 'repo' // 'repo' | 'not-repo'
+let gitAhead = 0
+let gitChanges = [
+  { path: 'src/renderer/src/App.tsx', kind: 'modified', staged: ' ', unstaged: 'M' },
+  { path: 'README.md', kind: 'modified', staged: ' ', unstaged: 'M' },
+  { path: 'docs/新建的笔记.md', kind: 'untracked', staged: '?', unstaged: '?' }
+]
+const gitStageCalls = []
+const gitUnstageCalls = []
+const gitCommitCalls = []
+
+/** 复刻 `git add` 对 XY 两位的改写（未跟踪 → `A `，已改 → `M `） */
+function applyStage(rels) {
+  for (const rel of rels) {
+    const hit = gitChanges.find((c) => c.path === rel)
+    if (!hit) continue
+    if (hit.staged === '?') {
+      hit.staged = 'A'
+      hit.unstaged = ' '
+      hit.kind = 'added'
+    } else {
+      hit.staged = hit.staged === 'D' ? 'D' : 'M'
+      hit.unstaged = ' '
+      hit.kind = hit.staged === 'D' ? 'deleted' : 'modified'
+    }
+  }
+}
+
+/** 复刻 `git restore --staged`（**只动暂存区** —— 工作区的改动还在，故 Y 位回到 'M'） */
+function applyUnstage(rels) {
+  for (const rel of rels) {
+    const hit = gitChanges.find((c) => c.path === rel)
+    if (!hit) continue
+    if (hit.staged === 'A') {
+      hit.staged = '?'
+      hit.unstaged = '?'
+      hit.kind = 'untracked'
+    } else {
+      hit.staged = ' '
+      hit.unstaged = 'M'
+      hit.kind = 'modified'
+    }
+  }
+}
+
+/** 假 unified diff：一带 - 一带 + 一个 @@ 头，够验"增删行有没有被着色" */
+const fakeDiff = (rel) =>
+  [
+    `diff --git a/${rel} b/${rel}`,
+    '--- a/' + rel,
+    '+++ b/' + rel,
+    '@@ -12,3 +12,4 @@',
+    ' 这一行没动',
+    '-被删掉的这一行',
+    '+新增的这一行',
+    '+另一行新增'
+  ].join('\n')
+
 const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
@@ -490,6 +554,39 @@ const STUBS = {
   // ⚠️ 参数顺序：处理器统一是 `fn(...args, event)` —— event 在**最后**（close 桩要用它取发起方）。
   'settings:open-window': () => openSettingsWinStub(),
   'settings:close-window': (_unused, event) => closeSettingsWinStub(event),
+  // ── 源代码管理（plan16）── 见上方 `gitChanges` 一处：桩是**有状态**的（固定值验不了暂存→提交这条链）
+  'git:status': () => {
+    if (gitMode !== 'repo') {
+      return {
+        ok: false,
+        view: null,
+        message: '当前工作区不是 Git 仓库（或没有提交过） —— 可在终端里执行 git init，或换一个工作区'
+      }
+    }
+    return { ok: true, view: { branch: 'master', changes: gitChanges.map((c) => ({ ...c })), ahead: gitAhead } }
+  },
+  'git:diff': (rel) => (gitMode === 'repo' ? fakeDiff(rel) : ''),
+  'git:stage': (rels) => {
+    gitStageCalls.push(rels)
+    applyStage(rels ?? [])
+    gitBroadcast()
+    return { ok: true }
+  },
+  'git:unstage': (rels) => {
+    gitUnstageCalls.push(rels)
+    applyUnstage(rels ?? [])
+    gitBroadcast()
+    return { ok: true }
+  },
+  'git:commit': (message) => {
+    gitCommitCalls.push(message)
+    const staged = gitChanges.filter((c) => c.staged !== ' ' && c.staged !== '?')
+    if (staged.length === 0) return { ok: false, summary: '', message: 'nothing to commit, working tree clean' }
+    gitChanges = gitChanges.filter((c) => c.staged === ' ' || c.staged === '?')
+    gitAhead += 1
+    gitBroadcast()
+    return { ok: true, summary: `[master ${'a1b2c3d'}] ${String(message).split('\n')[0]}` }
+  },
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   'models:list': () => ({
     profiles: [
@@ -1068,6 +1165,20 @@ app.whenReady().then(async () => {
   })
 
   // ── 设置独立窗口的桩实现（契约副本；真源见 src/main/index.ts openSettingsWindow）──
+  // Git 广播用与真源同款的语义：**发给所有窗口**（Git 状态是工作区级的，真源见 window-registry.sendToAll）
+  gitBroadcast = () => {
+    let n = 0
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed() || w.webContents.isDestroyed()) continue
+      try {
+        w.webContents.send('git:changed')
+        n += 1
+      } catch {
+        // 单个窗口发失败不该影响其余（典型场景：窗口正在销毁）
+      }
+    }
+    return n
+  }
   // 为什么必须真建窗：主窗口与设置窗口是**两个渲染进程**，设置探针全都要打到后者身上。
   // 刻意**不装**任何 flush 拦截（真源也不装）——保证"设置窗口开着时主窗口仍能正常关掉"这条能验。
   const settingsWins = []
@@ -5273,6 +5384,268 @@ app.whenReady().then(async () => {
   const chip3 = await readUsageChip()
   checkTrue('有一轮没报缓存 → 命中率整块消失（不写 0%），但主计数照常累计（2100+560 = 2.7k）',
     chip3.rates.length === 0 && chip3.total === '2.7k' && chip3.last === '+120', chip3)
+
+  // ── 源代码管理（plan16）：看得见改动 → 勾选暂存 → 写消息 → 提交 → 清空 ──────────
+  // ⚠️ 这一段跑在最后：前面几段探针动过工作台布局（分栏 / 折叠 / 关设置窗），
+  //    所以开头先**自愈**地把一栏找回来，否则失败理由会伪装成"面板坏了"。
+  const openScmPanel = async () => {
+    for (let i = 0; i < 8; i += 1) {
+      const has = await win.webContents.executeJavaScript("(() => !!document.querySelector('.scm-panel'))()")
+      if (has) return true
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const add = document.querySelector('.pane-add');
+          if (add) { add.click(); return true; }
+          const toggle = Array.from(document.querySelectorAll('button')).find((b) => (b.title || '').includes('工作台'));
+          if (toggle) { toggle.click(); return true; }
+          return false;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 400))
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const pick = Array.from(document.querySelectorAll('.wb-pick'))
+            .find((b) => (b.textContent || '').includes('源代码管理'));
+          if (pick) pick.click();
+          return !!pick;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    return false
+  }
+
+  /** 整份重读面板现状（不做增量推断 —— 面板自己就是这么设计的） */
+  const readScm = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const p = document.querySelector('.scm-panel');
+        if (!p) return { hasPanel: false };
+        const btn = p.querySelector('.scm-btn-primary');
+        return {
+          hasPanel: true,
+          branch: p.querySelector('.scm-title')?.textContent.trim() ?? null,
+          count: p.querySelector('.scm-count')?.textContent.trim() ?? null,
+          empty: p.querySelector('.scm-empty')?.textContent.trim() ?? null,
+          groups: Array.from(p.querySelectorAll('.scm-group')).map((g) => ({
+            head: g.querySelector('.scm-group-head')?.textContent.trim() ?? '',
+            items: Array.from(g.querySelectorAll('.scm-line')).map((l) => ({
+              rel: l.querySelector('.scm-rel')?.textContent.trim() ?? '',
+              kind: l.querySelector('.scm-kind')?.textContent.trim() ?? '',
+              kindLabel: l.querySelector('.scm-kind')?.getAttribute('title') ?? '',
+              checked: l.querySelector('.scm-check')?.checked ?? null
+            }))
+          })),
+          hasInput: !!p.querySelector('.scm-input'),
+          commitDisabled: btn ? btn.disabled : null,
+          commitTitle: btn ? (btn.getAttribute('title') ?? '') : '',
+          why: p.querySelector('.scm-why')?.textContent.trim() ?? null,
+          hasDiff: !!p.querySelector('.scm-diff')
+        };
+      })()
+    `)
+
+  const tickFirstCheck = async () => {
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const box = document.querySelector('.scm-check');
+        if (box) box.click();
+        return !!box;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+  }
+
+  // ① 先切到「不是 Git 仓库」那一档：空面板会被读成"没有改动"，必须明说原因
+  gitMode = 'not-repo'
+  gitBroadcast()
+  const scmReady = await openScmPanel()
+  await new Promise((r) => setTimeout(r, 700))
+  const scmNoRepo = await readScm()
+  console.log('SCM_NO_REPO=' + JSON.stringify(scmNoRepo))
+  checkTrue(
+    '非 Git 工作区：面板**明说原因**（空面板会被读成"没有改动"，那是假账）',
+    scmReady === true &&
+      scmNoRepo.hasPanel === true &&
+      typeof scmNoRepo.empty === 'string' &&
+      scmNoRepo.empty.includes('不是 Git 仓库') &&
+      // 摆着一个点不动的提交框比没有更糟 —— 非仓库时整个表单都不该出现
+      scmNoRepo.hasInput === false,
+    scmNoRepo
+  )
+
+  // ② 切回真仓库：三条改动（两条已改 + 一条未跟踪）
+  gitMode = 'repo'
+  gitBroadcast()
+  await new Promise((r) => setTimeout(r, 800))
+  const scmList = await readScm()
+  console.log('SCM_LIST=' + JSON.stringify(scmList))
+  checkTrue(
+    '有改动时**一条不漏**列出来（2 条已改 + 1 条未跟踪）',
+    scmList.hasPanel === true &&
+      scmList.groups.length === 1 &&
+      scmList.groups[0].items.length === 3,
+    scmList.groups
+  )
+  checkTrue(
+    '状态字母带**中文说明**（不假设用户懂 `??` 是什么意思）',
+    (scmList.groups[0]?.items ?? []).every((i) => i.rel.length > 0 && i.kindLabel.length > 0),
+    (scmList.groups[0]?.items ?? []).map((i) => `${i.kind}=${i.kindLabel}`)
+  )
+  checkTrue(
+    '顶部一行显示**分支 + 改动计数**',
+    scmList.branch === 'master' && scmList.count === '● 3 项改动',
+    { branch: scmList.branch, count: scmList.count }
+  )
+  checkTrue(
+    '没勾文件时**提交禁用且明说为什么**（禁用不给理由 = 用户只会以为按钮坏了）',
+    scmList.commitDisabled === true &&
+      scmList.why === '先勾选要提交的文件' &&
+      scmList.commitTitle.includes('先勾选'),
+    { disabled: scmList.commitDisabled, why: scmList.why, title: scmList.commitTitle }
+  )
+
+  // ③ 点文件看差异：增删行必须被着色（"-"红、"+"绿）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const rel = document.querySelector('.scm-rel');
+      if (rel) rel.click();
+      return !!rel;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const scmDiffView = await win.webContents.executeJavaScript(`
+    (() => {
+      const d = document.querySelector('.scm-diff');
+      if (!d) return { hasDiff: false };
+      const lines = Array.from(d.querySelectorAll('.scm-d-line'));
+      return {
+        hasDiff: true,
+        rel: d.querySelector('.scm-diff-rel')?.textContent.trim() ?? '',
+        add: lines.filter((l) => l.classList.contains('scm-d-add')).length,
+        del: lines.filter((l) => l.classList.contains('scm-d-del')).length,
+        meta: lines.filter((l) => l.classList.contains('scm-d-meta')).length
+      };
+    })()
+  `)
+  console.log('SCM_DIFF=' + JSON.stringify(scmDiffView))
+  checkTrue(
+    '点文件 → 展开差异，且**增删行分别着色**（新增 2 行 / 删除 1 行 / 位置头 1 行）',
+    scmDiffView.hasDiff === true &&
+      scmDiffView.add === 2 &&
+      scmDiffView.del === 1 &&
+      scmDiffView.meta === 1,
+    scmDiffView
+  )
+  // 收起，别让它一直占着面板高度
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.scm-diff-head .scm-btn')).find((x) => x.textContent.includes('收起'));
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+
+  // ④ 勾选 = 暂存：这一条要**真的挪进「已暂存的更改」组**
+  await tickFirstCheck()
+  const scmStaged = await readScm()
+  console.log('SCM_STAGED=' + JSON.stringify(scmStaged))
+  checkTrue(
+    '勾选 → 这条**真的进了「已暂存的更改」组**（不是本地把勾打上就完事）',
+    gitStageCalls.length === 1 &&
+      scmStaged.groups.length === 2 &&
+      scmStaged.groups[0].head.includes('已暂存的更改 (1)') &&
+      scmStaged.groups[1].head.includes('更改 (2)'),
+    { calls: gitStageCalls, heads: scmStaged.groups.map((g) => g.head) }
+  )
+  checkTrue(
+    '勾选项的**勾选态以 git 回话为准**（暂存成功后重载出来的确实是勾上的）',
+    scmStaged.groups[0]?.items?.[0]?.checked === true,
+    scmStaged.groups[0]?.items
+  )
+
+  // ⑤ 再点一次 = 取消暂存（只动暂存区，**工作区的改动还在** —— 所以回到「更改」组而不是消失）
+  await tickFirstCheck()
+  const scmUnstaged = await readScm()
+  console.log('SCM_UNSTAGED=' + JSON.stringify(scmUnstaged))
+  checkTrue(
+    '取消勾选 → 退回「更改」组且**条数不变**（取消暂存不丢改动）',
+    gitUnstageCalls.length === 1 &&
+      scmUnstaged.groups.length === 1 &&
+      scmUnstaged.groups[0].items.length === 3,
+    { calls: gitUnstageCalls, groups: scmUnstaged.groups }
+  )
+
+  // ⑥ 重新勾上，然后写提交消息
+  await tickFirstCheck()
+  const scmNoMsg = await readScm()
+  checkTrue(
+    '勾了文件但**没写消息** → 仍然禁用，且说的是"还没写提交消息"（理由跟着状态变）',
+    scmNoMsg.commitDisabled === true && scmNoMsg.why === '还没写提交消息',
+    { disabled: scmNoMsg.commitDisabled, why: scmNoMsg.why }
+  )
+  // ⚠️ React 受控 textarea：直接改 `.value` 不会触发 onChange —— 必须走原型上的原生 setter + input 事件
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const ta = document.querySelector('.scm-input');
+      if (!ta) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(ta, 'feat: 补上源代码管理面板');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const scmCanCommit = await readScm()
+  checkTrue(
+    '写了消息 → 提交按钮**可用**了',
+    scmCanCommit.commitDisabled === false,
+    scmCanCommit
+  )
+
+  // ⑦ 提交：暂存的那条被提交掉，列表清空，顶部切成「↑ N 个提交待推送」
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.scm-btn-primary');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 900))
+  const scmAfterCommit = await readScm()
+  console.log('SCM_AFTER_COMMIT=' + JSON.stringify(scmAfterCommit))
+  checkTrue(
+    '提交后**列表清空**（只提交勾上的那一条，其余两条还在）',
+    gitCommitCalls.length === 1 &&
+      gitCommitCalls[0] === 'feat: 补上源代码管理面板' &&
+      scmAfterCommit.groups.length === 1 &&
+      scmAfterCommit.groups[0].items.length === 2,
+    { calls: gitCommitCalls, groups: scmAfterCommit.groups }
+  )
+  checkTrue(
+    '提交后顶部显示「↑ 1 个提交待推送」（本批不做远程，但"堆积了"是真实信息）',
+    scmAfterCommit.count === '↑ 1 个提交待推送',
+    scmAfterCommit.count
+  )
+  const scmInputLen = await win.webContents.executeJavaScript(
+    "(() => (document.querySelector('.scm-input')?.value ?? '').length)()"
+  )
+  checkTrue('提交完清空输入框（否则下一条会沿用旧说明）', scmInputLen === 0, scmInputLen)
+
+  // ⑧ 外面改了文件（Agent 改 / 终端跑命令）→ **主进程广播** → 面板自动重拉（不靠定时器轮询）
+  gitChanges = gitChanges.concat([
+    { path: 'src/main/ipc.ts', kind: 'modified', staged: ' ', unstaged: 'M' }
+  ])
+  gitBroadcast()
+  await new Promise((r) => setTimeout(r, 800))
+  const scmExternal = await readScm()
+  console.log('SCM_EXTERNAL=' + JSON.stringify(scmExternal))
+  checkTrue(
+    '外面的改动（Agent / 终端）经**广播**自动出现（不用手点刷新）',
+    (scmExternal.groups[0]?.items ?? []).some((i) => i.rel === 'src/main/ipc.ts'),
+    (scmExternal.groups[0]?.items ?? []).map((i) => i.rel)
+  )
 
   reportAndExit()
 })

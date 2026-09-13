@@ -6,6 +6,7 @@ import ChangesPanel from './ChangesPanel'
 import ExplorerPanel from './ExplorerPanel'
 import FilePreviewPane from './FilePreviewPane'
 import PaneChooser from './PaneChooser'
+import ScmPanel from './ScmPanel'
 import TasksPanel from './TasksPanel'
 import TerminalPanel from './TerminalPanel'
 
@@ -30,13 +31,8 @@ function builtinBody(type: BuiltinType): JSX.Element {
       // 真 PTY 终端：会话活在主进程，这个组件是可丢弃的视图（plan7 批 C）
       return <TerminalPanel />
     case 'scm':
-      // 「＋」里留位置但**明说是待做**，不摆假界面糊弄（plan7 批 D）
-      return (
-        <div className="dock-placeholder">
-          <div className="dock-ph-title">源代码管理</div>
-          <div className="dock-ph-badge">尚未实现</div>
-        </div>
-      )
+      // 源代码管理（plan16）：变更列表 → 勾选暂存 → 写消息 → 提交
+      return <ScmPanel />
   }
 }
 

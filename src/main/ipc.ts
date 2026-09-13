@@ -28,7 +28,10 @@ import {
   type FsBinaryResult,
   type FsOpResult,
   type BackgroundTask,
-  type ConversationRollbackResult
+  type ConversationRollbackResult,
+  type GitStatusResult,
+  type GitOpResult,
+  type GitCommitResult
 } from '@shared/ipc'
 import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
@@ -138,9 +141,18 @@ import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } fr
 import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
+import { sendToAll } from './window-registry'
 import { statSync } from 'node:fs'
 import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
-import { readGitInfo } from './store/git-info'
+import {
+  NotARepoError,
+  gitCommit,
+  gitStage,
+  gitUnstage,
+  readGitDiff,
+  readGitInfo,
+  readGitStatus
+} from './store/git-info'
 import {
   browserGoBack,
   browserGoForward,
@@ -771,6 +783,74 @@ export function registerIpcHandlers(deps: {
     readGitInfo(getWorkspaceInfo(deps.userDataDir).path)
   )
 
+  // ── 源代码管理（plan16）：变更列表 / 暂存 / 提交 ──
+  //
+  // ⚠️ 这一组里的 add / restore / commit 是**写操作**，但与"工作区文件写入"同属**用户在界面上亲手点的**那一类：
+  //    不受权限档拦截（权限档管的是 **Agent** 能碰什么，见 `agent/runner.ts` 的 `allowedToolsFor`）。
+  //    真正挡住越界的是 `store/git-info.ts` 里的 `safeRel`（`resolveInsideWorkspace`）——
+  //    界面传来的每一条路径都要过它，否则就能 `git add ../../别的目录/文件`。
+
+  const gitPathsSchema = z.array(z.string().min(1).max(1024)).min(1).max(500)
+
+  ipcMain.handle(IPC.gitStatus, async (): Promise<GitStatusResult> => {
+    try {
+      return { ok: true, view: await readGitStatus(deps.agent.getWorkspaceRoot()) }
+    } catch (err) {
+      // 非 Git 仓库是最常见的一种，**必须说清**：空白面板会被读成"没有改动"，那是假账。
+      // 顺带给"怎么办"（其余情况 —— git 没装 / 超时 —— 原样把原因说出来，不编）
+      const message = err instanceof Error ? err.message : String(err)
+      return {
+        ok: false,
+        view: null,
+        message:
+          err instanceof NotARepoError
+            ? `${message} —— 可在终端里执行 git init，或换一个工作区`
+            : message
+      }
+    }
+  })
+
+  ipcMain.handle(IPC.gitDiff, async (_e, raw: unknown): Promise<string> => {
+    const rel = z.string().min(1).max(1024).parse(raw)
+    return readGitDiff(deps.agent.getWorkspaceRoot(), rel)
+  })
+
+  /** 写操作收口：**失败原样带 git 的原因**回界面（项目一贯的"界面把原因说出来"），成功后广播刷新 */
+  const runGitWrite = async (fn: () => Promise<void>): Promise<GitOpResult> => {
+    try {
+      await fn()
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+    }
+    sendToAll(IPC.gitChanged)
+    return { ok: true }
+  }
+
+  ipcMain.handle(IPC.gitStage, async (_e, raw: unknown): Promise<GitOpResult> => {
+    const p = gitPathsSchema.safeParse(raw)
+    if (!p.success) return { ok: false, message: '入参不合法' }
+    return runGitWrite(() => gitStage(deps.agent.getWorkspaceRoot(), p.data))
+  })
+
+  ipcMain.handle(IPC.gitUnstage, async (_e, raw: unknown): Promise<GitOpResult> => {
+    const p = gitPathsSchema.safeParse(raw)
+    if (!p.success) return { ok: false, message: '入参不合法' }
+    return runGitWrite(() => gitUnstage(deps.agent.getWorkspaceRoot(), p.data))
+  })
+
+  ipcMain.handle(IPC.gitCommit, async (_e, raw: unknown): Promise<GitCommitResult> => {
+    const p = z.string().min(1).max(20_000).safeParse(raw)
+    if (!p.success) return { ok: false, summary: '', message: '提交消息不能为空' }
+    try {
+      const summary = await gitCommit(deps.agent.getWorkspaceRoot(), p.data)
+      sendToAll(IPC.gitChanged)
+      return { ok: true, summary }
+    } catch (err) {
+      // git 的失败原因很有用（"nothing to commit" / hook 挂了 / 没配 user.email）—— 原话回给用户
+      return { ok: false, summary: '', message: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
   // 附件：选文件 → 读入内容（上限 64KB，超出截断并标注）；「路径 → 附件」实现在 `workspace-fs.readAttachment`，**两个入口共用**（文件选择框 / 拖拽进来）—— 抽到那边是为了能单测。
   ipcMain.handle(IPC.attachFile, async (e): Promise<Attachment | null> => {
     const ws = getWorkspaceInfo(deps.userDataDir).path
@@ -1067,6 +1147,9 @@ export function registerIpcHandlers(deps: {
           createChatEmitter(win.webContents, UI_RUN_OWNER).checkpoint(runId)
         }
       }
+      // 顺带通知 Git 面板刷新（plan16）：这里改的是工作区文件，git 状态必然跟着变 ——
+      // 与 `git:*` 写操作走同一条广播，面板只订阅一处，不靠定时器轮询去猜。
+      sendToAll(IPC.gitChanged)
     }
   }
 
