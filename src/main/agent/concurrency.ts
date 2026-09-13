@@ -44,10 +44,10 @@ export function createChatGate(max: number): ChatGate {
   return {
     begin(conversationId) {
       if (running.has(conversationId)) {
-        return { ok: false, message: '这条会话已经在跑了：请先点「停止」或等它完成' }
+        return { ok: false, message: '这条会话已经在跑：请先点「停止」，或等它完成' }
       }
       if (running.size >= max) {
-        return { ok: false, message: `同时最多跑 ${max} 条会话：等有会话跑完再发` }
+        return { ok: false, message: `同时最多运行 ${max} 条会话：请等待有会话结束后再发送` }
       }
       const controller = new AbortController()
       running.set(conversationId, controller)

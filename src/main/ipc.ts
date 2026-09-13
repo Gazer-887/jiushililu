@@ -236,7 +236,7 @@ export function registerIpcHandlers(deps: {
     const input = friendlyParse(settingsSchema, raw) as SettingsSaveInput
     const apiKey = input.apiKey && input.apiKey.length > 0 ? input.apiKey : getDecryptedApiKey()
     if (!apiKey) {
-      return { ok: false, message: '还没有 API Key：请先在下方填写并保存，或填好后直接点「测试连接」' }
+      return { ok: false, message: '尚未保存 API Key：请先在下方填写并保存，或填写后直接点「测试连接」' }
     }
     const provider = createProvider(input.providerType)
     const controller = new AbortController()
@@ -302,9 +302,9 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.modelsTest, async (_e, raw: unknown): Promise<TestResult> => {
     const id = friendlyParse(conversationIdSchema, raw)
     const target = profileForTest(id)
-    if (!target) return { ok: false, message: '这个模型不存在（可能已经被删过了）' }
+    if (!target) return { ok: false, message: '该模型不存在（可能已被删除）' }
     if (!target.apiKey) {
-      return { ok: false, message: '这个模型还没有填 API Key：点「编辑」补上再测' }
+      return { ok: false, message: '该模型尚未填写 API Key：请点「编辑」补充后再测试' }
     }
     const provider = createProvider(target.settings.providerType)
     const controller = new AbortController()
@@ -366,12 +366,12 @@ export function registerIpcHandlers(deps: {
     if (!settings.baseURL || !settings.model) {
       // 开跑前就退回的路径，**必须把刚占的位子还回去** —— 不然这条会话在闸里永远"在跑"，连重发都发不出去
       chatGate.end(conversationId)
-      emit.error('还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
+      emit.error('尚未配置模型：请先到「设置」页填写接口地址、模型名与 API Key')
       return
     }
     if (!hasApiKey()) {
       chatGate.end(conversationId)
-      emit.error('还没有保存 API Key：请先到「设置」页填写并保存')
+      emit.error('尚未保存 API Key：请先到「设置」页填写并保存')
       return
     }
 
@@ -481,17 +481,17 @@ export function registerIpcHandlers(deps: {
     }
     // 并发闸（交叉验证提出）：Agent 循环成本高（可跑满轮数 + 命令执行），同时只允许一个
     if (activeAgents.has(e.sender.id)) {
-      return failResult(req.agentName ?? '内核默认', '已有 Agent 任务在执行：请等待当前任务结束')
+      return failResult(req.agentName ?? '内核默认', '已有 Agent 任务在执行，请等待当前任务结束')
     }
     activeAgents.add(e.sender.id)
     try {
       const settings = getSettingsView()
       if (!settings.baseURL || !settings.model) {
-        return failResult(req.agentName ?? '内核默认', '还没有配置模型：请先到「设置」页填好接口地址、模型名和 API Key')
+        return failResult(req.agentName ?? '内核默认', '尚未配置模型：请先到「设置」页填写接口地址、模型名与 API Key')
       }
       const apiKey = getDecryptedApiKey()
       if (!apiKey) {
-        return failResult(req.agentName ?? '内核默认', '还没有保存 API Key：请先到「设置」页填写并保存')
+        return failResult(req.agentName ?? '内核默认', '尚未保存 API Key：请先到「设置」页填写并保存')
       }
       const result = await runAgent(deps.agent, {
         settings,
@@ -507,7 +507,7 @@ export function registerIpcHandlers(deps: {
         stopReason: result.stopReason,
         agent: result.agent,
         ...(result.stopReason === 'max-rounds'
-          ? { error: `已达轮数预算上限（${result.rounds} 轮）被强制停止，以下为部分产出` }
+          ? { error: `已达轮数预算上限（${result.rounds} 轮）并强制停止，以下为部分产出` }
           : {})
       }
     } catch (err) {
@@ -613,7 +613,7 @@ export function registerIpcHandlers(deps: {
       // 这条通道以前**静默**拒（不写日志、界面上也没有），失败理由必须留痕
       const reason = parsed.error.issues[0]?.message ?? '参数不合法'
       log.error('会话保存被拒', { id: input.id, count: messages.length, reason })
-      throw new Error(`会话没能存进磁盘：${reason}`)
+      throw new Error(`会话未能写入磁盘：${reason}`)
     }
     return saveConversation(input.id, parsed.data as ChatMessage[], {
       ...(input.usage
@@ -649,9 +649,9 @@ export function registerIpcHandlers(deps: {
     const allowed = await deps.confirm.ask({
       kind: 'rollback-messages',
       tool: '会话回滚',
-      detail: `回到第 ${target + 1} 条消息之前 —— 之后 ${hidden} 条将从对话里隐去（可撤销）`,
+      detail: `回到第 ${target + 1} 条消息之前：其后 ${hidden} 条将从对话中隐去（可撤销）`,
       agent: current.title,
-      where: `仅回滚对话消息，不影响工作区里的文件`,
+      where: `仅回滚对话消息，不影响工作区文件`,
       conversationId: id
     })
     if (!allowed) return null
@@ -670,7 +670,7 @@ export function registerIpcHandlers(deps: {
       .object({ id: z.string().min(1).max(64), toIndex: z.number().int().min(0).max(100000) })
       .parse(raw)
     if (chatGate.isRunning(input.id)) {
-      throw new Error('这条会话正在生成回复：请先等它结束、或点「停止」，再回滚')
+      throw new Error('该会话正在生成回复：请先等待其结束或点「停止」，再执行回滚')
     }
     return doRollback(input.id, input.toIndex)
   })
@@ -751,7 +751,7 @@ export function registerIpcHandlers(deps: {
     const settings = getSettingsView()
     const apiKey = getDecryptedApiKey()
     if (!settings.baseURL || !settings.model || !apiKey) {
-      throw new Error('请先在「设置」页配置模型与 API Key')
+      throw new Error('请先在「设置」页配置模型与 API Key。')
     }
     const provider = createProvider(settings.providerType)
     let out = ''
@@ -1034,7 +1034,7 @@ export function registerIpcHandlers(deps: {
         return {
           ok: false,
           conflict: true,
-          message: currentMtime === null ? '这个文件已经不在了（可能被删或改名）' : '文件在打开之后被改过',
+          message: currentMtime === null ? '该文件已不存在（可能被删除或重命名）' : '文件在打开之后已被修改',
           ...(currentMtime !== null ? { mtimeMs: currentMtime } : {})
         }
       }

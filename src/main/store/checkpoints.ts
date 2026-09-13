@@ -276,7 +276,7 @@ export function createCheckpointStore(dir: string): CheckpointStore {
       }
       const run = store.get(runId)
       if (!run) {
-        report.failed.push({ rel: '*', reason: '找不到这一轮的记录' })
+        report.failed.push({ rel: '*', reason: '未找到该轮次的记录' })
         return report
       }
       /** 动手之前先记下**这一轮此刻还在不在内存登记里**（收尾时行为不同）：`true` = 正在跑 → 回滚后必须**保持登记**，否则它后续每次写文件都不再留快照；`false` = 崩溃 / 中止残留 → 回滚后从内存里摘掉即可。 */

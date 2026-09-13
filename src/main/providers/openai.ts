@@ -102,10 +102,10 @@ export class OpenAICompatibleProvider implements IProvider {
         signal: req.signal
       })
       if (!res.ok) await throwHttpError(res)
-      return { ok: true, message: '连接成功，接口地址 / 模型名 / Key 三件套都有效', latencyMs: Date.now() - start }
+      return { ok: true, message: '连接成功，接口地址、模型名与 API Key 均有效', latencyMs: Date.now() - start }
     } catch (err) {
       if (isAbortError(err)) {
-        return { ok: false, message: '连接超时：检查 baseURL 是否可达，网络 / 代理 / DNS 是否正常' }
+        return { ok: false, message: '连接超时：请检查 baseURL 是否可达，网络、代理与 DNS 是否正常' }
       }
       return { ok: false, message: err instanceof Error ? err.message : String(err) }
     }
@@ -136,12 +136,12 @@ export class OpenAICompatibleProvider implements IProvider {
         )
         .filter((s) => s.length > 0)
       if (models.length === 0) {
-        return { ok: false, message: '这个端点没有返回任何模型（可能它不提供模型列表接口）', models: [] }
+        return { ok: false, message: '该端点未返回任何模型（可能它不提供模型列表接口）', models: [] }
       }
-      return { ok: true, message: `拉到 ${models.length} 个模型`, models }
+      return { ok: true, message: `获取到 ${models.length} 个模型`, models }
     } catch (err) {
       if (isAbortError(err)) {
-        return { ok: false, message: '拉取模型列表超时：检查 baseURL 是否可达', models: [] }
+        return { ok: false, message: '获取模型列表超时：请检查 baseURL 是否可达', models: [] }
       }
       return { ok: false, message: err instanceof Error ? err.message : String(err), models: [] }
     }

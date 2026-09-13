@@ -114,13 +114,11 @@ export default function ChangesPanel(): JSX.Element {
         </button>
       </div>
       <p className="ck-hint">
-        Agent 每轮改文件前会自动留存快照。改坏了可一键退回改动前的样子 ——
-        点「看差异」能先看清它到底改成了什么样，也可以只退回其中某几处。
-        回滚前会<strong>先把当前内容也存一份</strong>，所以退错了还能再退回来。
+        回滚前会<strong>先将当前内容另存一份</strong>，因此回滚后仍可再退回来。
       </p>
 
       {runs.length === 0 ? (
-        <div className="ck-empty">还没有文件改动。Agent 写文件后，这里会列出它改过什么。</div>
+        <div className="ck-empty">暂无文件改动。</div>
       ) : (
         <div className="ck-runs">
           {runs.map((r) => (
@@ -140,7 +138,7 @@ export default function ChangesPanel(): JSX.Element {
                 <span className="ck-run-tail">
                   {r.rolledBackAt !== undefined && <span className="ck-badge ck-badge-done">已回滚</span>}
                   {r.rolledBackAt === undefined && r.status === 'running' && (
-                    <span className="ck-badge ck-badge-warn">未收尾</span>
+                    <span className="ck-badge ck-badge-warn">未正常结束</span>
                   )}
                   <ConfirmButton
                     k={r.runId}
@@ -153,7 +151,7 @@ export default function ChangesPanel(): JSX.Element {
               {openId === r.runId && detail && (
                 <div className="ck-files">
                   {detail.changes.length === 0 ? (
-                    <div className="ck-file-empty">这一轮没有写文件</div>
+                    <div className="ck-file-empty">该轮次没有写文件</div>
                   ) : (
                     detail.changes.map((c) => (
                       <div key={c.rel} className="ck-file-item">

@@ -42,7 +42,7 @@ export default function TopBar(): JSX.Element {
     <header className="topbar">
       <button
         className={`panel-btn ${sidebarOpen ? 'on' : ''}`}
-        title={sidebarOpen ? '收起侧栏' : '展开侧栏（会话记录 / 设置）'}
+        title={sidebarOpen ? '收起侧栏' : '展开侧栏'}
         onClick={toggleSidebar}
       >
         <SidebarIcon />
@@ -61,7 +61,7 @@ export default function TopBar(): JSX.Element {
 
       <button
         className={`panel-btn ${dockOpen ? 'on' : ''}`}
-        title={dockOpen ? '收起工作台' : '展开工作台（资源管理器 / 终端 / 浏览器）'}
+        title={dockOpen ? '收起工作台' : '展开工作台'}
         onClick={toggleDock}
       >
         <DockIcon />

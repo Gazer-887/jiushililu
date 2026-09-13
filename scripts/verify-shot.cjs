@@ -875,7 +875,7 @@ const STUBS = {
       return {
         ok: false,
         reason: 'read-only',
-        message: '当前是「只读」权限档：这台机器只读，终端不执行命令 JSL_RO_9Z'
+        message: '当前是「只读」权限档：该档下终端不执行任何命令 JSL_RO_9Z'
       }
     }
     termHasSession = true
@@ -887,7 +887,7 @@ const STUBS = {
       return {
         ok: false,
         reason: 'read-only',
-        message: '当前是「只读」权限档：这台机器只读，终端不执行命令'
+        message: '当前是「只读」权限档：该档下终端不执行任何命令'
       }
     }
     termRestartCalls += 1
@@ -4600,7 +4600,7 @@ app.whenReady().then(async () => {
     savedState.hasDirtyBadge === false && savedState.hasTabDot === false, savedState)
   // 边界①：脏标记守卫 —— 这条是 plan7 验收里写死的那句"改了没存就关页签 → 有提示"
   checkTrue('**改了没存就关页签 → 被拦下来问一句**（不静默丢）',
-    guardState.guard.includes('没保存'), guardState)
+    guardState.guard.includes('未保存'), guardState)
   checkTrue('拦下来时**页签还在**（只是问了句，没有关掉）', guardState.stillOpen === true, guardState)
   checkTrue('守卫条给的是两个明确选择（取消 / 放弃修改并关闭）',
     guardState.buttons.length === 2 && guardState.buttons.some((b) => b.includes('取消')), guardState.buttons)

@@ -183,7 +183,7 @@ export default function ChatView() {
         {rollbackNotice && (
           <div className="rb-bar">
             <span className="rb-text">
-              已回滚这段对话：之后 {rollbackNotice.hidden} 条已隐去（仅回滚对话消息，工作区文件未改动）
+              已回滚该对话：其后 {rollbackNotice.hidden} 条已隐去（仅回滚对话消息，工作区文件未改动）
             </span>
             <button className="rb-btn" onClick={() => void undoRollback()}>
               撤销

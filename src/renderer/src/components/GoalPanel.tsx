@@ -75,8 +75,8 @@ export default function GoalPanel(): JSX.Element | null {
         <span className="goal-label">目标</span>
 
         {!adding && (
-          <button className="goal-add" onClick={() => setAdding(true)} title="加一条跨轮次的目标">
-            ＋ 加目标
+          <button className="goal-add" onClick={() => setAdding(true)} title="新增一条跨轮次的目标">
+            ＋ 新建目标
           </button>
         )}
         {open.length > 3 && (
@@ -96,7 +96,7 @@ export default function GoalPanel(): JSX.Element | null {
           <input
             autoFocus
             value={draft}
-            placeholder="要持续达成什么？（一句话，跨轮次存活）"
+            placeholder="要持续达成什么"
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') void submitNew()
@@ -107,7 +107,7 @@ export default function GoalPanel(): JSX.Element | null {
             }}
           />
           <button className="goal-btn goal-btn-go" onClick={() => void submitNew()}>
-            加上
+            添加
           </button>
           <button
             className="goal-btn"
@@ -139,9 +139,9 @@ export default function GoalPanel(): JSX.Element | null {
               }}
             />
           ) : (
-            <span className="goal-text" title={g.doneWhen ? `算做到：${g.doneWhen}` : g.text}>
+            <span className="goal-text" title={g.doneWhen ? `完成判据：${g.doneWhen}` : g.text}>
               {g.text}
-              {g.createdBy !== 'user' && <span className="goal-by">（{g.createdBy} 提的）</span>}
+              {g.createdBy !== 'user' && <span className="goal-by">（由 {g.createdBy} 创建）</span>}
             </span>
           )}
 
@@ -153,7 +153,7 @@ export default function GoalPanel(): JSX.Element | null {
             ) : (
               <>
                 {g.status === 'active' ? (
-                  <button className="goal-btn" title="暂停（先放一放）" onClick={() => void run(() => actOnGoal(g.id, 'pause'))}>
+                  <button className="goal-btn" title="暂停" onClick={() => void run(() => actOnGoal(g.id, 'pause'))}>
                     暂停
                   </button>
                 ) : (
@@ -166,14 +166,14 @@ export default function GoalPanel(): JSX.Element | null {
                 </button>
                 <button
                   className="goal-btn goal-btn-go"
-                  title="标记完成 —— 显式收尾，不让它变成永不关闭的僵尸"
+                  title="标记完成"
                   onClick={() => void run(() => actOnGoal(g.id, 'complete'))}
                 >
                   完成
                 </button>
                 <button
                   className="goal-btn goal-btn-del"
-                  title="彻底删除（「放弃」会留痕，删除不留）"
+                  title="彻底删除（「放弃」保留记录，删除不保留）"
                   onClick={() => void run(() => deleteGoal(g.id))}
                 >
                   删除

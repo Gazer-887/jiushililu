@@ -219,15 +219,15 @@ export type CheckpointSidesResult = CheckpointSides | { ok: false; reason: Sides
 export function describeSidesFailure(reason: SidesFailReason): string {
   switch (reason) {
     case 'run-missing':
-      return '找不到这一轮的记录（可能已被清理）'
+      return '未找到该轮次的记录（可能已被清理）'
     case 'not-recorded':
-      return '这一轮的记录里没有这个文件'
+      return '该轮次的记录中没有此文件'
     case 'backup-missing':
-      return '这一轮的快照已不在了（检查点只保留最近若干轮），看不了改前的内容'
+      return '该轮次的快照已不存在（检查点仅保留最近若干轮），无法查看改动前的内容'
     case 'bad-rel':
-      return '路径不合法，拒绝读取'
+      return '路径不合法，已拒绝读取'
     case 'other-workspace':
-      return '这一轮属于另一个工作区 —— 现在打开的不是它，看到的差异会对不上，已拒绝'
+      return '该轮次属于另一个工作区：当前打开的不是它，显示的差异将不匹配，已拒绝'
   }
 }
 
@@ -282,30 +282,30 @@ export function describeRevertFailure(reason: RevertFailReason): string {
   switch (reason) {
     case 'bad-input':
     case 'bad-rel':
-      return '请求不合法（路径或参数有问题），已拒绝'
+      return '请求不合法（路径或参数有误），已拒绝'
     case 'run-missing':
-      return '找不到这一轮的记录（可能已被清理）'
+      return '未找到该轮次的记录（可能已被清理）'
     case 'not-recorded':
-      return '这一轮的记录里没有这个文件'
+      return '该轮次的记录中没有此文件'
     case 'created':
-      return '新建的文件没有"改前的内容"可还原 —— 只能整份退回（= 删除）'
+      return '新建的文件没有"改动前的内容"可还原，只能整份退回（即删除该文件）'
     case 'backup-missing':
-      return '这一轮的快照已不在了（检查点只保留最近若干轮），退不了'
+      return '该轮次的快照已不存在（检查点仅保留最近若干轮），无法退回'
     case 'missing-current':
-      return '这个文件现在读不到了（可能已被删掉），退不了'
+      return '该文件当前读取不到（可能已被删除），无法退回'
     case 'truncated':
-      return '文件太大，只读到了一部分 —— 逐处退回会把文件写坏，请用整份退回'
+      return '文件过大仅读取了一部分：逐处退回会把文件写坏，请改用整份退回'
     case 'lossy-encoding':
-      return '这个文件不是 UTF-8 编码（可能是 GBK 或二进制）—— 逐处退回会把整份内容写坏且不可恢复，只能用整份退回'
+      return '该文件不是 UTF-8 编码（可能是 GBK 或二进制）：逐处退回会把整份内容写坏且不可恢复，只能改用整份退回'
     case 'changed-on-disk':
-      return '文件在你看差异之后被改过（Agent 或别的程序），为避免退错，请重新看一遍差异再退'
+      return '文件在查看差异之后被修改过（Agent 或其他程序），为避免退回错误，请重新查看差异'
     case 'other-workspace':
-      return '这一轮属于另一个工作区 —— 现在打开的工作区不是它，退回会改到同名的另一个文件，已拒绝'
+      return '该轮次属于另一个工作区：当前打开的工作区不是它，退回会改到同名的另一个文件，已拒绝'
     case 'no-such-hunk':
-      return '这一处改动已经不在了（可能刚被退回过），请重新看一遍差异'
+      return '该处改动已不存在（可能刚被退回过），请重新查看差异'
     case 'apply-failed':
-      return '这一处改动和文件当前内容对不上，没法安全地退回去'
+      return '该处改动与文件当前内容不匹配，无法安全退回'
     case 'write-failed':
-      return '退回算出来了，但写盘失败'
+      return '退回结果已算出，但写入磁盘失败'
   }
 }

@@ -74,7 +74,7 @@ export function actOnGoal(
 ): Goal {
   const all = readAll()
   const target = all.find((g) => g.id === id)
-  if (!target) throw new Error('这条目标不存在（可能已经被删过了）')
+  if (!target) throw new Error('该目标不存在（可能已被删除）')
   const result = applyGoalAction(target, action, Date.now(), patch)
   if (!result.ok) throw new Error(result.reason)
   writeAll(all.map((g) => (g.id === id ? result.goal : g)))

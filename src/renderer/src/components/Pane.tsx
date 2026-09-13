@@ -34,8 +34,7 @@ function builtinBody(type: BuiltinType): JSX.Element {
       return (
         <div className="dock-placeholder">
           <div className="dock-ph-title">源代码管理</div>
-          <div className="dock-ph-desc">分支、改动状态与差异视图。与输入框的分支显示同源。</div>
-          <div className="dock-ph-badge">待做 · plan7 批 D</div>
+          <div className="dock-ph-badge">尚未实现</div>
         </div>
       )
   }
@@ -147,7 +146,7 @@ export default function Pane({
       {pane.collapsed ? (
         <button
           className="pane-unfold"
-          title="展开本栏（显示标题栏与页签条）"
+          title="展开本栏"
           onClick={() => wbToggleCollapse(pane.id)}
         >
           ⌄
@@ -168,7 +167,7 @@ export default function Pane({
             </span>
             <button
               className="pane-btn"
-              title="折叠本栏（内容占满，宽度不变）"
+              title="折叠本栏"
               onClick={() => wbToggleCollapse(pane.id)}
             >
               ⌃
@@ -198,7 +197,7 @@ export default function Pane({
                   </button>
                   {/* 脏标记要在**页签上可见** —— 否则开着好几个页签时不知道脏的是哪个 */}
                   {t.content.kind === 'file' && t.content.dirty !== undefined && (
-                    <span className="pane-tab-dirty" title="有没保存的修改">
+                    <span className="pane-tab-dirty" title="有未保存的修改">
                       ●
                     </span>
                   )}
@@ -218,7 +217,7 @@ export default function Pane({
       {/* 有草稿时在这儿问一句，而不是静默丢掉 */}
       {pendingClose && (
         <div className="pane-guard">
-          <span className="pg-text">这个文件有没保存的修改</span>
+          <span className="pg-text">该文件有未保存的修改</span>
           <button className="pg-btn" onClick={() => setPendingClose(null)}>
             取消
           </button>

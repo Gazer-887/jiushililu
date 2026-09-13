@@ -143,7 +143,7 @@ export async function readAttachment(
     // 拒绝理由必须**自证现场**：只写"越界已被拒绝"，用户和排查者都不知道是哪个路径被拒、边界在哪
     // —— 2026-09-12 用户报拖拽失败时就卡在这（四种可能路径都能产生同一句话）。
     throw new Error(
-      `工作区文件树给的路径越出了工作区（已拒绝：「${pathOrRel}」；当前工作区：${workspaceRoot}）`
+      `工作区文件树提供的路径越出了工作区（已拒绝：「${pathOrRel}」；当前工作区：${workspaceRoot}）`
     )
   }
   const abs = inside ?? resolve(pathOrRel)
@@ -154,7 +154,7 @@ export async function readAttachment(
     buf = await readFile(abs)
   } catch (err) {
     // 读不了也要说清**是哪个文件**读不了 —— 否则界面上一句"文件不存在"等于没给线索
-    throw new Error(`读不了这个文件（「${abs}」）：${humanError(err)}`)
+    throw new Error(`无法读取该文件（「${abs}」）：${humanError(err)}`)
   }
 
   const truncated = buf.byteLength > ATTACH_LIMIT

@@ -724,7 +724,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const conversationId = get().activeId
     if (!content || get().streaming) return
     if (!conversationId) {
-      set({ streamError: '这条消息没有归属的会话：请先新建会话再发送' })
+      set({ streamError: '该消息没有归属的会话，请先新建会话再发送。' })
       return
     }
     const history = get().messages.filter((m) => m.content.trim().length > 0)
@@ -745,8 +745,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (othersRunning.length > 0) {
       set({
         concurrencyNotice:
-          `现在有 ${othersRunning.length} 条会话也在跑。两个会话同时改同一个工作区文件夹会互相覆盖文件 —— ` +
-          `要么错开跑，要么留意一下它们动的是不是同一批文件。`
+          `当前另有 ${othersRunning.length} 条会话正在运行。多条会话同时修改同一工作区会互相覆盖文件：` +
+          `请错开运行，或确认它们操作的是否为同一批文件。`
       })
     }
 
@@ -754,7 +754,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await window.api.chatSend({ conversationId, messages: payload })
     } catch {
       // 主进程入参校验失败等；常规错误已通过 chatError 事件送达
-      get().markError({ conversationId, payload: '发送失败：请求被主进程拒绝（参数校验未通过）' })
+      get().markError({ conversationId, payload: '发送失败：请求被主进程拒绝（参数校验未通过）。' })
     }
   },
 
@@ -796,7 +796,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       // **保存失败必须让用户看见**（以前裸 `await` + 调用点 `void` = 界面没反应、日志没痕迹）。单用 `saveError` 而不复用 `streamError`：后者会被切会话清掉，而失败恰恰发生在那一刻。
       set({
-        saveError: `这段对话没能存进磁盘：${err instanceof Error ? err.message : String(err)}`
+        saveError: `该对话未能写入磁盘：${err instanceof Error ? err.message : String(err)}`
       })
     }
   },

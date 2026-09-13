@@ -255,7 +255,7 @@ export default function CodeEditor({
   }, [value, state])
 
   if (state === 'error') {
-    return <div className="ex-msg ex-err">编辑器加载失败：{error}（下面仍可用预览查看内容）</div>
+    return <div className="ex-msg ex-err">编辑器加载失败：{error}（仍可用预览查看内容）</div>
   }
 
   return (

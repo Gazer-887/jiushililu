@@ -40,12 +40,12 @@ export function installCrashGuards(): void {
     // 告知用户（尽量给，给不出也不能因此再崩）
     try {
       const win = BrowserWindow.getAllWindows()[0]
-      const detail = `${message}\n\n详细堆栈已写入日志（设置 → 打开日志目录）。`
+      const detail = `${message}\n\n详细堆栈已写入日志（设置 → 故障排查 → 打开日志文件夹）。`
       if (win && !win.isDestroyed()) {
         void dialog.showMessageBox(win, {
           type: 'error',
           title: '九十里路遇到异常',
-          message: '程序遇到未预期的错误，但已记录，未退出。',
+          message: '程序遇到未预期的错误，已记录日志，未退出。',
           detail
         })
       }
@@ -82,8 +82,8 @@ export function installCrashGuards(): void {
           void dialog.showMessageBox(win, {
             type: 'error',
             title: '界面反复崩溃',
-            message: '界面连续异常退出，已停止自动重载以免陷入循环。',
-            detail: '详细堆栈已写入日志（设置 → 打开日志目录）。请重启应用；若持续出现请把日志反馈给开发者。'
+            message: '界面连续异常退出，已停止自动重载，以免陷入循环。',
+            detail: '详细堆栈已写入日志（设置 → 故障排查 → 打开日志文件夹）。请重启应用；若持续出现，请将日志提供给开发者。'
           })
         }
       } catch {

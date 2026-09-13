@@ -68,7 +68,7 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
     if (state.phase !== 'ready') return
     const mtimeMs = state.sides.mtimeMs
     if (mtimeMs === undefined) {
-      setNotice({ ok: false, text: '拿不到文件的时间戳，没法确认它有没有被改过 —— 请重新打开差异' })
+      setNotice({ ok: false, text: '无法获取文件时间戳，无法确认文件是否被修改，请重新打开差异' })
       setConfirmHunk(null)
       return
     }
@@ -96,7 +96,7 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
   }
 
   if (state.phase === 'loading') {
-    return <div className="df-wrap df-loading">正在读取这一轮的快照…</div>
+    return <div className="df-wrap df-loading">正在读取该轮次快照…</div>
   }
 
   if (state.phase === 'failed') {
@@ -150,46 +150,46 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
       {/* 这一轮还没收尾 —— Agent 可能正在写这些文件，此刻看到的内容正在变 */}
       {sides.runStatus === 'running' && (
         <div className="df-warn">
-          这一轮还没跑完，Agent 可能正在改这些文件 —— 现在看到的不是最终结果。
-          <strong>如果你现在退回某一处，Agent 可能随后又把它改回去</strong>，这次退回就白做了。
+          该轮次尚未结束，Agent 可能正在修改这些文件，当前内容不是最终结果。
+          <strong>此时退回某一处，Agent 可能随后再次修改该处</strong>，本次退回将失效。
         </div>
       )}
 
       {/* 截断必须说出来：只读了一半就下结论，比不显示更误导 */}
       {sides.truncated && (
         <div className="df-warn">
-          文件较大，这里只读了前 256 KB —— 下面显示的差异<strong>可能不完整</strong>。
+          文件较大，此处仅读取前 256 KB，下方显示的差异<strong>可能不完整</strong>。
         </div>
       )}
 
       {sides.before === null && (
         <div className="df-note">
-          这个文件在这一轮之前<strong>不存在</strong>，所以下面全是新增的内容。
+          该文件在该轮次之前<strong>不存在</strong>，下方内容均为新增。
         </div>
       )}
       {sides.before !== null && sides.after === null && (
         <div className="df-note">
-          这个文件现在<strong>已经不存在了</strong>（本轮之后被删掉），所以下面全是消失的内容。
+          该文件现已<strong>不存在</strong>（该轮次之后被删除），下方内容均为消失的行。
         </div>
       )}
 
       {/* 不是合法 UTF-8：退回会把整份内容按 UTF-8 重写，没被退的行也一起烂掉 */}
       {sides.lossy && (
         <div className="df-warn">
-          这个文件<strong>不是 UTF-8 编码</strong>（可能是 GBK 或二进制）——
-          逐处退回会把整份内容写坏且<strong>不可恢复</strong>，所以这里不提供逐处退回。
+          该文件<strong>不是 UTF-8 编码</strong>（可能是 GBK 或二进制）：
+          逐处退回会把整份内容写坏且<strong>不可恢复</strong>，因此此处不提供逐处退回。
         </div>
       )}
 
       {/* 改动太大算不动：**必须与"内容相同"区分开**，否则就是把"算不动"说成"没改动" */}
       {tooBig ? (
         <div className="df-warn">
-          这个文件这一轮改动<strong>太大</strong>（像是整份重写过）—— 逐行差异这里算不出来，
-          所以不逐行展示。要看结果请直接打开文件；要还原请用右边那个「回滚」按钮整份退回。
+          该文件本轮次改动<strong>过大</strong>（疑似整份重写过），逐行差异无法计算，
+          因此不逐行展示。查看结果请直接打开文件；还原请使用右侧「回滚」按钮整份退回。
         </div>
       ) : diff.identical ? (
         <div className="df-none">
-          当前内容和这一轮的快照<strong>完全一致</strong> —— 可能已经被退回过了。
+          当前内容与该轮次的快照<strong>完全一致</strong>，可能已经被退回过。
         </div>
       ) : (
         <>
@@ -227,12 +227,12 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
       {!diff.identical && !tooBig && !revertible && (
         <div className="df-note">
           {sides.kind === 'created'
-            ? '新建的文件没有"改前的内容"可逐处还原，只能整份退回（用右边那个「回滚」按钮 —— 对新建的文件来说就是把它删掉）。'
+            ? '新建的文件没有"改动前的内容"可逐处还原，只能整份退回（使用右侧「回滚」按钮；对新建文件而言即删除该文件）。'
             : sides.lossy
-              ? '这个文件不是 UTF-8 编码，逐处退回会把整份内容写坏 —— 只能整份退回（用右边那个「回滚」按钮）。'
+              ? '该文件不是 UTF-8 编码，逐处退回会把整份内容写坏，只能整份退回（使用右侧「回滚」按钮）。'
               : sides.truncated
-                ? '文件太大只读到了一部分，逐处退回会把文件写坏 —— 只能整份退回（用右边那个「回滚」按钮）。'
-                : '这个文件现在读不到（或已被删），只能整份退回（用右边那个「回滚」按钮）。'}
+                ? '文件过大仅读取了一部分，逐处退回会把文件写坏，只能整份退回（使用右侧「回滚」按钮）。'
+                : '该文件当前读取不到（或已被删除），只能整份退回（使用右侧「回滚」按钮）。'}
         </div>
       )}
 
@@ -290,8 +290,8 @@ function Hunk({
     ? hunk.oldLines === 0
       ? `退回后：把新插入的 ${hunk.newLines} 行删掉`
       : hunk.newLines === 0
-        ? `退回后：把删掉的 ${hunk.oldLines} 行放回来`
-        : `退回后：这 ${hunk.oldLines} 行会还原成改动前的样子`
+        ? `退回后：把删掉的 ${hunk.oldLines} 行恢复回来`
+        : `退回后：这 ${hunk.oldLines} 行将还原为改动前的内容`
     : hunk.oldLines === 0
       ? `在第 ${hunk.newStart} 行处插入 ${hunk.newLines} 行`
       : hunk.newLines === 0

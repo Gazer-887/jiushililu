@@ -56,12 +56,12 @@ export function createGoal(input: {
   now: number
 }): GoalResult {
   const text = input.text.trim()
-  if (text.length === 0) return { ok: false, reason: '目标不能是空的' }
+  if (text.length === 0) return { ok: false, reason: '目标内容不能为空' }
   if (text.length > GOAL_TEXT_MAX) {
-    return { ok: false, reason: `目标太长了（最多 ${GOAL_TEXT_MAX} 字，写清"要达成什么"就够）` }
+    return { ok: false, reason: `目标过长（最多 ${GOAL_TEXT_MAX} 字，写清要达成什么即可）` }
   }
   if (input.conversationId.trim().length === 0) {
-    return { ok: false, reason: '目标必须属于一条会话' }
+    return { ok: false, reason: '目标必须归属于一条会话' }
   }
   const doneWhen = input.doneWhen?.trim()
   return {
@@ -92,19 +92,19 @@ export function applyGoalAction(
       ok: false,
       reason:
         action === 'resume'
-          ? '这条目标没在暂停中'
+          ? '该目标当前未处于暂停状态'
           : action === 'pause'
-            ? '只有进行中的目标才能暂停'
+            ? '仅进行中的目标可以暂停'
             : action === 'complete'
-              ? '这条目标已经结束了（要先「重开」才能再次完成）'
-              : '这条目标现在的状态不支持这个操作'
+              ? '该目标已结束（需先「重开」才能再次完成）'
+              : '该目标当前状态不支持此操作'
     }
   }
 
   if (action === 'edit') {
     const text = (patch?.text ?? goal.text).trim()
-    if (text.length === 0) return { ok: false, reason: '目标不能改成空的' }
-    if (text.length > GOAL_TEXT_MAX) return { ok: false, reason: `目标太长了（最多 ${GOAL_TEXT_MAX} 字）` }
+    if (text.length === 0) return { ok: false, reason: '目标内容不能置空' }
+    if (text.length > GOAL_TEXT_MAX) return { ok: false, reason: `目标过长（最多 ${GOAL_TEXT_MAX} 字）` }
     const doneWhen = (patch?.doneWhen ?? goal.doneWhen ?? '').trim()
     return {
       ok: true,

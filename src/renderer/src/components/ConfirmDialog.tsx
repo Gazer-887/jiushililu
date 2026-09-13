@@ -52,14 +52,14 @@ export default function ConfirmDialog(): JSX.Element | null {
     <div className="cf-mask" role="dialog" aria-modal="true" aria-label={isRollback ? '会话回滚确认' : '危险操作确认'}>
       <div className="cf-box">
         <div className="cf-head">
-          <span className="cf-title">{isRollback ? '确认回滚这段对话' : '需要你确认'}</span>
+          <span className="cf-title">{isRollback ? '确认回滚这段对话' : '需要确认'}</span>
           <span className="cf-tool">{req.tool}</span>
         </div>
 
         <p className="cf-desc">
           {isRollback
-            ? '仅回滚对话消息：这段对话里靠后的部分会从界面上隐去，工作区里的文件一个都不动。回滚之后可以撤销。'
-            : '即将在工作区执行一条命令。命令能做的事没有上限，请看一眼再决定。'}
+            ? '仅回滚对话消息：该对话中靠后的部分将从界面隐去，工作区文件不受影响。回滚之后可以撤销。'
+            : '即将在工作区执行一条命令。命令的影响范围没有上限，请确认后再决定。'}
         </p>
 
         <pre className="cf-cmd">{req.detail}</pre>
@@ -75,7 +75,7 @@ export default function ConfirmDialog(): JSX.Element | null {
         </div>
 
         {queue.length > 1 && (
-          <p className="cf-queue">还有 {queue.length - 1} 条确认在排队，这条答复后就轮到手</p>
+          <p className="cf-queue">还有 {queue.length - 1} 条确认在排队，本条答复后轮至下一条</p>
         )}
 
         <div className="cf-actions">

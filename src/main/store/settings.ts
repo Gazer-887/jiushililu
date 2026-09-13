@@ -89,7 +89,7 @@ export function hasProfileKey(profileId: string): boolean {
 
 export function setProfileKey(profileId: string, apiKey: string): void {
   if (!encryptionAvailable()) {
-    throw new Error('系统加密服务不可用，为遵守「Key 不明文落盘」铁律已拒绝保存。请检查运行环境。')
+    throw new Error('系统加密服务不可用。为遵守「Key 不明文落盘」约束，已拒绝保存，请检查运行环境。')
   }
   const next = { ...(store.store.apiKeysEncrypted ?? {}) }
   next[profileId] = safeStorage.encryptString(apiKey).toString('base64')

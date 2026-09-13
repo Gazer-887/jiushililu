@@ -150,7 +150,7 @@ export const storedMessagesSchema = z
     if (total > MAX_STORED_CHARS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `会话太长（${total} 字，上限 ${MAX_STORED_CHARS} 字），整条存不下`
+        message: `会话太长（${total} 字，上限 ${MAX_STORED_CHARS} 字），整条无法保存`
       })
     }
   })

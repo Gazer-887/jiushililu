@@ -77,7 +77,7 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
 
       <div className="conv-scroll">
         <div className="section-label">工作区</div>
-        {groups.length === 0 && <div className="conv-empty">还没有会话。点「新建任务」开始。</div>}
+        {groups.length === 0 && <div className="conv-empty">暂无会话。</div>}
         {groups.map((g) => {
           const isCollapsed = collapsed[g.workspace] ?? false
           return (

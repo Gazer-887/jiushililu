@@ -102,7 +102,7 @@ export default function FilePreviewPane({
       if (!alive) return
       if (!res.ok) return setView({ kind: 'error', message: res.error ?? '读取失败' })
       if (res.hexHead) return setView({ kind: 'binary', hexHead: res.hexHead })
-      setView({ kind: 'error', message: '读不出内容' })
+      setView({ kind: 'error', message: '无法读取内容' })
     })
     return () => {
       alive = false
@@ -135,7 +135,7 @@ export default function FilePreviewPane({
     })
     setDraft(res.content)
     setConflict(false)
-    setSaveMsg('已按磁盘上的内容重新载入')
+    setSaveMsg('已重新载入磁盘上的内容')
     onDirtyChange?.(undefined)
   }
 
@@ -186,7 +186,7 @@ export default function FilePreviewPane({
         {previewUrl && view.kind === 'text' && !editing && (
           <button
             className="fp-html-toggle"
-            title={htmlRender ? '看这个文件的原始代码' : '按网页渲染它（沙箱：不执行脚本、不联网）'}
+            title={htmlRender ? '查看该文件的源代码' : '按网页渲染（沙箱：不执行脚本、不联网）'}
             onClick={() => setHtmlRender((v) => !v)}
           >
             {htmlRender ? '源码' : '渲染'}
@@ -195,7 +195,7 @@ export default function FilePreviewPane({
         {canEdit && (
           <button
             className="fp-mode"
-            title={editing ? '切回预览（草稿会留着）' : '编辑这个文件'}
+            title={editing ? '切回预览（草稿会保留）' : '编辑该文件'}
             onClick={() => onModeChange?.(editing ? 'preview' : 'edit')}
           >
             {editing ? '预览' : '编辑'}
@@ -207,8 +207,8 @@ export default function FilePreviewPane({
 
       {view.kind === 'tooLarge' && (
         <div className="ex-msg">
-          这张图 {formatSize(view.size)}，超过 {formatSize(8 * 1024 * 1024)} 的预览上限，
-          为免界面卡住不加载。用「在系统文件管理器中显示」打开它。
+          该图片 {formatSize(view.size)}，超过 {formatSize(8 * 1024 * 1024)} 预览上限，
+          为避免界面卡顿不予加载。请用「在系统文件管理器中显示」打开。
         </div>
       )}
 
@@ -216,8 +216,8 @@ export default function FilePreviewPane({
         <>
           {view.truncated && (
             <div className="ex-msg">
-              文件较大，仅显示前 256 KB —— 因此这个文件不提供编辑：
-              保存回去会把没读到的部分冲掉。
+              文件较大，仅显示前 256 KB，因此该文件不提供编辑：
+              保存会把未读取到的部分覆盖掉。
             </div>
           )}
           {editing ? (
@@ -229,7 +229,7 @@ export default function FilePreviewPane({
                 <span className="fp-hint">Ctrl+S</span>
                 {conflict ? (
                   <>
-                    <span className="fp-warn">文件在打开之后被改过</span>
+                    <span className="fp-warn">文件在打开之后已被修改</span>
                     <button className="fp-btn" onClick={() => void save(true)}>
                       覆盖
                     </button>
@@ -275,8 +275,7 @@ export default function FilePreviewPane({
                     src={previewUrl}
                   />
                   <div className="fp-html-note">
-                    沙箱预览：不执行脚本、不联网。外链资源（远程 CSS / JS / 图片）不会加载；
-                    同目录的图片与样式能正常显示。要跑脚本看全保真效果，请用系统浏览器打开这个文件。
+                    外链资源（远程 CSS / JS / 图片）不会加载，同目录的图片与样式可正常显示。
                   </div>
                 </div>
               ) : isMarkdown(rel) ? (
@@ -303,7 +302,7 @@ export default function FilePreviewPane({
 
       {view.kind === 'binary' && (
         <>
-          <div className="ex-msg">二进制文件 —— 下面是文件头（帮助辨认这是什么格式）</div>
+          <div className="ex-msg">二进制文件：下方为文件头</div>
           <pre className="fp-hex">{view.hexHead}</pre>
         </>
       )}

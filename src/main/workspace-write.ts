@@ -91,7 +91,7 @@ export function createWorkspaceWriter(
       hooks.beforeChange?.(finalRel, to)
       await mkdir(dirname(to), { recursive: true })
       await copyFile(sourceAbs, to)
-      const renamed = to === wanted ? '' : `（同名已存在，另存为 ${finalRel}）`
+      const renamed = to === wanted ? '' : `（同名文件已存在，另存为 ${finalRel}）`
       return `已导入 ${finalRel}（${info.size} 字节）${renamed}`
     }
   }
@@ -107,5 +107,5 @@ async function uniquePath(abs: string): Promise<string> {
     const next = join(dir, `${stem} (${i})${ext}`)
     if (!existsSync(next)) return next
   }
-  throw new Error('同名文件太多（已有 1000 个），请先清理目标目录')
+  throw new Error('同名文件过多（已有 1000 个），请先清理目标目录')
 }

@@ -22,7 +22,7 @@ export function ContextRing({ used }: { used: number }): JSX.Element {
   return (
     <span
       className={`ctx-ring ctx-${level}`}
-      title={limit > 0 ? `上下文用量约 ${used} / ${limit} tokens` : '上下文窗口未设置（去设置页填写）'}
+      title={limit > 0 ? `上下文用量约 ${used} / ${limit} tokens` : '上下文窗口未设置（请在设置页填写）'}
     >
       <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
         <circle cx="10" cy="10" r={R} fill="none" stroke="var(--border)" strokeWidth="2.5" />
@@ -63,17 +63,17 @@ export function UsageChip(): JSX.Element | null {
   const hit = cacheHitRate(total)
   const think = reasoningShare(total)
   const tip = [
-    `本会话累计（厂商真实值）：${totalTokens(total)} tokens`,
+    `本会话累计（厂商上报值）：${totalTokens(total)} tokens`,
     `输入 ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}`,
     hit !== null
       ? `其中前缀缓存命中：${formatTokens(total.cachedPromptTokens ?? 0)}（${formatRate(hit)}）`
-      : '前缀缓存命中：厂商未报',
+      : '前缀缓存命中：厂商未上报',
     think !== null
       ? `输出里推理（思考）：${formatTokens(total.reasoningTokens ?? 0)}（${formatRate(think)}）`
-      : '输出里推理（思考）：厂商未报',
+      : '输出里推理（思考）：厂商未上报',
     last ? `最近一轮：${totalTokens(last)} tokens` : '',
     // 记下"这轮是哪一档跑的" —— 用户比数字时得知道它的出处（plan8 §七②）
-    record.tier ? `省 token 档位（设置页可改）：${tierLabel(record.tier)}` : '',
+    record.tier ? `省 Token 档位（设置页可修改）：${tierLabel(record.tier)}` : '',
     // ⚠️ 这行必须**说清是估算**：它与上面的"厂商真实值"不同源，不说清用户没法判断哪个数能信。
     avoided > 0 ? `工具输出成形省下（本地估算）：约 ${formatTokens(avoided)} tokens` : ''
   ]
@@ -168,14 +168,14 @@ export function ModelSwitcher(): JSX.Element {
             ))
           ) : (
             <button className="model-item" onClick={() => setOpen(false)}>
-              {settings?.model || '还没配模型'}
-              <span className="model-item-src">去设置页添加</span>
+              {settings?.model || '尚未配置模型'}
+              <span className="model-item-src">在设置页添加</span>
             </button>
           )}
           <div className="model-new">
             <input
               value={draft}
-              placeholder="同一条连接上换个模型名，回车"
+              placeholder="在同一条连接上切换模型名，回车确认"
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void apply(draft)
@@ -196,9 +196,9 @@ export const PERM_LABEL: Record<PermissionPreset, string> = {
 }
 
 export const PERM_HINT: Record<PermissionPreset, string> = {
-  'read-only': '模型只能读取，不能修改任何文件',
-  write: '可读写工作区内文件；命令执行仍需显式授权',
-  'full-access': '含命令执行，不再逐次确认（谨慎使用）'
+  'read-only': '模型只能读取文件，不能修改。',
+  write: '可读写工作区内文件；执行命令仍需逐次授权。',
+  'full-access': '含命令执行，且不再逐次确认（谨慎使用）。'
 }
 
 /** 访问权限档（D-032：唯一由人决定的档位 —— 能力归模型，权限归人） */
@@ -264,7 +264,7 @@ export function BranchChip(): JSX.Element | null {
 
   if (!git) return null
   return (
-    <span className="tb-btn tb-branch" title={`Git 分支：${git.branch}${git.dirty ? '（有未提交改动）' : ''}`}>
+    <span className="tb-btn tb-branch" title={`Git 分支：${git.branch}${git.dirty ? '（存在未提交的改动）' : ''}`}>
       <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
         <path
           d="M4 3v7a3 3 0 0 0 3 3h2M4 3a1.6 1.6 0 1 1 0 3.2A1.6 1.6 0 0 1 4 3Zm7 0a1.6 1.6 0 1 1 0 3.2A1.6 1.6 0 0 1 11 3Zm0 3.2v2.4a3 3 0 0 1-3 3"
@@ -307,7 +307,7 @@ export function PolishButton({
   return (
     <button
       className={`tb-btn tb-icon ${busy ? 'busy' : ''}`}
-      title={error ?? '优化提示词（把草稿改写得更清晰）'}
+      title={error ?? '优化提示词'}
       disabled={busy || !text.trim()}
       onClick={() => void run()}
     >

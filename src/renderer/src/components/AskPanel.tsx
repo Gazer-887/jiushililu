@@ -27,10 +27,10 @@ interface Answered {
 
 /** 四种结局说的话必须不同 —— 把"跳过""没送到"说成"已送达"就是那类假账 */
 function noteOf(a: Answered): string {
-  if (a.stale) return '主进程没认领这次答复（可能已经超时或被中断）：上面记着你的选择，但模型不一定收得到。'
-  if (a.skipped) return '已跳过这题：模型会看到「用户跳过了这个问题」，按未作答继续 —— 不是超时，也不会替你选。'
-  if (a.text) return '已经把回答交给了模型：自填的文字原样送出。'
-  return '模型已经拿到这个答复，正接着往下做。'
+  if (a.stale) return '主进程未接收该答复（可能已超时或被中断）：界面上仍记录所选内容，但模型未必收得到。'
+  if (a.skipped) return '已跳过本题：模型将收到「用户跳过了这个问题」，按未作答继续，不是超时，也不会代为选择。'
+  if (a.text) return '答复已提交给模型。'
+  return '模型已收到该答复，正在继续执行。'
 }
 
 export default function AskPanel(): JSX.Element | null {
@@ -172,11 +172,11 @@ export default function AskPanel(): JSX.Element | null {
           </div>
 
           {asks.length > 1 && (
-            <p className="ask-note">还有 {asks.length - 1} 条提问在排队，这条答复后就轮到它</p>
+            <p className="ask-note">还有 {asks.length - 1} 条提问在排队，本条答复后轮至下一条</p>
           )}
           {/* 写清"不答会怎样"（同 ConfirmDialog 的到期说明）：不等 ≠ 默许，这条必须让用户看见 */}
           <p className="ask-note">
-            {Math.round(ASK_TIMEOUT_MS / 60000)} 分钟内不答复 → 模型收到「没有回答」并继续往下走，不会默认替你选
+            若 {Math.round(ASK_TIMEOUT_MS / 60000)} 分钟内不答复，模型将收到「没有回答」并继续执行，不会代为选择
           </p>
         </div>
       )}

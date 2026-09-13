@@ -278,14 +278,14 @@ export default function SettingsView() {
         setDraftModels(saved.models)
         setEditingModel({ id: saved.id })
         setApiKey('')
-        setNotice({ ok: true, text: apiKey ? '已保存（Key 已加密入库）' : '已保存' })
+        setNotice({ ok: true, text: apiKey ? '已保存（API Key 已加密存储）' : '已保存' })
         return
       }
       // 理论到不了这儿（表单只在编辑时出现）；留着是为了万一有别的入口
       const view = await window.api.saveSettings({ ...draft, apiKey })
       useAppStore.setState({ settings: view })
       setApiKey('')
-      setNotice({ ok: true, text: apiKey ? '已保存（Key 已加密入库）' : '已保存' })
+      setNotice({ ok: true, text: apiKey ? '已保存（API Key 已加密存储）' : '已保存' })
     } catch (err) {
       setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
     } finally {
@@ -402,7 +402,7 @@ export default function SettingsView() {
   const removeProfileById = async (id: string): Promise<void> => {
     const target = models?.profiles.find((p) => p.id === id)
     // 红线：删除先问。这里用系统确认框 —— 与文件删除同一套"问一句"的纪律
-    if (!window.confirm(`删除模型「${target?.name ?? id}」？\n\n它的 API Key 会一起删掉（工作区文件不受影响）。`)) {
+    if (!window.confirm(`删除模型「${target?.name ?? id}」？\n\n该模型的 API Key 将一并删除（工作区文件不受影响）。`)) {
       return
     }
     setModelNotice(null)
@@ -427,7 +427,7 @@ export default function SettingsView() {
             <h2>通用设置</h2>
 
             <div className="field-label">工作区</div>
-            <p className="hint">Agent 只能读写这个目录里的文件，越界会被拒绝。</p>
+            <p className="hint">Agent 只能读写该目录下的文件，越界操作会被拒绝。</p>
             <div className="logs-info">
               <span className="logs-path">{ws?.path ?? '加载中…'}</span>
               {ws && !ws.custom && <span className="logs-count">内置默认</span>}
@@ -447,7 +447,7 @@ export default function SettingsView() {
 
             <div className="field-label">访问权限</div>
             {/* 只留"这句在哪还能改"这一半：前半句是产品口号，每页来一次就是噪音 */}
-            <p className="hint">与输入框工具栏那处是同一个设置，改哪边都生效。</p>
+            <p className="hint">与输入框工具栏为同一设置，两处修改等效。</p>
             <div className="choice-list choice-list-fill" role="radiogroup" aria-label="访问权限">
               {PERM_ORDER.map((p) => (
                 <button
@@ -466,8 +466,8 @@ export default function SettingsView() {
             <div className="field-label">省 token 档位</div>
             {/* **省 token 不许让模型降智**（plan8 R9.1 §七②）：把"能力 vs 省钱"摆出来让人选，不替用户默认一个激进值 */}
             <p className="hint">
-              只影响省 token 的手段（工具输出的压缩力度、读文件默认给多少行），
-              不会因为选了省档就改数字或藏起厂商没报的东西。
+              仅影响省 Token 的手段（工具输出的压缩力度、读文件默认行数），
+              不修改计量口径，也不省略厂商未上报的数据。
             </p>
             <div className="choice-list choice-list-fill" role="radiogroup" aria-label="省 token 档位">
               {TOKEN_TIER_LIST.map((t) => (
@@ -508,7 +508,7 @@ export default function SettingsView() {
               <div className="model-head-text">
                 <div className="model-head-title">自定义模型</div>
                 <p className="hint">
-                  模型添加后会自动写入到本地 <code className="model-file">{models?.filePath ?? '…'}</code> 文件
+                  模型配置保存后写入本地 <code className="model-file">{models?.filePath ?? '…'}</code> 文件
                 </p>
               </div>
               <button className="btn-secondary model-add" onClick={startCreate}>
@@ -517,7 +517,7 @@ export default function SettingsView() {
             </div>
 
             {models && models.profiles.length === 0 && (
-              <p className="hint">还没有模型。点右上「添加模型」填一个 —— 填完就能开始对话。</p>
+              <p className="hint">尚未添加模型。</p>
             )}
 
             {models && models.profiles.length > 0 && (
@@ -533,24 +533,24 @@ export default function SettingsView() {
                     <span className="model-source">{sourceLabel(p.source)}</span>
                     {p.id === models.activeId && <span className="model-current">当前</span>}
                     <span className="model-actions">
-                      <button className="model-act" title="编辑这个模型" onClick={() => startEdit(p)}>
+                      <button className="model-act" title="编辑该模型" onClick={() => startEdit(p)}>
                         <IconPencil />
                       </button>
                       <button
                         className="model-act"
-                        title={p.hasApiKey ? '测试连接（用它自己的 Key）' : '还没有填 API Key'}
+                        title={p.hasApiKey ? '测试连接（使用该模型已保存的 API Key）' : '尚未填写 API Key'}
                         disabled={modelBusy === p.id}
                         onClick={() => void testProfile(p.id)}
                       >
                         <IconLink />
                       </button>
-                      <button className="model-act model-act-del" title="删除这个模型" onClick={() => void removeProfileById(p.id)}>
+                      <button className="model-act model-act-del" title="删除该模型" onClick={() => void removeProfileById(p.id)}>
                         <IconTrash />
                       </button>
                       {p.id !== models.activeId && (
                         <button
                           className="model-act model-act-use"
-                          title="改用这个模型"
+                          title="切换为该模型"
                           onClick={() => void useProfile(p.id)}
                         >
                           改用
@@ -572,7 +572,7 @@ export default function SettingsView() {
                 <div className="model-form-title">{editingModel.id ? '编辑模型' : '添加模型'}</div>
 
                 <label>
-                  显示名称（列表里显示这个）
+                  显示名称（用于列表显示）
                   <input
                     value={draftName}
                     placeholder="如 DeepSeek-V4 Flash"
@@ -580,13 +580,13 @@ export default function SettingsView() {
                   />
                 </label>
 
-                <p className="hint">Key 走系统加密存储（safeStorage），不落明文。</p>
+                <p className="hint">API Key 由系统加密存储（safeStorage）保存，不以明文落盘。</p>
 
                 <label>
                   接口地址 baseURL
                   <input
                     value={draft.baseURL}
-                    placeholder="如 https://api.deepseek.com（/v1 可带可不带）"
+                    placeholder="如 https://api.deepseek.com（/v1 可选）"
                     onChange={(e) => update('baseURL', e.target.value)}
                   />
                 </label>
@@ -596,7 +596,7 @@ export default function SettingsView() {
                   onChange={setDraftModels}
                   onFetch={async () => {
                     if (!editingModel?.id) {
-                      return { ok: false, message: '先保存这个端点（填好地址与 Key），再来拉取模型列表', models: [] }
+                      return { ok: false, message: '请先保存该端点（填写地址与 API Key），再拉取模型列表', models: [] }
                     }
                     return window.api.listAvailableModels(editingModel.id)
                   }}
@@ -627,7 +627,7 @@ export default function SettingsView() {
 
 
             {/* 承重句（会花钱，得先说）—— 只把主语去掉，不删 */}
-            <p className="hint">会发起一次真实请求，消耗少量 Token。</p>
+            <p className="hint">该操作会发起一次真实请求，消耗少量 Token。</p>
 
             <div className="actions">
               <button className="btn-secondary" onClick={cancelEdit}>
@@ -674,10 +674,10 @@ export default function SettingsView() {
           <div className="settings-section">
             <h2>故障排查</h2>
             {/* 承重（隐私 + 怎么用），但一句话说得完 */}
-            <p className="hint">日志记在本地，已过滤 API Key 等敏感信息；报障时把最近的日志发出来即可。</p>
+            <p className="hint">日志保存在本地，已过滤 API Key 等敏感信息；反馈问题时附上最近的日志文件。</p>
             <div className="logs-info">
               <span className="logs-path">
-                {logs?.dir ?? '（日志目录尚未创建，产生首条日志后自动出现）'}
+                {logs?.dir ?? '日志目录尚未创建，产生首条日志后自动出现'}
               </span>
               {logs && logs.files.length > 0 && (
                 <span className="logs-count">最近 {logs.files.length} 个文件</span>

@@ -121,7 +121,7 @@ export default function TerminalPanel(): JSX.Element {
       setSnap(snapNow)
       proto.id = snapNow.id
       if (snapNow.truncated) {
-        term.write('\x1b[2m（更早的输出已超出缓冲上限，被丢弃了）\x1b[0m\r\n')
+        term.write('\x1b[2m（更早的输出已超出缓冲上限，已丢弃）\x1b[0m\r\n')
       }
       for (const c of snapNow.chunks) term.write(c.data)
       if (gen !== proto.gen) return
@@ -323,7 +323,7 @@ export default function TerminalPanel(): JSX.Element {
         <span className="tm-shell" title={`${snap?.shell ?? ''}｜初始目录：${snap?.cwd ?? ''}`}>
           {snap?.shell ?? ''}
         </span>
-        <span className="tm-cwd" title="终端当前目录（用「回到工作区」可回去）">
+        <span className="tm-cwd" title="终端当前目录">
           {snap?.cwd ?? ''}
         </span>
         <button className="ck-btn" disabled={busy || snap?.status !== 'running'} onClick={cdHome}>
@@ -336,7 +336,7 @@ export default function TerminalPanel(): JSX.Element {
           className="ck-btn ck-btn-danger"
           disabled={busy || snap?.status !== 'running'}
           onClick={() => void kill()}
-          title="连整棵进程树一起停掉（终端里的子进程也会被终止）"
+          title="连同整棵进程树一起停止"
         >
           停止
         </button>
@@ -348,7 +348,7 @@ export default function TerminalPanel(): JSX.Element {
           <span className="tm-refuse">{refuse}</span>
           <br />
           <span className="tm-note">
-            权限档在「设置」里改：只读档下终端不执行任何命令（人和模型同一把尺）。
+            权限档可在「设置」中修改：只读档下终端不执行任何命令。
           </span>
         </div>
       )}
@@ -359,8 +359,8 @@ export default function TerminalPanel(): JSX.Element {
       </div>
 
       <div className="tm-note">
-        真终端（PTY）：补全、Ctrl+C、`vim` 一类全屏程序都能用。终端里改/删的文件
-        <strong>不进「文件变更记录」、删的也不进回收站</strong> —— 那是你自己的动作，自己负责。
+        终端内修改或删除的文件
+        <strong>不计入「文件变更记录」，删除的也不进回收站</strong>，该操作由用户自行负责。
       </div>
     </div>
   )

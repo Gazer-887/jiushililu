@@ -34,7 +34,7 @@ export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps):
     <div className="plus-wrap" ref={boxRef}>
       <button
         className={`plus-btn ${open ? 'open' : ''}`}
-        title="添加能力（技能 / 子 Agent）"
+        title="添加能力"
         onClick={() => setOpen((v) => !v)}
       >
         ＋
@@ -54,12 +54,12 @@ export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps):
             >
               <span className="plus-check" />
               <span className="plus-name">文件</span>
-              <span className="plus-desc">引用工作区文件进上下文（限 64KB）</span>
+              <span className="plus-desc">上限 64KB</span>
             </button>
             <div className="plus-item disabled">
               <span className="plus-check" />
               <span className="plus-name">图片</span>
-              <span className="plus-desc">需模型支持视觉（待做）</span>
+              <span className="plus-desc">尚未实现</span>
             </div>
           </div>
 
@@ -90,7 +90,7 @@ export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps):
             <div className="plus-item disabled">
               <span className="plus-check" />
               <span className="plus-name">MCP 连接器</span>
-              <span className="plus-desc">接入外部工具（P3 生态）</span>
+              <span className="plus-desc">尚未实现</span>
             </div>
           </div>
         </div>

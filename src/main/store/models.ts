@@ -287,7 +287,7 @@ export function saveEndpoint(input: ModelSaveInput): ModelProfile {
   const entries = input.models
     .map((m) => (m.model.trim() ? m : null))
     .filter((m): m is ModelEntry => m !== null)
-  if (entries.length === 0) throw new Error('一个端点至少要有一个模型 —— 模型 ID 不能空着')
+  if (entries.length === 0) throw new Error('一个端点至少要有一个模型 —— 模型 ID 不能为空')
 
   const existing = input.id ? profiles.find((p) => p.id === input.id) : undefined
   const activeModelId =
@@ -338,7 +338,7 @@ export function saveEndpoint(input: ModelSaveInput): ModelProfile {
 export function deleteProfileById(id: string): void {
   const { profiles, activeId } = listProfiles()
   const allowed = canDeleteProfile(profiles, id)
-  if (!allowed.ok) throw new Error(allowed.reason ?? '这个端点不能删')
+  if (!allowed.ok) throw new Error(allowed.reason ?? '该端点不能删除')
   const next = removeProfile(profiles, id)
   store.set('profiles', next)
   removeProfileKey(id)
@@ -348,7 +348,7 @@ export function deleteProfileById(id: string): void {
 
 export function setActiveProfile(id: string): void {
   const { profiles } = listProfiles()
-  if (!profiles.some((p) => p.id === id)) throw new Error('这个端点不存在（可能已经被删过了）')
+  if (!profiles.some((p) => p.id === id)) throw new Error('该端点不存在（可能已被删除）')
   store.set('activeId', id)
 }
 
@@ -356,9 +356,9 @@ export function setActiveProfile(id: string): void {
 export function setActiveEntry(profileId: string, entryId: string): void {
   const { profiles } = listProfiles()
   const profile = profiles.find((p) => p.id === profileId)
-  if (!profile) throw new Error('这个端点不存在（可能已经被删过了）')
+  if (!profile) throw new Error('该端点不存在（可能已被删除）')
   const guard = canDeleteEntry(profile, entryId) // 复用同一套"条目存不存在"的判断
-  if (!guard.ok && !profile.models.some((m) => m.id === entryId)) throw new Error(guard.reason ?? '这个模型不存在')
+  if (!guard.ok && !profile.models.some((m) => m.id === entryId)) throw new Error(guard.reason ?? '该模型不存在')
   store.set(
     'profiles',
     profiles.map((p) => (p.id === profileId ? { ...p, activeModelId: entryId, updatedAt: Date.now() } : p))
@@ -382,9 +382,9 @@ export function profileForTest(id: string): { settings: ModelSettings; apiKey: s
 export async function listAvailableModels(id: string): Promise<{ ok: boolean; message: string; models: string[] }> {
   const { profiles } = listProfiles()
   const profile = profiles.find((p) => p.id === id)
-  if (!profile) return { ok: false, message: '这个端点不存在（可能已经被删过了）', models: [] }
+  if (!profile) return { ok: false, message: '该端点不存在（可能已被删除）', models: [] }
   const apiKey = getProfileKey(profile.id)
-  if (!apiKey) return { ok: false, message: '这个端点还没有填 API Key：先保存 Key 再来拉取', models: [] }
+  if (!apiKey) return { ok: false, message: '该端点尚未填写 API Key：请先保存 Key 再拉取', models: [] }
 
   const entry = activeEntry(profile)
   const settings = entry ? settingsOf(profile, entry) : { ...EMPTY, baseURL: profile.baseURL, providerType: profile.providerType }

@@ -177,18 +177,18 @@ export function activeProfile(profiles: ModelProfile[], activeId: string | null)
 
 /** 能不能删端点：至少要留一个（删空了就发不出任何请求） */
 export function canDeleteProfile(profiles: ModelProfile[], id: string): { ok: boolean; reason?: string } {
-  if (!profiles.some((p) => p.id === id)) return { ok: false, reason: '这个模型端点不存在（可能已经被删过了）' }
+  if (!profiles.some((p) => p.id === id)) return { ok: false, reason: '该模型端点不存在（可能已被删除）' }
   if (profiles.length <= 1) {
-    return { ok: false, reason: '至少要留一个端点 —— 不然就没法发请求了。想换的话请先「添加」' }
+    return { ok: false, reason: '至少要留一个端点 —— 否则无法发起请求；如需更换，请先「添加」' }
   }
   return { ok: true }
 }
 
 /** 能不能删一个模型条目：端点里至少要留一条（内容删空 ≠ 连接没了，但同样没法用） */
 export function canDeleteEntry(profile: ModelProfile, entryId: string): { ok: boolean; reason?: string } {
-  if (!profile.models.some((m) => m.id === entryId)) return { ok: false, reason: '这个模型不存在（可能已经被删过了）' }
+  if (!profile.models.some((m) => m.id === entryId)) return { ok: false, reason: '该模型不存在（可能已被删除）' }
   if (profile.models.length <= 1) {
-    return { ok: false, reason: '这个端点至少要留一个模型 —— 不然它就成了一条空连接' }
+    return { ok: false, reason: '该端点至少要留一个模型 —— 不然它就成了一条空连接' }
   }
   return { ok: true }
 }

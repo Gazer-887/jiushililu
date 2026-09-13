@@ -175,8 +175,7 @@ export default function Workbench(): JSX.Element | null {
         {count === 0 ? (
           // 空工作台：展开后直接给开窗菜单，**不**悄悄塞一个资源管理器（默认布局本就是空的）
           <div className="wb-empty">
-            <div className="wb-empty-title">工作台是空的</div>
-            <div className="wb-empty-desc">选一个面板打开，之后可以再 ＋ 开新的一栏。</div>
+            <div className="wb-empty-title">工作台为空</div>
             <PaneChooser onPick={(t) => wbOpenTab(null, { kind: 'builtin', type: t })} />
           </div>
         ) : (

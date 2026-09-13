@@ -208,7 +208,7 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
       return {
         ok: false,
         reason: 'read-only',
-        message: '当前是「只读」权限档：这台机器只读，终端不执行命令'
+        message: '当前是「只读」权限档：该档下终端不执行任何命令'
       }
     }
 
@@ -300,11 +300,11 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
     write(data) {
       // ⚠️ 权限档**每次现查**，不能只信 `start()` 那次检查：用户可能在会话跑着的时候把档位降到只读，只拦启动处就成了"看着被拦、其实没拦"—— 比完全不拦更坏。
       if (deps.getPermission() === 'read-only') {
-        return { ok: false, message: '当前是「只读」权限档：终端不执行任何命令' }
+        return { ok: false, message: '当前是「只读」权限档：该档下终端不执行任何命令' }
       }
       const s = session
       if (!s || s.snap.status !== 'running' || !s.pty) {
-        return { ok: false, message: '会话已经结束了 —— 点「重启终端」再试' }
+        return { ok: false, message: '会话已经结束，请点「重启终端」重试' }
       }
       s.pty.write(data)
       return { ok: true }
@@ -370,7 +370,7 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
         return {
           ok: false,
           reason: 'read-only',
-          message: '当前是「只读」权限档：这台机器只读，终端不执行命令'
+          message: '当前是「只读」权限档：该档下终端不执行任何命令'
         }
       }
       teardown()

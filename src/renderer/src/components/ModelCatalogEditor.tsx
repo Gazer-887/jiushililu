@@ -20,7 +20,7 @@ function AdvancedPanel({
   const s = entry.settings ?? {}
   return (
     <div className="mc-adv">
-      <p className="hint">留空 = 跟随端点默认；这几个只影响这个模型。</p>
+      <p className="hint">仅影响该模型。</p>
       <label>
         输出上限（Token）
         <input
@@ -72,7 +72,7 @@ function AdvancedPanel({
           type="number"
           step="0.1"
           value={s.temperature ?? ''}
-          placeholder="留空 = 厂商默认"
+          placeholder="留空表示使用厂商默认值"
           onChange={(e) => onChange({ temperature: e.target.value.trim() === '' ? null : Number(e.target.value) })}
         />
       </label>
@@ -82,7 +82,7 @@ function AdvancedPanel({
           type="number"
           step="0.05"
           value={s.topP ?? ''}
-          placeholder="留空 = 厂商默认"
+          placeholder="留空表示使用厂商默认值"
           onChange={(e) => onChange({ topP: e.target.value.trim() === '' ? null : Number(e.target.value) })}
         />
       </label>
@@ -92,9 +92,9 @@ function AdvancedPanel({
           checked={s.supportsImages === true}
           onChange={(e) => onChange({ supportsImages: e.target.checked ? true : undefined })}
         />
-        支持图片输入（多模态模型才勾）
+        支持图片输入（仅多模态模型勾选）
       </label>
-      <span className="hint inline-hint">Top K 请用端点级或厂商默认：多数端点不认这个参数</span>
+      <span className="hint inline-hint">Top K 请使用端点级或厂商默认值：多数端点不支持该参数</span>
     </div>
   )
 }
@@ -141,7 +141,7 @@ export default function ModelCatalogEditor({
 
   const remove = (id: string): void => {
     if (models.length <= 1) {
-      setNotice({ ok: false, text: '至少要留一个模型 —— 不然这个端点就成了一条空连接' })
+      setNotice({ ok: false, text: '该端点至少要留一个模型 —— 不然它就成了一条空连接' })
       return
     }
     setNotice(null)
@@ -163,12 +163,12 @@ export default function ModelCatalogEditor({
       const have = new Set(models.map((m) => m.model))
       const fresh = res.models.filter((m) => !have.has(m))
       if (fresh.length === 0) {
-        setNotice({ ok: true, text: `厂商有 ${res.models.length} 个模型，都已经在目录里了` })
+        setNotice({ ok: true, text: `厂商返回 ${res.models.length} 个模型，均已加入目录` })
         setPicked(null)
         return
       }
       setPicked(fresh)
-      setNotice({ ok: true, text: `${res.message}；下面是还没加过的（勾选后点「导入」）` })
+      setNotice({ ok: true, text: `${res.message}；以下为尚未添加的模型（勾选后点「导入」）` })
     } catch (err) {
       setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
     } finally {
@@ -185,7 +185,7 @@ export default function ModelCatalogEditor({
     }))
     onChange([...models, ...added])
     setPicked(null)
-    setNotice({ ok: true, text: `已加入 ${added.length} 个模型` })
+    setNotice({ ok: true, text: `已添加 ${added.length} 个模型` })
   }
 
   return (
@@ -195,10 +195,10 @@ export default function ModelCatalogEditor({
         <span className="mc-head-actions">
           <button
             className="mc-link"
-            title="清掉目录，恢复成「只留第一个模型」"
+            title="清空目录，仅保留第一个模型"
             onClick={() => {
               onChange(models.slice(0, 1))
-              setNotice({ ok: true, text: '已恢复成只留第一个模型' })
+              setNotice({ ok: true, text: '已恢复为仅保留第一个模型' })
             }}
           >
             恢复默认模型
@@ -208,7 +208,6 @@ export default function ModelCatalogEditor({
           </button>
         </span>
       </div>
-      <p className="hint">这一把 Key 能调的模型都放这儿 —— 每个模型还能各自设置高级参数。</p>
 
       {models.map((m) => (
         <div key={m.id} className={`mc-row ${expanded === m.id ? 'on' : ''}`}>
@@ -216,7 +215,7 @@ export default function ModelCatalogEditor({
             <input
               className="mc-model"
               value={m.model}
-              placeholder="模型 ID（与厂商菜单一字不差）"
+              placeholder="模型 ID（须与厂商文档完全一致）"
               onChange={(e) => patch(m.id, { model: e.target.value })}
             />
             <input
@@ -227,12 +226,12 @@ export default function ModelCatalogEditor({
             />
             <button
               className="mc-icon"
-              title={expanded === m.id ? '收起高级设置' : '高级设置（只影响这个模型）'}
+              title={expanded === m.id ? '收起高级设置' : '高级设置（仅影响该模型）'}
               onClick={() => setExpanded(expanded === m.id ? null : m.id)}
             >
               {expanded === m.id ? '⌄' : '›'}
             </button>
-            <button className="mc-icon mc-del" title="删掉这个模型" onClick={() => remove(m.id)}>
+            <button className="mc-icon mc-del" title="删除该模型" onClick={() => remove(m.id)}>
               <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden focusable="false">
                 <path
                   d="M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8"
@@ -253,13 +252,13 @@ export default function ModelCatalogEditor({
         <button className="btn-secondary" onClick={add}>
           添加模型
         </button>
-        <span className="mc-foot-label">当前用：{entryLabel(models[0] ?? { id: '', model: '' })}</span>
+        <span className="mc-foot-label">当前使用：{entryLabel(models[0] ?? { id: '', model: '' })}</span>
       </div>
 
       {picked && (
         <div className="mc-import">
           <div className="mc-import-head">
-            <span>厂商返回的模型（勾选后导入）</span>
+            <span>厂商返回的模型</span>
             <button className="btn-secondary" onClick={importPicked}>
               导入选中的 {picked.length} 个
             </button>

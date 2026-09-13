@@ -52,16 +52,11 @@ export default function TasksPanel(): JSX.Element {
           {jobs.length === 0
             ? '无'
             : runningJobs > 0
-              ? `${runningJobs} 个在跑`
+              ? `${runningJobs} 个运行中`
               : `${jobs.length} 个已完成`}
         </span>
       </div>
-      {jobs.length === 0 ? (
-        <div className="tasks-empty">
-          当前没有子代理在跑。主代理遇到可以并行的独立子任务时（比如同时审几个文件），
-          会用 spawn_agents 派出去。
-        </div>
-      ) : (
+      {jobs.length > 0 && (
         <div className="tasks-list">
           {jobs.map((j) => (
             <div key={`${j.name}-${j.index}`} className={`task-item task-${j.phase}`}>
@@ -85,15 +80,10 @@ export default function TasksPanel(): JSX.Element {
       <div className="tasks-head tasks-head-gap">
         <span className="tasks-title">后台任务</span>
         <span className="tasks-sub">
-          {bgTasks.length === 0 ? '无' : runningBg > 0 ? `${runningBg} 个在跑` : `${bgTasks.length} 个`}
+          {bgTasks.length === 0 ? '无' : runningBg > 0 ? `${runningBg} 个运行中` : `${bgTasks.length} 个`}
         </span>
       </div>
-      {bgTasks.length === 0 ? (
-        <div className="tasks-empty">
-          当前没有后台任务。耗时较久的命令（构建、起服务、下载）可以用 run_command 的
-          background=true 转后台跑 —— 那样不会撞 30 秒超时。
-        </div>
-      ) : (
+      {bgTasks.length > 0 && (
         <div className="tasks-list">
           {bgTasks.map((t) => (
             <div key={t.id} className={`task-item task-bg-${t.status}`}>

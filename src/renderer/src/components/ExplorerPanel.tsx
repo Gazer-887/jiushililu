@@ -203,7 +203,7 @@ export default function ExplorerPanel(): JSX.Element {
     setEditing(null)
     if (!name) return
     if (name.includes('/') || name.includes('\\')) {
-      setNotice({ ok: false, text: '名字里不能带路径分隔符' })
+      setNotice({ ok: false, text: '名称不能包含路径分隔符' })
       return
     }
     const rel = e.parentRel ? `${e.parentRel}/${name}` : name
@@ -224,7 +224,7 @@ export default function ExplorerPanel(): JSX.Element {
     for (const f of files) {
       const abs = window.api.getPathForFile(f)
       if (!abs) {
-        outs.push({ ok: false, message: `${f.name}：拿不到磁盘路径，无法导入` })
+        outs.push({ ok: false, message: `${f.name}：无法获取磁盘路径，导入失败` })
         continue
       }
       const rel = parentRel ? `${parentRel}/${f.name}` : f.name
@@ -243,7 +243,7 @@ export default function ExplorerPanel(): JSX.Element {
       await navigator.clipboard.writeText(rel)
       setNotice({ ok: true, text: `已复制：${rel}` })
     } catch {
-      setNotice({ ok: false, text: '复制失败（系统剪贴板不可用）' })
+      setNotice({ ok: false, text: '复制失败：系统剪贴板不可用' })
     }
   }
 
@@ -253,7 +253,7 @@ export default function ExplorerPanel(): JSX.Element {
         ref={editRef}
         className="ex-edit"
         value={editing?.value ?? ''}
-        placeholder={editing?.kind === 'rename' ? '新名字' : '名字'}
+        placeholder={editing?.kind === 'rename' ? '新名称' : '名称'}
         onChange={(e) => setEditing((cur) => (cur ? { ...cur, value: e.target.value } : cur))}
         onKeyDown={(e) => {
           if (e.key === 'Enter') void commitEdit()
@@ -422,7 +422,7 @@ export default function ExplorerPanel(): JSX.Element {
         ) : rootErr ? (
           <div className="ex-msg ex-err">{rootErr}</div>
         ) : tree.children['']?.length === 0 && !rootTail ? (
-          <div className="ex-msg">这个工作区还是空的。右键新建，或直接把文件拖进来。</div>
+          <div className="ex-msg">可右键新建，或将文件拖入此处。</div>
         ) : (
           renderLevel('', 0)
         )}
@@ -503,7 +503,7 @@ export default function ExplorerPanel(): JSX.Element {
                   void runOp(() => window.api.deleteWorkspacePath(e.rel), parentOf(e.rel))
                 }}
               >
-                删除（进回收站）
+                删除（移入回收站）
               </button>
             </>
           )}

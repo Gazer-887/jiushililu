@@ -83,7 +83,7 @@ export default function BrowserPanel(): JSX.Element {
         <input
           className="bp-addr"
           value={addr}
-          placeholder="输入网址后回车（真实浏览器，Agent 可同时操作）"
+          placeholder="输入网址后按回车"
           onChange={(e) => setAddr(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') go()
@@ -96,11 +96,6 @@ export default function BrowserPanel(): JSX.Element {
         {!state.url || state.url === 'about:blank' ? (
           <div className="bp-empty">
             <div className="bp-empty-title">内置浏览器</div>
-            <div className="bp-empty-desc">
-              上方输入网址即可浏览。这是真浏览器（支持 JS 渲染），
-              <br />
-              Agent 也能直接操控它——你可以让它"打开某网站并读出内容"。
-            </div>
           </div>
         ) : null}
       </div>
