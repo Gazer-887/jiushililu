@@ -13,6 +13,8 @@ import {
   IPC,
   type AgentRunRequest,
   type ApiBridge,
+  type AskRequest,
+  type AskResult,
   type BrowserBounds,
   type BrowserState,
   type ChatMessage,
@@ -112,6 +114,9 @@ const api: ApiBridge = {
   onToolConfirmRequest: (cb) =>
     subscribe(IPC.confirmRequest, (req) => cb(req as ToolConfirmRequest & { conversationId: string })),
   respondToolConfirm: (result) => ipcRenderer.invoke(IPC.confirmRespond, result),
+  // 提问（Agent 向用户要主意）：载荷**不走信封**（本来就没有 payload 包装），会话身份在 `AskRequest` 字段里
+  onAskRequest: (cb) => subscribe(IPC.askRequest, (req) => cb(req as AskRequest)),
+  respondAsk: (result: AskResult) => ipcRenderer.invoke(IPC.askRespond, result),
   getUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsGet),
   setUIPrefs: (patch) => ipcRenderer.invoke(IPC.uiPrefsSet, patch),
   resetUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsReset),

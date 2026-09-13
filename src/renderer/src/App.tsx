@@ -36,6 +36,9 @@ function useStreamSubscriptions(): void {
     const offTool = window.api.onChatTool((e) => s().pushToolEvent(e))
     const offTodos = window.api.onTodoChanged((e) => s().setTodos(e))
     const offSubagents = window.api.onSubagentChanged((e) => s().setSubagents(e))
+    // 提问（带选项）：与流式同理挂在**这一层** —— 面板在条件渲染的 ChatView 里，订阅挂那儿就会在
+    // 切到设置页期间把提问丢掉，而主进程不会重发（那条 Agent 只能白等到超时）
+    const offAsk = window.api.onAskRequest((req) => s().pushAsk(req))
     // 补拉一次：todos/subagents 存在主进程，界面挂载时不该是空的
     const pull = (): void => {
       const activeId = s().activeId
@@ -65,6 +68,7 @@ function useStreamSubscriptions(): void {
       offTodos()
       offSubagents()
       offReasoning()
+      offAsk()
       offFlush()
     }
   }, [])

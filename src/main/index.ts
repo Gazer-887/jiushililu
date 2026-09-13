@@ -7,6 +7,7 @@ import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
 import { installCrashGuards } from './crash-guard'
 import { createConfirmBridge } from './confirm'
+import { createAskBridge } from './ask'
 import { IPC } from '@shared/ipc'
 import {
   browserClick,
@@ -52,6 +53,10 @@ if (!gotTheLock) {
 
 // HTML 预览协议：**必须赶在 ready 之前**注册（迟了就只是个普通死链）
 registerPreviewScheme()
+
+/** 提问归属哨兵：`AskRequest.conversationId` 是可选字段（桥是通用的），但**绝不留空** ——
+ *  空值查不出"这条问题是谁问的"（同 `ipc.ts` 的 `UI_RUN_OWNER` 口径）。 */
+const ASK_OWNER_UNKNOWN = 'unknown'
 
 /**
  * 安全基线（plan8 R3）：主窗口「只能停在自家页面」—— 两条 Electron 安全检查清单必做项，此前都缺失。
@@ -203,6 +208,21 @@ app.whenReady().then(() => {
   // 后台任务注册表（plan7 批 D）：**进程级单例** —— 窗口关闭时统一终止，留一堆没人管的进程是隐患
   const background = createBackgroundTaskStore()
 
+  // Agent 提问桥（带选项）：与确认桥同样是"惰性取窗口"。
+  // ⚠️ 推送走**所有窗口**（同后台任务 / 终端的广播写法），不是 `getAllWindows()[0]`：只推第一个窗口的话，
+  //    用户关窗重开（macOS activate）那条问题就没人看得见 —— 而桥还在等答复，白等到超时。
+  const ask = createAskBridge({
+    send: (req) => {
+      const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
+      if (wins.length === 0) return false
+      for (const w of wins) {
+        createChatEmitter(w.webContents, req.conversationId ?? ASK_OWNER_UNKNOWN).ask(req)
+      }
+      return true
+    },
+    log: (message, extra) => log.info(message, extra)
+  })
+
   // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
   const agentCtx = createAgentContext({
     getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
@@ -214,6 +234,8 @@ app.whenReady().then(() => {
     checkpointDir: join(userDataDir, 'checkpoints'),
     // 危险操作确认（plan8 R5）：run_command 执行前问用户
     confirmCommand: (req) => confirm.ask(req),
+    // 提问口（ask_user）：注入的是**桥本体**（只用到 ask 一个方法）—— runner 不许 import electron，故由组合根注入
+    ask,
     background,
     // 回收站（plan7 批 A2）：界面与 Agent 的删除都走它（非硬删）
     trash: (abs) => shell.trashItem(abs)
@@ -268,6 +290,7 @@ app.whenReady().then(() => {
     agent: agentCtx,
     userDataDir,
     confirm,
+    ask,
     terminal,
     // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
     onFlushDone: () => finishClose?.()
@@ -309,6 +332,8 @@ app.whenReady().then(() => {
   //    **不会**触发 `window-all-closed`（它先关窗口、直接进 `will-quit`）；只挂一个入口，macOS 上每次退出都留个没人管的 shell。
   const teardownAll = (): void => {
     confirm.abortAll('窗口已全部关闭')
+    // 提问同理 —— 没人能作答了，按未作答结束，而不是让那条 Agent 干等满 5 分钟
+    ask.abortAll('窗口已全部关闭')
     // 后台命令跟着终止（plan7 批 D 边界①）—— 与确认桥同一口径
     background.killAll()
     // 终端会话同理：**不留没人管的 shell**（它可能正跑着 dev server / 数据库）。

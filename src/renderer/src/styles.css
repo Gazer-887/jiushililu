@@ -4252,6 +4252,271 @@ body[data-resizing] {
   color: var(--muted);
 }
 
+/* ── Agent 提问卡片（带选项）──────────────────────────────────────────
+   输入框上方的独立卡片，**非模态**（无遮罩）：用户可以一边翻工作区一边答。
+   形态：小标题 + 发起方 → 问题 → 选项行（整行可点，主文案 + 说明） → 自由输入 → 底部操作栏。
+   用色走水墨口径（纸白 + 墨字 + 朱砂点睛）：⚠️ 刻意**不借** --accent / --ok —— 它们在
+   `data-theme=default` 下是**蓝**与**绿**，而按用户定调这张卡只用灰阶与朱砂。
+   中性色（--text / --muted / --border / --panel）两套主题都已就绪，故不写第二份。 */
+
+.ask-panel {
+  --ask-cinnabar: #a8342c;
+  --ask-cinnabar-soft: #f7ece9;
+  --ask-cinnabar-line: #e2bdb6;
+  --ask-paper: #fbfaf7;
+  --ask-line: #ddd9d0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin-bottom: var(--sp-8);
+}
+
+.ask-card {
+  padding: var(--sp-12);
+  border: 1px solid var(--ask-line);
+  border-left: 3px solid var(--ask-cinnabar);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+
+/* 已作答：朱砂收回去（那一笔已经落下了），整张卡退到背景 */
+.ask-done {
+  border-left-color: var(--ask-line);
+  background: var(--ask-paper);
+}
+
+/* 小标题在左、发起方在右 —— 一眼看出"这是什么、谁在问" */
+.ask-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ask-title {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.ask-tool {
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--muted);
+}
+
+.ask-from {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ask-q {
+  margin: var(--sp-8) 0;
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  word-break: break-word;
+}
+
+.ask-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+/* 选项行：**整行可点**（不是一排小按钮）= 左侧记号 + 主文案一行 + 说明一行 */
+.ask-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-8);
+  width: 100%;
+  padding: var(--sp-8) var(--sp-12);
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: var(--ask-paper);
+  border: 1px solid var(--ask-line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ask-row:hover:not(:disabled) {
+  border-color: var(--ask-cinnabar-line);
+  background: var(--ask-cinnabar-soft);
+}
+
+.ask-row:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 选中：朱砂只落在记号与边线上，面积保持极小 */
+.ask-row-on {
+  border-color: var(--ask-cinnabar);
+  background: var(--ask-cinnabar-soft);
+}
+
+/* 只读态的行：不可点、退到背景；选中那条靠 .ask-row-on 再亮回来 */
+.ask-row-done {
+  cursor: default;
+  background: transparent;
+  border-color: transparent;
+}
+
+.ask-row-done .ask-opt-label,
+.ask-row-done .ask-opt-desc {
+  color: var(--muted);
+}
+
+.ask-row-done.ask-row-on {
+  border-color: var(--ask-cinnabar-line);
+  background: var(--ask-cinnabar-soft);
+}
+
+.ask-row-done.ask-row-on .ask-opt-label {
+  color: var(--text);
+}
+
+.ask-mark {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--panel);
+  background: var(--panel);
+  border: 1px solid var(--ask-line);
+}
+
+/* 单选圆框、多选方框 —— 形状本身就在说"这道题能选几个" */
+.ask-mark-round {
+  border-radius: 50%;
+}
+
+.ask-mark-square {
+  border-radius: 2px;
+}
+
+.ask-mark-on {
+  border-color: var(--ask-cinnabar);
+  background: var(--ask-cinnabar);
+}
+
+.ask-opt-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.ask-opt-label {
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
+  color: var(--text);
+  word-break: break-word;
+}
+
+.ask-opt-desc {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--muted);
+  word-break: break-word;
+}
+
+/* 自由输入：与选项同宽；写进去就等于给了答案（不必是上面某个选项） */
+.ask-free-input {
+  width: 100%;
+  margin-top: var(--sp-6);
+  padding: var(--sp-8) var(--sp-12);
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--ask-line);
+  border-radius: var(--radius-md);
+}
+
+.ask-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin-top: var(--sp-12);
+}
+
+/* 跳过本题：用户"就是不想答"的明路 —— 低调但不藏起来（藏了就只能干等超时） */
+.ask-skip {
+  padding: var(--sp-4) var(--sp-12);
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--ask-line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ask-skip:hover:not(:disabled) {
+  color: var(--ask-cinnabar);
+  border-color: var(--ask-cinnabar-line);
+  background: var(--ask-cinnabar-soft);
+}
+
+.ask-skip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.ask-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* 提交 = 墨底白字（水墨里"墨"比"色"更实），朱砂只留给选中的记号 */
+.ask-submit {
+  padding: var(--sp-4) var(--sp-16);
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--panel);
+  background: var(--text);
+  border: 1px solid var(--text);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ask-submit:disabled {
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--ask-line);
+  cursor: default;
+}
+
+/* 只读卡片里"用户自己写的那段字"：与选项行区分开（它不是选项） */
+.ask-answer-text {
+  margin-top: var(--sp-6);
+  padding: var(--sp-8) var(--sp-12);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  background: var(--ask-cinnabar-soft);
+  border-left: 3px solid var(--ask-cinnabar-line);
+  border-radius: var(--radius-sm);
+  word-break: break-word;
+}
+
+.ask-note {
+  margin-top: var(--sp-6);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--muted);
+}
+
 /* ── 右栏「任务」页签：子代理运行记录（plan7 批 D）────────────────── */
 
 .tasks-panel {

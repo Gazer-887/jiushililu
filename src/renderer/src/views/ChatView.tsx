@@ -5,6 +5,7 @@ import MessageMarkdown from '../components/MessageMarkdown'
 import InputConsole from '../components/InputConsole'
 import TodoPanel from '../components/TodoPanel'
 import GoalPanel from '../components/GoalPanel'
+import AskPanel from '../components/AskPanel'
 
 // 对话页（D-032：单一通道）——用不用工具由模型自己决定，界面只负责让过程可见（工具执行卡片）。
 // 输入框为控制台形态（InputConsole）：模型/权限/进度/拓展/发送全在框内。
@@ -223,6 +224,9 @@ export default function ChatView() {
       )}
 
       <div className="chat-input">
+        {/* **提问**（Agent 拿不定主意时问一句）摆在最上面：它是唯一"正卡着模型等你"的东西，
+            而且非模态 —— 用户还能照常翻工作区、切页签，答完才继续。 */}
+        <AskPanel />
         {/* **目标**（跨轮次的长期意图）摆在待办上面，形态对齐 DSH —— 两者语义之分见 GoalPanel（plan12） */}
         <GoalPanel />
         {/* 待办清单在输入框**上方**（用户 2026-09-12 意见，形制对齐 DSH） */}

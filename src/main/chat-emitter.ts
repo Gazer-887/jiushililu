@@ -12,6 +12,7 @@
  */
 import type { WebContents } from 'electron'
 import { IPC, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
+import type { AskRequest } from '@shared/ask'
 import type { ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import type { SubagentJobEvent } from '@shared/agent'
@@ -28,6 +29,7 @@ type StreamChannel =
   | typeof IPC.todoChanged
   | typeof IPC.subagentChanged
   | typeof IPC.checkpointChanged
+  | typeof IPC.askRequest
 
 export interface ChatEmitter {
   chunk(delta: string): void
@@ -46,6 +48,8 @@ export interface ChatEmitter {
   error(message: string): void
   /** 危险操作确认（也带会话身份 —— 用户要知道是**哪条会话**在问） */
   confirm(req: ToolConfirmRequest): void
+  /** Agent 提问（同确认：带会话身份 —— 用户要知道自己在答**哪条会话**的问题） */
+  ask(req: AskRequest): void
   /** 预览用：这条 emitter 属于哪条会话 */
   readonly conversationId: string
 }
@@ -75,6 +79,11 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     confirm: (req) => {
       if (win.isDestroyed()) return
       win.send(IPC.confirmRequest, { ...req, conversationId })
+    },
+    ask: (req) => {
+      if (win.isDestroyed()) return
+      // `conversationId` 通常已由 Agent 那一侧补上；缺了就补 emitter 的 —— 两种都留空是**查不出**这条问题出自哪条会话的
+      win.send(IPC.askRequest, { ...req, conversationId: req.conversationId || conversationId })
     }
   }
 }

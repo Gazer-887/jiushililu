@@ -12,6 +12,12 @@ directories:
 # 图标走 extraResources 放到 asar 外（窗口图标用 process.resourcesPath 取）。
 files:
   - 'out/**'
+  # 只出 Windows x64 包 ⇒ 别的平台的 node-pty 预编译一律不装（用户 2026-09-13 要求"裁掉"）。
+  # 省的是实打实的体积：darwin 两份 + win32-arm64 一套（含它自己的 conpty exe/dll）。
+  # ⚠️ 留 `third_party/**` 不动 —— 那是上游构建产物，是否被运行时回退使用**没实测**，
+  #    没验证之前不裁（宁多几 MB，不要"某个 Windows 版本上 conpty 起不来"）。
+  - '!**/node_modules/node-pty/prebuilds/darwin-*'
+  - '!**/node_modules/node-pty/prebuilds/win32-arm64/**'
   - '!src/**'
   - '!tests/**'
   - '!config/**'

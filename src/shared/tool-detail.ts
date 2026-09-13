@@ -15,6 +15,7 @@ const KEY_OF: Record<string, string> = {
   browser_click: 'selector',
   browser_type: 'text',
   update_todos: 'todos',
+  ask_user: 'question',
   spawn_agents: 'jobs'
 }
 

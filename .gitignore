@@ -19,6 +19,12 @@ DIARY/
 # —— WorkBuddy 内部数据（含 memory/）——
 .workbuddy/
 
+# —— 工具自动沉淀的技能（用户 2026-09-13 定：不入公开仓库）——
+# 为什么：`.agents/skills/` 是**本机 agent 工具链**自动写出来的沉淀文件（内容随会话演进、
+# 与产品源码无关）。它曾被一次 `git add -A` 顺手带进仓库，用户明确要求撤掉。
+# 用 `git rm -r --cached .agents` 只从索引里去掉，**本地文件保留**（工具还要继续用）。
+.agents/
+
 # —— Python ——
 __pycache__/
 *.py[cod]

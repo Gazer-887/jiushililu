@@ -4,16 +4,13 @@ import type { Terminal as XTerm } from '@xterm/xterm'
 import type { FitAddon as XFitAddon } from '@xterm/addon-fit'
 import type { TerminalDataPayload, TerminalSessionSnapshot } from '@shared/terminal'
 
-// 内置终端面板（plan7 批 C）。三条约束先说明白：
-// ① **xterm 按需加载**（单例 + `import()`）：别让它进主 chunk —— 那是每次启动都要付的代价，而多数会话不看终端。
-// ② **视图可丢弃，会话不可**：本项目"切页签 = 卸载"是定死的语义（plan9 §W3），所以 shell 与输出缓冲活在主进程；
-//    重挂时先 `terminalSnapshot()` **按序号重放**再续接增量 —— 只收 `seq >= nextSeq` 的帧，既不重也不漏。
+// 内置终端面板（plan7 批 C）。三条约束：① **xterm 按需加载**（单例 + `import()`，别让它进主 chunk —— 那是每次启动都要付的代价）；
+// ② **视图可丢弃，会话不可**：本项目"切页签 = 卸载"是定死的语义（plan9 §W3），故 shell 与输出缓冲在主进程，重挂时先 `terminalSnapshot()` **按序号重放**再续接增量（只收 `seq >= nextSeq` 的帧）。
 // ③ **`convertEol` 不能开**：那是给伪终端用的（子进程吐裸 `\n`），真 PTY 本来就是 `\r\n`，再转会转两次。
 
 type XtermModule = typeof import('@xterm/xterm')
 type FitModule = typeof import('@xterm/addon-fit')
 
-/** 单例：整个应用只加载一次 xterm（Vite 也会把它切成独立 chunk） */
 let xtermPromise: Promise<[XtermModule, FitModule]> | null = null
 
 function loadXterm(): Promise<[XtermModule, FitModule]> {
@@ -23,12 +20,8 @@ function loadXterm(): Promise<[XtermModule, FitModule]> {
   return xtermPromise
 }
 
-/**
- * 终端配色 —— **跟着应用主题走**。
- *
- * ⚠️ 不许写死一套墨色：本项目默认是**纸白浅色**，写死会让终端变成浅色界面正中嵌着的一块黑板。
- * 浅色对应**纸白底 + 墨字 + 朱砂光标**（与 ink 是同一套语义，只是纸墨对调）。
- */
+/** 终端配色 —— **跟着应用主题走**。⚠️ 不许写死一套墨色：本项目默认是**纸白浅色**，写死会让终端变成浅色界面正中嵌着的一块黑板。
+ *  浅色对应**纸白底 + 墨字 + 朱砂光标**（与 ink 是同一套语义，只是纸墨对调）。 */
 const THEME_LIGHT = {
   background: '#fbfaf7',
   foreground: '#2b2b28',
@@ -50,13 +43,8 @@ function themeFor(theme: string | undefined): typeof THEME_LIGHT {
   return theme === 'ink' ? THEME_INK : THEME_LIGHT
 }
 
-/**
- * 重放协议状态（跨渲染存活 —— 「重启终端」要在事件回调里改它）。
- * ⚠️ 必须是**对象**而不是几个 `let`：`boot()` 活在 effect 里、订阅回调活在事件里，
- * 用对象引用才不会有"各改各的副本"。
- */
+/** 重放协议状态（跨渲染存活 —— 「重启终端」要在事件回调里改它）。⚠️ 必须是**对象**而不是几个 `let`：`boot()` 活在 effect 里、订阅回调活在事件里，用对象引用才不会有"各改各的副本"。 */
 interface Proto {
-  /** 屏幕当前对应的会话 id（`null` = 还没对齐过） */
   id: string | null
   /** 下一个**该写**的序号（判据：`seq >= nextSeq` 才写） */
   nextSeq: number
@@ -67,23 +55,15 @@ interface Proto {
   gen: number
 }
 
-/**
- * 写一段输出，并在 xterm **真正解析完**之后回执（背压的关键一环）。
- *
- * 主进程按"未回执字符数"决定 `pause()` / `resume()` —— 没有回执，洪泛输出会把
- * xterm 的待解析缓冲顶爆，然后抛异常丢数据。
- */
+/** 写一段输出，并在 xterm **真正解析完**之后回执（背压的关键一环）：主进程按"未回执字符数"决定 `pause()` / `resume()` —— 没有回执，洪泛输出会把 xterm 的待解析缓冲顶爆，然后抛异常丢数据。 */
 function writeChunk(term: XTerm, p: TerminalDataPayload): void {
   term.write(p.data, () => {
     void window.api.terminalAck(p.sessionId, p.data.length)
   })
 }
 
-/**
- * 把"重放期间排队"的帧按序号补上 —— **只写 `seq >= nextSeq` 的**（重放里已写过的不重写）。
- * ⚠️ 调用前必须已关闸，且**函数内不许有 await**：关闸 → 取队列 → 开闸要在同一个同步块里走完，
- * 否则新到的帧会从缝里漏掉。
- */
+/** 把"重放期间排队"的帧按序号补上 —— **只写 `seq >= nextSeq` 的**（重放里已写过的不重写）。
+ *  ⚠️ 调用前必须已关闸，且**函数内不许有 await**：关闸 → 取队列 → 开闸要在同一个同步块里走完，否则新到的帧会从缝里漏掉。 */
 function flushPending(term: XTerm, proto: Proto): void {
   const rest = proto.pending.splice(0).sort((a, b) => a.seq - b.seq)
   for (const p of rest) {
@@ -100,21 +80,13 @@ export default function TerminalPanel(): JSX.Element {
   const protoRef = useRef<Proto | null>(null)
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading')
   const [error, setError] = useState('')
-  /** 状态条用它显示"在跑 / 已结束 / 被停止"、shell、cwd */
   const [snap, setSnap] = useState<TerminalSessionSnapshot | null>(null)
   /** 起不来的原因（只读档 / 工作区没了 / 原生模块没加载成功）—— 要**明说**，不给个黑框 */
   const [refuse, setRefuse] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  /**
-   * 对齐屏幕：**取快照 → 整段重放 → 补上重放期间到达的帧**，三步缺一不可 ——
-   *   ① 进函数就 `replaying = true`：实时帧从此**只入队、不落屏**；
-   *   ② 快照到手后整段重放；③ 关闸后把队列里 `seq >= nextSeq` 的帧按序补上 ——
-   *      那正是"落在两次 IPC 往返之间"的帧：写过的不重、没写的不漏。
-   *
-   * ⚠️ 不许写成"先订阅（立刻落屏）→ 再重放全量"：那段窗口里的帧会被写两遍，
-   * 而它恰好是"后台进程正在吐输出"的时刻 —— 也就是终端最需要正确的时刻。
-   */
+/** 对齐屏幕：**取快照 → 整段重放 → 补上重放期间到达的帧**，三步缺一不可 —— ① 进函数就 `replaying = true`（实时帧从此只入队、不落屏）；② 快照到手整段重放；③ 关闸后把队列里 `seq >= nextSeq` 的帧按序补上（那正是"落在两次 IPC 往返之间"的帧：写过的不重、没写的不漏）。
+ *  ⚠️ 不许写成"先订阅（立刻落屏）→ 再重放全量"：那段窗口里的帧会被写两遍，而它恰好是"后台进程正在吐输出"的时刻 —— 也就是终端最需要正确的时刻。 */
   const boot = useCallback(async (opts?: { reset?: boolean }): Promise<void> => {
     const term = termRef.current
     const proto = protoRef.current
@@ -126,8 +98,7 @@ export default function TerminalPanel(): JSX.Element {
     setBusy(true)
     setRefuse(null)
     try {
-      // 已有会话就**接着用**（切走再切回是常态），只有真没有才 start ——
-      // 否则"用户点了「停止」、切走再回来"会凭空又起一个 shell，"停止"等于没停。
+      // 已有会话就**接着用**（切走再切回是常态），只有真没有才 start —— 否则「用户点了停止、切走再回来」会凭空又起一个 shell，停止等于没停。
       let snapNow = await window.api.terminalSnapshot()
       if (!snapNow) {
         const started = await window.api.terminalStart({
@@ -149,7 +120,6 @@ export default function TerminalPanel(): JSX.Element {
       if (gen !== proto.gen) return // 期间又有人 boot 了：让后来者重写，别写两遍
       setSnap(snapNow)
       proto.id = snapNow.id
-      // ② 整段重放（缓冲本身有上限，不会无限大）
       if (snapNow.truncated) {
         term.write('\x1b[2m（更早的输出已超出缓冲上限，被丢弃了）\x1b[0m\r\n')
       }
@@ -159,8 +129,7 @@ export default function TerminalPanel(): JSX.Element {
       // ③ 关闸。这一步与下面补队列之间**没有 await**，所以不会有帧插进来
       proto.replaying = false
       flushPending(term, proto)
-      // ④ 背压**重对齐**：卸载只退订阅、不通知主进程，那期间推来的帧没人回执，未回执计数可能已把 pty 按住 ——
-      //    重放完必须清零水位并恢复，否则用户切回来看到的是"活着但永远静止"的终端。
+      // ④ 背压**重对齐**：卸载只退订阅、不通知主进程，那期间推来的帧没人回执，未回执计数可能已把 pty 按住 —— 重放完必须清零水位并恢复，否则用户切回来看到的是"活着但永远静止"的终端。
       void window.api.terminalResync(snapNow.id)
     } finally {
       setBusy(false)
@@ -173,7 +142,6 @@ export default function TerminalPanel(): JSX.Element {
     }
   }, [])
 
-  // ── 建 xterm 实例（只建一次）──────────────────────────────
   useEffect(() => {
     let alive = true
     let disposers: Array<() => void> = []
@@ -190,7 +158,6 @@ export default function TerminalPanel(): JSX.Element {
           fontSize: 13,
           lineHeight: 1.2,
           cursorBlink: true,
-          // 配色跟着应用主题（见 THEME_LIGHT / THEME_INK 的说明）
           theme: themeFor(document.documentElement.dataset.theme)
         })
         const fit = new fitMod.FitAddon()
@@ -200,15 +167,13 @@ export default function TerminalPanel(): JSX.Element {
         fitRef.current = fit
         fit.fit()
 
-        // 键盘 → 主进程。**发原始按键**：真 PTY 下 shell 自己管行编辑/回显/补全，
-        // 我们**不做**本地回显（做了就会和 shell 的回显打架、一个字出现两遍）
+        // 键盘 → 主进程。**发原始按键**：真 PTY 下 shell 自己管行编辑/回显/补全，我们**不做**本地回显（做了会和 shell 的回显打架、一个字出现两遍）。
         term.onData((d) => {
           void window.api.terminalWrite(d).then((r) => {
             // 被拒了要说出来（只读档 / 会话已结束）—— 静默吞掉的话，用户会以为键盘坏了
             if (!r.ok && r.message) setRefuse(r.message)
           })
         })
-        // 尺寸变化 → 告诉 pty（不告诉的话 vim/进度条会画错，因为程序以为屏幕还是老的尺寸）
         term.onResize(({ cols, rows }) => {
           void window.api.terminalResize(cols, rows)
         })
@@ -222,24 +187,20 @@ export default function TerminalPanel(): JSX.Element {
           attributeFilter: ['data-theme']
         })
 
-        // 协议状态（`boot` 与下面两个回调共用同一个对象引用）
         protoRef.current = { id: null, nextSeq: 1, replaying: true, pending: [], gen: 0 }
 
-        // 增量输出 —— 两条规则，缺一条就会"重"或"漏"：
-        //   ① **换了会话**（重启成功 / 切了工作区）：整屏重来，序号跟着新会话从 1 重新对齐；
-        //   ② 重放期间只入队，非重放期只写 `seq >= nextSeq` 的帧（旧帧在重放里已写过，再写就是重复）。
+        // 增量输出 —— 两条规则，缺一条就会"重"或"漏"：① **换了会话**（重启成功 / 切了工作区）整屏重来、序号从 1 重新对齐；② 重放期间只入队，非重放期只写 `seq >= nextSeq` 的帧。
         const offData = window.api.onTerminalData((p) => {
           const proto = protoRef.current
           if (!proto) return
           if (proto.id !== null && p.sessionId !== proto.id) {
-            // ⚠️ 这一帧**丢掉不写**是有保证的：新会话的缓冲在主进程那边已经收下了它，
-            //    紧接着的 boot 会整段重放 —— 丢它不漏内容，反而避免写两遍。
+            // ⚠️ 这一帧**丢掉不写**是有保证的：新会话的缓冲在主进程那边已经收下了它，紧接着的 boot 会整段重放 —— 丢它不漏内容，反而避免写两遍。
             proto.id = p.sessionId
             proto.nextSeq = 1
             void boot({ reset: true })
             return
           }
-          if (p.seq < proto.nextSeq) return // 重放里已经写过这一段了
+          if (p.seq < proto.nextSeq) return
           if (proto.replaying) {
             proto.pending.push(p)
             return
@@ -251,7 +212,6 @@ export default function TerminalPanel(): JSX.Element {
           void window.api.terminalSnapshot().then((s) => {
             const proto = protoRef.current
             setSnap(s)
-            // 会话换了（「重启终端」成功、或切了工作区）→ 重新对齐 + 整屏重放
             if (proto && proto.id !== null && s && s.id !== proto.id) {
               proto.id = s.id
               void boot({ reset: true })
@@ -276,13 +236,11 @@ export default function TerminalPanel(): JSX.Element {
       termRef.current?.dispose()
       termRef.current = null
       fitRef.current = null
-      // ⚠️ **不在这里杀会话**：卸载 ≠ 结束 —— 切页签就会卸载，而用户要的正是"切走再切回来它还在跑"。
-      //    收会话只发生在：点「停止」、点「重启终端」、窗口全关（主进程那边统一杀）。
+      // ⚠️ **不在这里杀会话**：卸载 ≠ 结束 —— 切页签就会卸载，而用户要的正是"切走再切回来它还在跑"（收会话只发生在：点「停止」、点「重启终端」、窗口全关）。
     }
     // ⚠️ 依赖为空：终端实例是**重资产**（DOM + 缓冲 + 监听），重建一次的代价是丢屏上内容。
   }, [boot])
 
-  // 面板宽度可拖拽 → 用 ResizeObserver 跟着 fit（与 Monaco 的 automaticLayout 同一个道理）
   useEffect(() => {
     const host = hostRef.current
     if (!host || phase !== 'ready') return
@@ -308,12 +266,8 @@ export default function TerminalPanel(): JSX.Element {
     }
   }
 
-  /**
-   * 重启终端 = **杀掉旧会话、起一个新的**（会话卡住时用户唯一的自救手段）。
-   *
-   * ⚠️ 不许改成调 `boot()`：它走的是**幂等**的 `terminalStart`，会话还活着时只会把同一个会话
-   * 原样还回来 —— 而"卡住时自救"的场景里会话**必然是活着的**，那就等于一个死按钮。
-   */
+/** 重启终端 = **杀掉旧会话、起一个新的**（会话卡住时用户唯一的自救手段）。
+ *  ⚠️ 不许改成调 `boot()`：它走的是**幂等**的 `terminalStart`，会话还活着时只会把同一个会话原样还回来 —— 而"卡住时自救"的场景里会话**必然是活着的**，那就等于一个死按钮。 */
   const restart = async (): Promise<void> => {
     const proto = protoRef.current
     if (!proto) return
@@ -327,8 +281,7 @@ export default function TerminalPanel(): JSX.Element {
         setRefuse(r.message)
         return // 拒绝就到此为止 —— 闸门交给 finally 兜底打开
       }
-      // 统一走 `boot()` 重放（reset / 对齐 / 补队列都由它一处负责）。
-      // ⚠️ **不在这里手动开闸**：早开闸会让"重放还没开始"的实时帧先落屏，随后被重放再写一遍。
+      // 统一走 `boot()` 重放（reset / 对齐 / 补队列都由它一处负责）。⚠️ **不在这里手动开闸**：早开闸会让"重放还没开始"的实时帧先落屏，随后被重放再写一遍。
       await boot({ reset: true })
     } finally {
       setBusy(false)
@@ -346,7 +299,6 @@ export default function TerminalPanel(): JSX.Element {
     const root = snap?.workspaceRoot
     if (!root) return
     void window.api.terminalWrite(`cd "${root}"\r`).then((r) => {
-      // 与键盘那条路同口径：被拒要说出来（只读档 / 会话已结束），别让按钮变成"点了没反应"
       if (!r.ok && r.message) setRefuse(r.message)
     })
   }
@@ -392,8 +344,7 @@ export default function TerminalPanel(): JSX.Element {
 
       {refuse && (
         <div className="df-warn">
-          {/* ⚠️ 拒绝原因放进**独立节点**：门禁要能只读它。以前它和常驻说明同处一个
-              `.df-warn`，门禁取 textContent 会把常驻文案里的"只读"一并算进去 —— 那条断言是假阳性。 */}
+          {/* ⚠️ 拒绝原因放进**独立节点**：门禁要能只读它 —— 以前它和常驻说明同处一个 `.df-warn`，门禁取 textContent 会把常驻文案里的"只读"一并算进去、断言假阳性。 */}
           <span className="tm-refuse">{refuse}</span>
           <br />
           <span className="tm-note">

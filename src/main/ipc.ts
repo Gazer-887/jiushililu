@@ -1,8 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { z } from 'zod'
-// 检查点纯逻辑（plan13 B3）：rel 路径安全校验与"挑出指定文件"用共享层这一份 —— 界面与主进程各写一套迟早分岔。
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
-// 逐处退回的三道闸（plan13 B4）：抽在 `revert-flow.ts` 里，为的是可单测（理由见该文件头部）。
 import { revertOneHunk, samePath } from './revert-flow'
 import {
   IPC,
@@ -54,7 +52,6 @@ import {
 import { getProfileKey, hasProfileKey } from './store/settings'
 import { maskKey } from './store/mask'
 import type { ModelProfileView, ModelsView, ModelSaveInput } from '@shared/models'
-// createProvider 仍用于「测试连接」与「提示词优化」（轻量调用，与 Agent 循环无关）
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
@@ -62,6 +59,8 @@ import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { TerminalSessionStore } from './terminal-session'
 import type { TerminalSessionSnapshot, TerminalStartResult } from '@shared/terminal'
 import type { ConfirmBridge } from './confirm'
+import type { AskBridge } from './ask'
+import { ASK_MAX_OPTIONS, type AskResult } from '@shared/ask'
 import {
   chatSendInputSchema,
   conversationIdSchema,
@@ -87,10 +86,7 @@ import {
   TAB_MAX_COUNT
 } from '@shared/workbench'
 
-// 工作台分栏布局的 **IPC 边界**校验（plan9 W2，三层里的第二层）—— 只做「形状 + 尺寸上限」。
-// 为什么上限也要卡：布局是**频繁写入**的对象（拖拽/开栏/切页签都写），某处逻辑出 bug 反复往数组里塞会
-// 把盘写成巨大 JSON，且启动时被完整读进内存。上限值全从 workbench.ts 取；语义清洗（丢弃不认识的内置
-// 类型、截断超长内容、栏数与栏宽对齐）交给 setUIPref → sanitizeLayout。
+// 工作台分栏布局的 **IPC 边界**校验（plan9 W2，三层里的第二层）：只做「形状 + 尺寸上限」。⚠️ 上限也要卡 —— 布局是**频繁写入**的对象，某处逻辑出 bug 反复往数组里塞会把盘写成巨大 JSON；语义清洗交给 setUIPref → sanitizeLayout。
 const zPaneContent = z.union([
   z.object({
     kind: z.literal('builtin'),
@@ -160,48 +156,28 @@ import {
 } from './store/conversations'
 import { normalizeHistory } from './store/conversations-core'
 
-// 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。
-// schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
+// 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
 
-/**
- * 对话并发上限（plan11 §2.1）：一条会话 = 一堆工具调用 / 子进程，不设上限等于允许一键压垮机器；
- * 3 条够"改代码 + 查资料 + 跑长任务"三件事并行。
- */
+/** 对话并发上限（plan11 §2.1）：一条会话 = 一堆工具调用 / 子进程，不设上限等于允许一键压垮机器；3 条够"改代码 + 查资料 + 跑长任务"三件事并行。 */
 const MAX_CONCURRENT_CHATS = 3
 
-/**
- * 进行中的对话，**按会话**记（plan11 §2.1）：以前 key 是 `e.sender.id`（一个窗口只能跑一条），现在按
- * `conversationId` —— **同会话重复发送 → 拒绝；跨会话 → 放行**。
- * ⚠️ 闸的逻辑抽在 `./agent/concurrency`（纯函数可单测）：`verify-shot` 把 `chat:send` 整个 stub 掉了，
- * 界面上"两条都在跑"与闸的实际值**无关**（实测把上限改回 1，那边 6 条并发断言照样全绿）——只有纯单测验得到它。
- */
+/** 进行中的对话**按会话**记（plan11 §2.1）：`同会话重复发送 → 拒绝；跨会话 → 放行`（以前 key 是 `e.sender.id`，一个窗口只能跑一条）。
+ *  ⚠️ 闸的逻辑抽在 `./agent/concurrency`（纯函数可单测）：`verify-shot` 把 `chat:send` 整个 stub 掉了，界面上"两条都在跑"与闸的实际值**无关** —— 只有纯单测验得到它。 */
 const chatGate = createChatGate(MAX_CONCURRENT_CHATS)
-/** Agent 循环并发闸（按窗口）：同时只允许一个 Agent 任务 */
 const activeAgents = new Set<number>()
 
-/**
- * 当前待办清单（plan7 批 D）：**主进程内存态，不落盘** —— 它表达"这一轮干到哪了"的即时视图，不是历史
- * 数据；存主进程而非渲染端，因为界面会随视图切换重挂载。plan11：改成**按会话**存（原为模块级单例，两条会话会互相顶掉）。
- */
+/** 当前待办清单（plan7 批 D）：**主进程内存态，不落盘**（它表达"这一轮干到哪了"的即时视图）；按会话存是因为界面会随视图切换重挂载、且两条会话会互相顶掉。 */
 const todosByConversation = new Map<string, TodoItem[]>()
 
-/**
- * 最近一批子代理的运行事件（plan7 批 D）：同一 runId 内按 name+index **就地更新**（start 先落一条，
- * end/error 覆盖它），换批次（新 runId）清空重来 —— 界面显示的是"当前这批"，不是历史台账。
- * plan11：同样**按会话**存（单例会被另一条会话的事件顶掉）。
- */
+/** 最近一批子代理的运行事件（plan7 批 D）：同一 runId 内按 name+index **就地更新**（start 先落一条，end/error 覆盖它），换批次清空重来 —— 界面显示的是"当前这批"。同样**按会话**存。 */
 const subagentsByConversation = new Map<string, { runId: string | null; events: SubagentJobEvent[] }>()
 
 const log = createLogger('ipc')
 
-/**
- * 检查点轮次的**归属哨兵**（plan11 P0-11）：`begin` 的第三参必须给得出答案 —— 界面直接发起的文件操作
- * 不属于任何会话，单次 Agent 调用也没有对话上下文，两者都记成明确的哨兵而不是留空（留空 = 查不出"这轮是谁跑的"）。
- */
+/** 检查点轮次的**归属哨兵**（plan11 P0-11）：`begin` 的第三参必须给得出答案 —— 界面直接发起的文件操作、单次 Agent 调用都没有对话上下文，两者都记成明确的哨兵而不是留空（留空 = 查不出"这轮是谁跑的"）。 */
 const UI_RUN_OWNER = 'ui'
 const AGENT_TASK_OWNER = 'agent-task'
 
-// 把 zod 的英文校验错误翻译成人话（设置页直接展示，不再甩原始 JSON）
 const fieldLabels: Record<string, string> = {
   providerType: '协议类型',
   baseURL: '接口地址',
@@ -242,15 +218,11 @@ function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): 
 export function registerIpcHandlers(deps: {
   agent: AgentRuntimeContext
   userDataDir: string
-  /** 危险操作确认桥（plan8 R5） */
   confirm: ConfirmBridge
-  /**
-   * 内置终端会话（plan7 批 C）。⚠️ 传进来而不是在这里 new：**广播代码必须放 `main/index.ts`**
-   * （`ipc.ts` 里一个裸 `.send(` 都不许有，见 `tests/unit/stream-envelope.test.ts`），而会话的
-   * `onData` 要往所有窗口推 —— 所以"建会话"在组合根，这里只做"把界面请求转给会话层"。
-   */
+  /** Agent 提问桥。⚠️ 传进来而不是在这里 new：与 confirm 同理 —— **组合根负责"建"，这里只做转交**（本文件一个裸 `.send(` 都不许有） */
+  ask: AskBridge
+  /** 内置终端会话（plan7 批 C）。⚠️ 传进来而不是在这里 new：**广播代码必须放 `main/index.ts`**（本文件里一个裸 `.send(` 都不许有，见 `tests/unit/stream-envelope.test.ts`），而会话的 `onData` 要往所有窗口推 —— 故"建会话"在组合根，这里只做转交。 */
   terminal: TerminalSessionStore
-  /** 渲染端回报"要关窗口前的落盘已完成"（plan11 P0-2）—— 主进程收到才真关 */
   onFlushDone?: () => void
 }): void {
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
@@ -281,8 +253,7 @@ export function registerIpcHandlers(deps: {
     }
   })
 
-  // ── 多模型管理（plan7 F5）────────────────────────────────────────────
-  // 视图里**只给 Key 的掩码** —— 与 `settings:get` 同一条规矩：明文 Key 永远不回渲染进程。
+  // 多模型管理的视图里**只给 Key 的掩码**（与 `settings:get` 同一条规矩：明文 Key 永远不回渲染进程）。
   const modelsView = (): ModelsView => {
     const { profiles, activeId } = listProfiles()
     return {
@@ -306,13 +277,11 @@ export function registerIpcHandlers(deps: {
     return view
   })
 
-  // 「获取可用模型」（F5.1）：拉厂商的模型列表，失败给人话
   ipcMain.handle(IPC.modelsAvailable, async (_e, raw: unknown) => {
     const id = friendlyParse(conversationIdSchema, raw)
     return listAvailableModels(id)
   })
 
-  // 切端点内的当前模型（模型目录里「用」那个动作）
   ipcMain.handle(IPC.modelsSetEntry, (_e, raw: unknown): ModelsView => {
     const input = friendlyParse(modelEntryPickSchema, raw)
     setActiveEntry(input.profileId, input.entryId)
@@ -320,14 +289,13 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.modelsDelete, (_e, raw: unknown) => {
-    const id = friendlyParse(conversationIdSchema, raw) // 与其它 id 同一条长度约束
-    deleteProfileById(id) // 护栏（至少留一个）在里面，抛出的是人话
+    const id = friendlyParse(conversationIdSchema, raw)
+    deleteProfileById(id)
   })
 
   ipcMain.handle(IPC.modelsSetActive, (_e, raw: unknown): ModelsView => {
     const id = friendlyParse(conversationIdSchema, raw)
     setActiveProfile(id)
-    // 切换模型要立刻生效：设置页与输入框读的都是"当前档案"，无需重启
     return modelsView()
   })
 
@@ -353,7 +321,6 @@ export function registerIpcHandlers(deps: {
     }
   })
 
-  // ── 目标（plan12）──────────────────────────────────────────────────
   // 目标属于**一条会话**（plan11 的会话身份在这儿第二次派上用场）：切回那条会话还看得见它，是自然结果。
   ipcMain.handle(IPC.goalList, (_e, raw: unknown): Goal[] => {
     const conversationId = friendlyParse(conversationIdSchema, raw)
@@ -389,8 +356,7 @@ export function registerIpcHandlers(deps: {
     // 这一轮所有事件的**唯一发送口**：会话身份在构造时进了闭包，之后不可能漏（plan11 §2.5）
     const emit = createChatEmitter(e.sender, conversationId)
 
-    // IPC 层并发防护：渲染层的 streaming 标志只是软约束，这里才是硬闸 —— 同会话重复 → 拒；
-    // 跨会话 → 放行（上限见 MAX_CONCURRENT_CHATS）。规则本身在 ./agent/concurrency（纯函数，有单测）。
+    // IPC 层并发防护：渲染层的 streaming 标志只是软约束，这里才是硬闸（同会话重复 → 拒，跨会话 → 放行）。
     const gate = chatGate.begin(conversationId)
     if (!gate.ok) {
       emit.error(gate.message)
@@ -417,8 +383,7 @@ export function registerIpcHandlers(deps: {
       controller.abort()
     }, settings.timeoutMs)
 
-    // D-032：单一通道 —— 带工具清单 + 流式，由模型自决"直接回答还是先调工具"。
-    // 文本增量 → chat:chunk（上屏）；工具生命周期 → chat:tool（进度卡片）。
+    // D-032：单一通道 —— 带工具清单 + 流式，由模型自决"直接回答还是先调工具"；文本增量 → chat:chunk（上屏），工具生命周期 → chat:tool（进度卡片）。
     try {
       const result = await runAgent(deps.agent, {
         settings: getSettingsView(),
@@ -427,7 +392,6 @@ export function registerIpcHandlers(deps: {
         permission: getPermissionPreset(),
         conversationId,
         onText: (delta) => emit.chunk(delta),
-        // 思考流单独走一条通道：界面把它显示成"思考过程"，不与正文混在一起
         onReasoning: (delta) => emit.reasoning(delta),
         onToolEvent: (evt) => emit.tool(evt),
         // 待办清单（plan7 批 D）：先存主进程，再推给界面 —— 界面重挂载后仍能拉到
@@ -439,11 +403,8 @@ export function registerIpcHandlers(deps: {
         onToolWindowed: (info) => log.info('工具输出已成形', { conversationId, ...info }),
         // 校准开关（plan8 R9.1）：只认 `JSL_TOOL_WINDOW=off`，不给就是默认开 —— 免得留一个"忘了配就悄悄变了行为"的配置面。
         ...(process.env['JSL_TOOL_WINDOW'] === 'off' ? { toolWindow: false } : {}),
-        // 省 token 档位（plan8 R9.1 §七②）：**在这里解析**（组合根读设置再往下给 policy）—— runner
-        // 不许碰 electron-store（CI 无 Electron 二进制），所以读设置只能发生在本层。`JSL_TOKEN_TIER`
-        // 与 `JSL_TOOL_WINDOW` 同族的**校准钩子**：让 harness 能按档位切臂去跑；环境变量不存在时行为与以前一样。
+        // 省 token 档位（plan8 R9.1 §七②）：**在这里解析**（组合根读设置再往下给 policy）—— runner 不许碰 electron-store（CI 无 Electron），故读设置只能发生在本层；`JSL_TOKEN_TIER` 是**校准钩子**，环境变量不存在时行为与以前一样。
         policy: resolvePolicy(process.env['JSL_TOKEN_TIER'] ?? getTokenTier()),
-        // 子代理事件（plan7 批 D）：同批内就地更新，换批则重开
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
           if (state.runId !== evt.runId) {
@@ -485,12 +446,10 @@ export function registerIpcHandlers(deps: {
     chatGate.abort(conversationId)
   })
 
-  // 关窗口前的落盘回执（plan11 P0-2）：主进程收到它才真关窗口
   ipcMain.handle(IPC.flushDone, () => {
     deps.onFlushDone?.()
   })
 
-  // 待办清单：界面挂载时拉一次当前值（之后靠 chatSend 里的推送更新）
   ipcMain.handle(IPC.todoGet, (_e, raw: unknown): TodoItem[] => {
     const id = friendlyParse(conversationIdSchema, raw)
     return todosByConversation.get(id) ?? []
@@ -500,11 +459,9 @@ export function registerIpcHandlers(deps: {
     return subagentsByConversation.get(id)?.events ?? []
   })
 
-  // Agent 模式（plan6 D3/D4）：独立上下文 + 单次报告，不走流式
   const agentRunInput = z.object({
     task: z.string().min(1).max(200000),
     agentName: z.string().max(64).optional(),
-    // 归属（plan11）：可选，缺省由主进程记成哨兵值
     conversationId: conversationIdSchema.optional()
   })
   const failResult = (agent: string, error: string): AgentRunResult => ({
@@ -512,7 +469,6 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.agentRun, async (e, raw: unknown): Promise<AgentRunResult> => {
-    // 入参校验走 friendlyParse（人话错误），且失败也返回 AgentRunResult 而非抛裸 ZodError
     let req: { task: string; agentName?: string; conversationId?: string }
     try {
       req = friendlyParse(agentRunInput, raw) as {
@@ -542,7 +498,6 @@ export function registerIpcHandlers(deps: {
         apiKey,
         history: [{ role: 'user', content: req.task }],
         agentName: req.agentName,
-        // 单次 Agent 调用没有对话上下文：记一个**明确的哨兵**，不留空 —— 出事时要能追溯
         conversationId: req.conversationId ?? AGENT_TASK_OWNER
       })
       return {
@@ -563,9 +518,7 @@ export function registerIpcHandlers(deps: {
     }
   })
 
-  // ── P2 工作台 ────────────────────────────────────────────────
 
-  // 只改模型名（快速切换），其余配置不动
   ipcMain.handle(IPC.settingsSetModel, (_e, raw: unknown) => {
     const model = z.string().min(1).max(200).parse(raw)
     return setModel(model)
@@ -582,14 +535,12 @@ export function registerIpcHandlers(deps: {
     if (result.canceled || result.filePaths.length === 0) return null
     const picked = result.filePaths[0]!
     setWorkspaceRoot(picked)
-    // 切工作区 → 收掉终端会话：那个 shell 还停在**上一个项目**的目录里，且"每工作区一个会话"的语义下
-    // 它已没有归属（懒收 = 不碰终端就不收，等于不收）
+    // 切工作区 → 收掉终端会话：那个 shell 还停在**上一个项目**的目录里，且"每工作区一个会话"的语义下它已没有归属（懒收 = 不碰终端就不收，等于不收）
     deps.terminal.killAll()
     ensureAgentRuntime(deps.agent) // 新工作区目录先备好
     return getWorkspaceInfo(deps.userDataDir)
   })
 
-  // 切换到「已知工作区」（历史会话用过的路径）——不接受任意路径
   ipcMain.handle(IPC.workspaceSetKnown, (_e, raw: unknown): WorkspaceInfo | null => {
     const path = z.string().min(1).max(500).parse(raw)
     const allowed = knownWorkspaces()
@@ -600,7 +551,6 @@ export function registerIpcHandlers(deps: {
     return getWorkspaceInfo(deps.userDataDir)
   })
 
-  // 在系统文件管理器中打开目录
   ipcMain.handle(IPC.workspaceReveal, async (_e, raw: unknown) => {
     const path = z.string().min(1).max(500).parse(raw)
     const allowed = knownWorkspaces()
@@ -608,7 +558,6 @@ export function registerIpcHandlers(deps: {
     await shell.openPath(path)
   })
 
-  // ── 会话（P2 侧边栏）────────────────────────────────────────
 
   ipcMain.handle(IPC.convList, (): ConversationMeta[] => listConversations())
 
@@ -631,8 +580,7 @@ export function registerIpcHandlers(deps: {
     if (input.workspace !== current && !knownWorkspaces().includes(input.workspace)) {
       throw new Error(`工作区未被授权：${input.workspace}`)
     }
-    // **绑定"当前端点的当前模型"**（plan7 F5.1）：`model` 记名字（给人看、老数据只有它），`modelProfileId`
-    // 记端点（用哪条连接 + 哪把 Key）、`modelEntryId` 记目录里的哪一条 —— 渲染端不用关心，它此刻用的就是这一对。
+    // **绑定"当前端点的当前模型"**（plan7 F5.1）：`modelProfileId` 记端点（用哪条连接 + 哪把 Key）、`modelEntryId` 记目录里的哪一条 —— 渲染端不用关心，它此刻用的就是这一对。
     const active = getActiveEntry()
     return createConversation({
       ...input,
@@ -643,23 +591,19 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {
-    // **先松收下 → 规整 → 再严格校验**：① 流式占位（`content` 为空）是**合法中间状态**，先收得下来；
-    // ② 把没内容的消息丢掉（`normalizeHistory`）；③ 真正落盘前照旧严格把关。
-    // ⚠️ 以前是"直接严格 parse"，于是"流式没吐字就切会话/点停止/关窗口"这几条路**保存必然被拒**，
-    // 而调用方是 `void persistActive()` —— 静默、丢数据、无从解释。
+    // **先松收下 → 规整 → 再严格校验**：① 流式占位（`content` 为空）是**合法中间状态**，先收得下来；② 丢掉没内容的消息；③ 落盘前严格把关。
+    // ⚠️ 以前是"直接严格 parse"，于是"流式没吐字就切会话/点停止/关窗口"这几条路**保存必然被拒**，而调用方 `void persistActive()` —— 静默、丢数据、无从解释。
     const input = z
       .object({
         id: z.string().min(1).max(64),
         messages: incomingMessagesSchema,
-        // 用量账本（plan8 R9）：可选。**不信任上游的数字**——负/非有限一律拒，
-        // 免得一个 NaN 写进索引，之后每次列表都读到一个坏值
+        // 用量账本（plan8 R9）：可选。**不信任上游的数字**——负/非有限一律拒，免得一个 NaN 写进索引，之后每次列表都读到一个坏值
         usage: z
           .object({
             promptTokens: z.number().finite().nonnegative(),
             completionTokens: z.number().finite().nonnegative()
           })
           .optional(),
-        /** 窗口化省下的估算 token（plan8 R9.1），同样不信任上游 */
         avoidedTokens: z.number().finite().nonnegative().optional()
       })
       .parse(raw)
@@ -689,11 +633,7 @@ export function registerIpcHandlers(deps: {
     return renameConversation(input.id, input.title)
   })
 
-  // ── 会话回滚（plan10 B 批 · ④）──────────────────────────────────
-  // 三条边界：① **正在生成回复时拒绝回滚** —— 复用并发闸（按**会话**判断：回滚哪条就只看那条跑没跑，
-  // 流式没结束就动历史 = 在动的数据上做手术）；② **走 R5 确认桥**（`kind: 'rollback-messages'`）——
-  // 回滚会"藏起"一段对话，不该一点就走，且文案必须与**文件回滚**分得清；③ **回传权威正文** —— 渲染端
-  // 用它覆盖内存，否则下一次保存会把回滚掉的内容写回来。
+  // 会话回滚（plan10 B 批 ④）三条边界：① **正在生成回复时拒绝回滚**（流式没结束就动历史 = 在动的数据上做手术）；② **走 R5 确认桥**（`kind: 'rollback-messages'`，文案必须与**文件回滚**分得清）；③ **回传权威正文**（渲染端用它覆盖内存）。
   // ⚠️ 回滚**不删数据**（只移游标），所以"撤销"零成本 —— 这也是它敢用"确认一下就执行"的原因。
   const doRollback = async (
     id: string,
@@ -703,7 +643,7 @@ export function registerIpcHandlers(deps: {
     if (!current) return null
     const visible = current.messages.length
     const target = Math.max(0, Math.min(Math.floor(toIndex), visible))
-    if (target === visible) return null // 没东西可回滚，不打扰用户
+    if (target === visible) return null
 
     const hidden = visible - target
     const allowed = await deps.confirm.ask({
@@ -712,7 +652,6 @@ export function registerIpcHandlers(deps: {
       detail: `回到第 ${target + 1} 条消息之前 —— 之后 ${hidden} 条将从对话里隐去（可撤销）`,
       agent: current.title,
       where: `仅回滚对话消息，不影响工作区里的文件`,
-      // 这条回滚属于哪条会话 —— 确认框要显示出来（plan11 P0-3）
       conversationId: id
     })
     if (!allowed) return null
@@ -756,22 +695,18 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.skillsList, (): SkillInfo[] => listSkills(deps.agent))
 
-  // ── 输入框工具栏（P2 控制台）────────────────────────────────
 
   ipcMain.handle(IPC.permissionGet, (): PermissionPreset => getPermissionPreset())
 
   ipcMain.handle(IPC.permissionSet, (_e, raw: unknown): PermissionPreset => {
     const preset = z.enum(['read-only', 'write', 'full-access']).parse(raw)
     const applied = setPermissionPreset(preset)
-    // ⚠️ 降到只读时**必须把正在跑的终端会话收掉**：权限档的语义是"这台机器只读，人和模型同一把尺"
-    //    （plan14 §三③），而一个还在跑的 shell 会让"只读"变成空话 —— 界面横幅写着"不执行命令"，屏幕上却在执行。
+    // ⚠️ 降到只读时**必须把正在跑的终端会话收掉**：权限档的语义是"这台机器只读，人和模型同一把尺"，一个还在跑的 shell 会让"只读"变成空话 —— 界面横幅写着"不执行命令"，屏幕上却在执行。
     if (applied === 'read-only') deps.terminal.killAll()
     return applied
   })
 
-  // ── 省 token 档位（plan8 R9.1 §七②）────────────────────────
-  // 与权限档同一个模式：**人定的档存在主进程**，界面只是它的一个视图。这里用 zod 收口而不是"认不出就
-  // 回落"：回落是给**读**用的（老配置得能跑），**写**进来的脏值必须当场拒 —— 用户点了却没生效比报错更难查。
+  // 省 token 档位与权限档同一个模式：**人定的档存在主进程**，界面只是它的一个视图。这里用 zod 收口而不是"认不出就回落"：回落是给**读**用的，**写**进来的脏值必须当场拒。
   ipcMain.handle(IPC.tokenTierGet, (): TokenSaverTier => getTokenTier())
 
   ipcMain.handle(IPC.tokenTierSet, (_e, raw: unknown): TokenSaverTier => {
@@ -783,9 +718,7 @@ export function registerIpcHandlers(deps: {
     readGitInfo(getWorkspaceInfo(deps.userDataDir).path)
   )
 
-  // 附件：选文件 → 读入内容（上限 64KB，超出截断并标注）
-  // 「路径 → 附件」的实现在 `workspace-fs.readAttachment`，**两个入口共用**（文件选择框 / 拖拽进来）
-  // —— 抽到那边是为了能单测（那里不碰 electron）
+  // 附件：选文件 → 读入内容（上限 64KB，超出截断并标注）；「路径 → 附件」实现在 `workspace-fs.readAttachment`，**两个入口共用**（文件选择框 / 拖拽进来）—— 抽到那边是为了能单测。
   ipcMain.handle(IPC.attachFile, async (e): Promise<Attachment | null> => {
     const ws = getWorkspaceInfo(deps.userDataDir).path
     const win = BrowserWindow.fromWebContents(e.sender) ?? undefined
@@ -795,8 +728,7 @@ export function registerIpcHandlers(deps: {
     return readAttachment(ws, res.filePaths[0]!)
   })
 
-  // 拖拽进来的文件（③ 文件拖进会话）：相对路径来自工作区文件树（必须在工作区内），绝对路径来自系统
-  // 资源管理器（明确拖入即放行）。边界规则与理由集中在 `workspace-fs.readAttachment`，这里只管留痕。
+  // 拖拽进来的文件：相对路径来自工作区文件树（必须在工作区内），绝对路径来自系统资源管理器（明确拖入即放行）；边界规则与理由集中在 `workspace-fs.readAttachment`，这里只管留痕。
   ipcMain.handle(IPC.attachPath, async (_e, raw: unknown): Promise<Attachment> => {
     const pathOrRel = z.string().min(1).max(4096).parse(raw)
     const ws = getWorkspaceInfo(deps.userDataDir).path
@@ -807,7 +739,6 @@ export function registerIpcHandlers(deps: {
       log.warn('附件被拒', {
         received: pathOrRel,
         workspace: ws,
-        // 绝对路径 = 从系统资源管理器拖来的；相对路径 = 从工作区文件树拖来的
         kind: /^[a-zA-Z]:[\\/]|^\\\\/.test(pathOrRel) ? '系统拖拽/绝对路径' : '工作区相对路径',
         error: err instanceof Error ? err.message : String(err)
       })
@@ -815,7 +746,6 @@ export function registerIpcHandlers(deps: {
     }
   })
 
-  // 提示词优化：一次轻量模型调用，把草稿改写成更清晰的指令
   ipcMain.handle(IPC.promptPolish, async (_e, raw: unknown): Promise<string> => {
     const text = z.string().min(1).max(20000).parse(raw)
     const settings = getSettingsView()
@@ -844,7 +774,6 @@ export function registerIpcHandlers(deps: {
     return out.trim() || text
   })
 
-  // ── 内置浏览器（真浏览器，Agent 可操控同一实例）──────────────
 
   ipcMain.handle(IPC.browserState, (): BrowserState => getBrowserState())
 
@@ -873,7 +802,6 @@ export function registerIpcHandlers(deps: {
     setBrowserBounds(b)
   })
 
-  // ── 日志（plan8 R2）：排查入口 ──────────────────────────────
 
   ipcMain.handle(IPC.logsOpen, async (): Promise<boolean> => {
     const dir = getLogDir()
@@ -887,7 +815,6 @@ export function registerIpcHandlers(deps: {
     return { dir, files: listLogFiles() }
   })
 
-  // ── 检查点与回滚（plan8 R4）：Agent 改坏文件能退回去 ──────────
 
   ipcMain.handle(IPC.checkpointList, (): CheckpointRunMeta[] => deps.agent.checkpoints.list())
 
@@ -897,11 +824,7 @@ export function registerIpcHandlers(deps: {
     return deps.agent.checkpoints.get(parsed.data)
   })
 
-  /**
-   * Diff 视图取两侧内容（plan13 B3）。**纯读**：不落盘、不动检查点、不产生轮次 —— 打开 Diff 看一眼
-   * 不该有任何副作用。两侧**都在这里读**（快照 + 当前），而不是让界面自己读磁盘：一次 IPC 拿到的两侧才是
-   * **同一时刻**的一致快照，分两次读中间可能被 Agent 改掉。
-   */
+/** Diff 视图取两侧内容（plan13 B3）。**纯读**：不落盘、不动检查点、不产生轮次。两侧**都在这里读**（快照 + 当前）—— 一次 IPC 拿到的两侧才是**同一时刻**的一致快照，分两次读中间可能被 Agent 改掉。 */
   ipcMain.handle(
     IPC.checkpointSides,
     async (_e, raw: unknown): Promise<CheckpointSidesResult> => {
@@ -919,8 +842,7 @@ export function registerIpcHandlers(deps: {
       const change = selectChanges(run.changes, rel)[0]
       if (!change) return { ok: false, reason: 'not-recorded' }
 
-      // ⚠️ **工作区一致性**（审查指出）：检查点目录是全局的，列表里会有别的工作区的轮次，而 rel 是
-      //    相对路径 —— 拿当前工作区去拼就会比到**同名的另一个文件**。拦在这里，比"显示一份对不上的差异"诚实得多。
+      // ⚠️ **工作区一致性**（审查指出）：检查点目录是全局的，列表里会有别的工作区的轮次，而 rel 是相对路径 —— 拿当前工作区去拼就会比到**同名的另一个文件**；拦在这里，比"显示一份对不上的差异"诚实得多。
       const workspaceRoot = deps.agent.getWorkspaceRoot()
       if (!samePath(run.workspace, workspaceRoot)) {
         return { ok: false, reason: 'other-workspace' }
@@ -962,9 +884,7 @@ export function registerIpcHandlers(deps: {
       const input = z
         .object({ runId: z.string().min(1).max(64), rel: z.string().min(1).max(1024).optional() })
         .parse(raw)
-      // ⚠️ **回滚也要能"再回滚一次"**（plan13 审查第 1 轮指出的丢数据路径）：回滚是"把现在的内容换成
-      //    别的"，它自己不留快照的话，用户退错了就**永远回不去** —— Agent 那一版内容只在磁盘上，一覆盖就没了。
-      //    所以先把"即将被覆盖的当前内容"存成一轮检查点，再动手。
+      // ⚠️ **回滚也要能"再回滚一次"**：回滚是"把现在的内容换成别的"，它自己不留快照的话，用户退错了就**永远回不去** —— 所以先把"即将被覆盖的当前内容"存成一轮检查点，再动手。
       const preRunId = deps.agent.checkpoints.snapshotCurrent(
         input.runId,
         input.rel,
@@ -993,7 +913,24 @@ export function registerIpcHandlers(deps: {
     deps.confirm.respond(parsed.data)
   })
 
-  // ── 界面布局偏好（plan7 批 A0）──────────────────────────────
+  // 提问回执：这里只做**形状校验 + 转交**。配对、三种形态的优先级、超时都在 `ask.ts` 的桥里（那层纯函数可单测；
+  // 本文件 import 了 electron，CI 上跑不了）。值只当**候选**看：不在选项里的一律由桥丢弃。
+  // ⚠️ `skip` / `text` 必须写进 schema —— zod 默认**丢掉**未声明的键，漏一个就等于"界面的跳过与自填被静默吞掉"。
+  ipcMain.handle(IPC.askRespond, (_e, raw: unknown): boolean => {
+    const parsed = z
+      .object({
+        id: z.string().min(1).max(64),
+        values: z.array(z.string().max(200)).max(ASK_MAX_OPTIONS),
+        skip: z.boolean().optional(),
+        // 上限只为拦异常载荷：用户自己写的答案不该因为界面之外的原因被砍
+        text: z.string().max(4000).optional()
+      })
+      .safeParse(raw)
+    if (!parsed.success) return false
+    const result: AskResult = parsed.data
+    return deps.ask.respond(result)
+  })
+
   ipcMain.handle(IPC.uiPrefsGet, (): UIPrefs => getUIPrefs())
 
   ipcMain.handle(IPC.uiPrefsSet, (_e, raw: unknown): UIPrefs => {
@@ -1012,8 +949,7 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.uiPrefsReset, (): UIPrefs => resetUIPrefs())
 
-  // ── 工作区文件树（plan7 批 A，只读）──────────────────────────
-  // 工作区路径每次实时解析（用户可切换工作区，免重启）
+  // ── 工作区文件树（只读）：工作区路径每次实时解析（用户可切换工作区，免重启）
   ipcMain.handle(IPC.fsList, (_e, raw: unknown): Promise<FsListResult> => {
     const rel = z.string().max(1024).safeParse(raw)
     return listWorkspaceDir(deps.agent.getWorkspaceRoot(), rel.success ? rel.data : '')
@@ -1024,22 +960,16 @@ export function registerIpcHandlers(deps: {
     return readWorkspaceFile(deps.agent.getWorkspaceRoot(), rel)
   })
 
-  // 二进制预览（plan7 批 A3）：图片走 data URL、其余走十六进制头部
   ipcMain.handle(IPC.fsReadBinary, (_e, raw: unknown): Promise<FsBinaryResult> => {
     const rel = z.string().min(1).max(1024).parse(raw)
     return readWorkspaceBinary(deps.agent.getWorkspaceRoot(), rel)
   })
 
-  // ── 工作区写操作（plan7 批 A2）──────────────────────────────
-  // ① 全部走**统一写入服务**（界面与 Agent 同一条写入路径）；② 每个操作**各开一个检查点轮次**，于是界面里
-  // 删掉/改掉的东西同样出现在「文件变更记录」里、同样退得回（这正是批 A2 一直卡着不做的原因）；③ 删除走回收站，不是硬删。
+  // 工作区写操作（plan7 批 A2）：① 全部走**统一写入服务**（界面与 Agent 同一条写入路径）；② 每个操作**各开一个检查点轮次**，于是界面里删掉/改掉的东西同样出现在「文件变更记录」里、同样退得回；③ 删除走回收站，不是硬删。
   const fsWriteInput = z.object({
     rel: z.string().min(1).max(1024),
     content: z.string().max(5_000_000),
-    /**
-     * 冲突基线（编辑时带上；文件树的新建/重命名那条**不带**，因为本来就没有"打开"这一步）。
-     * 带了就比对 mtime：对不上**不写盘**，回 `conflict: true` 让用户选 —— 不做静默覆盖。
-     */
+    /** 冲突基线（编辑时带上；文件树的新建/重命名那条**不带**）：带了就比对 mtime，对不上**不写盘**、回 `conflict: true` 让用户选 —— 不做静默覆盖。 */
     expectedMtimeMs: z.number().nonnegative().optional()
   })
   const fsRelInput = z.object({ rel: z.string().min(1).max(1024) })
@@ -1052,16 +982,13 @@ export function registerIpcHandlers(deps: {
     rel: z.string().min(1).max(1024)
   })
 
-  /**
-   * 开一个检查点轮次 → 跑写入 → 收尾。**失败也照样 finish**：manifest 是增量落盘的，已发生的改动仍可回滚。
-   */
+/** 开一个检查点轮次 → 跑写入 → 收尾。**失败也照样 finish**：manifest 是增量落盘的，已发生的改动仍可回滚。 */
   const runFsOp = async (
     label: string,
     fn: (writer: WorkspaceWriter) => Promise<string>
   ): Promise<FsOpResult> => {
     const workspaceRoot = deps.agent.getWorkspaceRoot()
-    // 界面直接发起的文件操作（新建 / 改名 / 删除）不属于任何一条会话 ——
-    // 用一个**明确的哨兵**记归属，而不是留空：检查点里"这轮是谁跑的"必须永远答得出来
+    // 界面直接发起的文件操作（新建 / 改名 / 删除）不属于任何一条会话 —— 用一个**明确的哨兵**记归属，不留空（检查点里"这轮是谁跑的"必须永远答得出来）
     const runId = deps.agent.checkpoints.begin(workspaceRoot, label, UI_RUN_OWNER)
     const writer = createWorkspaceWriter(workspaceRoot, {
       beforeChange: (rel, abs) => deps.agent.checkpoints.record(runId, workspaceRoot, rel, abs),
@@ -1073,12 +1000,8 @@ export function registerIpcHandlers(deps: {
       return { ok: false, message: err instanceof Error ? err.message : String(err) }
     } finally {
       deps.agent.checkpoints.finish(runId)
-      // ⚠️ 必须在这里广播一次"检查点变了"（面板据此刷新），且**必须走 `createChatEmitter`**：界面自己
-      // 发起的写操作（新建 / 改名 / 删除 / 导入 / **逐处退回**）同样产生轮次，而这条路径原先不发任何事件 ——
-      // 面板要用户手动点「刷新」才看得见，而「逐处退回」刚承诺了"退错了还能再退回来"，承诺一条**找不到的
-      // 轮次**就成了骗人的话。**不许写裸 `webContents.send`**：结构性守卫（`tests/unit/stream-envelope.test.ts`）
-      // 要求"ipc.ts 一个裸 `.send(` 都不许有" —— 绕开唯一发送口就会漏带会话身份、界面串台。用广播而非只发
-      // 发起窗口：检查点列表是**全局**的（所有窗口同一目录），谁改了它谁就该刷新。
+      // ⚠️ 必须在这里广播一次"检查点变了"（面板据此刷新），且**必须走 `createChatEmitter`**：界面自己发起的写操作同样产生轮次，而"逐处退回"刚承诺了"退错了还能再退"，承诺一条**找不到的轮次**就成骗人的话。
+      // **不许写裸 `webContents.send`**：结构性守卫（`tests/unit/stream-envelope.test.ts`）要求"ipc.ts 一个裸 `.send(` 都不许有"——绕开唯一发送口会漏带会话身份、界面串台。用广播而非只发发起窗口：检查点列表是**全局**的，谁改了它谁就该刷新。
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) {
           createChatEmitter(win.webContents, UI_RUN_OWNER).checkpoint(runId)
@@ -1092,9 +1015,7 @@ export function registerIpcHandlers(deps: {
     if (!p.success) return { ok: false, message: '入参不合法' }
     const workspaceRoot = deps.agent.getWorkspaceRoot()
 
-    // **边界②：外部冲突**（plan7 批 A3）—— 文件可能在"打开之后、保存之前"被改过（Agent 或别的程序）。
-    // 这时**不许静默覆盖**：把冲突如实回给界面，由用户选"覆盖 / 重新载入"；
-    // 拿不到 mtime（文件刚被删）也当作冲突 —— 那种情况更不该闷头写下去。
+    // **边界②：外部冲突**（plan7 批 A3）：文件可能在"打开之后、保存之前"被改过 —— 这时**不许静默覆盖**，把冲突如实回给界面由用户选；拿不到 mtime（文件刚被删）也当作冲突。
     if (p.data.expectedMtimeMs !== undefined) {
       const abs = resolveInsideWorkspace(workspaceRoot, p.data.rel)
       if (!abs) return { ok: false, message: `路径「${p.data.rel}」越出工作区边界，已拒绝` }
@@ -1158,9 +1079,7 @@ export function registerIpcHandlers(deps: {
     return runFsOp('界面 · 导入文件', (w) => w.copyIn(p.data.sourceAbs, p.data.rel))
   })
 
-  // ── 内置终端（plan7 批 C）────────────────────────────────────
-  // 这些 handler 只做**两件事**：校验入参 → 转给会话层。真正的逻辑（权限门控 / cwd 校验 / 缓冲 /
-  // 序号 / 树杀）都在 `terminal-session.ts`（依赖注入、可单测）；handler 这层 import 了 electron，CI 上跑不了。
+  // 内置终端：这些 handler 只做**两件事** —— 校验入参 → 转给会话层。真正的逻辑（权限门控 / cwd 校验 / 缓冲 / 序号 / 树杀）都在 `terminal-session.ts`（依赖注入、可单测）；handler 这层 import 了 electron，CI 上跑不了。
   ipcMain.handle(IPC.terminalStart, (_e, raw: unknown): TerminalStartResult => {
     const size = z
       .object({ cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) })
@@ -1189,8 +1108,7 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.terminalKill, (): boolean => deps.terminal.kill())
 
-  // 背压回执（plan14 §三⑤ 的硬要求）：界面每解析完一段就回一次，主进程按"未回执字符数"决定暂停/恢复
-  // pty 读取。**不是可选优化** —— xterm 的 `write()` 在 50MB 未解析数据时直接抛异常丢数据。
+  // 背压回执（plan14 §三⑤ 的硬要求）：界面每解析完一段就回一次，主进程按"未回执字符数"暂停/恢复 pty 读取。**不是可选优化** —— xterm 的 `write()` 在 50MB 未解析数据时直接抛异常丢数据。
   ipcMain.handle(IPC.terminalAck, (_e, raw: unknown): void => {
     const parsed = z
       .object({ sessionId: z.string().max(200), chars: z.number().int().min(0).max(64 * 1024 * 1024) })
@@ -1199,22 +1117,16 @@ export function registerIpcHandlers(deps: {
     deps.terminal.ack(parsed.data.sessionId, parsed.data.chars)
   })
 
-  // 背压**重对齐**：界面重挂并重放完之后调。没有它的话，"切走页签期间没人回执"会让 pty 一直停在暂停上 ——
-  // 切回来看到的是"活着但永远静止"的终端。
+  // 背压**重对齐**：界面重挂并重放完之后调。没有它的话，"切走页签期间没人回执"会让 pty 一直停在暂停上 —— 切回来看到的是"活着但永远静止"的终端。
   ipcMain.handle(IPC.terminalResync, (_e, raw: unknown): void => {
     const parsed = z.object({ sessionId: z.string().max(200) }).safeParse(raw)
     if (!parsed.success) return
     deps.terminal.resync(parsed.data.sessionId)
   })
 
-  /**
-   * 逐处退回（plan13 批 B · B4）——「把 Agent 改的这一处还原成改之前」。写在**文件操作这一片**是因为它
-   * 必须复用 `runFsOp`（统一写入服务 + 自动开检查点轮次）。三道闸如下（实现在 `revert-flow.ts`）：
-   * ① **算差异的输入必须与界面看到的同一份**（比 mtime，对不上就拒 —— 块序号只在两侧内容与算差异时一致的
-   * 前提下有效，否则就是"点了第 2 处、改掉第 N 处"，**不报错、只改错内容**）；② **写盘走统一写入服务**
-   * （于是这次退回自己也有检查点，"退错了还能再退"）；③ **不安全的情形一律退化成"请用整份退回"** ——
-   * `created` 没有改前内容可还原，截断（>256KB）拿半个文件写盘就是把大文件砍坏。
-   */
+/** 逐处退回（plan13 B4）——「把 Agent 改的这一处还原成改之前」。写在**文件操作这一片**是因为它必须复用 `runFsOp`（统一写入服务 + 自动开检查点轮次）。
+ *  三道闸：① **算差异的输入必须与界面看到的同一份**（比 mtime，对不上就拒 —— 否则"点了第 2 处、改掉第 N 处"，**不报错、只改错内容**）；② **写盘走统一写入服务**（这次退回自己也有检查点，"退错了还能再退"）；
+ *  ③ **不安全的情形一律退化成"请用整份退回"** —— `created` 没有改前内容可还原，截断拿半个文件写盘就是把大文件砍坏。 */
   ipcMain.handle(
     IPC.checkpointRevertHunk,
     async (_e, raw: unknown): Promise<RevertHunkResult> => {
@@ -1228,8 +1140,7 @@ export function registerIpcHandlers(deps: {
         .safeParse(raw)
       if (!parsed.success) return { ok: false, reason: 'bad-input' }
 
-      // ⚠️ 三道闸（工作区一致 / mtime 安全阀 / created+截断挡住）**搬去了 `revert-flow.ts`**，不在这里 ——
-      //    handler 这层 import 了 electron，CI 上跑不了，那段逻辑曾一条测试都没有（详见该文件头部）。
+      // ⚠️ 三道闸**搬去了 `revert-flow.ts`**，不在这里 —— handler 这层 import 了 electron、CI 上跑不了，那段逻辑曾一条测试都没有（详见该文件头部）。
       const workspaceRoot = deps.agent.getWorkspaceRoot()
       const result = await revertOneHunk(
         {
@@ -1275,8 +1186,7 @@ export function registerIpcHandlers(deps: {
     return Promise.resolve()
   })
 
-  // ── 后台任务（plan7 批 D）──
-  // 只读查询 + 终止。**启动**不在这里：那是 run_command 工具的事（要过危险确认）。
+  // 后台任务：只读查询 + 终止。**启动**不在这里：那是 run_command 工具的事（要过危险确认）。
   ipcMain.handle(IPC.bgList, (): BackgroundTask[] => deps.agent.background?.list() ?? [])
   ipcMain.handle(IPC.bgKill, (_e, raw: unknown): boolean => {
     const p = z.string().min(1).max(64).safeParse(raw)

@@ -24,7 +24,9 @@ const STREAM_CONSTS = [
   'IPC.todoChanged',
   'IPC.subagentChanged',
   'IPC.checkpointChanged',
-  'IPC.confirmRequest'
+  'IPC.confirmRequest',
+  // ask:request —— 提问也带会话身份（界面要说明这条问题出自哪条会话），故同样只许走 emitter
+  'IPC.askRequest'
 ] as const
 
 /** 唯一允许出现流式通道常量的主进程文件 */
