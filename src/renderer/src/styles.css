@@ -367,6 +367,97 @@ nav {
   font-size: var(--fs-md);
 }
 
+/* ── 文案注释层（FieldNote）────────────────────────────────────────────
+   把长说明收进一个 ⓘ/！ 记号，悬停或聚焦才展开。
+   2026-09-13 用户定调：设置页的段落注释长到影响拖放视觉与布局 —— 收起来，不是删掉。
+   ⚠️ 气泡配色**与主题反着来**（浅色界面用深气泡、深色界面用浅气泡）：
+   它是浮在内容之上的临时层，靠明度反差才认得出"这是附注、不是正文"。 */
+
+.fnote {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: baseline;
+}
+
+.fnote-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: var(--sp-4);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: help;
+  user-select: none;
+}
+
+/* 左侧记号：margin 换边（右侧那个默认 margin-left 要撤掉） */
+.fnote-left .fnote-mark {
+  margin-left: 0;
+  margin-right: var(--sp-4);
+  order: -1;
+}
+
+.fnote-mark:hover,
+.fnote-mark:focus-visible {
+  color: var(--text);
+  border-color: var(--muted);
+  outline: none;
+}
+
+/* 「！」= 有代价或有坑，用朱砂点一下（与全软件的告警色一致） */
+.fnote-mark-warn {
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.fnote-mark-warn:hover,
+.fnote-mark-warn:focus-visible {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 气泡：**默认不占位、不参与布局**（absolute），只靠 hover / focus 显示 */
+.fnote-bubble {
+  position: absolute;
+  bottom: calc(100% + var(--sp-8));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: none;
+  /* 定宽而不是 max-content：长句在窄栏里会撑出视口（设置页右栏本来就窄） */
+  width: 280px;
+  padding: var(--sp-8) var(--sp-12);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: var(--lh-normal);
+  text-align: left;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
+  white-space: normal;
+  pointer-events: none;
+}
+
+.fnote-mark:hover + .fnote-bubble,
+.fnote-mark:focus-visible + .fnote-bubble {
+  display: block;
+}
+
+/* 左记号时 DOM 顺序被 order 换过，兄弟选择器要跟着换向 */
+.fnote-left .fnote-mark + .fnote-bubble {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
 .settings-view label {
   display: flex;
   flex-direction: column;
@@ -496,6 +587,12 @@ label.checkbox {
 .field-label {
   font-size: var(--fs-md);
   color: var(--muted);
+}
+
+/* 带注释记号的标签：文字与 ⓘ 同一行对齐（`inline-flex` 让气泡的 absolute 有个定位父级） */
+.field-label-with-note {
+  display: flex;
+  align-items: center;
 }
 
 .with-presets {
@@ -4515,6 +4612,93 @@ body[data-resizing] {
   font-size: var(--fs-xs);
   line-height: var(--lh-normal);
   color: var(--muted);
+}
+
+/* ── 已答卡的折叠态（2026-09-13 用户反馈「会卡窗口，无法关闭或收起」后加）────────
+   起因：答完/跳过的卡原样画出选项行（只读 div），既"看着能点"，又最多留 3 张把输入框顶小。
+   现在折叠态**只留一行**（标题 + 摘要），想看细节点开；
+   → 折叠时机与 GoalPanel / ChangesPanel 的「收起」同一套交互语言。 */
+
+.ask-done-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ask-clear {
+  padding: var(--sp-2) var(--sp-8);
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.ask-clear:hover {
+  color: var(--text);
+  border-color: var(--ask-line);
+}
+
+/* 折叠头：**整行可点**（与 .ask-row 同一套"整行是一个热区"的做法），去掉按钮的默认外观 */
+.ask-fold-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.ask-fold-mark {
+  flex-shrink: 0;
+  width: 10px;
+  color: var(--muted);
+}
+
+.ask-fold-head .ask-title {
+  flex-shrink: 0;
+}
+
+/* 摘要：折叠态唯一的信息载体 —— 独占剩余宽度，超出打省略号（卡片高度必须恒定） */
+.ask-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.ask-summary-muted {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.ask-fold-head .ask-tool {
+  flex-shrink: 0;
+}
+
+/* 展开后的详情区：与折叠头之间留一点呼吸 */
+.ask-done-body {
+  margin-top: var(--sp-8);
+}
+
+/* 展开态给个左侧记号，让"这张是打开的"一眼可辨 */
+.ask-done-open {
+  border-left-color: var(--ask-line);
+  background: var(--panel);
 }
 
 /* ── 右栏「任务」页签：子代理运行记录（plan7 批 D）────────────────── */

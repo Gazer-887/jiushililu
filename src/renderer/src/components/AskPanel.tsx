@@ -8,6 +8,11 @@ import { useAppStore } from '../store'
  * 三条纪律：① **排队不覆盖** —— 并发多条提问先进先出，答复按**该条的 id** 配对（单槽 state 会让用户
  * 读着 A 的问题、点下的却是 B 的选项）；② **答完留痕** —— 卡片转只读并标出选了什么；③ **不把用户堵在
  * 选项上** —— 自由输入是**真答案**（`AskResult.text`，不必是选项），另有「跳过本题」这条明路。
+ *
+ * ⚠️ 第四条纪律（2026-09-13 用户反馈后补）：**已答卡默认折叠**。
+ * 起因：答完/跳过的卡会把选项行原样画出来（只读的 `div`），既有"看着能点、点了没反应"的误导，
+ * 又因为最多留 3 张而把输入框顶得很小 —— 用户的原话是「会卡窗口，无法关闭或收起」。
+ * 现在折叠态**只留一行摘要**（选了什么 / 跳过了），想看细节再点开；并给「全部清除」一个出口。
  */
 
 /** 已作答的卡片最多留几张：输入框上方是公共空间，堆满会把输入框顶走 */
@@ -33,6 +38,21 @@ function noteOf(a: Answered): string {
   return '模型已收到该答复，正在继续执行。'
 }
 
+/** 已答卡的**一行摘要** —— 折叠态就靠这句话说清"我当初答了什么"，不必展开 */
+function summaryOf(a: Answered): string {
+  if (a.skipped) return '已跳过'
+  if (a.text) return a.text
+  const labels = a.values.map((v) => a.req.options.find((o) => o.value === v)?.label ?? v)
+  return labels.length > 0 ? labels.join('、') : '已答复'
+}
+
+/** 折叠态的标题：三种结局各有各的说法（与 `noteOf` 同一套口径，不另起一套） */
+function titleOf(a: Answered): string {
+  if (a.skipped) return '已跳过本题'
+  if (a.stale) return '答复没送到'
+  return '已回答'
+}
+
 export default function AskPanel(): JSX.Element | null {
   const asks = useAppStore((s) => s.asks)
   const dropAsk = useAppStore((s) => s.dropAsk)
@@ -42,6 +62,8 @@ export default function AskPanel(): JSX.Element | null {
   const [checked, setChecked] = useState<string[]>([])
   const [free, setFree] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 展开着看详情的已答卡 id 集合。**默认全折叠** —— 折叠态一行就说清了「我答了什么」 */
+  const [opened, setOpened] = useState<string[]>([])
   /** 拦**同一个 tick 内**的第二次提交：`busy` 是 state，第二次点击时它还没生效 */
   const lock = useRef(false)
 
@@ -181,46 +203,89 @@ export default function AskPanel(): JSX.Element | null {
         </div>
       )}
 
-      {answered.map((a) => (
-        <div className="ask-card ask-done" key={a.req.id} data-ask-id={a.req.id}>
-          <div className="ask-head">
-            <span className="ask-title">
-              {a.skipped ? '已跳过本题' : a.stale ? '答复没送到' : '已回答'}
-            </span>
-            <span className="ask-tool">{a.req.tool ?? 'ask_user'}</span>
-          </div>
-
-          <p className="ask-q">{a.req.question}</p>
-
-          <div className="ask-rows">
-            {a.req.options.map((o) => {
-              const picked = a.values.includes(o.value)
-              return (
-                <div
-                  key={o.value}
-                  className={picked ? 'ask-row ask-row-done ask-row-on' : 'ask-row ask-row-done'}
-                >
-                  <span
-                    className={`ask-mark ${
-                      a.req.multiSelect ? 'ask-mark-square' : 'ask-mark-round'
-                    }${picked ? ' ask-mark-on' : ''}`}
-                    aria-hidden="true"
-                  >
-                    {picked ? '✓' : ''}
-                  </span>
-                  <span className="ask-opt-text">
-                    <span className="ask-opt-label">{o.label}</span>
-                    {o.description && <span className="ask-opt-desc">{o.description}</span>}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-
-          {a.text && <p className="ask-answer-text">你的回答：{a.text}</p>}
-          <p className="ask-note">{noteOf(a)}</p>
+      {answered.length > 0 && (
+        <div className="ask-done-bar">
+          <span className="ask-done-count">已处理 {answered.length} 条</span>
+          <button
+            className="ask-clear"
+            type="button"
+            // 清除只是让它别占地方：答复早已送达，这里清的是**界面留痕**，不影响模型
+            title="从上方清掉这些已处理的记录（答复早已送达，不影响模型）"
+            onClick={() => {
+              setAnswered([])
+              setOpened([])
+            }}
+          >
+            全部清除
+          </button>
         </div>
-      ))}
+      )}
+
+      {answered.map((a) => {
+        const open = opened.includes(a.req.id)
+        const summary = summaryOf(a)
+        return (
+          <div
+            className={open ? 'ask-card ask-done ask-done-open' : 'ask-card ask-done'}
+            key={a.req.id}
+            data-ask-id={a.req.id}
+          >
+            {/* 折叠头：**整行可点** —— 点开才看得到选项详情，收起时只留一句话 */}
+            <button
+              className="ask-fold-head"
+              type="button"
+              aria-expanded={open}
+              onClick={() =>
+                setOpened((cur) =>
+                  cur.includes(a.req.id) ? cur.filter((x) => x !== a.req.id) : [...cur, a.req.id]
+                )
+              }
+            >
+              <span className="ask-fold-mark" aria-hidden="true">
+                {open ? '▾' : '▸'}
+              </span>
+              <span className="ask-title">{titleOf(a)}</span>
+              {/* 摘要：折叠态唯一的信息载体。「跳过」没有摘要，故不占位 */}
+              {!a.skipped && <span className="ask-summary">{summary}</span>}
+              {a.skipped && <span className="ask-summary ask-summary-muted">未作答</span>}
+              <span className="ask-tool">{a.req.tool ?? 'ask_user'}</span>
+            </button>
+
+            {/* 详情：**只有展开时才画选项行** —— 折叠态不画那排"看着能点"的只读行（那是误导的来源） */}
+            {open && (
+              <div className="ask-done-body">
+                <p className="ask-q">{a.req.question}</p>
+                <div className="ask-rows">
+                  {a.req.options.map((o) => {
+                    const picked = a.values.includes(o.value)
+                    return (
+                      <div
+                        key={o.value}
+                        className={picked ? 'ask-row ask-row-done ask-row-on' : 'ask-row ask-row-done'}
+                      >
+                        <span
+                          className={`ask-mark ${
+                            a.req.multiSelect ? 'ask-mark-square' : 'ask-mark-round'
+                          }${picked ? ' ask-mark-on' : ''}`}
+                          aria-hidden="true"
+                        >
+                          {picked ? '✓' : ''}
+                        </span>
+                        <span className="ask-opt-text">
+                          <span className="ask-opt-label">{o.label}</span>
+                          {o.description && <span className="ask-opt-desc">{o.description}</span>}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {a.text && <p className="ask-answer-text">你的回答：{a.text}</p>}
+                <p className="ask-note">{noteOf(a)}</p>
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
