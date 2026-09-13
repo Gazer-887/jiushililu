@@ -4,6 +4,7 @@ import { ProviderError, isAbortError, mapHttpError } from './errors'
 import { resolveApiUrl } from './url'
 import { usageFromOpenAIChunk } from './usage-parsers'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
+import { httpFetch } from './http-client'
 
 // 纯函数：构造请求体（单元测试覆盖）
 export function buildOpenAIChatBody(
@@ -44,7 +45,7 @@ export class OpenAICompatibleProvider implements IProvider {
 
   async streamChat(req: ProviderRequest, cb: StreamCallbacks): Promise<void> {
     const { settings, apiKey, signal } = req
-    const res = await fetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
+    const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(buildOpenAIChatBody(settings, req.messages, settings.stream)),
@@ -90,7 +91,7 @@ export class OpenAICompatibleProvider implements IProvider {
   async testConnection(req: ProviderRequest): Promise<TestResult> {
     const start = Date.now()
     try {
-      const res = await fetch(resolveApiUrl(req.settings.baseURL, 'chat/completions'), {
+      const res = await httpFetch(resolveApiUrl(req.settings.baseURL, 'chat/completions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${req.apiKey}` },
         body: JSON.stringify({
@@ -114,7 +115,7 @@ export class OpenAICompatibleProvider implements IProvider {
   /** 「获取可用模型」：`GET {baseURL}/models`；返回体约定 `{ data: [{ id }] }`（少数实现直接给数组，两种都认） */
   async listModels(req: ProviderRequest) {
     try {
-      const res = await fetch(resolveApiUrl(req.settings.baseURL, 'models'), {
+      const res = await httpFetch(resolveApiUrl(req.settings.baseURL, 'models'), {
         method: 'GET',
         headers: { Authorization: `Bearer ${req.apiKey}` },
         signal: req.signal

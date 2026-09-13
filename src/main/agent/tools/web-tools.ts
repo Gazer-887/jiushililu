@@ -1,4 +1,5 @@
 import type { AgentTool } from '@shared/agent'
+import { httpFetch } from '../../providers/http-client'
 
 // 网页获取工具（P1 工具层补全）：抓取一个网页并粗提纯文本。
 // 边界：仅 http/https；正文上限 512KB；30s 超时；粗去标签（script/style 剔除）。
@@ -70,7 +71,9 @@ export function createWebTools(): AgentTool[] {
         return `错误：${err instanceof Error ? err.message : String(err)}`
       }
       try {
-        const res = await fetch(url, {
+        // ⚠️ 传 `toString()` 而不是 `URL` 对象：`net.fetch` 的入参只认 string / Request。
+        //    协议白名单已在 `assertHttpUrl` 里验过，这里换回字符串不会重新打开 SSRF 的口子。
+        const res = await httpFetch(url.toString(), {
           // 不跟随重定向：避免"合法起点 → 302 到内网/元数据服务"的 SSRF 绕过
           redirect: 'manual',
           signal: AbortSignal.timeout(30000),

@@ -9,6 +9,7 @@ import type { TodoItem } from '@shared/todo'
 import type { TokenUsage } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
 import type { SystemSettings } from '@shared/system'
+import type { NetworkPatch } from '@shared/network'
 import type { TerminalDataPayload } from '@shared/terminal'
 import {
   IPC,
@@ -91,6 +92,9 @@ const api: ApiBridge = {
   setTokenTier: (tier: TokenSaverTier) => ipcRenderer.invoke(IPC.tokenTierSet, tier),
   getSystem: () => ipcRenderer.invoke(IPC.systemGet),
   setSystem: (patch: Partial<SystemSettings>) => ipcRenderer.invoke(IPC.systemSet, patch),
+  // ── 网络代理（plan7 批 F2）──
+  getNetwork: () => ipcRenderer.invoke(IPC.netProxyGet),
+  setNetwork: (patch: NetworkPatch) => ipcRenderer.invoke(IPC.netProxySet, patch),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
   // ── 源代码管理（plan16）──
   getGitStatus: () => ipcRenderer.invoke(IPC.gitStatus),

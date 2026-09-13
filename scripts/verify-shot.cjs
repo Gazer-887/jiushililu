@@ -418,6 +418,25 @@ let systemStub = {
 const systemSetCalls = []
 /** `system:get` 被调用次数 —— 没有它，"取数失败回落到 `setSys(null)`（未勾选+禁用）"与"存根返回 false"在断言层不可区分 */
 let systemGetCalls = 0
+
+// 网络代理（plan7 批 F2）。⚠️ 契约副本：`NetworkView` 加字段必须同步加，否则渲染端静默拿到 undefined。
+// 桩**必须有状态、且要复刻真主进程的三条行为**，否则一条都验不到：
+//   ① 改档之后「当前生效」要跟着变（代理功能唯一的硬证据就是这一行）；
+//   ② 手动档不填地址 = 体检不通过 → 不落盘、不应用、给原因；
+//   ③ 地址里的 user:pass 要被**剥走**、界面只回显剥过的地址（凭据不回显）。
+let netStub = {
+  proxyMode: 'system',
+  proxyRules: '',
+  hasCredentials: false,
+  effective: 'PROXY 127.0.0.1:7897; DIRECT',
+  effectiveFor: 'https://api.openai.com',
+  effectiveError: null,
+  applied: true,
+  error: null
+}
+const netSetCalls = []
+/** `net-proxy:get` 调用次数 —— 与 system 同理：没有它就分不清"取到了"与"界面默认值" */
+let netGetCalls = 0
 /** 让下一次 `system:set` 回一个**载荷没要的值**：只有这样才能证明界面跟着返回值走，而不是乐观更新 */
 let systemForceNextSet = null
 const makeTermSnapshot = () => ({
@@ -754,6 +773,52 @@ const STUBS = {
     }
     systemStub.keepRunningActive = systemStub.keepRunning === true
     return { ...systemStub }
+  },
+  // 网络代理（plan7 批 F2）：与 `system:set` 同一口径 —— 改状态、回新状态，界面拿返回值回显
+  'net-proxy:get': () => {
+    netGetCalls += 1
+    return { ...netStub }
+  },
+  'net-proxy:set': (patch) => {
+    const p = patch ?? {}
+    netSetCalls.push({ ...p })
+    const mode = p.proxyMode ?? netStub.proxyMode
+    let rules = p.proxyRules !== undefined ? String(p.proxyRules) : netStub.proxyRules
+    // 体检不通过：手动档必须填地址 —— **不落盘、不应用**，只回原因（真主进程同款行为）
+    if (mode === 'custom' && rules.trim().length === 0) {
+      return {
+        ...netStub,
+        proxyMode: 'custom',
+        proxyRules: rules,
+        applied: false,
+        error: '手动配置需要填写代理地址（示例：127.0.0.1:7897）'
+      }
+    }
+    let hasCredentials = netStub.hasCredentials
+    if (p.proxyUser !== undefined || p.proxyPass !== undefined) {
+      hasCredentials = p.proxyUser !== null && String(p.proxyUser ?? '').length > 0
+    }
+    // 从地址里剥出凭据：界面只回显剥过的地址，明文**不回传**
+    const m = /^([a-z][a-z0-9+.-]*:\/\/)?([^/@\s]+):([^/@\s]*)@(.+)$/.exec(rules)
+    if (m) {
+      hasCredentials = true
+      rules = (m[1] || 'http://') + m[4]
+    }
+    const bare = rules.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^@]*@/, '')
+    const effective =
+      mode === 'direct' ? 'DIRECT' : mode === 'custom' ? 'PROXY ' + bare : 'PROXY 127.0.0.1:7897; DIRECT'
+    netStub = {
+      ...netStub,
+      proxyMode: mode,
+      proxyRules: rules,
+      hasCredentials,
+      effective,
+      effectiveFor: 'https://api.openai.com',
+      effectiveError: null,
+      applied: true,
+      error: null
+    }
+    return { ...netStub }
   },
   'git:info': () => ({ branch: 'master', dirty: false }),
   'attach:file': () => null,
@@ -3351,7 +3416,8 @@ app.whenReady().then(async () => {
   //    **不许在这里冒充**。
   const systemRead = () => sevalRaw(`
     (() => {
-      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
       const pick = (t) => rows.find((r) => r.textContent.trim().startsWith(t)) ?? null;
       const size = (el) => {
         if (!el) return null;
@@ -3399,7 +3465,8 @@ app.whenReady().then(async () => {
 
   await sevalRaw(`
     (() => {
-      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
       const pick = (t) => rows.find((r) => r.textContent.trim().startsWith(t));
       const k = pick('锁屏与熄屏后继续运行');
       const a = pick('开机自启');
@@ -3425,7 +3492,8 @@ app.whenReady().then(async () => {
   systemForceNextSet = { openAtLogin: true }
   await sevalRaw(`
     (() => {
-      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
       const a = rows.find((r) => r.textContent.trim().startsWith('开机自启'));
       if (a) a.querySelector('input').click();
       return !!a;
@@ -3491,6 +3559,150 @@ app.whenReady().then(async () => {
     openAtLoginSupported: true,
     openAtLoginReason: null
   }
+
+  // ── 网络代理（plan7 批 F2）──
+  // 验收的**核心**是「当前生效」那一行：代理配错的表现是超时，而"没生效"与"生效了但连不上"
+  // 对用户是同一个现象 —— 只有这一行能把两者分开，所以每一档都要验它真的变了。
+  const netRead = () => sevalRaw(`
+    (() => {
+      // ⚠️ size 是**每个 eval 脚本内部的局部函数**（别的段落里那份到不了这里），必须自带一份；
+      //    漏了它的表现是整段 eval 抛异常，报错只说"脚本执行失败"，很难定位到这一行。
+      //    （本段注释里不许出现反引号 —— 它会截断外层模板字符串，上次 2319 行就是这么炸的）
+      const size = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=radio]'));
+      const shape = (el) => {
+        if (!el) return null;
+        const input = el.querySelector('input');
+        return { checked: input.checked, disabled: input.disabled, box: size(input) };
+      };
+      const pick = (t) => rows.find((r) => r.textContent.trim().startsWith(t));
+      const hints = Array.from(document.querySelectorAll('.settings-body p.hint'));
+      const addrLabel = Array.from(document.querySelectorAll('.settings-body label'))
+        .find((l) => l.textContent.trim().startsWith('代理地址'));
+      const addrInput = addrLabel ? addrLabel.querySelector('input') : null;
+      const eff = hints.find((p) => p.textContent.indexOf('当前生效') >= 0);
+      const clearBtn = Array.from(document.querySelectorAll('.settings-body button'))
+        .find((b) => b.textContent.trim().indexOf('清除已保存') >= 0);
+      return {
+        modes: rows.map((r) => r.textContent.trim()),
+        system: shape(pick('跟随系统')),
+        direct: shape(pick('直连')),
+        custom: shape(pick('手动配置')),
+        hasAddrInput: !!addrInput,
+        addrValue: addrInput ? addrInput.value : null,
+        effectiveText: eff ? eff.textContent.trim() : '',
+        hasClearBtn: !!clearBtn,
+        hints: hints.map((p) => p.textContent.trim())
+      };
+    })()
+  `)
+
+  const netInitial = await netRead()
+  checkTrue('设置页「网络」有三档：跟随系统 / 直连 / 手动配置 —— 默认跟随系统（与 Electron 自身默认一致）',
+    netInitial.modes.length === 3 &&
+      netInitial.system !== null && netInitial.system.checked === true &&
+      netInitial.direct !== null && netInitial.direct.checked === false &&
+      netInitial.custom !== null && netInitial.custom.checked === false,
+    netInitial)
+  checkTrue('初值来自主进程（net-proxy:get 真被调过，不是界面默认值）', netGetCalls >= 1, { netGetCalls })
+  checkTrue('「当前生效」显示的是**探测到的代理**（跟随系统档：能读出系统里那个代理与兜底直连）',
+    netInitial.effectiveText.indexOf('当前生效') >= 0 &&
+      netInitial.effectiveText.indexOf('127.0.0.1:7897') >= 0 &&
+      netInitial.effectiveText.indexOf('直连') >= 0,
+    netInitial.effectiveText)
+  checkTrue('三档单选框**量出来是看得见的**（宽高 > 0，不是零尺寸隐形控件）',
+    visible(netInitial.system.box) && visible(netInitial.direct.box) && visible(netInitial.custom.box),
+    { s: netInitial.system.box, d: netInitial.direct.box, c: netInitial.custom.box })
+  // 承重文案：代理是**只对新请求生效**的，不说清楚会被理解成"改完立刻全局生效"
+  checkTrue('写明「只影响之后发起的请求」（已建立的连接不受影响）',
+    netInitial.hints.some((t) => t.indexOf('之后发起的') >= 0), netInitial.hints)
+
+  await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=radio]'));
+      const d = rows.find((r) => r.textContent.trim().startsWith('直连'));
+      if (d) d.querySelector('input').click();
+      return !!d;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const netDirect = await netRead()
+  checkTrue('选「直连」：载荷只带 proxyMode=direct，且**当前生效变成直连**',
+    netSetCalls.length >= 1 && netSetCalls[netSetCalls.length - 1].proxyMode === 'direct' &&
+      netDirect.direct.checked === true && netDirect.effectiveText.indexOf('当前生效：直连') >= 0,
+    { calls: netSetCalls, text: netDirect.effectiveText })
+
+  await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=radio]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('手动配置'));
+      if (c) c.querySelector('input').click();
+      return !!c;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const netCustom = await netRead()
+  checkTrue('选「手动配置」才出现地址输入框（另外两档不该有，那会诱导乱填）',
+    netCustom.custom.checked === true && netCustom.hasAddrInput === true, netCustom)
+
+  // 空地址直接点「应用」：体检不通过 → 界面**当场说出原因**，且不假装已生效
+  await sevalRaw(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.settings-body button'))
+        .find((b) => b.textContent.trim() === '应用');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const netEmpty = await netRead()
+  checkTrue('手动档不填地址就应用：**当场报原因**（"改了没反应"是最难排查的一类故障）',
+    netEmpty.hints.some((t) => t.indexOf('手动配置需要填写代理地址') >= 0), netEmpty.hints)
+
+  // 填一个**带凭据**的地址：界面传原文、主进程剥走、只回显剥过的地址（凭据不回显）
+  await sevalRaw(`
+    (() => {
+      const label = Array.from(document.querySelectorAll('.settings-body label'))
+        .find((l) => l.textContent.trim().startsWith('代理地址'));
+      const input = label ? label.querySelector('input') : null;
+      if (!input) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'http://u:p@1.2.3.4:8080');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  await sevalRaw(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.settings-body button'))
+        .find((b) => b.textContent.trim() === '应用');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const netApplied = await netRead()
+  checkTrue('填地址后应用：载荷把**用户填的原文**发出去（剥凭据是主进程的活，不是界面的）',
+    netSetCalls.length >= 1 &&
+      netSetCalls[netSetCalls.length - 1].proxyRules === 'http://u:p@1.2.3.4:8080',
+    netSetCalls)
+  checkTrue('⚠️ 凭据**不回显**：地址框里只剩 http://1.2.3.4:8080，明文不回到界面',
+    netApplied.addrValue === 'http://1.2.3.4:8080', { addrValue: netApplied.addrValue })
+  checkTrue('「当前生效」跟着变成刚配的那个代理（这是"配了到底生效没有"唯一的硬证据）',
+    netApplied.effectiveText.indexOf('1.2.3.4:8080') >= 0, netApplied.effectiveText)
+  checkTrue('存过凭据后出现「清除已保存的账号密码」（凭据只进不出，但必须给得出清退的路）',
+    netApplied.hasClearBtn === true, { hasClearBtn: netApplied.hasClearBtn })
+
+  // 还原：别把"手动配置"留给后面的段落
+  netStub = { ...netStub, proxyMode: 'system', proxyRules: '', hasCredentials: false, effective: 'PROXY 127.0.0.1:7897; DIRECT', applied: true, error: null }
 
   // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
   await sevalRaw(`

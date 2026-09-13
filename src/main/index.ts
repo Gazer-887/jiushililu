@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, powerSaveBlocker, shell } from 'electron'
+import { app, BrowserWindow, Menu, powerSaveBlocker, session, shell } from 'electron'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { registerIpcHandlers } from './ipc'
@@ -22,7 +22,18 @@ import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
 import { createSystemIntegration } from './system-integration'
-import { getPermissionPreset, getSystemSettings, setSystemSettings } from './store/settings'
+import { createNetworkProxy } from './network-proxy'
+import { installElectronFetch } from './net/electron-fetch'
+import { httpFetchKind } from './providers/http-client'
+import {
+  getPermissionPreset,
+  getSystemSettings,
+  setSystemSettings,
+  getNetworkSettings,
+  setNetworkSettings,
+  getNetworkCredentials,
+  setNetworkCredentials
+} from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
@@ -242,7 +253,7 @@ function openSettingsWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // 没拿到锁的第二个实例**到这里就停**：`app.quit()` 是异步的、ready 回调仍会跑到，否则它在退出的
   // 路上还会初始化一遍日志与异常兜底 —— 日志里多出一条「应用启动」，看着像"开了两次却只跑了一次"。
   if (!gotTheLock) return
@@ -393,6 +404,36 @@ app.whenReady().then(() => {
     }
   })
 
+  // ── 网络代理（plan7 批 F2）──────────────────────────────────────────────
+  //
+  // 两件事，**顺序不能反**：
+  //   ① 先把模型请求的网络出口换成 `net.fetch` —— 只有它吃 session 的代理配置（Node 原生 fetch 不吃，
+  //      实证见 `scripts/probe-main-proxy.cjs`）。不换这一步，下面配什么都是"改了没反应"。
+  //   ② 再按落盘意图 `setProxy` 一次 —— 它是**进程级**的，进程没了就没了，每次启动都要重来。
+  installElectronFetch()
+  log.info('模型请求网络出口已就绪', { kind: httpFetchKind() })
+
+  const network = createNetworkProxy({
+    session: {
+      // ⚠️ 只作用于**默认 session**：模型请求与内置浏览器都在这一个 session 里，故一次配置两边都生效
+      setProxy: (config) => session.defaultSession.setProxy(config),
+      resolveProxy: (url) => session.defaultSession.resolveProxy(url)
+    },
+    store: { read: getNetworkSettings, write: setNetworkSettings },
+    // 凭据走 safeStorage：代理地址里的 user:pass 是凭据，不进明文配置
+    credentials: { read: getNetworkCredentials, write: setNetworkCredentials },
+    log: (message, extra) => log.info(message, extra)
+  })
+  // await 到"应用成功"为止（这一步要挡住启动：不然第一发模型请求可能跑在老配置上）；
+  // 探测"当前生效的代理"要问系统，慢 —— 放后台，界面打开设置页时会自己再取一次。
+  const networkAtStart = await network.applyStored(false)
+  void network.refresh()
+  log.info('网络代理已按落盘意图应用', {
+    mode: networkAtStart.proxyMode,
+    applied: networkAtStart.applied,
+    error: networkAtStart.error
+  })
+
   registerIpcHandlers({
     agent: agentCtx,
     userDataDir,
@@ -400,6 +441,7 @@ app.whenReady().then(() => {
     ask,
     terminal,
     system,
+    network,
     // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
     onFlushDone: () => finishClose?.(),
     // ── 设置独立窗口（2026-09-13）────────────────────────────────

@@ -14,6 +14,13 @@ import { THEMES } from '@shared/splitter'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
 import { TOKEN_TIER_LIST, type TokenSaverTier } from '@shared/token-tier'
 import { SYSTEM_TOGGLES, type SystemSettings, type SystemView } from '@shared/system'
+import {
+  PROXY_MODES,
+  PROXY_PROBE_URL,
+  describeProxy,
+  type NetworkPatch,
+  type NetworkView
+} from '@shared/network'
 
 /*
  * 设置分区导航（plan8 R7）：形制对齐 DSH 设置页 —— 左侧分区导航 + 右侧内容，选中项为圆角胶囊高亮。
@@ -163,6 +170,12 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const [tier, setTier] = useState<TokenSaverTier>('balanced')
   /** 系统集成（plan7 批 F1）：值与**真生效状态**都在主进程（blocker 起没起来只有它知道） */
   const [sys, setSys] = useState<SystemView | null>(null)
+  /** 网络代理（plan7 批 F2）：**当前生效的是谁**只有主进程探测得到，界面不猜 */
+  const [net, setNet] = useState<NetworkView | null>(null)
+  /** 手动档的三项输入。⚠️ 凭据**不回显**（与主进程同口径）：只报「已保存」，改就重新填 */
+  const [netRules, setNetRules] = useState('')
+  const [netUser, setNetUser] = useState('')
+  const [netPass, setNetPass] = useState('')
   /** 故障排查区：日志目录与最近文件，用于"出问题能查" */
   const [logs, setLogs] = useState<LogsInfo | null>(null)
 
@@ -219,6 +232,46 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
       .then(setSys)
       .catch(() => setSys(null))
   }, [section])
+
+  // 网络代理（plan7 批 F2）：与系统集成同理，进「通用设置」时重取 ——
+  // 「当前生效的代理」会被系统设置、网络切换、PAC 脚本改变，缓存久了就是错的。
+  useEffect(() => {
+    if (section !== 'general') return
+    void window.api
+      .getNetwork()
+      .then((v) => {
+        setNet(v)
+        setNetRules(v.proxyRules)
+      })
+      .catch(() => setNet(null))
+  }, [section])
+
+  /**
+   * 一律用主进程返回值回显：`applied` 与 `effective` 只有它给得出，乐观更新就是「假绿」。
+   *
+   * ⚠️ 每次都把**界面当前显示的档位**一起发（`proxyMode: net?.proxyMode`）—— 门禁抓出来的真 bug：
+   *   只发 `{proxyRules}` 的话，主进程会拿「上次落盘的档位」顶替。典型翻车链：切到「手动配置」
+   *   （还没填地址 → 体检不通过 → 档位**没有落盘**）→ 填好地址点「应用」→ 主进程按旧档位存 ——
+   *   用户明明在手动配置里填的地址，存完却变回「跟随系统」，而且界面不报错。
+   */
+  const applyNetwork = async (patch: NetworkPatch): Promise<void> => {
+    const merged: NetworkPatch = { proxyMode: net?.proxyMode, ...patch }
+    try {
+      const v = await window.api.setNetwork(merged)
+      setNet(v)
+      setNetRules(v.proxyRules)
+      // 凭据保存成功就清空输入框：不回显明文，也不让用户以为「还在编辑上次那串」
+      if (merged.proxyUser !== undefined || merged.proxyPass !== undefined) {
+        setNetUser('')
+        setNetPass('')
+      }
+    } catch {
+      void window.api
+        .getNetwork()
+        .then(setNet)
+        .catch(() => setNet(null))
+    }
+  }
 
   const chooseSystem = async (key: keyof SystemSettings, value: boolean): Promise<void> => {
     const patch: Partial<SystemSettings> =
@@ -570,6 +623,91 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                 </Fragment>
               )
             })}
+
+            {/* ── 网络代理（plan7 批 F2）──
+                三条纪律：① 选档即时生效、地址要点「应用」（地址会输一半，不能边输边存）；
+                ② **当前生效的代理**由主进程探测后显示 —— 配错代理的表现是超时，而「没生效」与
+                   「生效了但连不上」都表现为超时，只有这一行能把两者分开；
+                ③ 凭据**只进不出**：不回显明文，只说「已保存」。 */}
+            <div className="field-label">网络</div>
+            <p className="hint">
+              代理只影响**之后发起的**请求，已经建立的连接不受影响。模型请求与内置浏览器都走这里的配置。
+            </p>
+            {PROXY_MODES.map((m) => (
+              <label className="checkbox" key={m.key}>
+                <input
+                  type="radio"
+                  name="proxy-mode"
+                  checked={net?.proxyMode === m.key}
+                  disabled={!net}
+                  onChange={() => void applyNetwork({ proxyMode: m.key })}
+                />
+                {m.label}
+              </label>
+            ))}
+            <p className="hint">{PROXY_MODES.find((m) => m.key === net?.proxyMode)?.note ?? ''}</p>
+
+            {net?.proxyMode === 'custom' && (
+              <>
+                <label>
+                  代理地址
+                  <input
+                    value={netRules}
+                    placeholder="127.0.0.1:7897"
+                    onChange={(e) => setNetRules(e.target.value)}
+                  />
+                </label>
+                <label>
+                  账号（可选）
+                  <input
+                    value={netUser}
+                    placeholder={net.hasCredentials ? '已保存，留空表示不修改' : '如 corp\\用户名'}
+                    onChange={(e) => setNetUser(e.target.value)}
+                  />
+                </label>
+                <label>
+                  密码（可选）
+                  <input
+                    type="password"
+                    value={netPass}
+                    placeholder={net.hasCredentials ? '已保存，留空表示不修改' : ''}
+                    onChange={(e) => setNetPass(e.target.value)}
+                  />
+                </label>
+                <div className="actions">
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    onClick={() =>
+                      void applyNetwork({
+                        proxyRules: netRules,
+                        // undefined = 不动；空串 = 用户没填 → 同样当不动（清除走下面那个按钮）
+                        proxyUser: netUser.length > 0 ? netUser : undefined,
+                        proxyPass: netPass.length > 0 ? netPass : undefined
+                      })
+                    }
+                  >
+                    应用
+                  </button>
+                  {net.hasCredentials && (
+                    <button
+                      className="btn-secondary"
+                      type="button"
+                      onClick={() => void applyNetwork({ proxyUser: null, proxyPass: null })}
+                    >
+                      清除已保存的账号密码
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+
+            <p className="hint">
+              当前生效：{describeProxy(net?.effective ?? null)}
+              {net?.effectiveFor ? `（按 ${net.effectiveFor} 探测）` : `（按 ${PROXY_PROBE_URL} 探测）`}
+            </p>
+            {net && !net.applied && net.error && <p className="hint">{net.error}</p>}
+            {net?.effectiveError && <p className="hint">探测失败：{net.effectiveError}</p>}
           </div>
         )}
 

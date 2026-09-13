@@ -4,6 +4,7 @@ import { usageFromAnthropicEvent } from './usage-parsers'
 import { ProviderError, isAbortError, mapHttpError } from './errors'
 import { resolveApiUrl } from './url'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
+import { httpFetch } from './http-client'
 
 // 思考强度 → Anthropic extended thinking 预算（方言映射）
 const EFFORT_BUDGET: Record<Exclude<ReasoningEffort, 'default'>, number> = {
@@ -80,7 +81,7 @@ export class AnthropicProvider implements IProvider {
 
   async streamChat(req: ProviderRequest, cb: StreamCallbacks): Promise<void> {
     const { settings, apiKey, signal } = req
-    const res = await fetch(resolveApiUrl(settings.baseURL, 'messages'), {
+    const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -130,7 +131,7 @@ export class AnthropicProvider implements IProvider {
   async testConnection(req: ProviderRequest): Promise<TestResult> {
     const start = Date.now()
     try {
-      const res = await fetch(resolveApiUrl(req.settings.baseURL, 'messages'), {
+      const res = await httpFetch(resolveApiUrl(req.settings.baseURL, 'messages'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -158,7 +159,7 @@ export class AnthropicProvider implements IProvider {
   /** 「获取可用模型」：`GET {baseURL}/models`。认证头与对话不同（`x-api-key` + `anthropic-version`），不能照抄 OpenAI 那套 */
   async listModels(req: ProviderRequest) {
     try {
-      const res = await fetch(resolveApiUrl(req.settings.baseURL, 'models'), {
+      const res = await httpFetch(resolveApiUrl(req.settings.baseURL, 'models'), {
         method: 'GET',
         headers: {
           'x-api-key': req.apiKey,

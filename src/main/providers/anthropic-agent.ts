@@ -8,6 +8,7 @@ import { usageFromAnthropicEvent } from './usage-parsers'
 import type { TokenUsage } from '@shared/usage'
 import { mergeUsageHalves } from '@shared/usage'
 import { ToolCallAccumulator } from './tool-accumulator'
+import { httpFetch } from './http-client'
 
 // Anthropic tool_use 适配（plan6 → P1）：把 OpenAI 风格的 Agent 消息翻译成 Anthropic 块结构。
 // 三个纯函数（toAnthropicAgentMessages / fromAnthropicResponse / buildTools）可独立单测。
@@ -132,7 +133,7 @@ export async function chatWithToolsAnthropic(
     messages: anthropicMessages
   }
 
-  const res = await fetch(resolveApiUrl(settings.baseURL, 'messages'), {
+  const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -182,7 +183,7 @@ export async function streamWithToolsAnthropic(
   onText: (delta: string) => void,
   signal?: AbortSignal
 ): Promise<AgentChatResult> {
-  const res = await fetch(resolveApiUrl(settings.baseURL, 'messages'), {
+  const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -35,7 +35,10 @@ import {
 } from '@shared/ipc'
 import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
+import type { NetworkPatch, NetworkView } from '@shared/network'
+import { networkSetSchema } from '@shared/network'
 import type { SystemIntegration } from './system-integration'
+import type { NetworkProxy } from './network-proxy'
 import { resolvePolicy, type TokenSaverTier } from '@shared/token-tier'
 // 「当前用哪个模型」由**模型档案**决定（plan7 F5 多模型）：内核/界面永远只看见"当前这一个模型"，真源搬到了 store/models
 import {
@@ -137,6 +140,9 @@ const systemSetSchema = z.object({
   keepRunning: z.boolean().optional(),
   openAtLogin: z.boolean().optional()
 })
+
+// 网络代理（plan7 批 F2）：schema 与 `networkSetSchema` 同源（放在 @shared 是为了让界面与这里共用一份判据）
+const netProxySetSchema = networkSetSchema
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
@@ -245,6 +251,8 @@ export function registerIpcHandlers(deps: {
   terminal: TerminalSessionStore
   /** 系统集成（plan7 批 F1）：同样是组合根建、这里转交 —— 它持有 blocker id 与自启状态，**每个进程只能有一份** */
   system: SystemIntegration
+  /** 网络代理（plan7 批 F2）：同样是组合根建 —— session 是进程级的、凭据要过 safeStorage，两件都不能在这里 new */
+  network: NetworkProxy
   onFlushDone?: () => void
   /**
    * 设置变更广播（2026-09-13，设置独立窗口）。
@@ -777,6 +785,21 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.systemSet, (_e, raw: unknown): SystemView => {
     const patch = systemSetSchema.parse(raw) as Partial<SystemSettings>
     return deps.system.set(patch)
+  })
+
+  // ── 网络代理（plan7 批 F2）──
+  //
+  // ⚠️ 取数一律走主进程返回值回显、**不做乐观更新**：代理"配了但没生效"是一个**静默**故障
+  //    （界面看不出来、日志不报错、请求照旧直连），只有主进程的 `applied` 与探测到的
+  //    `effective` 能证明它到底生效没有。
+  ipcMain.handle(IPC.netProxyGet, (): NetworkView => deps.network.view())
+
+  ipcMain.handle(IPC.netProxySet, async (_e, raw: unknown): Promise<NetworkView> => {
+    const patch = netProxySetSchema.parse(raw) as NetworkPatch
+    const view = await deps.network.set(patch)
+    // 代理改了要广播：设置窗口与主窗口是两个渲染进程，不推就只有一半界面知道
+    deps.onSettingsChanged?.('settings')
+    return view
   })
 
   ipcMain.handle(IPC.gitInfo, (): Promise<GitInfo | null> =>

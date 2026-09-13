@@ -3,6 +3,8 @@ import { safeStorage } from 'electron'
 import type { ModelSettings, PermissionPreset } from '@shared/ipc'
 import { DEFAULT_TOKEN_TIER, isTokenSaverTier, type TokenSaverTier } from '@shared/token-tier'
 import type { SystemSettings } from '@shared/system'
+import type { NetworkCredentials, NetworkSettings } from '@shared/network'
+import { normalizeNetwork } from '@shared/network'
 
 // 持久化设置。铁律（D-013 / AGENTS.md）：API Key 只走 safeStorage 加密落盘，绝不存明文。
 // safeStorage 在 Windows 用 DPAPI、macOS 用 Keychain（DIARY 术语词典有词条）。
@@ -31,6 +33,14 @@ interface StoredSettings extends ModelSettings {
   keepRunning?: boolean
   /** **开机自启**（plan7 批 F1）。⚠️ 只有安装版会写进来：开发态写入的启动项指向 electron.exe，不是本应用 */
   openAtLogin?: boolean
+  /**
+   * **网络代理**（plan7 批 F2）。⚠️ `proxyRules` 里**不含凭据** —— 保存前从地址里剥走、应用时拼回。
+   * 缺字段 = 老配置 → 跟随系统（与 Electron 自身默认一致）。
+   */
+  proxyMode?: NetworkSettings['proxyMode']
+  proxyRules?: string
+  /** 代理账号密码的**密文**（明文只存在于内存；JSON 序列化，避免密码里的冒号把格式搞坏） */
+  proxyCredentialsEncrypted?: string
 }
 
 const store = new Store<StoredSettings>({ name: 'settings' })
@@ -68,6 +78,57 @@ export function getSystemSettings(): SystemSettings {
 export function setSystemSettings(patch: Partial<SystemSettings>): void {
   if (patch.keepRunning !== undefined) store.set('keepRunning', patch.keepRunning)
   if (patch.openAtLogin !== undefined) store.set('openAtLogin', patch.openAtLogin)
+}
+
+// ── 网络代理（plan7 批 F2）：意图落盘，凭据加密 ────────────────────────────
+// ⚠️ **凭据绝不进明文配置**（AGENTS.md 红线）：地址里的 `user:pass` 在保存前就被剥走了，
+//    剩下这一段只负责把剥出来的那份加密存好。读不到（未加密过 / 加密服务不可用）一律当"没有凭据"，
+//    而不是报错 —— 没有凭据只是**走不了需要认证的代理**，不该让设置页打不开。
+
+export function getNetworkSettings(): NetworkSettings {
+  return normalizeNetwork({ proxyMode: store.store.proxyMode, proxyRules: store.store.proxyRules })
+}
+
+export function setNetworkSettings(patch: Partial<NetworkSettings>): void {
+  if (patch.proxyMode !== undefined) store.set('proxyMode', patch.proxyMode)
+  if (patch.proxyRules !== undefined) store.set('proxyRules', patch.proxyRules)
+}
+
+export function getNetworkCredentials(): NetworkCredentials | null {
+  const enc = store.store.proxyCredentialsEncrypted
+  if (!enc || !encryptionAvailable()) return null
+  try {
+    const raw = safeStorage.decryptString(Buffer.from(enc, 'base64'))
+    const parsed = JSON.parse(raw) as unknown
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      typeof (parsed as NetworkCredentials).user === 'string' &&
+      typeof (parsed as NetworkCredentials).pass === 'string'
+    ) {
+      return { user: (parsed as NetworkCredentials).user, pass: (parsed as NetworkCredentials).pass }
+    }
+    return null
+  } catch {
+    // 密文损坏（换了系统用户、密钥环不可用）→ 当没配过，用户重填一次即可
+    return null
+  }
+}
+
+export function setNetworkCredentials(credentials: NetworkCredentials | null): void {
+  if (credentials === null) {
+    store.delete('proxyCredentialsEncrypted' as keyof StoredSettings)
+    return
+  }
+  if (!encryptionAvailable()) {
+    throw new Error(
+      '系统加密服务不可用。为遵守「凭据不明文落盘」的约束，已拒绝保存代理账号密码 —— 请检查运行环境，或改用不需要认证的代理地址。'
+    )
+  }
+  store.set(
+    'proxyCredentialsEncrypted',
+    safeStorage.encryptString(JSON.stringify(credentials)).toString('base64')
+  )
 }
 
 export function encryptionAvailable(): boolean {

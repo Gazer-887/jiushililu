@@ -6,6 +6,7 @@ import type { TokenUsage } from '@shared/usage'
 import { ProviderError, mapHttpError } from './errors'
 import { createSSEParser } from './sse'
 import { ToolCallAccumulator } from './tool-accumulator'
+import { httpFetch } from './http-client'
 
 // OpenAI tool-calls 适配（plan6 → P1；D-032 增补流式）：主循环的模型通道。
 // DeepSeek / V4 全系原生兼容 OpenAI tool-calls 协议；采样字段与 chat 路径同规则（可空不发）。
@@ -46,7 +47,7 @@ export async function chatWithToolsOpenAI(
   tools: ToolSchema[],
   signal?: AbortSignal
 ): Promise<AgentChatResult> {
-  const res = await fetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
+  const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(buildToolsBody(settings, messages, tools, false)),
@@ -84,7 +85,7 @@ export async function streamWithToolsOpenAI(
   /** 思考增量（DeepSeek 系返回 `reasoning_content`）；不传 = 忽略 */
   onReasoning?: (delta: string) => void
 ): Promise<AgentChatResult> {
-  const res = await fetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
+  const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(buildToolsBody(settings, messages, tools, true)),

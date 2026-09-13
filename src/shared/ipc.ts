@@ -9,6 +9,7 @@ import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
 import type { AskRequest, AskResult } from './ask'
 import type { SystemSettings, SystemView } from './system'
+import type { NetworkPatch, NetworkView } from './network'
 import type { GitChange } from './git-status'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
@@ -260,6 +261,9 @@ export const IPC = {
   // ── 系统集成（plan7 批 F1）：后台运行 + 开机自启 ──
   systemGet: 'system:get',
   systemSet: 'system:set',
+  // ── 网络代理（plan7 批 F2）：三档 + 手动地址 + 凭据（凭据只进不出）──
+  netProxyGet: 'net-proxy:get',
+  netProxySet: 'net-proxy:set',
   gitInfo: 'git:info',
   // ── 源代码管理（plan16）：变更列表 / 暂存 / 提交 ──
   gitStatus: 'git:status',
@@ -468,6 +472,9 @@ export interface ApiBridge {
   /** 系统集成（plan7 批 F1）：值与**真生效状态**都由主进程给（界面不猜） */
   getSystem(): Promise<SystemView>
   setSystem(patch: Partial<SystemSettings>): Promise<SystemView>
+  /** 网络代理（plan7 批 F2）：**当前生效的代理**由主进程探测后给，界面不猜 */
+  getNetwork(): Promise<NetworkView>
+  setNetwork(patch: NetworkPatch): Promise<NetworkView>
   getGitInfo(): Promise<GitInfo | null>
   // ── 源代码管理（plan16）──
   /** 完整状态（分支 + 变更列表 + 待推送计数）。**非 Git 仓库不是错误** —— 走 `ok:false` + `message` 说清原因 */
