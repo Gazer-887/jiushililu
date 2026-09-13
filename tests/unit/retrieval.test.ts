@@ -171,6 +171,24 @@ describe('parseRipgrepJson（解析 --json 流）', () => {
     const { hits } = parseRipgrepJson(stdout, root, 50)
     expect(hits[0]!.file).toBe('src/deep/x.ts')
   })
+
+  it('**接受 rg 真实的「混合分隔符」输出**（实机抓到的形态，不是构造的）', () => {
+    // 依据：在 Windows 上实跑随包 rg（`--json`），传 `-- d:/proj/src` 时它的输出是
+    //   {"path":{"text":"d:/proj/src\\shared\\x.ts"}}
+    // 即 **basePath 原样回显（正斜杠）+ 平台分隔符拼接（反斜杠）**。
+    // 这里是解析层的输入契约：不能假定 rg 的路径分隔符统一 ——
+    // 它取决于调用方传进去的 basePath 长什么样。
+    const abs = process.platform === 'win32' ? 'd:/proj/src\\shared\\x.ts' : '/proj/src/shared/x.ts'
+    const wsRoot = process.platform === 'win32' ? 'd:\\proj' : '/proj'
+    const stdout = line({
+      type: 'match',
+      data: { path: { text: abs }, line_number: 5, lines: { text: 'mixed\n' } }
+    })
+    const { hits } = parseRipgrepJson(stdout, wsRoot, 50)
+    // `path.relative` 在有平台语义的宿主上能消化这种混合形态
+    // （Windows 上 `d:/a` 与 `d:\a` 同义；POSIX 上本来就只有一种分隔符）
+    expect(hits[0]!.file).toBe('src/shared/x.ts')
+  })
 })
 
 describe('runSearch（执行 + 降级）', () => {
