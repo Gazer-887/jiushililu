@@ -28,13 +28,26 @@
    * border-radius 12 种、padding 56 种、gap 12 种、line-height 7 种。
    * 收敛方式：**按语义分组**（同类元素同一档），不做机械四舍五入 ——
    * 既消灭"每处拍一个数"，又不破坏原有的疏密节奏。
+   *
+   * plan7 批 F3（2026-09-14）：`--fs-*` 从绝对像素改为 **rem 基** —— 界面字号档的实现
+   * 是"改根元素 font-size"一处生效全局（别去逐个改 token，plan7 原话）。
+   * 换算按根字号 16px：11px=0.6875rem … 24px=1.5rem，标准档（100%）渲染结果与旧的
+   * 绝对像素**逐像素一致**，只有用户主动换档才会变。
    */
-  --fs-xs: 11px; /* 角标 / 极小的辅助字 */
-  --fs-sm: 12px; /* 次要文字 / 标签 */
-  --fs-md: 13px; /* 控件文字 / 表单标签 */
-  --fs-base: 14px; /* 正文基准 */
-  --fs-lg: 18px; /* 区块标题 */
-  --fs-xl: 24px; /* 页面主标题 / 首屏题辞 */
+  --fs-xs: 0.6875rem; /* 角标 / 极小的辅助字 */
+  --fs-sm: 0.75rem; /* 次要文字 / 标签 */
+  --fs-md: 0.8125rem; /* 控件文字 / 表单标签 */
+  --fs-base: 0.875rem; /* 正文基准 */
+  --fs-lg: 1.125rem; /* 区块标题 */
+  --fs-xl: 1.5rem; /* 页面主标题 / 首屏题辞 */
+
+  /*
+   * 界面字体（plan7 批 F3）：`--font-ui` 是**运行时可覆盖**的变量 —— 渲染端在根元素上
+   * 写 inline style（store.ts 的 applyFontPrefs），空值时回落到这条默认栈。
+   * 值来自盘上存储的字体名，**已经过白名单清洗**（sanitizeUiFont 只留字面字符），
+   * CSS 里这条默认栈是唯一真相源，渲染端不重复拼写回退链。
+   */
+  --font-ui: 'Segoe UI', 'Microsoft YaHei', sans-serif;
 
   /*
    * 间距阶梯（R7 收敛）：**名字即像素值** —— 增删档位不影响既有引用，也不会记错档。
@@ -103,8 +116,16 @@ body,
   height: 100%;
 }
 
+/*
+ * 根字号基准（plan7 批 F3）：写 100% 而不是拍死 16px —— 尊重用户在系统/浏览器侧
+ * 配置的默认字号；字号档换算（fontScalePercent）写进来的也是百分比，两者口径一致。
+ */
+html {
+  font-size: 100%;
+}
+
 body {
-  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-ui);
   color: var(--text);
   background: var(--bg);
   font-size: var(--fs-base);
@@ -453,7 +474,7 @@ nav {
   width: 15px;
   height: 15px;
   margin-left: var(--sp-4);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-style: normal;
   font-weight: 600;
   line-height: 1;
@@ -4549,7 +4570,7 @@ body[data-resizing] {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 0.625rem;
   line-height: 1;
   color: var(--panel);
   background: var(--panel);

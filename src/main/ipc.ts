@@ -1,6 +1,7 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { z } from 'zod'
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
+import { FONT_SCALE_KEYS, UI_FONT_MAX } from '@shared/splitter'
 import { revertOneHunk, samePath } from './revert-flow'
 import {
   IPC,
@@ -39,6 +40,7 @@ import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
 import type { SystemIntegration } from './system-integration'
 import type { NetworkProxy } from './network-proxy'
+import { listSystemFonts } from './system-fonts'
 import { resolvePolicy, type TokenSaverTier } from '@shared/token-tier'
 // 「当前用哪个模型」由**模型档案**决定（plan7 F5 多模型）：内核/界面永远只看见"当前这一个模型"，真源搬到了 store/models
 import {
@@ -792,6 +794,9 @@ export function registerIpcHandlers(deps: {
   // ⚠️ 取数一律走主进程返回值回显、**不做乐观更新**：代理"配了但没生效"是一个**静默**故障
   //    （界面看不出来、日志不报错、请求照旧直连），只有主进程的 `applied` 与探测到的
   //    `effective` 能证明它到底生效没有。
+  // ── 界面字体（plan7 批 F3）：枚举失败返回原因，不抛 —— 别让一个下拉框把设置页打挂 ──
+  ipcMain.handle(IPC.fontsList, () => listSystemFonts())
+
   ipcMain.handle(IPC.netProxyGet, (): NetworkView => deps.network.view())
 
   ipcMain.handle(IPC.netProxySet, async (_e, raw: unknown): Promise<NetworkView> => {
@@ -1095,6 +1100,9 @@ export function registerIpcHandlers(deps: {
         sidebarWidth: z.number().min(1).max(4096).optional(),
         dockWidth: z.number().min(1).max(4096).optional(),
         theme: z.enum(['classic', 'ink']).optional(),
+        // 字号档/字体名（plan7 批 F3）：形状在这层把关，语义清洗（坏值回落）交给 setUIPref
+        fontScale: z.enum(FONT_SCALE_KEYS).optional(),
+        uiFont: z.string().max(UI_FONT_MAX).optional(),
         workbench: workbenchSchema.optional(),
         workbenchSizes: workbenchSizesSchema.optional()
       })

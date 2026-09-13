@@ -94,6 +94,7 @@ const api: ApiBridge = {
   setSystem: (patch: Partial<SystemSettings>) => ipcRenderer.invoke(IPC.systemSet, patch),
   // ── 网络代理（plan7 批 F2）──
   getNetwork: () => ipcRenderer.invoke(IPC.netProxyGet),
+  listFonts: () => ipcRenderer.invoke(IPC.fontsList),
   setNetwork: (patch: NetworkPatch) => ipcRenderer.invoke(IPC.netProxySet, patch),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
   // ── 源代码管理（plan16）──

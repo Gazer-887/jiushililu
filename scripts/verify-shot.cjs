@@ -437,6 +437,19 @@ let netStub = {
 const netSetCalls = []
 /** `net-proxy:get` 调用次数 —— 与 system 同理：没有它就分不清"取到了"与"界面默认值" */
 let netGetCalls = 0
+/** 系统字体枚举桩（plan7 批 F3）：给一小把有代表性的名字 —— 含中文 family 与空 message */
+let fontsStub = { ok: true, fonts: ['Arial', 'Consolas', 'Microsoft YaHei', '微软雅黑'], message: null }
+/** ui-prefs 桩改成**有状态**（plan7 批 F3）：字号/字体断言要看"写进去了什么"，无状态桩只能验返回值 */
+let uiPrefsStub = {
+  sidebarWidth: 248,
+  dockWidth: 360,
+  theme: 'classic',
+  fontScale: 'md',
+  uiFont: '',
+  workbench: { schemaVersion: 1, panes: [] },
+  workbenchSizes: { paneWidths: [] }
+}
+const uiPrefsSetCalls = []
 /** 让下一次 `system:set` 回一个**载荷没要的值**：只有这样才能证明界面跟着返回值走，而不是乐观更新 */
 let systemForceNextSet = null
 const makeTermSnapshot = () => ({
@@ -775,6 +788,7 @@ const STUBS = {
     return { ...systemStub }
   },
   // 网络代理（plan7 批 F2）：与 `system:set` 同一口径 —— 改状态、回新状态，界面拿返回值回显
+  'fonts:list': () => ({ ...fontsStub, fonts: [...fontsStub.fonts] }),
   'net-proxy:get': () => {
     netGetCalls += 1
     return { ...netStub }
@@ -836,30 +850,26 @@ const STUBS = {
   }),
   'logs:open': () => true,
   // 界面布局偏好（含工作台分栏）。⚠️ 契约复制品：UIPrefs 加字段必须同步加，否则渲染端静默漏掉 undefined
-  'ui-prefs:get': () => ({
-    sidebarWidth: 248,
-    dockWidth: 360,
-    theme: 'classic',
-    workbench: { schemaVersion: 1, panes: [] },
-    workbenchSizes: { paneWidths: [] }
-  }),
+  // ⚠️ 有状态（plan7 批 F3）：set 合并进 uiPrefsStub 再返回 —— 渲染端拿返回值回显，桩要像真主进程一样"记住"
+  'ui-prefs:get': () => ({ ...uiPrefsStub }),
   'ui-prefs:set': (patch) => {
     if (patch && patch.workbench) wbSetCalls.push(Date.now())
-    return {
-      sidebarWidth: patch?.sidebarWidth ?? 248,
-      dockWidth: patch?.dockWidth ?? 360,
-      theme: patch?.theme ?? 'classic',
-      workbench: patch?.workbench ?? { schemaVersion: 1, panes: [] },
-      workbenchSizes: patch?.workbenchSizes ?? { paneWidths: [] }
-    }
+    uiPrefsSetCalls.push({ ...patch })
+    uiPrefsStub = { ...uiPrefsStub, ...patch }
+    return { ...uiPrefsStub }
   },
-  'ui-prefs:reset': () => ({
-    sidebarWidth: 248,
-    dockWidth: 360,
-    theme: 'classic',
-    workbench: { schemaVersion: 1, panes: [] },
-    workbenchSizes: { paneWidths: [] }
-  }),
+  'ui-prefs:reset': () => {
+    uiPrefsStub = {
+      sidebarWidth: 248,
+      dockWidth: 360,
+      theme: 'classic',
+      fontScale: 'md',
+      uiFont: '',
+      workbench: { schemaVersion: 1, panes: [] },
+      workbenchSizes: { paneWidths: [] }
+    }
+    return { ...uiPrefsStub }
+  },
   // ③ 文件拖进会话：按路径取附件（文件选择框走 attach:file）。⚠️ 这里的路径规则是主进程 readAttachment
   //    那套两层边界的复制品（绝对路径原样；相对拼工作区根；区外带 outside 标记）—— 主进程改了这里必须跟着改。
   'attach:path': (p) => {
@@ -3752,6 +3762,127 @@ app.whenReady().then(async () => {
     })()
   `)
   await new Promise((r) => setTimeout(r, 500))
+
+  // ── 界面字号（plan7 批 F3）：四档选择 → 根元素 font-size 变化 + 落盘载荷带档位 ──
+  // 实现口径：--fs-* 已是 rem 基，根字号一改全站跟着动；标准档 100% 必须与旧的绝对像素逐像素一致
+  {
+    const fontRead = await sevalRaw(`
+      (() => {
+        const group = document.querySelector('[role="radiogroup"][aria-label="界面字号"]');
+        const items = group ? Array.from(group.querySelectorAll('.choice-item')) : [];
+        return {
+          count: items.length,
+          names: items.map((b) => b.querySelector('.choice-name')?.textContent?.trim() ?? ''),
+          checked: group?.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null,
+          rootFontSize: document.documentElement.style.fontSize || '(inline 未设置)'
+        };
+      })()
+    `)
+    checkTrue('「外观」有字号四档（小/标准/大/特大），默认选中标准档',
+      fontRead.count === 4 && fontRead.names.join(',') === '小,标准,大,特大' && fontRead.checked === '标准',
+      fontRead)
+    checkTrue('标准档根元素 font-size 为 100%（rem 换算逐像素复刻旧版的前提）',
+      fontRead.rootFontSize === '100%', fontRead.rootFontSize)
+
+    await sevalRaw(`
+      (() => {
+        const group = document.querySelector('[role="radiogroup"][aria-label="界面字号"]');
+        const btn = group && Array.from(group.querySelectorAll('.choice-item'))
+          .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '特大');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const fontXl = await sevalRaw(`
+      (() => ({
+        rootFontSize: document.documentElement.style.fontSize || '(inline 未设置)',
+        checked: document.querySelector('[role="radiogroup"][aria-label="界面字号"] .choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null,
+        bodyPx: getComputedStyle(document.body).fontSize
+      }))()
+    `)
+    checkTrue('点「特大」：根元素变 125%，正文字号从 14px 跟到 17.5px（rem token 全站联动）',
+      fontXl.rootFontSize === '125%' && fontXl.checked === '特大' && fontXl.bodyPx === '17.5px',
+      fontXl)
+    checkTrue('字号档落盘：ui-prefs:set 载荷带 fontScale=xl（不是只改界面）',
+      uiPrefsSetCalls.length >= 1 && uiPrefsSetCalls[uiPrefsSetCalls.length - 1].fontScale === 'xl',
+      uiPrefsSetCalls[uiPrefsSetCalls.length - 1])
+
+    // 还原标准档（可重复运行）
+    await sevalRaw(`
+      (() => {
+        const group = document.querySelector('[role="radiogroup"][aria-label="界面字号"]');
+        const btn = group && Array.from(group.querySelectorAll('.choice-item'))
+          .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '标准');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 500))
+  }
+
+  // ── 界面字体（plan7 批 F3）：fonts:list 出下拉框，选中写 --font-ui 且落盘；空串 = 恢复默认栈 ──
+  {
+    const fontSel = await sevalRaw(`
+      (() => {
+        const label = Array.from(document.querySelectorAll('.settings-body label'))
+          .find((l) => l.textContent.trim().startsWith('字体'));
+        const sel = label ? label.querySelector('select') : null;
+        return {
+          hasSelect: !!sel,
+          optionCount: sel ? sel.options.length : 0,
+          firstOption: sel && sel.options[0] ? sel.options[0].textContent.trim() : null
+        };
+      })()
+    `)
+    checkTrue('字体枚举来自主进程：下拉框存在，含默认项 + 桩里 4 个系统字体',
+      fontSel.hasSelect && fontSel.optionCount === 5 && (fontSel.firstOption ?? '').indexOf('默认') === 0,
+      fontSel)
+
+    await sevalRaw(`
+      (() => {
+        const label = Array.from(document.querySelectorAll('.settings-body label'))
+          .find((l) => l.textContent.trim().startsWith('字体'));
+        const sel = label ? label.querySelector('select') : null;
+        if (!sel) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(sel, 'Microsoft YaHei');
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const fontApplied = await sevalRaw(`
+      (() => ({
+        fontUi: document.documentElement.style.getPropertyValue('--font-ui').trim(),
+        value: document.querySelector('.settings-body select')
+          ? document.querySelector('.settings-body select').value
+          : null
+      }))()
+    `)
+    checkTrue('选字体后 --font-ui 写上（选中字体打头 + 回退栈跟随），ui-prefs:set 载荷带 uiFont',
+      fontApplied.fontUi.indexOf("'Microsoft YaHei'") === 0 &&
+        fontApplied.fontUi.indexOf('Segoe UI') > 0 &&
+        uiPrefsSetCalls[uiPrefsSetCalls.length - 1].uiFont === 'Microsoft YaHei',
+      fontApplied)
+
+    await sevalRaw(`
+      (() => {
+        const sel = document.querySelector('.settings-body select');
+        if (!sel) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(sel, '');
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const fontReset = await sevalRaw(`
+      document.documentElement.style.getPropertyValue('--font-ui').trim()
+    `)
+    checkTrue('选回「默认」：--font-ui 被移除（空串是恢复默认栈，不是往 style 里写空值）',
+      fontReset === '', fontReset)
+  }
 
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
   const cssCheck = await sevalRaw(`

@@ -3,11 +3,14 @@ import {
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
+  FONT_SCALE_DEFAULT,
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
+  sanitizeFontScale,
   sanitizeStoredWidth,
   sanitizeTheme,
+  sanitizeUiFont,
   type ThemeName,
   type UIPrefs
 } from '@shared/splitter'
@@ -23,6 +26,10 @@ interface StoredPrefs {
   sidebarWidth?: number
   dockWidth?: number
   theme?: ThemeName
+  /** 字号档（plan7 批 F3）。盘上不可信，读出来过 sanitizeFontScale */
+  fontScale?: unknown
+  /** 界面字体 family 名（plan7 批 F3）。⚠️ 读出来过 sanitizeUiFont（白名单清洗，防 CSS 注入） */
+  uiFont?: unknown
   /** 盘上是**不可信**的 —— 读出来一律过 sanitizeLayout */
   workbench?: unknown
   workbenchSizes?: unknown
@@ -45,6 +52,8 @@ export function getUIPrefs(): UIPrefs {
     ),
     dockWidth: sanitizeStoredWidth(store.store.dockWidth, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX),
     theme: sanitizeTheme(store.store.theme),
+    fontScale: sanitizeFontScale(store.store.fontScale),
+    uiFont: sanitizeUiFont(store.store.uiFont),
     workbench,
     workbenchSizes: sanitizeSizes(store.store.workbenchSizes, workbench.panes.length)
   }
@@ -69,6 +78,18 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
     store.set('theme', theme)
     next.theme = theme
   }
+  if (patch.fontScale !== undefined) {
+    // 非法值**存默认档**而不是忽略：让"改坏了"和"没改"在盘上长得不一样，少一层怀疑对象
+    const scale = sanitizeFontScale(patch.fontScale)
+    store.set('fontScale', scale)
+    next.fontScale = scale
+  }
+  if (patch.uiFont !== undefined) {
+    // 空串是合法值（= 恢复默认字体栈），不能当"没填"处理
+    const font = sanitizeUiFont(patch.uiFont)
+    store.set('uiFont', font)
+    next.uiFont = font
+  }
   if (patch.workbench !== undefined) {
     const clean = sanitizeLayout(patch.workbench)
     store.set('workbench', clean)
@@ -91,12 +112,16 @@ export function resetUIPrefs(): UIPrefs {
   store.set('sidebarWidth', SIDEBAR_DEFAULT)
   store.set('dockWidth', DOCK_DEFAULT)
   store.set('theme', 'classic')
+  store.set('fontScale', FONT_SCALE_DEFAULT)
+  store.set('uiFont', '')
   store.set('workbench', emptyLayout())
   store.set('workbenchSizes', emptySizes())
   return {
     sidebarWidth: SIDEBAR_DEFAULT,
     dockWidth: DOCK_DEFAULT,
     theme: 'classic',
+    fontScale: FONT_SCALE_DEFAULT,
+    uiFont: '',
     workbench: emptyLayout(),
     workbenchSizes: emptySizes()
   }

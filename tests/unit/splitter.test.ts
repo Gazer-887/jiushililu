@@ -3,13 +3,19 @@ import {
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
+  FONT_SCALE_DEFAULT,
+  FONT_SCALES,
   MAIN_RESERVE,
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
+  UI_FONT_MAX,
   clampWidth,
   computeWidth,
-  sanitizeStoredWidth
+  fontScalePercent,
+  sanitizeFontScale,
+  sanitizeStoredWidth,
+  sanitizeUiFont
 } from '@shared/splitter'
 
 // 分隔条纯逻辑（plan7 批 A0）
@@ -173,5 +179,72 @@ describe('常量自身的合理性（防止以后改坏）', () => {
 
   it('主区域保底为正数', () => {
     expect(MAIN_RESERVE).toBeGreaterThan(0)
+  })
+})
+
+// ── 界面字号档（plan7 批 F3）────────────────────────────────────────
+
+describe('sanitizeFontScale（坏值回落默认档）', () => {
+  it('四档合法值原样返回', () => {
+    for (const key of ['sm', 'md', 'lg', 'xl']) {
+      expect(sanitizeFontScale(key)).toBe(key)
+    }
+  })
+
+  it('非法值回落默认档', () => {
+    expect(sanitizeFontScale('huge')).toBe(FONT_SCALE_DEFAULT)
+    expect(sanitizeFontScale(125)).toBe(FONT_SCALE_DEFAULT)
+    expect(sanitizeFontScale(null)).toBe(FONT_SCALE_DEFAULT)
+    expect(sanitizeFontScale(undefined)).toBe(FONT_SCALE_DEFAULT)
+  })
+})
+
+describe('fontScalePercent（档位 → 根元素百分比）', () => {
+  it('标准档是 100', () => {
+    expect(fontScalePercent('md')).toBe(100)
+    expect(fontScalePercent(FONT_SCALE_DEFAULT)).toBe(100)
+  })
+
+  it('四档百分比单调递增且对称分布', () => {
+    const percents = FONT_SCALES.map((s) => s.percent)
+    expect(percents).toEqual([87.5, 100, 112.5, 125])
+  })
+
+  it('未知档位不炸，回落 100', () => {
+    expect(fontScalePercent('nope' as never)).toBe(100)
+  })
+})
+
+// ── 界面字体名清洗（plan7 批 F3）────────────────────────────────────
+
+describe('sanitizeUiFont（白名单清洗，这是 CSS 注入的防线）', () => {
+  it('普通字体名原样保留', () => {
+    expect(sanitizeUiFont('Microsoft YaHei')).toBe('Microsoft YaHei')
+    expect(sanitizeUiFont('Segoe-UI_Variable')).toBe('Segoe-UI_Variable')
+    expect(sanitizeUiFont('思源黑体')).toBe('思源黑体')
+  })
+
+  it('剥掉引号/分号/花括号等注入字符', () => {
+    // CSS 注入的最小样本：值最终会被拼进 --font-ui 写进 style；剥完只剩字面与空白
+    expect(sanitizeUiFont("a'; } body { display:none")).toBe('a  body  displaynone')
+  })
+
+  it('剥掉反斜杠与 @import', () => {
+    expect(sanitizeUiFont('x\'; @import url(evil)')).not.toMatch(/[\;@'()]/)
+  })
+
+  it('超长值整串拒绝（贴整串 font-family 的防呆）', () => {
+    expect(sanitizeUiFont('a'.repeat(UI_FONT_MAX + 1))).toBe('')
+    expect(sanitizeUiFont('a'.repeat(UI_FONT_MAX))).toBe('a'.repeat(UI_FONT_MAX))
+  })
+
+  it('非字符串一律空串（= 恢复默认栈）', () => {
+    expect(sanitizeUiFont(null)).toBe('')
+    expect(sanitizeUiFont(42)).toBe('')
+    expect(sanitizeUiFont(undefined)).toBe('')
+  })
+
+  it('首尾空白裁掉', () => {
+    expect(sanitizeUiFont('  Arial  ')).toBe('Arial')
   })
 })

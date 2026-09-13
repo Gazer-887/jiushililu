@@ -10,7 +10,8 @@ import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } 
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import FieldNote from '../components/FieldNote'
 import { useAppStore } from '../store'
-import { THEMES } from '@shared/splitter'
+import { THEMES, FONT_SCALES } from '@shared/splitter'
+import type { SystemFontsResult } from '@shared/font-names'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
 import { TOKEN_TIER_LIST, type TokenSaverTier } from '@shared/token-tier'
 import { SYSTEM_TOGGLES, type SystemSettings, type SystemView } from '@shared/system'
@@ -156,6 +157,11 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const loadSettings = useAppStore((s) => s.loadSettings)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
+  // ── 字号 / 字体（plan7 批 F3）：值在 store（文档级属性，改了即时生效）──
+  const fontScale = useAppStore((s) => s.fontScale)
+  const setFontScale = useAppStore((s) => s.setFontScale)
+  const uiFont = useAppStore((s) => s.uiFont)
+  const setUiFont = useAppStore((s) => s.setUiFont)
   const [draft, setDraft] = useState<SettingsSaveInput | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
@@ -176,6 +182,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const [netRules, setNetRules] = useState('')
   const [netUser, setNetUser] = useState('')
   const [netPass, setNetPass] = useState('')
+  /** 系统字体列表（plan7 批 F3）：进「外观」分区时向主进程要，列不出就显示原因 */
+  const [fonts, setFonts] = useState<SystemFontsResult | null>(null)
   /** 故障排查区：日志目录与最近文件，用于"出问题能查" */
   const [logs, setLogs] = useState<LogsInfo | null>(null)
 
@@ -244,6 +252,14 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         setNetRules(v.proxyRules)
       })
       .catch(() => setNet(null))
+  }, [section])
+  useEffect(() => {
+    if (section !== 'appearance') return
+    // 字体枚举失败**不是错误**：显示原因、退化为手动输入框，设置页照常工作
+    window.api
+      .listFonts()
+      .then(setFonts)
+      .catch(() => setFonts({ ok: false, fonts: [], message: '字体列表获取失败，可手动输入字体名。' }))
   }, [section])
 
   /**
@@ -891,6 +907,62 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                 </button>
               ))}
             </div>
+
+            <div className="field-label">界面字号</div>
+            {/* 字号档（plan7 批 F3）：实现是根元素 font-size 缩放，全站 rem token 一起动。
+                档位由 shared 的 FONT_SCALES 出，这里不另拍一组数；改了即时生效。 */}
+            <div className="choice-list" role="radiogroup" aria-label="界面字号">
+              {FONT_SCALES.map((s) => (
+                <button
+                  key={s.key}
+                  role="radio"
+                  aria-checked={fontScale === s.key}
+                  className={`choice-item${fontScale === s.key ? ' is-on' : ''}`}
+                  onClick={() => setFontScale(s.key)}
+                >
+                  <span className="choice-name">{s.label}</span>
+                  <span className="choice-desc">{s.desc}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="field-label">界面字体</div>
+            {/* 字体枚举在主进程（渲染端 document.fonts 只有已加载的）：列得出就给下拉框，
+                列不出就明说原因并退化为手动输入 —— **不做假下拉框**（plan7 批 F3 原话）。 */}
+            {fonts?.ok ? (
+              <label>
+                字体
+                <select
+                  value={uiFont}
+                  onChange={(e) => setUiFont(e.target.value)}
+                  aria-label="界面字体"
+                >
+                  <option value="">默认（Segoe UI / 微软雅黑）</option>
+                  {fonts.fonts.map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                字体（手动输入）
+                <input
+                  value={uiFont}
+                  placeholder="如 Microsoft YaHei"
+                  onChange={(e) => setUiFont(e.target.value)}
+                />
+              </label>
+            )}
+            {fonts && !fonts.ok && fonts.message && <p className="hint">{fonts.message}</p>}
+            <p className="hint">
+              预览（切换后全站生效）：
+              <span style={uiFont ? { fontFamily: `'${uiFont}', sans-serif` } : undefined}>
+                中文字体 Abc 123 —— The quick brown fox
+              </span>
+            </p>
+            <p className="hint">代码编辑器与终端保持等宽字号，不跟随此设置。</p>
           </div>
         )}
 

@@ -10,6 +10,7 @@ import type { FsBinaryResult, FsListResult, FsReadResult } from './fs-tree'
 import type { AskRequest, AskResult } from './ask'
 import type { SystemSettings, SystemView } from './system'
 import type { NetworkPatch, NetworkView } from './network'
+import type { SystemFontsResult } from './font-names'
 import type { GitChange } from './git-status'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
@@ -264,6 +265,8 @@ export const IPC = {
   // ── 网络代理（plan7 批 F2）：三档 + 手动地址 + 凭据（凭据只进不出）──
   netProxyGet: 'net-proxy:get',
   netProxySet: 'net-proxy:set',
+  // ── 界面字体（plan7 批 F3）：系统字体枚举（主进程读注册表，document.fonts 只有已加载的）──
+  fontsList: 'fonts:list',
   gitInfo: 'git:info',
   // ── 源代码管理（plan16）：变更列表 / 暂存 / 提交 ──
   gitStatus: 'git:status',
@@ -475,6 +478,8 @@ export interface ApiBridge {
   /** 网络代理（plan7 批 F2）：**当前生效的代理**由主进程探测后给，界面不猜 */
   getNetwork(): Promise<NetworkView>
   setNetwork(patch: NetworkPatch): Promise<NetworkView>
+  /** 系统字体枚举（plan7 批 F3）：**列不出就明说**，不做假下拉框 */
+  listFonts(): Promise<SystemFontsResult>
   getGitInfo(): Promise<GitInfo | null>
   // ── 源代码管理（plan16）──
   /** 完整状态（分支 + 变更列表 + 待推送计数）。**非 Git 仓库不是错误** —— 走 `ok:false` + `message` 说清原因 */

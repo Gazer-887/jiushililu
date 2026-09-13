@@ -19,11 +19,16 @@ import {
   DOCK_DEFAULT,
   DOCK_MAX,
   DOCK_MIN,
+  FONT_SCALE_DEFAULT,
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   clampWidth,
+  fontScalePercent,
+  sanitizeFontScale,
   sanitizeTheme,
+  sanitizeUiFont,
+  type FontScale,
   type ThemeName,
   type UIPrefs
 } from '@shared/splitter'
@@ -85,6 +90,22 @@ function cancelScheduledPersist(conversationId: string): void {
   }
 }
 
+/** 默认字体栈的拼写与 styles.css 的 `--font-ui` 默认值保持一致（CSS 那条是唯一真相源，这里只为拼回退链） */
+const FALLBACK_FONT_STACK = "'Segoe UI', 'Microsoft YaHei', sans-serif"
+
+/**
+ * 把字号档/字体写进根元素 —— 与 setTheme 同一手法：文档级属性，写了即时生效。
+ * ⚠️ 字体名来自盘上存储，**已经过主进程 sanitizeUiFont 白名单清洗**（只留字面字符），
+ *    所以这里拼单引号是安全的；清洗是安全边界，这行只是消费它，别在调用前自己再造一套转义。
+ * 字体为空串 = 恢复默认栈：**移除** inline 变量而不是写空值，让 styles.css 的默认值接管。
+ */
+function applyFontPrefs(scale: FontScale, font: string): void {
+  const root = document.documentElement
+  root.style.fontSize = `${fontScalePercent(scale)}%`
+  if (font) root.style.setProperty('--font-ui', `'${font}', ${FALLBACK_FONT_STACK}`)
+  else root.style.removeProperty('--font-ui')
+}
+
 interface AppState {
   view: AppView
   setView: (view: AppView) => void
@@ -93,6 +114,12 @@ interface AppState {
   dockWidth: number
   theme: ThemeName
   setTheme: (t: ThemeName) => void
+  /** 界面字号档（plan7 批 F3）：实现是根元素 font-size 缩放，`--fs-*` 已是 rem 基，一处生效全局 */
+  fontScale: FontScale
+  setFontScale: (s: FontScale) => void
+  /** 界面字体 family 名（空串 = 默认栈）。值进 store 前过 sanitizeUiFont */
+  uiFont: string
+  setUiFont: (f: string) => void
   setSidebarWidth: (w: number) => void
   setDockWidth: (w: number) => void
   persistUIPrefs: (patch: Partial<UIPrefs>) => Promise<void>
@@ -348,6 +375,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     document.documentElement.dataset.theme = theme
     void useAppStore.getState().persistUIPrefs({ theme })
   },
+  fontScale: FONT_SCALE_DEFAULT,
+  uiFont: '',
+  setFontScale: (s) => {
+    const scale = sanitizeFontScale(s)
+    set({ fontScale: scale })
+    // 先应用再落盘：字号是文档级属性，和主题一样要即时生效
+    applyFontPrefs(scale, get().uiFont)
+    void useAppStore.getState().persistUIPrefs({ fontScale: scale })
+  },
+  setUiFont: (f) => {
+    const font = sanitizeUiFont(f)
+    set({ uiFont: font })
+    applyFontPrefs(get().fontScale, font)
+    void useAppStore.getState().persistUIPrefs({ uiFont: font })
+  },
   setSidebarWidth: (w) => set({ sidebarWidth: clampWidth(w, SIDEBAR_MIN, SIDEBAR_MAX) }),
   setDockWidth: (w) => set({ dockWidth: clampWidth(w, DOCK_MIN, DOCK_MAX) }),
   persistUIPrefs: async (patch) => {
@@ -358,7 +400,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         sidebarWidth: next.sidebarWidth,
         dockWidth: next.dockWidth,
-        theme: sanitizeTheme(next.theme)
+        theme: sanitizeTheme(next.theme),
+        fontScale: sanitizeFontScale(next.fontScale),
+        uiFont: sanitizeUiFont(next.uiFont)
       })
     } catch {
       // 忽略：布局偏好不是关键数据
@@ -372,31 +416,44 @@ export const useAppStore = create<AppState>((set, get) => ({
         sidebarWidth: next.sidebarWidth,
         dockWidth: next.dockWidth,
         theme: sanitizeTheme(next.theme),
+        fontScale: sanitizeFontScale(next.fontScale),
+        uiFont: sanitizeUiFont(next.uiFont),
         workbench: next.workbench,
         workbenchSizes: next.workbenchSizes
       })
+      // 恢复默认布局的同时把文档级属性也拉回默认，否则界面要等下次重启才回原样
+      applyFontPrefs(sanitizeFontScale(next.fontScale), sanitizeUiFont(next.uiFont))
     } catch {
       set({
         sidebarWidth: SIDEBAR_DEFAULT,
         dockWidth: DOCK_DEFAULT,
         theme: 'classic',
+        fontScale: FONT_SCALE_DEFAULT,
+        uiFont: '',
         workbench: emptyLayout(),
         workbenchSizes: emptySizes()
       })
+      applyFontPrefs(FONT_SCALE_DEFAULT, '')
     }
   },
   loadUIPrefs: async () => {
     try {
       const prefs = await window.api.getUIPrefs()
+      const fontScale = sanitizeFontScale(prefs.fontScale)
+      const uiFont = sanitizeUiFont(prefs.uiFont)
       set({
         sidebarWidth: prefs.sidebarWidth,
         dockWidth: prefs.dockWidth,
         theme: sanitizeTheme(prefs.theme),
+        fontScale,
+        uiFont,
         workbench: prefs.workbench,
         workbenchSizes: prefs.workbenchSizes
       })
       // 启动即应用主题（否则刷新/重开会闪回默认主题）
       document.documentElement.dataset.theme = sanitizeTheme(prefs.theme)
+      // 字号/字体同理：启动即应用，别让用户设置的档位闪回默认
+      applyFontPrefs(fontScale, uiFont)
     } catch {
       // 偏好读不到就用默认值（首启动 / 文件损坏都走这里）
     }
