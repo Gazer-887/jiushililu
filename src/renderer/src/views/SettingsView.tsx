@@ -8,6 +8,7 @@ import type {
 } from '@shared/ipc'
 import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
+import FieldNote from '../components/FieldNote'
 import { useAppStore } from '../store'
 import { THEMES } from '@shared/splitter'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
@@ -490,13 +491,19 @@ export default function SettingsView() {
               ))}
             </div>
 
-            <div className="field-label">省 token 档位</div>
-            {/* **省 token 不许让模型降智**（plan8 R9.1 §七②）：把"能力 vs 省钱"摆出来让人选，不替用户默认一个激进值 */}
-            <p className="hint">
-              仅影响省 Token 的手段（工具输出的压缩力度、读文件默认行数），
-              不修改计量口径，也不省略厂商未上报的数据。
-            </p>
-            <div className="choice-list choice-list-fill" role="radiogroup" aria-label="省 token 档位">
+            {/* 省 token 的口号不写在这里 —— 它是"能力 vs 省钱"的取舍，摆进每个档位的说明里让人自己选，
+                不替用户默认一个激进值（plan8 R9.1 §七②）。
+                2026-09-13：段落注释收进 ⓘ 气泡，免得长文挤掉拖放视觉（用户反馈）。 */}
+            <div className="field-label field-label-with-note">
+              Token Saver
+              <FieldNote
+                text={
+                  '仅影响省 Token 的手段（工具输出的压缩力度、读文件默认行数），' +
+                  '不修改计量口径，也不省略厂商未上报的数据。'
+                }
+              />
+            </div>
+            <div className="choice-list choice-list-fill" role="radiogroup" aria-label="Token Saver 档位">
               {TOKEN_TIER_LIST.map((t) => (
                 <button
                   key={t.tier}
