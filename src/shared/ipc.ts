@@ -163,6 +163,11 @@ export type {
   RollbackReport
 } from './checkpoint'
 
+// ── 内置终端（plan7 批 C）──
+// 类型定义在 `@shared/terminal`（纯类型，主进程与界面共用同一口径）
+import type { TerminalDataPayload, TerminalSessionSnapshot, TerminalStartResult } from './terminal'
+export type { TerminalChunk, TerminalDataPayload, TerminalSessionSnapshot, TerminalStartResult } from './terminal'
+
 /** Agent 模式执行结果（plan6：独立上下文 + 单次报告返回） */
 export interface AgentRunResult {
   ok: boolean
@@ -379,7 +384,24 @@ export const IPC = {
   /** 终止一条后台任务 */
   bgKill: 'bg:kill',
   /** 主进程 → 界面：任务状态或输出变化 */
-  bgChanged: 'bg:changed'
+  bgChanged: 'bg:changed',
+  // ── 内置终端（plan7 批 C）──
+  // ⚠️ 这是**进程级**通道（终端是"这个工作区的终端"，不属于任何一条会话），与 `bgChanged` 同类。
+  //    所以它**不在** `STREAM_CONSTS` 里，而是**显式登记**在
+  //    `tests/unit/stream-envelope.test.ts` 的 `EXEMPT_CONSTS` 里并写明理由 ——
+  //    那条守卫的原话是「豁免要写在这里、写明白，不许靠"扫不到"蒙混过去」。
+  terminalStart: 'terminal:start',
+  terminalWrite: 'terminal:write',
+  terminalResize: 'terminal:resize',
+  terminalKill: 'terminal:kill',
+  /** 界面的背压回执（渲染 → 主进程）：这一段已经解析完了 */
+  terminalAck: 'terminal:ack',
+  /** 界面重挂并重放之后的重对齐（渲染 → 主进程）：把未回执计数清零、必要时恢复 pty */
+  terminalResync: 'terminal:resync',
+  terminalRestart: 'terminal:restart',
+  terminalSnapshot: 'terminal:snapshot',
+  terminalData: 'terminal:data',
+  terminalState: 'terminal:state'
 } as const
 
 /** 界面布局偏好（左右抽屉宽度，plan7 批 A0）—— 定义见 @shared/splitter */
@@ -684,6 +706,28 @@ export interface ApiBridge {
   /** 终止一条后台任务（连带它的子进程） */
   killBackgroundTask(id: string): Promise<boolean>
   onBackgroundChanged(cb: (list: BackgroundTask[]) => void): () => void
+  // ── 内置终端（plan7 批 C）──
+  /**
+   * 起会话（**幂等**：本工作区已有活会话就返回它）。
+   * ⚠️ 只读权限档下**主进程会拒绝** —— 不只是把按钮变灰。
+   */
+  terminalStart(size?: { cols: number; rows: number }): Promise<TerminalStartResult>
+  /** 写**原始按键**（真 PTY 下 shell 自己管行编辑/回显/补全，所以不是"写一整行"） */
+  terminalWrite(data: string): Promise<{ ok: boolean; message?: string }>
+  /** 终端尺寸变化（`fit()` 之后调）—— 不传的话 `vim`/进度条会画错 */
+  terminalResize(cols: number, rows: number): Promise<void>
+  terminalKill(): Promise<boolean>
+  /** 背压回执（渲染 → 主进程）：这一段输出已经解析完了，主进程据此恢复/继续暂停 pty 读取 */
+  terminalAck(sessionId: string, chars: number): Promise<void>
+  /** 重放结束后的背压重对齐（渲染 → 主进程）—— 不复位的话 pty 会永远停在暂停上 */
+  terminalResync(sessionId: string): Promise<void>
+  terminalRestart(): Promise<TerminalStartResult>
+  /** 当前会话快照（含输出缓冲与 `nextSeq`）—— **重挂时靠它重放，不重不漏** */
+  terminalSnapshot(): Promise<TerminalSessionSnapshot | null>
+  /** 增量输出（**进程级**通道） */
+  onTerminalData(cb: (payload: TerminalDataPayload) => void): () => void
+  /** 会话状态变化（起/停/退出）—— 界面据此显示"已结束/被停止" */
+  onTerminalState(cb: (sessionId: string) => void): () => void
   /**
    * 拖入的文件对象 → 磁盘绝对路径（拖拽上传用）。
    * Electron 32+ 起 `File.path` 已移除，必须走 preload 的 `webUtils.getPathForFile`。

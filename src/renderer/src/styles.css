@@ -3383,7 +3383,112 @@ label.radio {
   color: var(--text);
 }
 
+/* ── 内置终端（plan7 批 C）────────────────────────────────────
+   墨底亮字：终端本来就是"墨"最该出现的地方。
+   ⚠️ 颜色**只在这里与 TerminalPanel 的 THEME 两处**定义，两处要一起改
+   —— xterm 自己那套主题是运行时经 `<style>` 注入的（生产 CSP 已为它放行 style-src-elem）。 */
+
+.tm-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.tm-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-8);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-xs);
+}
+
+.tm-status {
+  flex-shrink: 0;
+  padding: 1px var(--sp-6);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.tm-status-running {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: var(--ok-border);
+}
+
+.tm-status-killed,
+.tm-status-exited {
+  color: var(--warn-deep);
+  background: var(--warn-soft);
+  border-color: var(--warn-border);
+}
+
+.tm-shell {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.tm-cwd {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono, monospace);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* 路径太长时优先看得见**末尾**（那才是当前目录名） */
+  text-align: left;
+}
+
+.tm-host-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 8rem;
+  background: #1c1c1a;
+  padding: var(--sp-6);
+  overflow: hidden;
+}
+
+.tm-host {
+  width: 100%;
+  height: 100%;
+}
+
+.tm-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8b8a83;
+  font-size: var(--fs-sm);
+}
+
+.tm-note {
+  padding: var(--sp-4) var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+/* xterm 的滚动条在这套深底上默认是白的（抢戏）—— 压暗成灰 */
+.tm-host .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.tm-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #4a4a45;
+  border-radius: 4px;
+}
+
+.tm-host .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* ── 危险操作确认对话框（plan8 R5）────────────────────────── */
+
 
 .cf-mask {
   position: absolute;

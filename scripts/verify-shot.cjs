@@ -457,6 +457,41 @@ const revertCalls = []
 /** 退过一次之后，`checkpoint:sides` 要回一份"那一处已经不见了"的内容（验界面有没有重取） */
 let appHunkOneReverted = false
 
+/**
+ * plan7 批 C：终端面板的假会话。
+ *
+ * ⚠️ 门禁**把 IPC 全 stub**，所以这里**跑不了真 shell**。但"重放"这件事必须能验 ——
+ * 而它的判据是"**切走再切回，输出不重不漏**"，那就要求 stub **记住推过什么**：
+ * 只回一个固定快照的话，不管重放有没有做对，断言都会以同一个结果收场（自证式）。
+ * 所以这里维护一份**累积缓冲**，`terminal:snapshot` 每次都把它回给界面。
+ */
+const termChunks = [{ seq: 1, data: 'PS D:\\jsllworkplace_for_test> ' }]
+let termSeq = 2
+let termStatus = 'running'
+/** 会话号：`restart` 会把它 +1 —— 这是"真重启"与"幂等的 start"唯一的可观测差别 */
+let termSessionNo = 1
+/** 有没有会话：`kill` 之后置 false（`terminal:snapshot` 要据此回 null） */
+let termHasSession = true
+/** 权限档（门禁可以把它切成 read-only，验"拒绝 + 说明原因"那条路） */
+let termPermission = 'write'
+let termRestartCalls = 0
+/** `terminal:start` 被调用的次数（只读档断言要用它证明"界面试过启动"） */
+let termStartCalls = 0
+const termSessionId = () => (termSessionNo === 1 ? 'term-probe' : `term-probe-${termSessionNo}`)
+const makeTermSnapshot = () => ({
+  id: termSessionId(),
+  cwd: 'D:\\jsllworkplace_for_test',
+  workspaceRoot: 'D:\\jsllworkplace_for_test',
+  shell: 'PowerShell（未加载 profile）',
+  status: termStatus,
+  startedAt: Date.now() - 60000,
+  cols: 80,
+  rows: 24,
+  chunks: termChunks.slice(),
+  nextSeq: termSeq,
+  truncated: false
+})
+
 /** 会话保存的调用流水（要验"在别的页面期间流出来的内容有没有被存下来"） */
 const convSaveCalls = []
 
@@ -961,6 +996,63 @@ const STUBS = {
     }
   },
 
+  // plan7 批 C：内置终端的存根。
+  // ⚠️ 门禁里**不起真 shell**（IPC 全 stub）—— 真机验证在单测里（`terminal-session.test.ts`
+  //    有一条真 node-pty 端到端）。这里验的是**界面那条链路**：渲染、样式、重放、权限文案。
+  'terminal:start': () => {
+    termStartCalls += 1
+    // 只读档**在启动处就拒绝**（与主进程真实实现同一条口径）——
+    // 门禁要能验"界面把原因说清楚"，而不是给一个黑框。
+    // ⚠️ 文案末尾那个哨兵串是给断言用的：证明界面上那句话**真的来自 IPC 返回值**，
+    //    而不是界面模板里自己写死的（审查 D 指出：只断言 includes('只读') 会被常驻文案满足）。
+    if (termPermission === 'read-only') {
+      return {
+        ok: false,
+        reason: 'read-only',
+        message: '当前是「只读」权限档：这台机器只读，终端不执行命令 JSL_RO_9Z'
+      }
+    }
+    termHasSession = true
+    return { ok: true, session: makeTermSnapshot() }
+  },
+  // **真重启**：换会话号 + 清缓冲。与 `start` 的区别正是"重启"与"幂等 no-op"的区别 ——
+  // 老实现点「重启终端」走的是 `start`，拿回同一个会话、屏幕内容不变（死按钮）。
+  'terminal:restart': () => {
+    if (termPermission === 'read-only') {
+      return {
+        ok: false,
+        reason: 'read-only',
+        message: '当前是「只读」权限档：这台机器只读，终端不执行命令'
+      }
+    }
+    termRestartCalls += 1
+    termSessionNo += 1
+    termChunks.length = 0
+    termChunks.push({ seq: 1, data: 'PS D:\\jsllworkplace_for_test> ' })
+    termSeq = 2
+    termStatus = 'running'
+    termHasSession = true
+    return { ok: true, session: makeTermSnapshot() }
+  },
+  // ⚠️ **故意慢 400ms** —— 这是"订阅 ↔ 重放那个缝"的**制造器**。
+  //    不慢的话，帧永远在重放之后才到，那条"实时帧顺序"断言就成了摆设
+  //    （审查 D 正是据此判定它**名不副实**：老协议下也会绿）。
+  'terminal:snapshot': async () => {
+    await new Promise((r) => setTimeout(r, 400))
+    return termHasSession ? makeTermSnapshot() : null
+  },
+  'terminal:write': () => ({ ok: true }),
+  'terminal:resize': () => undefined,
+  // 背压回执 / 重对齐：门禁里不做真流控，但这两个通道必须能吃下
+  // （否则渲染层的 `terminalAck`/`terminalResync` 会变成 unhandled rejection，把门禁日志搅浑）
+  'terminal:ack': () => undefined,
+  'terminal:resync': () => undefined,
+  'terminal:kill': () => {
+    termStatus = 'killed'
+    termHasSession = false
+    return true
+  },
+
   // plan13 B4：逐处退回。**只记流水 + 改状态**，真正的写盘由主进程负责（门禁里不需要真写）。
   'checkpoint:revert-hunk': (input) => {
     revertCalls.push(input)
@@ -1042,7 +1134,17 @@ app.whenReady().then(async () => {
   win.webContents.on('console-message', (...a) => {
     // 兼容新旧签名：Electron 33 是 (event, level, message, ...)，35+ 是 (event, details)
     const msg = typeof a[2] === 'string' ? a[2] : (a[0] && a[0].message) || ''
-    if (/Content Security Policy|Refused to/i.test(msg)) cspViolations.push(msg)
+    if (/Content Security Policy|Refused to/i.test(msg)) {
+      // ⚠️ **必须记来源**（plan7 批 C 加的）：同一条指令可能由不同文档触发 ——
+      //    应用自己的 index.html、HTML 预览的 `jsl-preview:` 子文档、monaco / xterm 的注入……
+      //    不记来源时"谁在违反 CSP"只能靠猜（本轮就猜错过一次：把 172 条全算到终端头上，
+      //    实测才发现大头是 monaco 的 diff 余量装饰）。
+      // ⚠️ 取值要容错：新版 Electron 把 `sourceId` 给成 **URL 对象**而不是字符串
+      //    （写成 `typeof === 'string'` 会静默退化成"来源未知"——第一版就这么错了一次）。
+      const raw = a[4] ?? (a[0] && (a[0].sourceId ?? a[0].sourceURL))
+      const src = raw ? String(raw) : '(来源未知)'
+      cspViolations.push(`[${src}] ${msg}`)
+    }
   })
 
   await win.loadFile(join(ROOT, 'out/renderer/index.html'))
@@ -2863,6 +2965,263 @@ app.whenReady().then(async () => {
   writeFileSync(join(SHOTS, 'verify-tasks.png'), shotTasks.toPNG())
 
   await new Promise((r) => setTimeout(r, 900))
+
+  // —— 工作台「终端」面板（plan7 批 C）——
+  //
+  // ⚠️ 门禁**把 IPC 全 stub 掉了**（本文件开头就写着），所以这里**跑不了真 shell** ——
+  //    「敲命令能看到输出」这件事在门禁里验不了。这一节能验、也必须验的是：
+  //      ① 终端面板真的渲染出来了（xterm 实例在、可交互）
+  //      ② **它的样式真的生效**（生产 CSP 下最容易静默坏掉的一条，见下）
+  //      ③ 从主进程推一帧输出 → 屏幕上看得见
+  //      ④ **切走再切回：输出还在、且不重**（重放协议的核心，靠序号）
+  //      ⑤ 只读档 → 明说"不执行"，而不是给一个黑框
+  const openedTerm = await openBuiltin('终端')
+  checkTrue('工作台能通过 ＋ 菜单打开终端', openedTerm === true, openedTerm)
+  await new Promise((r) => setTimeout(r, 2500)) // xterm 按需加载 + 建实例
+
+  const termState = await win.webContents.executeJavaScript(`
+    (() => {
+      const host = document.querySelector('.tm-host');
+      const rows = document.querySelector('.tm-host .xterm-rows');
+      const span = rows ? rows.querySelector('span') : null;
+      const cs = (el) => { if (!el) return null; const c = getComputedStyle(el); return { color: c.color, background: c.backgroundColor, whiteSpace: c.whiteSpace, display: c.display, verticalAlign: c.verticalAlign }; };
+      return {
+        hasPanel: !!document.querySelector('.tm-panel'),
+        hasTerm: !!document.querySelector('.tm-host .xterm'),
+        hasRows: !!rows,
+        hostH: host ? Math.round(host.getBoundingClientRect().height) : 0,
+        // 当前主题（值 'ink' 才是墨色，其余一律纸白）—— 下面的样式断言要按它选期望色
+        // 注：这段是字符串里的 JS，注释里不许出现反引号（会截断模板串）。
+        dataTheme: document.documentElement.dataset.theme ?? '',
+        status: document.querySelector('.tm-status')?.textContent?.trim() ?? null,
+        shell: document.querySelector('.tm-shell')?.textContent?.trim() ?? null,
+        rowsStyle: cs(rows),
+        spanStyle: cs(span),
+        // ⚠️ 锚定**直接子节点**：面板里有两个 '.tm-note'（拒绝提示里的说明 + 底部常驻说明），
+        //    裸 querySelector('.tm-note') 取的是文档序第一个 —— 谁把采样挪到只读段之后
+        //    就会得到一条莫名其妙的红（审查 D 指出的脆弱点）。
+        //    注：这段是**字符串里的 JS**，注释里不许出现反引号（会截断模板串）。
+        note: document.querySelector('.tm-panel > .tm-note')?.textContent?.trim() ?? null
+      };
+    })()
+  `)
+  const shotTerm = await win.webContents.capturePage()
+  writeFileSync(join(SHOTS, 'verify-terminal.png'), shotTerm.toPNG())
+
+  // 从主进程推一帧输出（真链路：主进程 → preload → React → xterm）。
+  // ⚠️ 同时**记进 `termChunks`** —— 否则切页签回来时 stub 的快照里没有这一帧，
+  //    "重放"这件事就验不出来了（断言会以"本来就没有"收场 = 自证式）。
+  //
+  // 这一帧里**故意带一段 ANSI 红**：xterm 的 DOM 渲染器是往单元格上写**内联 `style` 属性**
+  // （`_addStyle()`，4 个调用点里 3 个是设颜色）。生产 CSP 一旦把 `style-src-attr` 收成 `'none'`，
+  // **字还在、颜色没了** —— `ls` / `git diff` 全变灰。只验"文字在不在"抓不到这件事。
+  const TERM_MARK = 'JSL_TERM_PROBE_9Z'
+  // **16 色 palette** —— 走 xterm 注入样式表里的类名（`xterm-fg-1`），归 `style-src-elem` 档
+  const TERM_RED_MARK = 'JSL_TERM_RED_9Z'
+  // **真彩** —— 走 `_addStyle()` 的 `setAttribute('style', 'color:#…')`，归 `style-src-attr` 档。
+  // 这一条是给 attr 那一档补的牙：只验 16 色的话，把 attr 收成 'none' 断言照样绿
+  //（审查 D 的实测结论：16 色走注入样式表，真彩才走属性）。
+  const TERM_TRUE_MARK = 'JSL_TERM_TRUE_9Z'
+  const termFrameSeq = termSeq
+  const termFrameData =
+    TERM_MARK +
+    '\r\n\u001b[31m' +
+    TERM_RED_MARK +
+    '\u001b[0m\r\n\u001b[38;2;255;0;0m' +
+    TERM_TRUE_MARK +
+    '\u001b[0m\r\n'
+  termChunks.push({ seq: termFrameSeq, data: termFrameData })
+  termSeq += 1
+  win.webContents.send('terminal:data', {
+    sessionId: termSessionId(),
+    seq: termFrameSeq,
+    data: termFrameData
+  })
+  await new Promise((r) => setTimeout(r, 800))
+  const termAfterFrame = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = document.querySelector('.tm-host .xterm-rows');
+      if (!rows) return { text: '', has: false, redColor: null, plainColor: null };
+      const text = Array.from(rows.children).map((e) => e.textContent || '').join('');
+      const spans = Array.from(rows.querySelectorAll('span'));
+      const pick = (mark) => spans.find((s) => (s.textContent || '').includes(mark)) || null;
+      const redSpan = pick(${JSON.stringify(TERM_RED_MARK)});
+      const trueSpan = pick(${JSON.stringify(TERM_TRUE_MARK)});
+      return {
+        text: text.slice(0, 200),
+        has: text.includes(${JSON.stringify(TERM_MARK)}),
+        redColor: redSpan ? getComputedStyle(redSpan).color : null,
+        trueColor: trueSpan ? getComputedStyle(trueSpan).color : null,
+        // ⚠️ 别去找"普通文字的 span"：xterm 把**默认色**的文字直接写成 row 的文本节点，
+        //    只有**带颜色**的单元格才生成 span（实测：红 span 在、普通 span 根本不存在）。
+        //    所以基准取"行元素的默认前景色"，它才是被比较的那一方。
+        rowsColor: getComputedStyle(rows).color
+      };
+    })()
+  `)
+
+  // 切走再切回：会话与输出都该还在（本项目「切页签 = 卸载」，靠主进程缓冲 + 序号重放）
+  await openBuiltin('任务管理')
+  await new Promise((r) => setTimeout(r, 600))
+  await openBuiltin('终端')
+
+  // ⚠️ **就在这一刻推一帧实时输出**（不再额外等待）：面板刚挂载、`boot()` 正卡在
+  //    stub 的 400ms 快照上（`replaying = true`）—— 这一帧**必然落进"订阅↔重放"那个缝**。
+  //    老协议（先订阅立刻落屏 → 再重放全量）会让它**写两遍**、且第一遍排在历史**前面**。
+  //    （审查 D 的判据：不制造这个缝，这条断言在老实现下也会绿 = 名不副实。）
+  const LIVE_MARK = 'JSL_TERM_LIVE_7Q'
+  const liveSeq = termSeq
+  const liveData = LIVE_MARK + '\r\n'
+  termChunks.push({ seq: liveSeq, data: liveData })
+  termSeq += 1
+  win.webContents.send('terminal:data', {
+    sessionId: termSessionId(),
+    seq: liveSeq,
+    data: liveData
+  })
+  await new Promise((r) => setTimeout(r, 2000))
+  const termAfterSwitch = await win.webContents.executeJavaScript(`
+    (() => {
+      const text = Array.from(document.querySelectorAll('.tm-host .xterm-rows > div'))
+        .map((e) => e.textContent || '').join('');
+      const marks = text.split(${JSON.stringify(TERM_MARK)}).length - 1;
+      return { marks, has: text.includes(${JSON.stringify(TERM_MARK)}) };
+    })()
+  `)
+  const termLive = await win.webContents.executeJavaScript(`
+    (() => {
+      const hosts = Array.from(document.querySelectorAll('.tm-host'));
+      const rows = document.querySelector('.tm-host .xterm-rows');
+      const text = rows ? Array.from(rows.children).map((e) => e.textContent || '').join('') : '';
+      return {
+        hostCount: hosts.length,
+        termMarks: text.split(${JSON.stringify(TERM_MARK)}).length - 1,
+        liveMarks: text.split(${JSON.stringify(LIVE_MARK)}).length - 1,
+        liveAt: text.indexOf(${JSON.stringify(LIVE_MARK)}),
+        termAt: text.indexOf(${JSON.stringify(TERM_MARK)}),
+        text: text.slice(0, 160)
+      };
+    })()
+  `)
+
+  checkTrue('终端面板渲染出来了（xterm 实例在、有可见的行、有高度）',
+    termState.hasPanel === true && termState.hasTerm === true && termState.hasRows === true && termState.hostH > 100,
+    termState)
+
+  // ⚠️ **这一条是本批最容易静默坏掉的**：xterm 运行时插 `<style>`，被生产 CSP 拒掉之后
+  //    **字会变成背景色（屏幕上什么都看不见）**、`white-space` 从 pre 掉回 normal、
+  //    `span` 的 display 从 inline-block 掉回 inline —— 而**页面照样渲染得出来**，
+  //    所以"元素在不在"完全抓不到它。判据必须落在**计算样式**上，而且**钉住主题常量**
+  //    （只断言"前景 ≠ 背景"是近乎恒真的：没背景规则时 backgroundColor 是 `rgba(0,0,0,0)`，
+  //     格式天然不同，注入样式全被砍掉它也照样通过 —— 审查 B 抓出来的）。
+  //    常量与 `TerminalPanel.tsx` 的 THEME 同源：foreground `#e8e6e3` = rgb(232, 230, 227)。
+  //    ⚠️ 改主题色时这里要跟着改（这正是"钉住"的意思）。
+  // ⚠️ 期望色**按当前主题选**（与 `TerminalPanel.tsx` 的 THEME_LIGHT / THEME_INK 同源）：
+  //    `ink` → 墨底亮字 `#e8e6e3`；默认（纸白）→ 墨字 `#2b2b28`。
+  //    ⚠️ 改主题配色时必须同步改这里（这正是"钉住"的意思 —— 代价是改色会红一次）。
+  const themeFg = termState.dataTheme === 'ink' ? 'rgb(232, 230, 227)' : 'rgb(43, 43, 40)'
+  checkTrue('**终端样式真的生效**（字色 = 当前主题的前景色、white-space:pre、span 是 inline-block）',
+    termState.rowsStyle?.color === themeFg &&
+      termState.rowsStyle?.whiteSpace === 'pre' &&
+      termState.spanStyle?.display === 'inline-block',
+    { theme: termState.dataTheme, expect: themeFg, rows: termState.rowsStyle, span: termState.spanStyle })
+
+  checkTrue('**样式类 CSP 违规为 0**（`style-src-elem` 与 `style-src-attr` 两档都放行了）',
+    cspViolations.filter((m) => /Refused to apply inline style/i.test(m)).length === 0,
+    cspViolations.filter((m) => /Refused to apply inline style/i.test(m)).slice(0, 3))
+
+  checkTrue('主进程推一帧输出 → **屏幕上真的看得见**（主进程 → preload → React → xterm 整条链路）',
+    termAfterFrame.has === true, termAfterFrame)
+
+  // ⚠️ **先说清这条判不了什么**：把构建产物的 `style-src-attr` 改回 `'none'`（CSP 证伪实验）
+  //    之后这条**仍然绿** —— **16 色**走的是注入样式表里的类名（`xterm-fg-N`），归 elem 档。
+  //    它守的是"终端的颜色链路整体没坏"（主题 / 注入样式 / 渲染器任一出问题都会红）。
+  checkTrue('**16 色 ANSI 颜色真的画上去了**（红色那段的计算色 ≠ 行的默认前景色）',
+    termAfterFrame.redColor !== null &&
+      termAfterFrame.rowsColor !== null &&
+      termAfterFrame.redColor !== termAfterFrame.rowsColor,
+    termAfterFrame)
+
+  // ⚠️ 这才是**咬住 `style-src-attr` 那一档**的断言：真彩走 `_addStyle()` 的
+  //    `setAttribute('style', 'color:#ff0000')` —— 那一档一旦收成 `'none'`，
+  //    span 拿不到颜色、计算色会掉回行的默认前景色，这条**必红**。
+  checkTrue('**真彩（24 位）颜色真的画上去了**（`38;2;255;0;0` 那段 = rgb(255, 0, 0)，这条咬 style-src-attr）',
+    termAfterFrame.trueColor === 'rgb(255, 0, 0)',
+    { trueColor: termAfterFrame.trueColor, rowsColor: termAfterFrame.rowsColor })
+
+  checkTrue('**切走页签再切回：历史输出还在、且没有重复**（缓冲重放）',
+    termAfterSwitch.has === true && termAfterSwitch.marks === 1, termAfterSwitch)
+
+  checkTrue('**重挂后到达的实时帧：只出现一次、且落在历史之后**（订阅↔重放那段窗口的判据）',
+    termLive.liveMarks === 1 && termLive.termMarks === 1 && termLive.liveAt > termLive.termAt,
+    termLive)
+
+  // ── 「重启终端」必须是**真重启** ───────────────────────────────
+  //
+  // 老实现点它走的是**幂等**的 `terminal:start`：拿回同一个会话、屏幕内容原样 ——
+  // 一个**死按钮**。而它的唯一用途是"会话卡住时自救"，那个场景里会话**必然是活的**，
+  // 也就是**必然**走到那条幂等分支。判据落在"会话号变了 + 旧屏被清掉"上。
+  const clickedRestart = await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.tm-bar .ck-btn'))
+        .find((b) => (b.textContent || '').trim() === '重启终端');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1600))
+  const termAfterRestart = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = document.querySelector('.tm-host .xterm-rows');
+      const text = rows ? Array.from(rows.children).map((e) => e.textContent || '').join('') : '';
+      return {
+        text: text.slice(0, 120),
+        hasOld: text.includes(${JSON.stringify(TERM_MARK)}),
+        hasLive: text.includes(${JSON.stringify(LIVE_MARK)})
+      };
+    })()
+  `)
+  checkTrue('点「重启终端」→ **真的换了会话**（走了 restart 通道、旧屏被清掉）',
+    clickedRestart === true &&
+      termRestartCalls === 1 &&
+      termAfterRestart.hasOld === false &&
+      termAfterRestart.hasLive === false,
+    { clickedRestart, termRestartCalls, termAfterRestart })
+
+  checkTrue('边界如实写在界面上（终端里改/删的文件不进检查点与回收站）',
+    (termState.note || '').includes('回收站'), termState.note)
+
+  // ── 只读档：**拒绝执行 + 说清原因**（plan14 C5 的验收项）────────────
+  //
+  // 这一段在**最后**做：它会把会话置成"没有"，之后终端就停在"还没有会话"的状态。
+  // 判据是两条：① 界面上明说原因（不是给一个黑框）；② **真的没有起会话**。
+  termPermission = 'read-only'
+  termHasSession = false
+  const termStartCallsBefore = termStartCalls
+  await openBuiltin('任务管理')
+  await new Promise((r) => setTimeout(r, 500))
+  await openBuiltin('终端')
+  await new Promise((r) => setTimeout(r, 1600))
+  const termReadOnly = await win.webContents.executeJavaScript(`
+    (() => ({
+      refuse: document.querySelector('.tm-panel .tm-refuse')?.textContent?.trim() ?? null,
+      warnAll: document.querySelector('.tm-panel .df-warn')?.textContent?.trim() ?? null,
+      status: document.querySelector('.tm-status')?.textContent?.trim() ?? null
+    }))()
+  `)
+  // ⚠️ 判据读的是**独立节点** `.tm-refuse`，且要求出现 stub 文案里的**哨兵串** ——
+  //    证明那句话真的来自 IPC 返回值，而不是界面模板里自己写死的
+  //    （审查 D：只断言 includes('只读') 会被常驻文案满足 = 假阳性）。
+  checkTrue('只读档下终端**拒绝执行**，且界面把 IPC 返回的原因**原样说出来**（哨兵串在）',
+    (termReadOnly.refuse || '').includes('JSL_RO_9Z') && termReadOnly.status === '还没有会话',
+    { termReadOnly, termStartCalls })
+  // ⚠️ 光断言 `termHasSession === false` 是**恒真**的（门禁自己刚把它设成 false，
+  //    而只读档下没有任何界面路径能改回来）。加上"界面试过启动"的计数差才算真的验了
+  //    plan14 C5 那句话：「启动会话这一步都被拒绝」。
+  checkTrue('只读档下**界面试过启动、却一条会话都没留下**（计数差 + 会话状态双判）',
+    termStartCalls > termStartCallsBefore && termHasSession === false,
+    { termStartCalls, termStartCallsBefore, termHasSession })
+  termPermission = 'write' // 收尾：把门禁的存根状态还原，免得影响后面段落
 
   // ── 省 token 档位（plan8 R9.1 §七②）──
   //

@@ -41,10 +41,20 @@ const STREAM_CONSTS = [
 const EMITTER = 'src/main/chat-emitter.ts'
 
 /**
- * **豁免**：进程级通道不进信封（它本来就跨会话可见 —— plan11 §2.3 的取舍）。
+ * **豁免**：进程级通道不进信封（它们本来就跨会话可见 —— plan11 §2.3 的取舍）。
  * 豁免要写在这里、写明白，不许靠"扫不到"蒙混过去。
+ *
+ * ⚠️ 每一条**必须带理由注释**（下面有一条断言盯着这件事，注释不许省）。
+ * 理由本身也写在 `src/main/chat-emitter.ts` 的「例外」那一节里 —— 两处呼应。
  */
-const EXEMPT_CONSTS = ['IPC.bgChanged'] as const
+const EXEMPT_CONSTS = [
+  // bg:changed —— "系统里在跑什么后台命令"跨会话可见，不属于任何一条会话
+  'IPC.bgChanged',
+  // terminal:data —— 终端是**这个工作区**的终端，不是"某条对话的终端"（plan7 批 C）
+  'IPC.terminalData',
+  // terminal:state —— 同上：会话起停是工作区级状态，界面据此刷新，不带会话信封
+  'IPC.terminalState'
+] as const
 
 function walkTs(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -120,5 +130,39 @@ describe('流式事件必须带会话身份（plan11 §2.5 结构性守卫）', 
   it('豁免清单写明白了（进程级通道不进信封）', () => {
     expect(EXEMPT_CONSTS.length).toBeGreaterThan(0)
     expect(STREAM_CONSTS.length).toBeGreaterThan(EXEMPT_CONSTS.length)
+  })
+
+  /**
+   * ⚠️ 这一条是**补实**原守卫的（plan14 的审查指出）：原注释承诺"豁免要写明白，
+   * 不许靠扫不到蒙混过去"，但 `EXEMPT_CONSTS` 其实**没有任何机械效果** ——
+   * 不进 `STREAM_CONSTS` 的常量本来就扫不到，一个字不改它也会绿。
+   * 于是补两条真的：
+   *   ① 每个豁免项**旁边必须写理由**（注释不许省）
+   *   ② 清单里的常量串**必须真出现在 `ipc.ts` 里**（改名/打错字后守卫静默失效）
+   */
+  it('**每个豁免项旁边都写了理由**（不许只写个常量名）', () => {
+    const lines = readFileSync(__filename, 'utf8').split('\n')
+    const missing = EXEMPT_CONSTS.filter((c) => {
+      const i = lines.findIndex((l) => l.includes(`'${c}'`))
+      if (i < 0) return true
+      // 它自己那行、或上面两行里要有注释
+      return ![lines[i - 1], lines[i - 2], lines[i], lines[i + 1]].some(
+        (l) => l !== undefined && l.includes('//')
+      )
+    })
+    expect(missing, '这些豁免项没写理由 —— 豁免必须写明白').toEqual([])
+  })
+
+  it('**清单里的通道常量必须真的存在**（防改名/打错字后守卫静默失效）', () => {
+    const ipcSrc = read('src/shared/ipc.ts')
+    const all = [...STREAM_CONSTS, ...EXEMPT_CONSTS]
+    // ⚠️ 注意查的是**属性名**（`chatChunk:`）而不是 `IPC.chatChunk` ——
+    //    常量在 ipc.ts 里是裸属性名，`IPC.` 前缀只在**使用处**出现。
+    //    （这一版我第一稿就写错了：查全名 → 12 条全"找不到"，是这条断言自己把我抓住的。）
+    const missing = all.filter((c) => {
+      const name = c.replace(/^IPC\./, '')
+      return !new RegExp(`\\b${name}\\s*:`).test(ipcSrc)
+    })
+    expect(missing, '这些常量在 ipc.ts 里找不到 —— 是不是改名了？那守卫就空转了').toEqual([])
   })
 })

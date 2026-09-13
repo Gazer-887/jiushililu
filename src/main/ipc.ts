@@ -64,6 +64,8 @@ import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
 import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
+import type { TerminalSessionStore } from './terminal-session'
+import type { TerminalSessionSnapshot, TerminalStartResult } from '@shared/terminal'
 import type { ConfirmBridge } from './confirm'
 import {
   chatSendInputSchema,
@@ -260,6 +262,15 @@ export function registerIpcHandlers(deps: {
   userDataDir: string
   /** 危险操作确认桥（plan8 R5） */
   confirm: ConfirmBridge
+  /**
+   * 内置终端会话（plan7 批 C）。
+   *
+   * ⚠️ 传进来而不是在这里 new：**广播代码必须放 `main/index.ts`**
+   * （`ipc.ts` 里一个裸 `.send(` 都不许有 —— `tests/unit/stream-envelope.test.ts` 有守卫），
+   * 而会话的 `onData` 要往所有窗口推。所以"建会话"在组合根，
+   * 这里只做"把界面请求转给会话层"。
+   */
+  terminal: TerminalSessionStore
   /** 渲染端回报"要关窗口前的落盘已完成"（plan11 P0-2）—— 主进程收到才真关 */
   onFlushDone?: () => void
 }): void {
@@ -602,6 +613,9 @@ export function registerIpcHandlers(deps: {
     if (result.canceled || result.filePaths.length === 0) return null
     const picked = result.filePaths[0]!
     setWorkspaceRoot(picked)
+    // 切工作区 → 收掉终端会话：那个 shell 还停在**上一个项目**的目录里；
+    // 而且"每工作区一个会话"的语义下它已经没有归属了。（懒收 = 不碰终端就不收，等于不收）
+    deps.terminal.killAll()
     ensureAgentRuntime(deps.agent) // 新工作区目录先备好
     return getWorkspaceInfo(deps.userDataDir)
   })
@@ -612,6 +626,7 @@ export function registerIpcHandlers(deps: {
     const allowed = knownWorkspaces()
     if (!allowed.includes(path)) return null
     setWorkspaceRoot(path)
+    deps.terminal.killAll() // 同上：切工作区即收终端会话，不留旧项目的 shell
     ensureAgentRuntime(deps.agent)
     return getWorkspaceInfo(deps.userDataDir)
   })
@@ -787,7 +802,13 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.permissionSet, (_e, raw: unknown): PermissionPreset => {
     const preset = z.enum(['read-only', 'write', 'full-access']).parse(raw)
-    return setPermissionPreset(preset)
+    const applied = setPermissionPreset(preset)
+    // ⚠️ 降到只读时**必须把正在跑的终端会话收掉**：权限档的语义是
+    //    "这台机器只读，人和模型同一把尺"（plan14 §三③），而一个还在跑的 shell
+    //    会让"只读"变成一句空话 —— 界面横幅写着"不执行命令"，屏幕上却在执行。
+    //    收会话同时会广播状态，界面那边会如实变成「已被停止」。
+    if (applied === 'read-only') deps.terminal.killAll()
+    return applied
   })
 
   // ── 省 token 档位（plan8 R9.1 §七②）────────────────────────
@@ -1202,6 +1223,58 @@ export function registerIpcHandlers(deps: {
     const p = fsImportInput.safeParse(raw)
     if (!p.success) return Promise.resolve({ ok: false, message: '入参不合法' })
     return runFsOp('界面 · 导入文件', (w) => w.copyIn(p.data.sourceAbs, p.data.rel))
+  })
+
+  // ── 内置终端（plan7 批 C）────────────────────────────────────
+  //
+  // 这些 handler 只做**两件事**：校验入参 → 转给会话层。
+  // 真正的逻辑（权限门控 / cwd 校验 / 缓冲 / 序号 / 树杀）都在 `terminal-session.ts` 里，
+  // 那一层依赖注入、可单测；而 handler 这层 import 了 electron，CI 上跑不了。
+  ipcMain.handle(IPC.terminalStart, (_e, raw: unknown): TerminalStartResult => {
+    const size = z
+      .object({ cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) })
+      .safeParse(raw)
+    return deps.terminal.start(size.success ? size.data : undefined)
+  })
+
+  ipcMain.handle(IPC.terminalRestart, (): TerminalStartResult => deps.terminal.restart())
+
+  ipcMain.handle(IPC.terminalSnapshot, (): TerminalSessionSnapshot | null => deps.terminal.current())
+
+  ipcMain.handle(IPC.terminalWrite, (_e, raw: unknown): { ok: boolean; message?: string } => {
+    // 上限 64KB：一次按键/粘贴不该有这么大，真有就是异常，别把它灌进 pty
+    const parsed = z.string().max(64 * 1024).safeParse(raw)
+    if (!parsed.success) return { ok: false, message: '输入不合法' }
+    return deps.terminal.write(parsed.data)
+  })
+
+  ipcMain.handle(IPC.terminalResize, (_e, raw: unknown): void => {
+    const parsed = z
+      .object({ cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) })
+      .safeParse(raw)
+    if (!parsed.success) return
+    deps.terminal.resize(parsed.data.cols, parsed.data.rows)
+  })
+
+  ipcMain.handle(IPC.terminalKill, (): boolean => deps.terminal.kill())
+
+  // 背压回执（plan14 §三⑤ 的硬要求）：界面每解析完一段就回一次，
+  // 主进程按"未回执字符数"决定暂停/恢复 pty 的读取。**不是可选优化** ——
+  // xterm 的 write() 在 50MB 未解析数据时直接抛异常丢数据。
+  ipcMain.handle(IPC.terminalAck, (_e, raw: unknown): void => {
+    const parsed = z
+      .object({ sessionId: z.string().max(200), chars: z.number().int().min(0).max(64 * 1024 * 1024) })
+      .safeParse(raw)
+    if (!parsed.success) return
+    deps.terminal.ack(parsed.data.sessionId, parsed.data.chars)
+  })
+
+  // 背压**重对齐**：界面重挂并重放完之后调。没有它的话，"切走页签期间没人回执"
+  // 会让 pty 一直停在暂停上 —— 切回来看到的是"活着但永远静止"的终端。
+  ipcMain.handle(IPC.terminalResync, (_e, raw: unknown): void => {
+    const parsed = z.object({ sessionId: z.string().max(200) }).safeParse(raw)
+    if (!parsed.success) return
+    deps.terminal.resync(parsed.data.sessionId)
   })
 
   /**

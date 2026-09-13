@@ -8,6 +8,7 @@ import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import type { TokenUsage } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
+import type { TerminalDataPayload } from '@shared/terminal'
 import {
   IPC,
   type AgentRunRequest,
@@ -153,7 +154,24 @@ const api: ApiBridge = {
   // ── 后台任务（plan7 批 D）──
   listBackgroundTasks: () => ipcRenderer.invoke(IPC.bgList),
   killBackgroundTask: (id) => ipcRenderer.invoke(IPC.bgKill, id),
-  onBackgroundChanged: (cb) => subscribe(IPC.bgChanged, (list) => cb(list as BackgroundTask[]))
+  onBackgroundChanged: (cb) => subscribe(IPC.bgChanged, (list) => cb(list as BackgroundTask[])),
+  // ── 内置终端（plan7 批 C）──
+  terminalStart: (size) => ipcRenderer.invoke(IPC.terminalStart, size),
+  terminalWrite: (data: string) => ipcRenderer.invoke(IPC.terminalWrite, data),
+  terminalResize: (cols: number, rows: number) =>
+    ipcRenderer.invoke(IPC.terminalResize, { cols, rows }),
+  terminalKill: () => ipcRenderer.invoke(IPC.terminalKill),
+  // 背压回执：告诉主进程"这一段已经解析完了"（未回执字符数是它暂停/恢复 pty 的依据）
+  terminalAck: (sessionId: string, chars: number) =>
+    ipcRenderer.invoke(IPC.terminalAck, { sessionId, chars }),
+  terminalResync: (sessionId: string) => ipcRenderer.invoke(IPC.terminalResync, { sessionId }),
+  terminalRestart: () => ipcRenderer.invoke(IPC.terminalRestart),
+  terminalSnapshot: () => ipcRenderer.invoke(IPC.terminalSnapshot),
+  // ⚠️ 终端输出是**进程级**通道（不经会话信封）—— 见 `@shared/ipc.ts` 里那段注释的理由。
+  //    载荷里带 `sessionId`，界面靠它区分"这帧属于哪条会话"。
+  onTerminalData: (cb) =>
+    subscribe(IPC.terminalData, (payload) => cb(payload as TerminalDataPayload)),
+  onTerminalState: (cb) => subscribe(IPC.terminalState, (sessionId) => cb(sessionId as string))
 }
 
 contextBridge.exposeInMainWorld('api', api)

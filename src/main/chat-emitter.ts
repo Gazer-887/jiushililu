@@ -15,10 +15,17 @@
  *   ① 主进程里**只有本文件**能引用流式通道常量（其它文件出现即红）；
  *   ② `main/ipc.ts` 里**一个裸 `.send(` 都不许有**。
  *
- * ## 唯一的例外
+ * ## 例外（**都要在这儿写明白**，不许让它们靠"扫不到"蒙混过去）
  *
- * `bg:changed`（后台命令清单）是**进程级**状态 —— "系统里在跑什么命令"本来就跨会话可见，
- * 它不该被塞进"某条会话"的信封里（plan11 §2.3 的取舍）。所以它不在这里发。
+ * 有些通道是**进程级**状态 —— 它们本来就跨会话可见，塞进"某条会话"的信封里没有意义：
+ *
+ * - `bg:changed`（后台命令清单，plan11 §2.3 的取舍）："系统里在跑什么命令"不属于任何一条会话。
+ * - `terminal:data` / `terminal:state`（内置终端，plan7 批 C）：终端是**这个工作区的终端**，
+ *   不是"某条对话的终端" —— 用户在终端里敲命令跟他当前开着哪条会话无关。
+ *   载荷里带 `sessionId`（会话身份用工作区这一层表达），渲染端靠它区分帧属于谁。
+ *
+ * 这两条的豁免同时登记在 `tests/unit/stream-envelope.test.ts` 的 `EXEMPT_CONSTS` 里，
+ * 并且那里有一条断言盯着"**每个豁免项旁边都写了理由**"。
  */
 import type { WebContents } from 'electron'
 import { IPC, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'

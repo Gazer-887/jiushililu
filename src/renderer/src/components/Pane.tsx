@@ -7,6 +7,7 @@ import ExplorerPanel from './ExplorerPanel'
 import FilePreviewPane from './FilePreviewPane'
 import PaneChooser from './PaneChooser'
 import TasksPanel from './TasksPanel'
+import TerminalPanel from './TerminalPanel'
 
 // 工作台的**一栏**（plan9 W3）：标题栏 + 栏内页签条 + 内容。
 //
@@ -33,18 +34,16 @@ function builtinBody(type: BuiltinType): JSX.Element {
       return <BrowserPanel />
     case 'tasks':
       return <TasksPanel />
-    case 'scm':
     case 'terminal':
-      // 属 plan7 批 B / 批 C —— 「＋」里留位置，但**明说是待做**，不摆假界面糊弄
+      // plan7 批 C —— 真 PTY 终端（会话活在主进程，这个组件是可丢弃的视图）
+      return <TerminalPanel />
+    case 'scm':
+      // 属 plan7 批 D —— 「＋」里留位置，但**明说是待做**，不摆假界面糊弄
       return (
         <div className="dock-placeholder">
-          <div className="dock-ph-title">{type === 'scm' ? '源代码管理' : '终端'}</div>
-          <div className="dock-ph-desc">
-            {type === 'scm'
-              ? '分支、改动状态与差异视图。与输入框的分支显示同源。'
-              : '在当前工作区内运行命令，输出流式回显。'}
-          </div>
-          <div className="dock-ph-badge">{type === 'scm' ? '待做 · plan7 批 D' : '待做 · plan7 批 C'}</div>
+          <div className="dock-ph-title">源代码管理</div>
+          <div className="dock-ph-desc">分支、改动状态与差异视图。与输入框的分支显示同源。</div>
+          <div className="dock-ph-badge">待做 · plan7 批 D</div>
         </div>
       )
   }

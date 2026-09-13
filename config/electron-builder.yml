@@ -21,6 +21,15 @@ files:
   - '!{README.md,AGENTS.md,CLAUDE.md,.gitattributes,.npmrc,.prettierrc.json}'
   - '!{NOTEBOOK,PLAN,DIARY,.workbuddy,.github}/**'
 
+# 原生模块（node-pty，plan7 批 C 的终端）**必须放在 asar 外面**：
+# `.node` / `conpty` / `winpty-agent.exe` 是由操作系统直接加载的二进制，
+# 打进 asar 之后 Node 的 `process.dlopen` 找不到它们 —— 症状是"开发态一切正常、
+# 打包版一打开终端就报模块加载失败"。这类"只有打包版才坏"的坑本项目踩过多次
+# （CSP 那条也是同形），所以这里显式解包，并由 `scripts/verify-asar.cjs` 那类检查兜底。
+asarUnpack:
+  - '**/node_modules/node-pty/**'
+  - '**/*.node'
+
 extraResources:
   - from: resources/icon.ico
     to: icon.ico

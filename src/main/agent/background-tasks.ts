@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { BackgroundTask } from '@shared/background'
+import { killProcessTree, spawnOptsForGroupKill } from '../process-tree'
 
 // 后台任务注册表（plan7 批 D 后半 —— 右栏「任务」页签的"后台任务"区）。
 //
@@ -37,23 +38,14 @@ export interface BackgroundTaskStore {
 }
 
 /**
- * 杀进程树。
- * 为什么不能只 `child.kill()`：命令是经 shell 起的（`shell: true`），
- * 杀掉 shell 并不杀掉它拉起的子进程 —— 那些会变成孤儿，端口继续占着。
+ * 杀进程树 —— **实现搬到了 `src/main/process-tree.ts`**（plan14 C1）。
+ *
+ * 搬家的理由：终端要杀的是**同一类东西**（shell 拉起的整棵树），
+ * 两处各写一套的下场本项目刚吃过（"两套判据迟早分岔"）。
+ * 原来这里的注释（"杀掉 shell 并不杀掉它拉起的子进程 → 会变孤儿、端口继续占着"）
+ * 连同 Windows 的 `/T /F` 与 POSIX 的进程组杀法一并搬了过去，语义**没变**。
  */
-function killTree(child: ChildProcess): void {
-  if (child.pid === undefined) return
-  if (process.platform === 'win32') {
-    // taskkill /T 连带子进程。这里**不经 shell**，故不受 Git Bash 的 `/F` 路径转换坑影响
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
-    return
-  }
-  try {
-    process.kill(-child.pid, 'SIGTERM') // 负号 = 整个进程组
-  } catch {
-    child.kill('SIGTERM')
-  }
-}
+const killTree = killProcessTree
 
 export function createBackgroundTaskStore(): BackgroundTaskStore {
   const tasks = new Map<string, BackgroundTask>()
@@ -114,7 +106,13 @@ export function createBackgroundTaskStore(): BackgroundTaskStore {
       tasks.set(id, task)
 
       // shell: true —— 与前台 run_command 同一种执行语义（管道、&& 照常）
-      const child = spawn(command, { cwd, shell: true, windowsHide: true })
+      //
+      // ⚠️ `spawnOptsForGroupKill` **不是装饰**：POSIX 下只有 `detached: true` 才让子进程
+      //    成为**进程组组长**，而 `killProcessTree` 的 POSIX 分支靠 `process.kill(-pid)`
+      //    杀整组。不加它的话那个负号会 ESRCH、退化成"只杀 shell 自己"——
+      //    孙进程（`npm run dev` 拉起的那些）就留成孤儿了。
+      //    Windows 下它是无害的（配合 `windowsHide` 不弹窗口，真正干活的是 `taskkill /T`）。
+      const child = spawn(command, { ...spawnOptsForGroupKill(cwd), shell: true })
       children.set(id, child)
 
       const append = (buf: Buffer): void => {

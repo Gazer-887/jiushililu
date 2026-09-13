@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
+import { createRequire } from 'node:module'
 import { registerIpcHandlers } from './ipc'
 import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
@@ -18,6 +19,8 @@ import {
 } from './browser'
 import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
+import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
+import { getPermissionPreset } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
@@ -245,10 +248,53 @@ app.whenReady().then(() => {
       if (!w.isDestroyed()) w.webContents.send(IPC.bgChanged, list)
     }
   })
+
+  // ── 内置终端（plan7 批 C）────────────────────────────────────
+  //
+  // 会话在这里建（组合根），不建在 `ipc.ts` 里：**广播代码必须在这一层** ——
+  // `ipc.ts` 里一个裸 `.send(` 都不许有（`tests/unit/stream-envelope.test.ts` 有守卫，
+  // 那条守卫守的是一次真实事故：绕开唯一发送口就会漏带会话身份、界面串台）。
+  //
+  // ⚠️ `node-pty` 是**原生模块**：这里**延迟到第一次真开终端时才 require**。
+  //    这样它没装好/加载失败时，结果是"终端开不起来（会话层会把它变成 spawn-failed）"，
+  //    而**不是整个应用起不来** —— 一台机器上的终端不该拖垮整个工作台。
+  let ptyModule: PtyModuleLike | null = null
+  const cjsRequire = createRequire(__filename)
+  const loadPty = (): PtyModuleLike => {
+    if (!ptyModule) {
+      // 用 createRequire 而不是 `require(...)`：主进程产物是 CJS（`__filename` 可用），
+      // 而 eslint 禁了裸 require —— 而**不能**把它提到顶层：
+      // 顶层加载会让"原生模块坏了"从"终端不可用"升级成"应用起不来"。
+      ptyModule = cjsRequire('node-pty') as PtyModuleLike
+    }
+    return ptyModule
+  }
+
+  const terminal = createTerminalSessionStore({
+    getPermission: getPermissionPreset,
+    getWorkspaceRoot: () => agentCtx.getWorkspaceRoot(),
+    pty: { spawn: (file, args, opts) => loadPty().spawn(file, args, opts) }
+  })
+
+  // 终端输出 → 推给所有窗口（**进程级**通道，不带会话信封；理由见 shared/ipc.ts 那段注释）
+  terminal.onData((sessionId, chunk) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) {
+        w.webContents.send(IPC.terminalData, { sessionId, seq: chunk.seq, data: chunk.data })
+      }
+    }
+  })
+  terminal.onState((sessionId) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send(IPC.terminalState, sessionId)
+    }
+  })
+
   registerIpcHandlers({
     agent: agentCtx,
     userDataDir,
     confirm,
+    terminal,
     // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
     onFlushDone: () => finishClose?.()
   })
@@ -286,11 +332,20 @@ app.whenReady().then(() => {
 
   // 窗口全关时，把待决的危险操作确认按**拒绝**处理 ——
   // 否则那个 Agent 会一直卡在等待上直到 60s 超时。
-  app.on('window-all-closed', () => {
+  // ⚠️ 收尾清单**只有这一处实现**，`before-quit` 与 `window-all-closed` 两个入口都调它。
+  //    为什么两个都要挂：Electron 的文档写得很死 —— 用户按 **Cmd+Q** 或代码调 `app.quit()` 时
+  //    **不会**触发 `window-all-closed`（它先关窗口、直接进 `will-quit`）。
+  //    只挂一个入口的话，macOS 上每次退出都会留一个没人管的 shell。
+  const teardownAll = (): void => {
     confirm.abortAll('窗口已全部关闭')
     // 后台命令跟着终止（plan7 批 D 边界①）—— 与确认桥同一口径
     background.killAll()
-  })
+    // 终端会话同理：**不留没人管的 shell**（它可能正跑着 dev server / 数据库）。
+    terminal.killAll()
+  }
+
+  app.on('window-all-closed', teardownAll)
+  app.on('before-quit', teardownAll)
 })
 
 app.on('window-all-closed', () => {
