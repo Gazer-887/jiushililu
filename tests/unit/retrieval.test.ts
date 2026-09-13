@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { buildSearchSpec, literalToRegexSource, SearchQueryError, specToRegExp } from '@shared/search-query'
 import { buildRipgrepArgs, resolveRipgrepPath, ripgrepBinaryName } from '@shared/ripgrep-locate'
@@ -121,13 +121,24 @@ describe('buildRipgrepArgs（参数拼装）', () => {
 })
 
 describe('parseRipgrepJson（解析 --json 流）', () => {
-  const root = 'D:/ws'
+  // ⚠️ **路径必须按当前平台构造，不能硬编码 Windows 形态**。
+  //
+  // 这里踩过一次真实的 CI 红灯：最初写成 `root = 'D:/ws'` 配 `'D:\\ws\\a.ts'`，
+  // 本地（Windows）`path.relative('D:/ws', 'D:\\ws\\a.ts')` 返回 `a.ts` → 绿；
+  // CI（Linux）上 `D:` 只是个普通目录名、与 `/` 无任何关系，于是算出
+  // `../../D:/ws/a.ts` → 红。**本地全绿 ≠ 通过**，跨平台差异只在 CI 暴露。
+  //
+  // 契约本身也是"平台原生"的：ripgrep 输出的就是本平台路径（Windows 用 `\`，
+  // Linux/macOS 用 `/`），故测试用 `join` 构造才是对契约的准确刻画。
+  const root = join(sep, 'ws') // Windows: '\ws'（当前盘根）; POSIX: '/ws'
+  const inRoot = (...parts: string[]): string => join(root, ...parts)
   const line = (obj: unknown): string => JSON.stringify(obj)
 
   it('只取 match 事件，路径转相对且用正斜杠', () => {
+    const abs = inRoot('a.ts')
     const stdout = [
-      line({ type: 'begin', data: { path: { text: 'D:\\ws\\a.ts' } } }),
-      line({ type: 'match', data: { path: { text: 'D:\\ws\\a.ts' }, line_number: 3, lines: { text: 'has magic\n' } } }),
+      line({ type: 'begin', data: { path: { text: abs } } }),
+      line({ type: 'match', data: { path: { text: abs }, line_number: 3, lines: { text: 'has magic\n' } } }),
       line({ type: 'end', data: {} })
     ].join('\n')
     const { hits } = parseRipgrepJson(stdout, root, 50)
@@ -136,7 +147,7 @@ describe('parseRipgrepJson（解析 --json 流）', () => {
 
   it('**半截行不让整次解析崩掉**（进程被杀时最后一行常常是断的）', () => {
     const stdout = [
-      line({ type: 'match', data: { path: { text: 'D:\\ws\\a.ts' }, line_number: 1, lines: { text: 'x\n' } } }),
+      line({ type: 'match', data: { path: { text: inRoot('a.ts') }, line_number: 1, lines: { text: 'x\n' } } }),
       '{"type":"match","data":{"path":{"te'
     ].join('\n')
     const { hits } = parseRipgrepJson(stdout, root, 50)
@@ -145,11 +156,20 @@ describe('parseRipgrepJson（解析 --json 流）', () => {
 
   it('到达上限时标记 truncated', () => {
     const stdout = Array.from({ length: 5 }, (_, i) =>
-      line({ type: 'match', data: { path: { text: `D:\\ws\\f${i}.ts` }, line_number: 1, lines: { text: 'm\n' } } })
+      line({ type: 'match', data: { path: { text: inRoot(`f${i}.ts`) }, line_number: 1, lines: { text: 'm\n' } } })
     ).join('\n')
     const { hits, truncated } = parseRipgrepJson(stdout, root, 3)
     expect(hits).toHaveLength(3)
     expect(truncated).toBe(true)
+  })
+
+  it('子目录里的命中保留相对子路径（且一律正斜杠）', () => {
+    const stdout = line({
+      type: 'match',
+      data: { path: { text: inRoot('src', 'deep', 'x.ts') }, line_number: 7, lines: { text: 'hit\n' } }
+    })
+    const { hits } = parseRipgrepJson(stdout, root, 50)
+    expect(hits[0]!.file).toBe('src/deep/x.ts')
   })
 })
 
