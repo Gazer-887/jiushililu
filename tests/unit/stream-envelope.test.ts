@@ -42,7 +42,10 @@ const EXEMPT_CONSTS = [
   // terminal:data —— 终端是**这个工作区**的终端，不是"某条对话的终端"（plan7 批 C）
   'IPC.terminalData',
   // terminal:state —— 同上：会话起停是工作区级状态，界面据此刷新，不带会话信封
-  'IPC.terminalState'
+  'IPC.terminalState',
+  // settings:changed —— 设置是**全应用**的（主题/权限档/供应商），不属于任何一条会话；设置独立窗口
+  // 与主窗口是两个渲染进程，改了必须让另一个知道（2026-09-13）
+  'IPC.settingsChanged'
 ] as const
 
 function walkTs(dir: string, out: string[] = []): string[] {

@@ -31,12 +31,12 @@ export default function TopBar(): JSX.Element {
   const dockOpen = useAppStore((s) => s.dockOpen)
   const toggleDock = useAppStore((s) => s.toggleDock)
 
+  // ⚠️ 2026-09-13：`'settings'` 那一支已删（设置改独立窗口，主区域里不再有它）——
+  //    留着就是永远走不到的死分支。主区域只剩「新建 / 对话」两态。
   const title =
-    view === 'settings'
-      ? '设置'
-      : view === 'new'
-        ? '' // 新建任务页不显示标题（用户 2026-09-12：页面中间已有文案，顶栏再标一次是重复）
-        : (conversations.find((c) => c.id === activeId)?.title ?? '会话')
+    view === 'new'
+      ? '' // 新建任务页不显示标题（用户 2026-09-12：页面中间已有文案，顶栏再标一次是重复）
+      : (conversations.find((c) => c.id === activeId)?.title ?? '会话')
 
   return (
     <header className="topbar">

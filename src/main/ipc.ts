@@ -234,12 +234,41 @@ export function registerIpcHandlers(deps: {
   /** 系统集成（plan7 批 F1）：同样是组合根建、这里转交 —— 它持有 blocker id 与自启状态，**每个进程只能有一份** */
   system: SystemIntegration
   onFlushDone?: () => void
+  /**
+   * 设置变更广播（2026-09-13，设置独立窗口）。
+   *
+   * **为什么放在组合根而不是本文件**：本文件里一个裸 `.send(` 都不许有
+   * （`tests/unit/stream-envelope.test.ts` 有守卫）。设置窗口与主窗口是**两个渲染进程**，
+   * store 不共享 —— 一处改了必须让另一处知道，否则"同一份数据实时联动"就是空话。
+   * 故这里只**上报变更事实**，真正的遍历发送交给 `main/index.ts`。
+   */
+  onSettingsChanged?: (kind: 'settings' | 'ui-prefs' | 'models') => void
+  /**
+   * 开设置窗口（幂等）。由侧栏齿轮触发 —— 渲染端不 import electron，建窗口只能在主进程。
+   */
+  openSettingsWindow?: () => void
 }): void {
+  ipcMain.handle(IPC.settingsOpenWindow, () => {
+    deps.openSettingsWindow?.()
+  })
+
+  // 关设置窗口：**由发起方那个窗口自己关**，不用"按用途取设置窗口"——
+  // 发起关窗的必然是设置窗口（× 只画在它上面），用 `event.sender` 拿到的就是它本人，
+  // 且避免了"用户连点两次 × / 窗口已在关闭路上"时取到 null 的边界。
+  ipcMain.handle(IPC.settingsCloseWindow, (event) => {
+    const wc = event.sender
+    const win = BrowserWindow.fromWebContents(wc)
+    if (win && !win.isDestroyed()) win.close()
+  })
+
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
 
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
     const input = friendlyParse(settingsSchema, raw) as SettingsSaveInput
-    return saveSettings(input)
+    const saved = saveSettings(input)
+    // 通知**所有**窗口重读 —— 主窗口的权限档、供应商标签都取自这里
+    deps.onSettingsChanged?.('settings')
+    return saved
   })
 
   ipcMain.handle(IPC.settingsTest, async (_e, raw: unknown): Promise<TestResult> => {
@@ -284,6 +313,8 @@ export function registerIpcHandlers(deps: {
     const saved = saveEndpoint(input)
     const view = modelsView().profiles.find((p) => p.id === saved.id)
     if (!view) throw new Error('保存后没能读回这个端点（存储异常）')
+    // 模型档案变了 → 主窗口的供应商标签/输入框工具栏要跟着变
+    deps.onSettingsChanged?.('models')
     return view
   })
 
@@ -301,11 +332,14 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.modelsDelete, (_e, raw: unknown) => {
     const id = friendlyParse(conversationIdSchema, raw)
     deleteProfileById(id)
+    deps.onSettingsChanged?.('models')
   })
 
   ipcMain.handle(IPC.modelsSetActive, (_e, raw: unknown): ModelsView => {
     const id = friendlyParse(conversationIdSchema, raw)
     setActiveProfile(id)
+    // "当前用哪个模型"是主窗口输入框上直接显示的，必须立刻同步
+    deps.onSettingsChanged?.('models')
     return modelsView()
   })
 
@@ -963,10 +997,17 @@ export function registerIpcHandlers(deps: {
       })
       .parse(raw)
     // 形状过了之后交给 setUIPref 做语义清洗并落盘（它返回**清洗后**的完整偏好）
-    return setUIPref(patch as Partial<UIPrefs>)
+    const next = setUIPref(patch as Partial<UIPrefs>)
+    // 主题/布局改了 → 另一个窗口要跟着变（尤其主题：它是文档级属性，不通知就一边新一边旧）
+    deps.onSettingsChanged?.('ui-prefs')
+    return next
   })
 
-  ipcMain.handle(IPC.uiPrefsReset, (): UIPrefs => resetUIPrefs())
+  ipcMain.handle(IPC.uiPrefsReset, (): UIPrefs => {
+    const next = resetUIPrefs()
+    deps.onSettingsChanged?.('ui-prefs')
+    return next
+  })
 
   // ── 工作区文件树（只读）：工作区路径每次实时解析（用户可切换工作区，免重启）
   ipcMain.handle(IPC.fsList, (_e, raw: unknown): Promise<FsListResult> => {

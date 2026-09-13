@@ -29,14 +29,12 @@ function groupConversations(list: ConversationMeta[]): Group[] {
 }
 
 export default function Sidebar({ open, width }: { open: boolean; width: number }): JSX.Element {
-  const view = useAppStore((s) => s.view)
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
   const newSession = useAppStore((s) => s.newSession)
   const openConversation = useAppStore((s) => s.openConversation)
   const renameConversation = useAppStore((s) => s.renameConversation)
   const removeConversation = useAppStore((s) => s.removeConversation)
-  const setView = useAppStore((s) => s.setView)
   /** **正在跑的会话集合**（plan11）：当前那条看顶层 `streaming`，后台那几条看各自存档里的 —— 合起来才是"谁在跑"的全貌 */
   const runtimes = useAppStore((s) => s.runtimes)
   const activeStreaming = useAppStore((s) => s.streaming)
@@ -184,11 +182,10 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
       </div>
 
       <div className="sidebar-foot">
-        <button
-          className={`gear-btn ${view === 'settings' ? 'active' : ''}`}
-          title="设置"
-          onClick={() => setView('settings')}
-        >
+        {/* 齿轮 = **开独立设置窗口**（2026-09-13 用户定案）。
+            ⚠️ 不再有 `.active` 选中态：设置现在是浮在上面的独立窗口，不是一个"当前所在页" ——
+            "已打开"由窗口自己表达，侧栏再高亮一次是重复信号。 */}
+        <button className="gear-btn" title="设置" onClick={() => void window.api.openSettingsWindow()}>
           <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
             <path

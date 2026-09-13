@@ -439,6 +439,10 @@ const FAKE_BG_TASKS = [
   }
 ]
 
+/** 设置独立窗口的桩：在 whenReady 里赋值（需要 win 已存在），STUBS 表按名调用 */
+let openSettingsWinStub = () => Promise.resolve({ ok: true })
+let closeSettingsWinStub = () => true
+
 const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
@@ -455,6 +459,13 @@ const STUBS = {
   'settings:save': () => settingsView,
   'settings:test': () => ({ ok: true, message: 'ok' }),
   'settings:set-model': () => settingsView,
+  // 设置独立窗口：齿轮 -> 开新窗 / 窗口内 × -> 关自己。
+  // ⚠️ 这里必须**真的建出第二个 BrowserWindow**（不能返回 undefined 了事）—— 下面那一整段设置探针
+  //    都靠「找到除 win 之外的窗口」定位目标；桩里不建窗，整段会集体红，且红得像产品坏了。
+  // ⚠️ 契约副本：真源 src/main/index.ts 的 openSettingsWindow（900x660、parent、幂等 focus、loadFile + hash）。
+  // ⚠️ 参数顺序：处理器统一是 `fn(...args, event)` —— event 在**最后**（close 桩要用它取发起方）。
+  'settings:open-window': () => openSettingsWinStub(),
+  'settings:close-window': (_unused, event) => closeSettingsWinStub(event),
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   'models:list': () => ({
     profiles: [
@@ -966,8 +977,10 @@ const STUBS = {
 
 app.whenReady().then(async () => {
   for (const [channel, fn] of Object.entries(STUBS)) {
-    // 透传参数：像 fs:list 这种需要知道"列哪个目录"的通道必须拿得到实参
-    ipcMain.handle(channel, (_e, ...args) => fn(...args))
+    // 透传参数：像 fs:list 这种需要知道"列哪个目录"的通道必须拿得到实参。
+    // ⚠️ 首参透传 event：`settings:close-window` 要按"发起方"关窗（真源同款 —— 用 fromWebContents 取自己），
+    //    不透传就只能靠猜哪个窗口该关。参数个数不影响其余桩（多余实参被 JS 忽略）。
+    ipcMain.handle(channel, (event, ...args) => fn(...args, event))
   }
 
   // 危险操作确认（plan8 R5）：记录界面回传的答复，用于判断点击是否真的生效
@@ -1029,6 +1042,48 @@ app.whenReady().then(async () => {
       cspViolations.push(`[${src}] ${msg}`)
     }
   })
+
+  // ── 设置独立窗口的桩实现（契约副本；真源见 src/main/index.ts openSettingsWindow）──
+  // 为什么必须真建窗：主窗口与设置窗口是**两个渲染进程**，设置探针全都要打到后者身上。
+  // 刻意**不装**任何 flush 拦截（真源也不装）——保证"设置窗口开着时主窗口仍能正常关掉"这条能验。
+  const settingsWins = []
+  openSettingsWinStub = async () => {
+    // 幂等：已开则聚焦（真源同款）——门禁里连点两次必须只有一个窗口
+    const live = settingsWins.find((w) => !w.isDestroyed())
+    if (live) {
+      live.focus()
+      return { ok: true, reused: true }
+    }
+    settingsWins.push(
+      new BrowserWindow({
+        width: 900,
+        height: 660,
+        show: false,
+        parent: win,
+        webPreferences: {
+          preload: join(ROOT, 'out/preload/index.js'),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          backgroundThrottling: false
+        }
+      })
+    )
+    // ⚠️ `{ hash: '/settings' }` 是独立窗口的唯一标记：渲染入口 main.tsx 靠它分叉出设置外壳
+    await settingsWins[settingsWins.length - 1].loadFile(
+      join(ROOT, 'out/renderer/index.html'),
+      { hash: '/settings' }
+    )
+    return { ok: true, reused: false }
+  }
+  closeSettingsWinStub = (event) => {
+    // 按发起方关窗（真源同款：fromWebContents(event.sender)）——关错窗口会连带毁掉后续探针
+    const sender = event && event.sender
+    const target =
+      (sender && BrowserWindow.fromWebContents(sender)) || settingsWins.find((w) => !w.isDestroyed())
+    if (target && !target.isDestroyed()) target.close()
+    return true
+  }
 
   await win.loadFile(join(ROOT, 'out/renderer/index.html'))
   await new Promise((r) => setTimeout(r, 3000))
@@ -1224,17 +1279,95 @@ app.whenReady().then(async () => {
 
   win.setSize(1200, 800)
   await new Promise((r) => setTimeout(r, 800))
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const gear = document.querySelector('.gear-btn');
-      if (gear) gear.click();
-      return !!gear;
-    })()
+
+  /*
+   * ── 设置改**独立窗口**（2026-09-13 用户定案）──────────────────────────
+   *
+   * 以前这里点齿轮 = 主区域切到设置页，此后所有探针都打在 `win` 上。
+   * 现在点齿轮 = **弹出第二个 BrowserWindow**，设置内容在**另一个 webContents** 里 ——
+   * 故下面一律改用 `swin`（设置窗口）与 `seval`（在设置窗口里求值）。
+   *
+   * ⚠️ 这一段本身就是"设置真的独立了"的**机械证据**：若齿轮还是切主区域那一套，
+   *    `swin` 会一直是 null，下面每一条都会红 —— 而不是悄悄绿着。
+   * ⚠️ 用 `getAllWindows()` 找**第二个**窗口（不是 [0]）：这一层是"测试怎么找窗口"，
+   *    与产品代码里的窗口登记制是两回事（那是主进程里按用途取，见 window-registry.ts）。
+   */
+  const openSettingsWin = async () => {
+    // 点齿轮 → 主进程建独立窗口
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const gear = document.querySelector('.gear-btn');
+        if (gear) gear.click();
+        return !!gear;
+      })()
+    `)
+    // 等窗口出现 + 加载完（设置页要拉 settings/models/logs 好几路 IPC）
+    for (let i = 0; i < 40; i += 1) {
+      await new Promise((r) => setTimeout(r, 200))
+      const found = BrowserWindow.getAllWindows().find((w) => w !== win && !w.isDestroyed())
+      if (found) {
+        await new Promise((r) => setTimeout(r, 900)) // 再等一拍让 React 挂载完
+        return found
+      }
+    }
+    return null
+  }
+
+  /** 在**设置窗口**里求值（主窗口一律用 win.webContents） */
+  const sevalRaw = async (expr) => {
+    const swinNow = BrowserWindow.getAllWindows().find((w) => w !== win && !w.isDestroyed())
+    if (!swinNow) throw new Error('设置窗口不存在 —— 齿轮没能开出独立窗口')
+    return swinNow.webContents.executeJavaScript(expr)
+  }
+  /** 在设置窗口里求值，并顺带返回该窗口对象的方便取法 */
+  const getSettingsWin = () => BrowserWindow.getAllWindows().find((w) => w !== win && !w.isDestroyed())
+
+  const swin = await openSettingsWin()
+  checkTrue('点侧栏齿轮 → **开出独立的设置窗口**（不是切主区域视图）', swin !== null && swin !== undefined, {
+    opened: !!swin,
+    windowCount: BrowserWindow.getAllWindows().length
+  })
+  // 主区域**不该**再出现设置内容 —— 齿轮是开窗，不是切页
+  const mainHasSettings = await win.webContents.executeJavaScript(
+    "(() => !!document.querySelector('.settings-view'))()"
+  )
+  checkTrue('主窗口里**不再有设置视图**（设置已整体搬进独立窗口）', mainHasSettings === false, {
+    mainHasSettings
+  })
+  // 独立窗口的地址带 `#/settings` —— 渲染入口据此分叉（main.tsx）
+  checkTrue(
+    '设置窗口的 URL 带 `#/settings`（渲染入口按 hash 分叉）',
+    typeof swin.webContents.getURL() === 'string' && swin.webContents.getURL().includes('settings'),
+    { url: swin.webContents.getURL().slice(-60) }
+  )
+  // 外壳：标题行 + 关闭按钮（连系统标题栏一起看，参考图那个形态）
+  const shellInfo = await sevalRaw(`
+    (() => ({
+      hasShell: !!document.querySelector('.settings-window'),
+      title: document.querySelector('.settings-window-title')?.textContent?.trim() ?? null,
+      hasClose: !!document.querySelector('.settings-window-close'),
+      // ⚠️ 旧的「← 返回」必须**不在**：设置是独立窗口，出口是 ×；留着返回就是死按钮
+      hasBackBtn: !!document.querySelector('.settings-nav .back-btn')
+    }))()
   `)
-  await new Promise((r) => setTimeout(r, 1200))
+  console.log('SETTINGS_SHELL=' + JSON.stringify(shellInfo))
+  checkTrue(
+    '设置窗口有外壳：标题「设置」+ 右上角关闭按钮；**旧的「← 返回」已删**（独立窗口的出口是 ×）',
+    shellInfo.hasShell === true &&
+      shellInfo.title === '设置' &&
+      shellInfo.hasClose === true &&
+      shellInfo.hasBackBtn === false,
+    shellInfo
+  )
+
+  // 设置窗口截一张（这就是用户看到的形态）
+  {
+    const sshot = await getSettingsWin().capturePage()
+    writeFileSync(join(SHOTS, 'verify-settings-window.png'), sshot.toPNG())
+  }
 
   // —— 设置页分区导航（左导航 + 右内容）：量几何 + 逐个点开截图，选中态必须有背景色 ——
-  const navInfo = await win.webContents.executeJavaScript(`
+  const navInfo = await sevalRaw(`
     (() => {
       const items = Array.from(document.querySelectorAll('.settings-nav-item'));
       const rect = (el) => {
@@ -1266,7 +1399,7 @@ app.whenReady().then(async () => {
     ['外观', 'appearance'],
     ['故障排查', 'trouble']
   ]) {
-    await win.webContents.executeJavaScript(`
+    await sevalRaw(`
       (() => {
         const b = Array.from(document.querySelectorAll('.settings-nav-item'))
           .find((x) => x.textContent.trim() === ${JSON.stringify(label)});
@@ -1275,7 +1408,7 @@ app.whenReady().then(async () => {
       })()
     `)
     await new Promise((r) => setTimeout(r, 700))
-    const secInfo = await win.webContents.executeJavaScript(`
+    const secInfo = await sevalRaw(`
       (() => {
         const cards = Array.from(document.querySelectorAll('.choice-item'));
         const rects = cards.map((el) => el.getBoundingClientRect());
@@ -1293,7 +1426,7 @@ app.whenReady().then(async () => {
     console.log('SETTINGS_SECTION=' + slug + ' ' + JSON.stringify(secInfo))
     if (slug === 'model') {
       // ── 模型列表：判据盯看得见的东西 —— 条数、当前标记只有 1 个、每行 3 个操作、页面里出现真实路径 ──
-      const modelPage = await win.webContents.executeJavaScript(`
+      const modelPage = await sevalRaw(`
         (() => {
           const rows = Array.from(document.querySelectorAll('.model-row'));
           const first = rows[0];
@@ -1323,7 +1456,8 @@ app.whenReady().then(async () => {
       console.log('MODELS=' + JSON.stringify(modelPage))
 
       // ── 模型目录编辑器（F5.1）：点「编辑」→ 一行一个模型 + 每个模型可展开高级设置 ──
-      await win.webContents.executeJavaScript(`
+      // ⚠️ 2026-09-13：点「编辑」现在进的是**二级页**（表单取代列表）。故这一段同时验二级页形态。
+      await sevalRaw(`
         (() => {
           const btn = Array.from(document.querySelectorAll('.model-row .model-act'))
             .find((b) => (b.getAttribute('title') || '').includes('编辑'));
@@ -1332,7 +1466,7 @@ app.whenReady().then(async () => {
         })()
       `)
       await new Promise((r) => setTimeout(r, 700))
-      const catalog = await win.webContents.executeJavaScript(`
+      const catalog = await sevalRaw(`
         (() => {
           const rows = Array.from(document.querySelectorAll('.mc-row'));
           return {
@@ -1342,25 +1476,30 @@ app.whenReady().then(async () => {
             hasAdd: !!Array.from(document.querySelectorAll('.mc-foot button')).find((b) => (b.textContent || '').includes('添加模型')),
             hasFetch: !!Array.from(document.querySelectorAll('.mc-link')).find((b) => (b.textContent || '').includes('获取可用模型')),
             hasRestore: !!Array.from(document.querySelectorAll('.mc-link')).find((b) => (b.textContent || '').includes('恢复默认模型')),
-            advBefore: !!document.querySelector('.mc-adv')
+            advBefore: !!document.querySelector('.mc-adv'),
+            // 二级页形态（2026-09-13）：表单取代列表 + 左上角有「← 返回」
+            isSubpage: !!document.querySelector('.settings-subpage'),
+            hasBack: !!document.querySelector('.settings-subpage .back-btn'),
+            listGone: !document.querySelector('.model-head'),
+            titleText: document.querySelector('.model-form-title')?.textContent?.trim() ?? null
           };
         })()
       `)
-      await win.webContents.executeJavaScript(`
+      await sevalRaw(`
         (() => { const b = document.querySelector('.mc-row .mc-icon'); if (b) b.click(); return !!b })()
       `)
       await new Promise((r) => setTimeout(r, 500))
-      const adv = await win.webContents.executeJavaScript(`
+      const adv = await sevalRaw(`
         (() => ({ panel: !!document.querySelector('.mc-adv'), fields: document.querySelectorAll('.mc-adv input, .mc-adv select').length }))()
       `)
       console.log('MODEL_CATALOG=' + JSON.stringify({ ...catalog, adv }))
       modelCatalog = { ...catalog, adv }
     }
-    const png = await win.webContents.capturePage()
+    const png = await getSettingsWin().capturePage()
     writeFileSync(join(SHOTS, 'verify-settings-' + slug + '.png'), png.toPNG())
   }
 
-  const m3 = await win.webContents.executeJavaScript(`
+  const m3 = await sevalRaw(`
     (() => {
       const pick = (sel) => {
         const el = document.querySelector(sel);
@@ -1380,9 +1519,8 @@ app.whenReady().then(async () => {
       };
     })()
   `)
-  const shot3 = await win.webContents.capturePage()
   // 不额外存 verify-settings.png：它与下面分区循环里的 trouble 那张**逐字节相同**（实测哈希一致）
-  void shot3
+  void m3
 
   /** 打开工作台里的某个内置面板：不是“点常驻页签”，而是 ＋ 开窗菜单 —— 没展开先点顶栏开关 →
    *  已有栏就点栏内 ＋ → 点菜单里同名那项；每步之间要等 React 重渲染，故拆成三次 executeJavaScript。 */
@@ -2956,8 +3094,19 @@ app.whenReady().then(async () => {
     { termStartCalls, termStartCallsBefore, termHasSession })
   termPermission = 'write' // 收尾：把门禁的存根状态还原，免得影响后面段落
 
+  // ⚠️ 必须先切回「通用设置」：上面分区循环最后一站停在「故障排查」，不切回来
+  //    下面找 `.settings-body label.checkbox` 必然全 null（会红成"开关不存在"，其实只是没翻到那一页）
+  await sevalRaw(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item')).find((x) => x.textContent.trim() === '通用设置');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+
   // ── Token Saver 档位：档位卡片与权限档同屏 —— 一律用 [aria-label="Token Saver 档位"] 限定范围查（.choice-item 会把权限档也捞进来）──
-  const tierBefore = await win.webContents.executeJavaScript(`
+  const tierBefore = await sevalRaw(`
     (() => {
       const group = document.querySelector('[aria-label="Token Saver 档位"]');
       if (!group) return { found: false };
@@ -2973,7 +3122,7 @@ app.whenReady().then(async () => {
   checkTrue('默认落在**平衡**档（用户定调的默认，不是界面随手编的）',
     tierBefore.checked === '平衡', tierBefore)
 
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const group = document.querySelector('[aria-label="Token Saver 档位"]');
       const btn = group && Array.from(group.querySelectorAll('.choice-item'))
@@ -2983,7 +3132,7 @@ app.whenReady().then(async () => {
     })()
   `)
   await new Promise((r) => setTimeout(r, 500))
-  const tierAfter = await win.webContents.executeJavaScript(`
+  const tierAfter = await sevalRaw(`
     (() => {
       const group = document.querySelector('[aria-label="Token Saver 档位"]');
       if (!group) return null;
@@ -2997,7 +3146,7 @@ app.whenReady().then(async () => {
   // ⚠️ 门禁里主进程是存根，故这一段能验的只有"界面结构与载荷对不对"；"真生效"由实机验收
   //    （`scripts/probe-main-system.cjs` 跑真组合根 + `powercfg /requests` 人工看，见 PLAN/plan15 §六），
   //    **不许在这里冒充**。
-  const systemRead = () => win.webContents.executeJavaScript(`
+  const systemRead = () => sevalRaw(`
     (() => {
       const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
       const pick = (t) => rows.find((r) => r.textContent.trim().startsWith(t)) ?? null;
@@ -3045,7 +3194,7 @@ app.whenReady().then(async () => {
       systemBefore.hints.some((t) => t.indexOf('关闭主窗口即退出应用') >= 0),
     systemBefore.hints)
 
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
       const pick = (t) => rows.find((r) => r.textContent.trim().startsWith(t));
@@ -3071,7 +3220,7 @@ app.whenReady().then(async () => {
   // ⚠️ 上面那条在"纯回显"的存根下**乐观更新也能绿**。真正能分辨的是这一条：让存根回一个**载荷没要的值**
   //    （点击发 `openAtLogin:false`，存根回 `true`）—— 界面若跟着返回值走，就该保持勾选。
   systemForceNextSet = { openAtLogin: true }
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'));
       const a = rows.find((r) => r.textContent.trim().startsWith('开机自启'));
@@ -3099,7 +3248,7 @@ app.whenReady().then(async () => {
   }
   // ⚠️ 必须"切走、**等一帧**、再切回"：两次点击在同一批次里会被 React 合并成"没离开过"，依赖 section 的
   //    取数就不会重跑 —— 那会把"重取真值"验成假绿（探针只验到内存里的旧值）
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const b = Array.from(document.querySelectorAll('.settings-nav-item')).find((x) => x.textContent.trim() === '模型');
       if (b) b.click();
@@ -3107,7 +3256,7 @@ app.whenReady().then(async () => {
     })()
   `)
   await new Promise((r) => setTimeout(r, 400))
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const b = Array.from(document.querySelectorAll('.settings-nav-item')).find((x) => x.textContent.trim() === '通用设置');
       if (b) b.click();
@@ -3141,7 +3290,7 @@ app.whenReady().then(async () => {
   }
 
   // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const b = Array.from(document.querySelectorAll('.settings-nav-item'))
         .find((x) => x.textContent.trim() === '外观');
@@ -3151,7 +3300,7 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 500))
 
-  const themeBefore = await win.webContents.executeJavaScript(`
+  const themeBefore = await sevalRaw(`
     (() => ({
       items: Array.from(document.querySelectorAll('.choice-item .choice-name')).map((e) => e.textContent.trim()),
       checked: document.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null,
@@ -3159,7 +3308,7 @@ app.whenReady().then(async () => {
     }))()
   `)
 
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const btn = Array.from(document.querySelectorAll('.choice-item'))
         .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '水墨');
@@ -3168,7 +3317,7 @@ app.whenReady().then(async () => {
     })()
   `)
   await new Promise((r) => setTimeout(r, 700))
-  const themeAfter = await win.webContents.executeJavaScript(`
+  const themeAfter = await sevalRaw(`
     (() => ({
       checked: document.querySelector('.choice-item[aria-checked="true"] .choice-name')?.textContent?.trim() ?? null,
       dataTheme: document.documentElement.dataset.theme ?? '(none)',
@@ -3179,7 +3328,7 @@ app.whenReady().then(async () => {
   writeFileSync(join(SHOTS, 'verify-theme-ink.png'), shotTheme.toPNG())
 
   // 恢复经典（别把状态留在水墨 —— 验证脚本应可重复运行）
-  await win.webContents.executeJavaScript(`
+  await sevalRaw(`
     (() => {
       const btn = Array.from(document.querySelectorAll('.choice-item'))
         .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '经典');
@@ -3190,7 +3339,7 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 500))
 
   // CSS 是否真的生效（CSP 若拦掉样式表，界面会退化成裸 HTML —— 用计算样式判定）
-  const cssCheck = await win.webContents.executeJavaScript(`
+  const cssCheck = await sevalRaw(`
     (() => {
       const sheets = document.styleSheets.length;
       const view = document.querySelector('.settings-view');
@@ -3211,7 +3360,7 @@ app.whenReady().then(async () => {
   `)
 
   // CSP 是否真的在拦：主动注入内联脚本探针（“零违规”只说明没打坏东西；script-src 'self' 下注入的赋值不应执行）
-  const cspProbe = await win.webContents.executeJavaScript(`
+  const cspProbe = await sevalRaw(`
     new Promise((resolve) => {
       window.__cspProbe = false;
       const s = document.createElement('script');
@@ -3220,6 +3369,43 @@ app.whenReady().then(async () => {
       setTimeout(() => resolve({ inlineScriptExecuted: window.__cspProbe }), 80);
     })
   `)
+
+  // ── 设置窗口的生命周期：× 真能关掉 / 齿轮能再开出来 / 连点两次不叠窗（幂等）──
+  // 这三条是独立窗口形态的核心交互，缺一条用户就会遇到"关不掉""开出两个一模一样的设置窗口"。
+  {
+    const beforeClose = BrowserWindow.getAllWindows().length
+    await sevalRaw(`(() => { document.querySelector('.settings-window-close')?.click(); return true; })()`)
+    // 等窗口真的销毁（close 是异步的，立刻查会假绿）
+    let gone = false
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise((r) => setTimeout(r, 150))
+      if (!getSettingsWin()) {
+        gone = true
+        break
+      }
+    }
+    checkTrue(
+      '设置窗口的 × **真能关掉窗口**（关完窗口数回落，不是只隐藏）',
+      gone === true && BrowserWindow.getAllWindows().length < beforeClose,
+      { before: beforeClose, after: BrowserWindow.getAllWindows().length, gone }
+    )
+
+    // 再开一次：证明关掉之后齿轮还能重新开出来（不是一次性）
+    const reopened = await openSettingsWin()
+    checkTrue('关掉后点齿轮**还能再开出来**（不是一次性窗口）', reopened !== null, {
+      opened: !!reopened
+    })
+
+    // 幂等：再点一次齿轮，不该叠出第二个设置窗口
+    await win.webContents.executeJavaScript(`
+      (() => { document.querySelector('.gear-btn')?.click(); return true; })()
+    `)
+    await new Promise((r) => setTimeout(r, 900))
+    const otherWins = BrowserWindow.getAllWindows().filter((w) => w !== win && !w.isDestroyed())
+    checkTrue('连点两次齿轮**不叠窗**（幂等：已开则聚焦，只保留一个设置窗口）', otherWins.length === 1, {
+      settingsWindowCount: otherWins.length
+    })
+  }
 
   console.log('TEXT_CHECK=' + JSON.stringify(textCheck))
   console.log('WIDE=' + JSON.stringify(m1))
@@ -4703,22 +4889,32 @@ app.whenReady().then(async () => {
     (() => ({ got: (document.querySelector('.chat-messages')?.textContent ?? '').includes('切换之前的字') }))()
   `)
 
-  // 切到设置页（**真鼠标**点齿轮）—— 这一步会让 ChatView 卸载
+  // 点齿轮开独立设置窗口 —— ⚠️ 语义已随架构切换更新：以前"点齿轮"是主窗口**切视图**（ChatView 卸载）；
+  //    现在是**开新窗口**，主窗口的 ChatView 根本不卸载。要验的东西没变：**对话流式订阅不因开设置窗口而断**
+  //    （旧代码就是因为视图卸载时订阅被清掉才丢字）。
   const gearPos = await centerOf('.gear-btn')
   if (rbInputReady && gearPos) await realClick(gearPos.x, gearPos.y, 'left')
-  await new Promise((r) => setTimeout(r, 800))
+  await new Promise((r) => setTimeout(r, 900))
   const onSettings = await win.webContents.executeJavaScript(`
-    (() => ({ settings: !!document.querySelector('.settings, .settings-view, .settings-page'), chat: !!document.querySelector('.chat-view') }))()
+    (() => ({
+      chatStillMounted: !!document.querySelector('.chat-view'),
+      mainHasNoSettings: !document.querySelector('.settings, .settings-view, .settings-page')
+    }))()
   `)
+  checkTrue(
+    '点齿轮开设置窗口时，**主窗口的对话视图仍在**（开窗不是切页，对话不该被卸载）',
+    onSettings.chatStillMounted === true && onSettings.mainHasNoSettings === true,
+    onSettings
+  )
 
-  // 在设置页期间继续推：一段正文 + 结束（旧代码里 chat:done 收不到 → 那段字永远不会被存盘，故断言的是 conv:save 载荷）
+  // 设置窗口开着期间继续推：一段正文 + 结束（旧代码里视图卸载后 chat:done 收不到 → 那段字永远不会被存盘）
   convSaveCalls.length = 0
-  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '切页期间的字' })
+  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '开窗期间的字' })
   await new Promise((r) => setTimeout(r, 300))
   win.webContents.send('chat:done', { conversationId: 'c1', payload: null })
   await new Promise((r) => setTimeout(r, 700))
   const savedWhileAway = convSaveCalls.some((c) =>
-    (c.messages ?? []).some((m) => String(m.content ?? '').includes('切页期间的字'))
+    (c.messages ?? []).some((m) => String(m.content ?? '').includes('开窗期间的字'))
   )
 
   await win.webContents.executeJavaScript(`
@@ -4736,7 +4932,7 @@ app.whenReady().then(async () => {
       const all = document.querySelector('.chat-messages')?.textContent ?? '';
       return {
         text: all.slice(-40),
-        hasChunkAfterUnmount: all.includes('切页期间的字'),
+        hasChunkWhileSettingsOpen: all.includes('开窗期间的字'),
         stopping: !!btn && btn.classList.contains('stopping'),
         sendTitle: btn ? (btn.getAttribute('title') || '') : ''
       };
@@ -4913,9 +5109,15 @@ app.whenReady().then(async () => {
     closed.tabGone === true && closed.hasEditBar === false, closed)
 
   checkTrue('前置：订阅在（推一段流界面能收到）', subBefore.got === true, subBefore)
-  checkTrue('前置：确实切到了设置页（ChatView 已被卸载 —— 否则下面一条说明不了任何事）',
-    onSettings.settings === true && onSettings.chat === false, onSettings)
-  checkTrue('**在设置页期间流出来的内容，仍然被存盘**（订阅没跟着视图卸载 —— 旧代码这里必红）',
+  // ⚠️ 判据随架构更新：以前"切设置页"= 主窗口切视图（ChatView 卸载）；现在 = **开独立窗口**。
+  //    强度不变：必须确认**设置窗口真的开了**，否则"开窗期间的字仍存盘"这条证明不了任何事。
+  checkTrue('前置：设置窗口确实开出来了（主窗口对话仍在，设置已搬去独立窗口）',
+    onSettings.chatStillMounted === true &&
+      onSettings.mainHasNoSettings === true &&
+      getSettingsWin() !== null &&
+      getSettingsWin() !== undefined,
+    onSettings)
+  checkTrue('**设置窗口开着期间流出来的内容，仍然被存盘**（订阅不因开窗而断 —— 旧代码这里必红）',
     savedWhileAway === true, { savedWhileAway, saves: convSaveCalls.length })
   checkTrue('**收到 `chat:done` 之后不卡在"生成中"**（发送键回到「发送」）',
     subAfter.stopping === false && subAfter.sendTitle.includes('发送'), subAfter)

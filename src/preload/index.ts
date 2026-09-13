@@ -123,6 +123,14 @@ const api: ApiBridge = {
   getUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsGet),
   setUIPrefs: (patch) => ipcRenderer.invoke(IPC.uiPrefsSet, patch),
   resetUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsReset),
+  // ── 设置独立窗口（2026-09-13）──────────────────────────────
+  // 开窗/关窗都走主进程：渲染端不 import electron（架构守卫），拿不到 BrowserWindow
+  openSettingsWindow: () => ipcRenderer.invoke(IPC.settingsOpenWindow),
+  closeSettingsWindow: () => ipcRenderer.invoke(IPC.settingsCloseWindow),
+  /** 设置变更广播：主窗口与设置窗口是**两个渲染进程**，store 不共享 —— 一处改了另一处据此重读。
+   *  ⚠️ 不带会话信封（进程级通道，同终端/后台任务），故直接收 kind 而不是 StreamEnvelope。 */
+  onSettingsChanged: (cb) =>
+    subscribe(IPC.settingsChanged, (kind) => cb(kind as 'settings' | 'ui-prefs' | 'models')),
   listWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsList, rel),
   readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel),
   readWorkspaceBinary: (rel) => ipcRenderer.invoke(IPC.fsReadBinary, rel),

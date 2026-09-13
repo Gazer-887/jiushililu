@@ -292,6 +292,72 @@ nav {
   overflow: hidden;
 }
 
+/* ── 设置独立窗口的外壳（2026-09-13）─────────────────────────────
+ * 主进程建的是**普通边框窗口**（不藏系统标题栏：藏了就得自己实现拖动/缩放/最小化，不值得）。
+ * 下面这条是**内容区内的标题行** —— 对齐参考图里「设置 / ×」那一行的视觉锚点：
+ * 设置窗口没有菜单栏也没有地址栏，需要一句话说清"这是什么"。
+ */
+.settings-window {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.settings-window-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  padding: 0 var(--sp-12) 0 var(--sp-20);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-window-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-window-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.settings-window-close:hover {
+  background: var(--bg-soft, var(--bg));
+  color: var(--text);
+}
+
+/* 设置窗口里的 `.settings-view` 要吃掉标题行剩下的高度 */
+.settings-window .settings-view {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── 设置内的**二级页面**（添加模型 / 编辑模型等）─────────────────
+ * 形态对齐参考图：点进去整块换页 + 左上角「← 返回」，而不是就地展开半屏表单。
+ */
+.settings-subpage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.settings-subpage .back-btn {
+  align-self: flex-start;
+}
+
 .settings-nav {
   flex-shrink: 0;
   width: 196px;

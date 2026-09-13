@@ -1,5 +1,6 @@
-import { app, dialog, BrowserWindow } from 'electron'
+import { app, dialog } from 'electron'
 import { createLogger } from './log'
+import { getMainWindow } from './window-registry'
 
 // 异常兜底（plan8 R1）：**主进程崩了不能就这么消失**。
 // 在此之前任何未捕获异常都让应用直接退出，用户只看到"软件没了"，排查拿不到任何线索。
@@ -39,10 +40,21 @@ export function installCrashGuards(): void {
 
     // 告知用户（尽量给，给不出也不能因此再崩）
     try {
-      const win = BrowserWindow.getAllWindows()[0]
+      // ⚠️ 挂到**主窗口**上（2026-09-13）：错误框该出现在用户正在干活的那个窗口上。
+      //    取任意窗口的话，主窗口好好的人却在设置窗口里被弹一个"程序遇到错误"，指向性全丢。
+      const win = getMainWindow()
       const detail = `${message}\n\n详细堆栈已写入日志（设置 → 故障排查 → 打开日志文件夹）。`
-      if (win && !win.isDestroyed()) {
+      if (win) {
         void dialog.showMessageBox(win, {
+          type: 'error',
+          title: '九十里路遇到异常',
+          message: '程序遇到未预期的错误，已记录日志，未退出。',
+          detail
+        })
+      } else {
+        // 主窗口不在（用户只开着设置窗口，或全都关了）→ **不能因此丢掉这条告警**：
+        // 用无父窗口的对话框，它仍会显示在系统里（只是不依附某个窗口）
+        void dialog.showMessageBox({
           type: 'error',
           title: '九十里路遇到异常',
           message: '程序遇到未预期的错误，已记录日志，未退出。',
@@ -77,15 +89,17 @@ export function installCrashGuards(): void {
     if (reloadTimes.length >= MAX_RELOADS) {
       log.error('渲染进程反复崩溃，已停止自动重载', { attempts: reloadTimes.length })
       try {
-        const win = BrowserWindow.getAllWindows()[0]
-        if (win && !win.isDestroyed()) {
-          void dialog.showMessageBox(win, {
-            type: 'error',
-            title: '界面反复崩溃',
-            message: '界面连续异常退出，已停止自动重载，以免陷入循环。',
-            detail: '详细堆栈已写入日志（设置 → 故障排查 → 打开日志文件夹）。请重启应用；若持续出现，请将日志提供给开发者。'
-          })
+        // 同上：告警挂主窗口，主窗口不在就给无父窗口的（别把告警吞了）
+        const win = getMainWindow()
+        const box = {
+          type: 'error' as const,
+          title: '界面反复崩溃',
+          message: '界面连续异常退出，已停止自动重载，以免陷入循环。',
+          detail:
+            '详细堆栈已写入日志（设置 → 故障排查 → 打开日志文件夹）。请重启应用；若持续出现，请将日志提供给开发者。'
         }
+        if (win) void dialog.showMessageBox(win, box)
+        else void dialog.showMessageBox(box)
       } catch {
         // 提示失败不影响主进程存活
       }

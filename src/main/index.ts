@@ -26,6 +26,8 @@ import { getPermissionPreset, getSystemSettings, setSystemSettings } from './sto
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
+// 窗口登记制（2026-09-13）：取代散落各处的 `getAllWindows()[0]` —— 多窗口后那个前提不再成立
+import { getMainWindow, getWindow, isWindowOpen, registerWindow, sendToAll } from './window-registry'
 
 // 主进程入口：窗口生命周期 + IPC 注册（Agent 内核跑在 worker_threads，不在这里）。
 
@@ -45,8 +47,10 @@ if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0]
-    if (!win || win.isDestroyed()) return
+    // ⚠️ 必须取**主窗口**，不能取任意窗口（2026-09-13）：用户双击图标时意图是"回到我的工作台"，
+    //    若把浮在上面的**设置窗口**叫到前面，看起来就像主窗口丢了。
+    const win = getMainWindow()
+    if (!win) return
     if (win.isMinimized()) win.restore()
     win.focus()
   })
@@ -164,6 +168,8 @@ function createWindow(): void {
 
   applyNavigationGuards(win)
   installFlushBeforeClose(win)
+  // ⚠️ 登记**用途**（2026-09-13）：之后取窗口一律按用途取，不再靠"数组第 0 个"
+  registerWindow('main', win)
 
   win.on('ready-to-show', () => win.show())
 
@@ -173,6 +179,66 @@ function createWindow(): void {
     void win.loadURL(devURL)
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+/**
+ * 设置独立窗口（2026-09-13 用户定案）。
+ *
+ * **形态**：浮在主窗口之上的独立窗口，自带标题栏与关闭按钮（对齐用户给的 WorkBuddy 参考图）。
+ *
+ * **为什么用 `loadURL/loadFile` 带 hash 而不是另做一个 HTML 入口**：
+ * electron-vite 的渲染产物入口是单一的 `index.html`。另建入口要动构建配置、多出一份 bundle，
+ * 而这里两个窗口**共用同一份代码**（同一套组件与 store 初始化），差异只是"挂哪个根组件"——
+ * hash 是这件事最轻的表达方式。`src/renderer/src/main.tsx` 按 hash 分叉。
+ *
+ * ⚠️ **幂等**：已开则聚焦，绝不叠第二个设置窗口（用户在侧栏连点两下不该出来两个）。
+ * ⚠️ **不做 `installFlushBeforeClose`**：那个 flush 是**会话落盘**用的，设置窗口没有会话 ——
+ *    给它装上只会白等 2 秒超时，且 `finishClose` 是**单槽全局变量**，会被设置窗口覆盖掉
+ *    （那正是"主窗口关不掉 / 落错盘"的成因之一）。
+ */
+function openSettingsWindow(): void {
+  if (isWindowOpen('settings')) {
+    const win = getWindow('settings')
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
+    return
+  }
+
+  const win = new BrowserWindow({
+    width: 900,
+    height: 660,
+    minWidth: 720,
+    minHeight: 520,
+    title: '设置',
+    show: false,
+    parent: getMainWindow() ?? undefined,
+    // 设置窗口是**工具窗口**：不占任务栏、不参与「下一个窗口」切换，关掉它不该像关掉一个"应用"
+    skipTaskbar: false, // 保留任务栏存在感：用户可能只想在设置里翻，找不到窗口会很困惑
+    icon: app.isPackaged
+      ? join(process.resourcesPath, 'icon.ico')
+      : join(app.getAppPath(), 'resources/icon.ico'),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+
+  applyNavigationGuards(win)
+  registerWindow('settings', win)
+
+  win.on('ready-to-show', () => win.show())
+
+  const devURL = process.env['ELECTRON_RENDERER_URL']
+  const hash = '#/settings'
+  if (devURL) {
+    void win.loadURL(`${devURL}${hash}`)
+  } else {
+    void win.loadFile(join(__dirname, '../renderer/index.html'), { hash: '/settings' })
   }
 }
 
@@ -197,8 +263,10 @@ app.whenReady().then(() => {
   // 注意用**惰性取窗口**（调用时才查），因为桥是在 createWindow 之前建的。
   const confirm = createConfirmBridge({
     send: (req) => {
-      const win = BrowserWindow.getAllWindows()[0]
-      if (!win || win.isDestroyed()) return false
+      // ⚠️ 必须取**主窗口**（2026-09-13）：确认框问的是"要不要执行这条命令"，那是**主窗口那条会话**的事。
+      //    取任意窗口的话，用户正在设置里改东西时会被一个"是否允许 rm -rf"的框糊脸 —— 上下文全错。
+      const win = getMainWindow()
+      if (!win) return false
       // 走同一发送口（plan11 §2.5）：确认请求也带会话身份 —— 否则并发时用户会批了另一条会话的命令
       createChatEmitter(win.webContents, req.conversationId).confirm(req)
       return true
@@ -333,14 +401,24 @@ app.whenReady().then(() => {
     terminal,
     system,
     // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
-    onFlushDone: () => finishClose?.()
+    onFlushDone: () => finishClose?.(),
+    // ── 设置独立窗口（2026-09-13）────────────────────────────────
+    // 开窗走 IPC：渲染端不 import electron（架构守卫），必须由主进程建窗口
+    openSettingsWindow,
+    // ⚠️ 广播代码只能在这一层（`ipc.ts` 里一个裸 `.send(` 都不许有，有守卫盯着）。
+    onSettingsChanged: (kind) => {
+      const n = sendToAll(IPC.settingsChanged, kind)
+      log.info('设置变更已广播', { kind, windows: n })
+    }
   })
   // HTML 沙箱预览：`jsl-preview://doc/<相对路径>` → 工作区文件，带断脚本/断网响应头（真源见 src/shared/html-preview.ts）
   installPreviewProtocol(() => agentCtx.getWorkspaceRoot())
   createWindow()
 
   // 内置浏览器：真 Chromium 视图，用户与 Agent 共用同一实例
-  const win = BrowserWindow.getAllWindows()[0]
+  // ⚠️ 浏览器视图挂在**主窗口**上（2026-09-13）：设置窗口里没有浏览器面板，
+  //    若这里取到设置窗口，`initBrowser` 会把 WebContentsView 挂到错误的窗口上。
+  const win = getMainWindow()
   if (win) {
     initBrowser(win)
     // 状态变化推给所有窗口（地址栏/标题/前进后退可用性）
@@ -363,7 +441,10 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // ⚠️ 判据是"**主窗口**还在不在"，不是"有没有任何窗口"（2026-09-13）：
+    //    设置窗口浮着而主窗口被关掉时，`getAllWindows().length !== 0` → 旧写法**不会再建主窗口**，
+    //    用户点 Dock 图标什么也不发生（macOS 上这就是"应用假死"的观感）。
+    if (!getMainWindow()) {
       createWindow()
       // macOS 关窗即 `teardownAll`（cookie：两个入口都调它）→ blocker 被收掉；窗口重建时按落盘意图重新应用，
       // 否则"设置里开着、实际没生效"。`applyStored` 幂等，window 已存在时不会走到这里。

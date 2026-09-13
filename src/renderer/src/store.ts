@@ -50,7 +50,9 @@ import {
 
 // 界面状态只放这里；真正的模型请求一律走 IPC 交主进程执行。
 
-export type AppView = 'new' | 'chat' | 'settings'
+/** 主区域的视图。⚠️ 2026-09-13 起**没有 `'settings'`**：设置改成独立窗口了 ——
+ *  留着这个值就是死值（没有任何入口能设到它），与 plan8 R5 死代码同性质。 */
+export type AppView = 'new' | 'chat'
 
 /** 工作台落盘的**合并窗口**（plan9 §W5 提交点表）：切页签、拖宽这类高频动作只在停下来后写一次盘 */
 const WB_PERSIST_DEBOUNCE_MS = 300
@@ -129,6 +131,8 @@ interface AppState {
   settings: SettingsView | null
   settingsLoaded: boolean
   loadSettings: () => Promise<void>
+  /** 订阅主进程的设置变更广播；返回取消订阅函数（设置独立窗口：两个渲染进程要实时同步） */
+  subscribeSettingsChanged: () => () => void
 
   conversations: ConversationMeta[]
   activeId: string | null
@@ -484,6 +488,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadSettings: async () => {
     const settings = await window.api.getSettings()
     set({ settings, settingsLoaded: true })
+  },
+
+  /**
+   * 订阅设置变更广播（2026-09-13 设置独立窗口）。
+   *
+   * **为什么需要**：主窗口与设置窗口是**两个渲染进程**，zustand store 各有一份、互不可见。
+   * 用户在设置窗口改了主题/权限档/模型，主窗口若不重读就还显示旧值 —— "同一份数据实时联动"就落空了。
+   * 唯一真相源是**主进程落盘的那份**，这里收到通知后`重读`，而不是把变更内容搬过来（同「单一真相源」的做法）。
+   *
+   * ⚠️ 返回值是**取消订阅**函数：StrictMode 下 effect 会跑两遍，不退订就会挂两条、每次变更读两回。
+   */
+  subscribeSettingsChanged: () => {
+    return window.api.onSettingsChanged((kind) => {
+      const s = (): ReturnType<typeof useAppStore.getState> => useAppStore.getState()
+      if (kind === 'ui-prefs') {
+        // 主题是**文档级**属性：另一窗口改了必须在本窗口重设，否则一边新一边旧
+        void s().loadUIPrefs()
+        return
+      }
+      // settings / models：重读设置（供应商标签、权限档都取自这里）
+      void s().loadSettings()
+    })
   },
 
   conversations: [],

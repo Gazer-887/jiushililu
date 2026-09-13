@@ -14,7 +14,8 @@ import {
 } from '@shared/splitter'
 import ChatView from './views/ChatView'
 import NewSessionView from './views/NewSessionView'
-import SettingsView from './views/SettingsView'
+// ⚠️ 设置**不再是主区域的视图**（2026-09-13）：它改成了独立窗口，见 views/SettingsWindow.tsx。
+//    故这里不 import SettingsView —— 主窗口永远不渲染它。
 
 // 三段式布局（P2）：顶栏 + 左抽屉（会话/设置） + 主区域（对话） + 右抽屉（工作台）——
 // 主区域只负责"对话"，新增能力一律往两侧抽屉挂。
@@ -60,6 +61,10 @@ function useStreamSubscriptions(): void {
         .finally(() => void window.api.flushDone())
     })
 
+    // 设置变更（2026-09-13 设置独立窗口）：用户在设置窗口里改了主题/权限档/模型，
+    // 这个窗口要跟着变 —— 两个渲染进程的 store 不共享，只能靠主进程广播
+    const offSettings = s().subscribeSettingsChanged()
+
     return () => {
       offChunk()
       offDone()
@@ -70,6 +75,7 @@ function useStreamSubscriptions(): void {
       offReasoning()
       offAsk()
       offFlush()
+      offSettings()
     }
   }, [])
 }
@@ -132,7 +138,6 @@ export default function App() {
         <main className="content">
           {view === 'new' && <NewSessionView />}
           {view === 'chat' && <ChatView />}
-          {view === 'settings' && <SettingsView />}
         </main>
         {dockOpen && (
           <Splitter

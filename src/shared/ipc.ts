@@ -268,6 +268,14 @@ export const IPC = {
   subagentGet: 'subagent:get',
   flushRequest: 'app:flush-request',
   flushDone: 'app:flush-done',
+  // ── 设置独立窗口（2026-09-13）──
+  // 开设置窗口（幂等：已开则聚焦，不开第二个）
+  settingsOpenWindow: 'settings:open-window',
+  // 关设置窗口（由**设置窗口自己**发起：点右上角 ×。渲染端拿不到 BrowserWindow，只能走主进程）
+  settingsCloseWindow: 'settings:close-window',
+  // ⚠️ 变更广播是**进程级**通道（每个窗口都该收到，与终端/后台任务同类）——
+  //    它不在 `STREAM_CONSTS` 里，须显式登记进 `stream-envelope.test.ts` 的 `EXEMPT_CONSTS`。
+  settingsChanged: 'settings:changed',
   fsList: 'fs:list',
   fsRead: 'fs:read',
   fsReadBinary: 'fs:read-binary',
@@ -459,6 +467,13 @@ export interface ApiBridge {
   getUIPrefs(): Promise<UIPrefs>
   setUIPrefs(patch: Partial<UIPrefs>): Promise<UIPrefs>
   resetUIPrefs(): Promise<UIPrefs>
+  // ── 设置独立窗口（2026-09-13）──
+  /** 开设置窗口。**幂等**：已开则聚焦，不开第二个。 */
+  openSettingsWindow(): Promise<void>
+  /** 关设置窗口（设置窗口自己点 × 时调；渲染端拿不到 BrowserWindow） */
+  closeSettingsWindow(): Promise<void>
+  /** 设置变更广播（进程级，不带会话信封）。`kind` 说明变的是哪一类，界面据此决定重读什么。 */
+  onSettingsChanged(cb: (kind: 'settings' | 'ui-prefs' | 'models') => void): () => void
   listWorkspaceDir(rel: string): Promise<FsListResult>
   readWorkspaceFile(rel: string): Promise<FsReadResult>
   /** 读二进制文件用于预览：图片给 `dataUrl`、其余给 `hexHead`，超上限则 `tooLarge` 且**不给数据**。

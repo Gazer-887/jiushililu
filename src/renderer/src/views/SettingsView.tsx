@@ -142,7 +142,9 @@ function IconTrash(): JSX.Element {
   )
 }
 
-export default function SettingsView() {
+/** ⚠️ `onClose` 已弃用但**保留签名**：设置改成独立窗口后，出口是窗口外壳右上角的 ×（见 SettingsWindow），
+ *  视图自己不再需要"返回"回调。留着参数是为了不打断既有调用点（传了也不生效，故加下划线前缀）。 */
+export default function SettingsView({ onClose: _onClose }: { onClose?: () => void } = {}) {
   const settings = useAppStore((s) => s.settings)
   const loadSettings = useAppStore((s) => s.loadSettings)
   const theme = useAppStore((s) => s.theme)
@@ -253,9 +255,9 @@ export default function SettingsView() {
           {s.label}
         </button>
       ))}
-      <button className="back-btn" onClick={() => useAppStore.getState().setView('new')}>
-        ← 返回
-      </button>
+      {/* ⚠️ 这里**不再有「← 返回」**（2026-09-13 设置改独立窗口）：返回按钮是"在主区域里从设置退回对话"
+          那个形态的产物。设置现在是个**独立窗口**，出口是窗口右上角的关闭按钮（见 SettingsWindow）。
+          留一个「返回」会变成"返回哪儿？"的死按钮 —— 与 plan8 R5 的死代码同性质，故一并删掉。 */}
     </nav>
   )
 
@@ -573,11 +575,14 @@ export default function SettingsView() {
 
         {section === 'model' && (
           <>
-            <h2>模型</h2>
+            {/* ⚠️ 标题与列表在**编辑时让位给二级页**（2026-09-13）：二级页自带「← 返回」，
+                两套导航同时出现会让人不知道该点哪个。 */}
+            {!editingModel && <h2>模型</h2>}
 
             {/* ── 模型列表（plan7 F5 多模型管理）──────────────────────────────
                 为什么要有"当前用哪个"：列表没有当前态就是一坨 —— 用户看不出正在用谁。
                 （路径来自主进程的真值，不硬编码 —— 说得出口就得是真的） */}
+            {!editingModel && (
             <div className="model-head">
               <div className="model-head-text">
                 <div className="model-head-title">自定义模型</div>
@@ -589,12 +594,13 @@ export default function SettingsView() {
                 添加模型
               </button>
             </div>
+            )}
 
-            {models && models.profiles.length === 0 && (
+            {!editingModel && models && models.profiles.length === 0 && (
               <p className="hint">尚未添加模型。</p>
             )}
 
-            {models && models.profiles.length > 0 && (
+            {!editingModel && models && models.profiles.length > 0 && (
               <div className="model-list">
                 {models.profiles.map((p) => (
                   <div key={p.id} className={`model-row ${p.id === models.activeId ? 'on' : ''}`}>
@@ -636,13 +642,20 @@ export default function SettingsView() {
               </div>
             )}
 
-            {modelNotice && (
+            {!editingModel && modelNotice && (
               <div className={modelNotice.ok ? 'notice-ok' : 'notice-err'}>{modelNotice.text}</div>
             )}
 
-            {/* ── 编辑表单：只在新增 / 编辑时出现（列表演示时不该占着半屏）── */}
+            {/* ── 编辑表单：**第二级页面**（2026-09-13，设置改独立窗口）──
+                形态对齐用户给的 WorkBuddy 参考图：点「添加模型」→ 整块换成表单页 + 左上角「← 返回」，
+                而**不是**在列表下面就地展开半屏表单。
+                为什么换成二级页：① 参考图就是这个形态；② 表单很长（显示名/baseURL/模型目录/协议/Key），
+                就地展开会把列表挤到看不见，"我正在编辑哪一条"失去参照。 */}
             {editingModel && (
-              <>
+              <div className="settings-subpage">
+                <button className="back-btn" type="button" onClick={cancelEdit}>
+                  ← 返回
+                </button>
                 <div className="model-form-title">{editingModel.id ? '编辑模型' : '添加模型'}</div>
 
                 <label>
@@ -716,7 +729,7 @@ export default function SettingsView() {
             </div>
 
                 {notice && <div className={notice.ok ? 'notice-ok' : 'notice-err'}>{notice.text}</div>}
-              </>
+              </div>
             )}
           </>
         )}
