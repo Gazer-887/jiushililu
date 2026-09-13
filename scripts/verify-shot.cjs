@@ -232,6 +232,30 @@ process.on('unhandledRejection', (err) => {
   app.exit(1)
 })
 
+// ⚠️ 同步异常也要接：上面只接了 Promise 链上的拒绝，`uncaughtException` 走的是另一条路，
+//    没接住的话 Electron 同样会挂着不退（2026-09-13 实测：一个诊断任务因此空转 1h56m，
+//    门禁主进程与两个子进程一直躺在进程表里，直到被外部 taskkill 才消失）。
+process.on('uncaughtException', (err) => {
+  console.log('FAIL: 脚本内部未捕获异常 → ' + (err && err.stack ? err.stack : String(err)))
+  console.log('CHECKS=' + JSON.stringify({ total: checks.length, failed: checks.length + 1 }))
+  console.log('==== verify-shot 失败：脚本自身异常 ====')
+  app.exit(1)
+})
+
+// ⚠️ **看门狗**：门禁最怕的不是失败，是"挂着不动"——失败有 FAIL 行可查，挂着只会空转。
+//    触发场景：某个 await 永远不 resolve（窗口没开出来、IPC 没人回、渲染进程卡死）。
+//    到点无论卡在哪都带现场退出，保证"跑门禁 = 一定会结束"。
+//    正常全量跑约 2 分钟，故 10 分钟是宽裕的安全阈值（不追求精确，只求不会僵尸）。
+const WATCHDOG_MS = 10 * 60 * 1000
+setTimeout(() => {
+  console.log('FAIL: 门禁超时（' + WATCHDOG_MS / 60000 + ' 分钟未结束）—— 有 await 永远没返回')
+  console.log(
+    'CHECKS=' + JSON.stringify({ total: checks.length, failed: checks.length + 1, done: checks.length })
+  )
+  console.log('==== verify-shot 失败：看门狗超时 ====')
+  app.exit(1)
+}, WATCHDOG_MS).unref()
+
 /** 模型档案的公共字段：三条假档案共用一份，只改 id / 名字 / 来源 / Key（复制三份必然漂移） */
 const FAKE_PROFILE_BASE = {
   providerType: 'openai-compatible',
