@@ -71,6 +71,7 @@ const api: ApiBridge = {
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
   pickWorkspace: () => ipcRenderer.invoke(IPC.workspacePick),
   setKnownWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceSetKnown, path),
+  resetWorkspace: () => ipcRenderer.invoke(IPC.workspaceReset),
   revealWorkspace: (path: string) => ipcRenderer.invoke(IPC.workspaceReveal, path),
   listConversations: () => ipcRenderer.invoke(IPC.convList),
   getConversation: (id: string) => ipcRenderer.invoke(IPC.convGet, id),

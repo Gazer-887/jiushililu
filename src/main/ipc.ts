@@ -151,7 +151,7 @@ import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { sendToAll } from './window-registry'
 import { statSync } from 'node:fs'
-import { getWorkspaceInfo, setWorkspaceRoot } from './store/workspace'
+import { getWorkspaceInfo, resetWorkspaceRoot, setWorkspaceRoot } from './store/workspace'
 import {
   NotARepoError,
   gitCommit,
@@ -613,6 +613,14 @@ export function registerIpcHandlers(deps: {
     if (!allowed.includes(path)) return null
     setWorkspaceRoot(path)
     deps.terminal.killAll() // 同上：切工作区即收终端会话，不留旧项目的 shell
+    ensureAgentRuntime(deps.agent)
+    return getWorkspaceInfo(deps.userDataDir)
+  })
+
+  // 恢复内置默认工作区（plan7 批 F4）：与「选择目录」同为切换动作，语义对齐（收终端会话 + 备好新目录）
+  ipcMain.handle(IPC.workspaceReset, (): WorkspaceInfo => {
+    resetWorkspaceRoot()
+    deps.terminal.killAll()
     ensureAgentRuntime(deps.agent)
     return getWorkspaceInfo(deps.userDataDir)
   })

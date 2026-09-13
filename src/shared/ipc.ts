@@ -247,6 +247,8 @@ export const IPC = {
   workspaceGet: 'workspace:get',
   workspacePick: 'workspace:pick',
   workspaceSetKnown: 'workspace:set-known',
+  // 恢复内置默认工作区（plan7 批 F4）：选了自定义目录后得有一条回内置的路，否则默认落点成了单程票
+  workspaceReset: 'workspace:reset',
   workspaceReveal: 'workspace:reveal',
   convList: 'conv:list',
   convGet: 'conv:get',
@@ -454,6 +456,8 @@ export interface ApiBridge {
   pickWorkspace(): Promise<WorkspaceInfo | null>
   /** 切换到"已知工作区"（历史会话用过的路径）——不接受任意路径，收紧权限面 */
   setKnownWorkspace(path: string): Promise<WorkspaceInfo | null>
+  /** 恢复内置默认工作区（plan7 批 F4）：**只影响新任务** —— 已创建的会话各自绑定当时的工作区，不动 */
+  resetWorkspace(): Promise<WorkspaceInfo>
   revealWorkspace(path: string): Promise<void>
   listConversations(): Promise<ConversationMeta[]>
   getConversation(id: string): Promise<Conversation | null>

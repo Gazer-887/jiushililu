@@ -450,6 +450,12 @@ let uiPrefsStub = {
   workbenchSizes: { paneWidths: [] }
 }
 const uiPrefsSetCalls = []
+// ── 工作区桩（plan7 批 F4）改**有状态**：恢复默认的断言要看"切过去又切回来"，无状态桩只能验返回值 ──
+const WS_STUB_DEFAULT = { path: 'D:\\jsllworkplace_for_test', custom: false }
+let wsStub = { ...WS_STUB_DEFAULT }
+/** 下一次「选择目录」的结果（null = 取消，对齐真实对话框的默认行为）；断言段先置值再点 */
+let wsPickNext = null
+const wsResetCalls = []
 /** 让下一次 `system:set` 回一个**载荷没要的值**：只有这样才能证明界面跟着返回值走，而不是乐观更新 */
 let systemForceNextSet = null
 const makeTermSnapshot = () => ({
@@ -662,9 +668,20 @@ const STUBS = {
   'chat:send': () => undefined,
   'chat:abort': () => undefined,
   'agent:run': () => ({ ok: true, output: '', rounds: 0, stopReason: 'completed', agent: 'x' }),
-  'workspace:get': () => ({ path: 'D:\\jsllworkplace_for_test', custom: false }),
-  'workspace:pick': () => null,
+  'workspace:get': () => ({ ...wsStub }),
+  'workspace:pick': () => {
+    if (!wsPickNext) return null
+    wsStub = { ...wsPickNext }
+    wsPickNext = null
+    return { ...wsStub }
+  },
   'workspace:set-known': () => null,
+  // 恢复内置默认（plan7 批 F4）：真办事的桩 —— 改状态、计数，回显新值
+  'workspace:reset': () => {
+    wsResetCalls.push(Date.now())
+    wsStub = { ...WS_STUB_DEFAULT }
+    return { ...wsStub }
+  },
   'workspace:reveal': () => undefined,
   'conv:list': () => [
     {
@@ -3713,6 +3730,78 @@ app.whenReady().then(async () => {
 
   // 还原：别把"手动配置"留给后面的段落
   netStub = { ...netStub, proxyMode: 'system', proxyRules: '', hasCredentials: false, effective: 'PROXY 127.0.0.1:7897; DIRECT', applied: true, error: null }
+
+  // ── 工作区默认落点（plan7 批 F4）：三键齐 + 恢复内置默认有真退路 + 文案说清"只影响新任务" ──
+  // 这条设置的全部语义就两句话：新任务默认在这个目录进行；老会话各自绑定当时的工作区，改这里不影响它们
+  {
+    const wsRead = () =>
+      sevalRaw(`
+        (() => {
+          const body = document.querySelector('.settings-body');
+          const labels = Array.from(body.querySelectorAll('.field-label'));
+          const wsLabel = labels.find((l) => l.textContent.trim() === '工作区');
+          const section = wsLabel ? wsLabel.parentElement : null;
+          const buttons = section ? Array.from(section.querySelectorAll('button')) : [];
+          const btn = (name) => buttons.find((b) => b.textContent.trim() === name) ?? null;
+          const shape = (b) => (b ? { disabled: b.disabled } : null);
+          return {
+            found: !!wsLabel,
+            path: section?.querySelector('.logs-path')?.textContent?.trim() ?? null,
+            badge: section?.querySelector('.logs-count')?.textContent?.trim() ?? null,
+            pickBtn: shape(btn('选择目录…')),
+            resetBtn: shape(btn('恢复内置默认')),
+            openBtn: shape(btn('打开目录')),
+            hints: section ? Array.from(section.querySelectorAll('.hint')).map((p) => p.textContent.trim()) : []
+          };
+        })()
+      `)
+    const wsInit = await wsRead()
+    checkTrue('工作区行有三键：选择目录… / 恢复内置默认 / 打开目录；内置默认档下「恢复内置默认」禁用（空操作按钮不装可用）',
+      // ⚠️ checkTrue 对 cond 做 === true 严判：末位不能落在对象上（truthy 对象不等于 true），包一层 Boolean
+      Boolean(
+        wsInit.found && wsInit.pickBtn && wsInit.pickBtn.disabled === false &&
+          wsInit.resetBtn && wsInit.resetBtn.disabled === true && wsInit.openBtn
+      ),
+      wsInit)
+    checkTrue('文案写明「新任务默认在这个目录进行」与「不影响」已有会话（这项设置的全部语义）',
+      wsInit.hints.some((t) => t.indexOf('新任务默认在这个目录') >= 0) &&
+        wsInit.hints.some((t) => t.indexOf('不影响') >= 0),
+      wsInit.hints)
+
+    // 让桩"选"一个自定义目录（真实对话框自动化不了；桩默认返回取消，行为与真取消一致）
+    wsPickNext = { path: 'D:\\ws_f4_custom', custom: true }
+    await sevalRaw(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('.settings-body button'))
+          .find((b) => b.textContent.trim() === '选择目录…');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const wsCustom = await wsRead()
+    checkTrue('选目录后：路径与徽标变成自定义档、「恢复内置默认」解锁（默认落点改了要看得见）',
+      wsCustom.path === 'D:\\ws_f4_custom' && wsCustom.badge === null &&
+        wsCustom.resetBtn && wsCustom.resetBtn.disabled === false,
+      wsCustom)
+
+    await sevalRaw(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('.settings-body button'))
+          .find((b) => b.textContent.trim() === '恢复内置默认');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const wsBack = await wsRead()
+    checkTrue('恢复内置默认后：徽标与路径回到内置档、按钮再禁用（选错目录必须有单程退路才算完整）',
+      wsBack.path === 'D:\\jsllworkplace_for_test' && wsBack.badge === '内置默认' &&
+        wsBack.resetBtn && wsBack.resetBtn.disabled === true,
+      wsBack)
+    checkTrue('workspace:reset 真被调过且只调一次（状态变化只能来自主进程桩，不是界面乐观更新）',
+      wsResetCalls.length === 1, { calls: wsResetCalls.length })
+  }
 
   // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
   await sevalRaw(`

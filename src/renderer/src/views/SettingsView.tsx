@@ -416,6 +416,11 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     if (next) setWs(next)
   }
 
+  /** 恢复内置默认工作区（plan7 批 F4）：取数一律走主进程返回值回显，不做乐观更新 */
+  const resetWs = async (): Promise<void> => {
+    setWs(await window.api.resetWorkspace())
+  }
+
   const choosePerm = async (p: PermissionPreset): Promise<void> => {
     setPerm(await window.api.setPermission(p))
   }
@@ -526,7 +531,9 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             <h2>通用设置</h2>
 
             <div className="field-label">工作区</div>
-            <p className="hint">Agent 只能读写该目录下的文件，越界操作会被拒绝。</p>
+            {/* 承重定位（plan7 批 F4）：这里改的是"新任务的默认落点"；老会话绑定当时的工作区，不受影响 */}
+            <p className="hint">Agent 只能读写该目录下的文件，越界操作会被拒绝。新任务默认在这个目录进行。</p>
+            <p className="hint">已创建的会话各自绑定当时的工作区，改这里不影响它们。</p>
             <div className="logs-info">
               <span className="logs-path">{ws?.path ?? '加载中…'}</span>
               {ws && !ws.custom && <span className="logs-count">内置默认</span>}
@@ -534,6 +541,14 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             <div className="actions">
               <button className="btn-secondary" onClick={() => void pickWs()}>
                 选择目录…
+              </button>
+              {/* 只在自定义档给得出退路：内置默认档下这个按钮是空操作，禁用比点了没反应诚实 */}
+              <button
+                className="btn-secondary"
+                disabled={!ws?.custom}
+                onClick={() => void resetWs()}
+              >
+                恢复内置默认
               </button>
               <button
                 className="btn-secondary"
