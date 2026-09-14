@@ -631,8 +631,20 @@ nav {
 }
 
 .fnote-mark:hover + .fnote-bubble,
+.fnote-mark:focus + .fnote-bubble,
 .fnote-mark:focus-visible + .fnote-bubble {
   display: block;
+}
+/* :focus（不只 :focus-visible）也展开：点击 ⓘ 的用户就是要看说明；
+   且编程聚焦（如自动化探针）在 Chromium 里不保证命中 :focus-visible */
+
+/* 分条显示（组级 ⓘ 汇总多个选项的说明）：每条一行，条间留一点呼吸 */
+.fnote-bubble .fnote-line {
+  display: block;
+}
+
+.fnote-bubble .fnote-line + .fnote-line {
+  margin-top: var(--sp-6);
 }
 
 /* 左记号时 DOM 顺序被 order 换过，兄弟选择器要跟着换向 */

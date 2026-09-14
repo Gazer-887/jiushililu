@@ -654,9 +654,18 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
               </button>
             </div>
 
-            <div className="field-label">访问权限</div>
-            {/* 只留"这句在哪还能改"这一半：前半句是产品口号，每页来一次就是噪音 */}
-            <p className="hint">与输入框工具栏为同一设置，两处修改等效。</p>
+            {/* 注释收进 ⓘ（2026-09-14 用户定调：界面极简，说明不直接显示）；trouble 行保留 —— 它是"设了不等于生效"的实时状态，不是注释 */}
+            <div className="field-label field-label-with-note">
+              访问权限
+              <FieldNote
+                text={[
+                  '与输入框工具栏为同一设置，两处修改等效。',
+                  `只读访问：${PERM_HINT['read-only']}`,
+                  `可写访问：${PERM_HINT['write']}`,
+                  `完全访问：${PERM_HINT['full-access']}`
+                ]}
+              />
+            </div>
             <div className="choice-list choice-list-fill" role="radiogroup" aria-label="访问权限">
               {PERM_ORDER.map((p) => (
                 <button
@@ -667,21 +676,19 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   onClick={() => void choosePerm(p)}
                 >
                   <span className="choice-name">{PERM_LABEL[p]}</span>
-                  <span className="choice-desc">{PERM_HINT[p]}</span>
                 </button>
               ))}
             </div>
 
-            {/* 省 token 的口号不写在这里 —— 它是"能力 vs 省钱"的取舍，摆进每个档位的说明里让人自己选，
-                不替用户默认一个激进值（plan8 R9.1 §七②）。
-                2026-09-13：段落注释收进 ⓘ 气泡，免得长文挤掉拖放视觉（用户反馈）。 */}
+            {/* 省 token 的口号不写在这里 —— 它是"能力 vs 省钱"的取舍，摆进 ⓘ 里让人自己选，
+                不替用户默认一个激进值（plan8 R9.1 §七②）。 */}
             <div className="field-label field-label-with-note">
               Token Saver
               <FieldNote
-                text={
-                  '仅影响省 Token 的手段（工具输出的压缩力度、读文件默认行数），' +
-                  '不修改计量口径，也不省略厂商未上报的数据。'
-                }
+                text={[
+                  '仅影响省 Token 的手段（工具输出的压缩力度、读文件默认行数），不修改计量口径，也不省略厂商未上报的数据。',
+                  ...TOKEN_TIER_LIST.map((t) => `${t.label}：${t.note}`)
+                ]}
               />
             </div>
             <div className="choice-list choice-list-fill" role="radiogroup" aria-label="Token Saver 档位">
@@ -694,7 +701,6 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   onClick={() => void chooseTier(t.tier)}
                 >
                   <span className="choice-name">{t.label}</span>
-                  <span className="choice-desc">{t.note}</span>
                 </button>
               ))}
             </div>
@@ -710,10 +716,12 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
               </button>
             </div>
 
-            {/* ── 系统（plan7 批 F1）：两项都是**系统级副作用**，故各自都要写出代价 ──
-                取数规则：值取主进程回显（不乐观更新）；"设了不等于生效"的两条路径各有自己的提示行
-                （blocker 起不来 / 系统启动项里查不到），这正是 plan7 点名的"以为在跑、其实被挂起了"的防线。 */}
-            <div className="field-label">系统</div>
+            {/* ── 系统（plan7 批 F1）：两项都是**系统级副作用**，代价说明收进组 ⓘ；
+                "设了不等于生效"的 trouble 行**保留直接显示** —— 它是实时状态不是注释。 */}
+            <div className="field-label field-label-with-note">
+              系统
+              <FieldNote text={SYSTEM_TOGGLES.map((t) => `${t.label}：${t.note}`)} />
+            </div>
             {SYSTEM_TOGGLES.map((t) => {
               const unsupported = t.key === 'openAtLogin' && sys !== null && !sys.openAtLoginSupported
               // 「设了」与「生效了」不一致时**必须当场说**（plan7 点名的"以为在跑、其实被挂起了"）：
@@ -744,21 +752,23 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                     />
                     {t.label}
                   </label>
-                  <p className="hint">{t.note}</p>
                   {trouble && <p className="hint">{trouble}</p>}
                 </Fragment>
               )
             })}
 
-            {/* ── 网络代理（plan7 批 F2）──
-                三条纪律：① 选档即时生效、地址要点「应用」（地址会输一半，不能边输边存）；
-                ② **当前生效的代理**由主进程探测后显示 —— 配错代理的表现是超时，而「没生效」与
-                   「生效了但连不上」都表现为超时，只有这一行能把两者分开；
-                ③ 凭据**只进不出**：不回显明文，只说「已保存」。 */}
-            <div className="field-label">网络</div>
-            <p className="hint">
-              代理只影响**之后发起的**请求，已经建立的连接不受影响。模型请求与内置浏览器都走这里的配置。
-            </p>
+            {/* ── 网络代理（plan7 批 F2）── 组说明与各选项 note 收进 ⓘ；
+                「当前生效」探测行**保留直接显示** —— 配错代理的表现是超时，只有它能分开
+                「没生效」与「生效了但连不上」。 */}
+            <div className="field-label field-label-with-note">
+              网络
+              <FieldNote
+                text={[
+                  '代理只影响之后发起的请求，已经建立的连接不受影响。模型请求与内置浏览器都走这里的配置。',
+                  ...PROXY_MODES.map((m) => `${m.label}：${m.note}`)
+                ]}
+              />
+            </div>
             {PROXY_MODES.map((m) => (
               <label className="checkbox" key={m.key}>
                 <input
@@ -771,7 +781,6 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                 {m.label}
               </label>
             ))}
-            <p className="hint">{PROXY_MODES.find((m) => m.key === net?.proxyMode)?.note ?? ''}</p>
 
             {net?.proxyMode === 'custom' && (
               <>
@@ -1001,10 +1010,14 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         {section === 'agents' && <AgentManager />}
 
         {section === 'appearance' && (
-          /* 主题切换（水墨 / 经典），切换即时生效并持久化 */
+          /* 主题切换，切换即时生效并持久化；各主题说明收进组 ⓘ（2026-09-14 界面极简定调） */
           <div className="settings-section">
             <h2>外观</h2>
             {/* 不写"切换立即生效，重启后保持"：那是**一切设置**的共性，说了等于没说 */}
+            <div className="field-label field-label-with-note">
+              主题
+              <FieldNote text={THEMES.map((t) => `${t.label}：${t.desc}`)} />
+            </div>
             <div className="choice-list" role="radiogroup" aria-label="主题">
               {THEMES.map((t) => (
                 <button
@@ -1015,12 +1028,14 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   onClick={() => setTheme(t.id)}
                 >
                   <span className="choice-name">{t.label}</span>
-                  <span className="choice-desc">{t.desc}</span>
                 </button>
               ))}
             </div>
 
-            <div className="field-label">界面字号</div>
+            <div className="field-label field-label-with-note">
+              界面字号
+              <FieldNote text={FONT_SCALES.map((s) => `${s.label}：${s.desc}`)} />
+            </div>
             {/* 字号档（plan7 批 F3）：实现是根元素 font-size 缩放，全站 rem token 一起动。
                 档位由 shared 的 FONT_SCALES 出，这里不另拍一组数；改了即时生效。 */}
             <div className="choice-list" role="radiogroup" aria-label="界面字号">
@@ -1033,12 +1048,14 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   onClick={() => setFontScale(s.key)}
                 >
                   <span className="choice-name">{s.label}</span>
-                  <span className="choice-desc">{s.desc}</span>
                 </button>
               ))}
             </div>
 
-            <div className="field-label">界面字体</div>
+            <div className="field-label field-label-with-note">
+              界面字体
+              <FieldNote text="代码编辑器与终端保持等宽字号，不跟随此设置。" />
+            </div>
             {/* 字体枚举在主进程（渲染端 document.fonts 只有已加载的）：列得出就给下拉框，
                 列不出就明说原因并退化为手动输入 —— **不做假下拉框**（plan7 批 F3 原话）。 */}
             {fonts?.ok ? (
@@ -1068,13 +1085,13 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
               </label>
             )}
             {fonts && !fonts.ok && fonts.message && <p className="hint">{fonts.message}</p>}
+            {/* 预览行是功能不是注释，保留直接显示（用户拍板） */}
             <p className="hint">
               预览（切换后全站生效）：
               <span style={uiFont ? { fontFamily: `'${uiFont}', sans-serif` } : undefined}>
                 中文字体 Abc 123 —— The quick brown fox
               </span>
             </p>
-            <p className="hint">代码编辑器与终端保持等宽字号，不跟随此设置。</p>
           </div>
         )}
 

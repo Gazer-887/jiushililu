@@ -114,6 +114,30 @@ describe('loadAgentsFromDir / loadAgentEntries（三层加载与覆盖，plan17 
   })
 })
 
+describe('内置定义（resources/agents，随包分发）', () => {
+  // 直接读仓库里的真实定义文件：定义内容坏了这里红，不用等打包后才发现
+  const dir = join(process.cwd(), 'resources', 'agents')
+
+  it('全部可解析且无 warnings（name 满足 loader 规则 = 表单口径）', () => {
+    const res = loadAgentsFromDir(dir, 'builtin')
+    expect(res.entries.length).toBeGreaterThanOrEqual(10)
+    expect(res.warnings).toEqual([])
+    for (const e of res.entries) {
+      expect(e.name).toMatch(/^[a-z0-9][a-z0-9_-]{0,63}$/)
+      expect(e.description.length).toBeGreaterThan(0)
+      expect(e.systemPrompt.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('三领域覆盖：规划 ≥3 / 执行 ≥4 / 审查 ≥3（2026-09-14 用户拍板的数量要求）', () => {
+    const res = loadAgentsFromDir(dir, 'builtin')
+    const names = res.entries.map((e) => e.name)
+    expect(names.filter((n) => n.endsWith('-planner')).length).toBeGreaterThanOrEqual(3)
+    expect(names.filter((n) => n.endsWith('-executor')).length).toBeGreaterThanOrEqual(4)
+    expect(names.filter((n) => n.endsWith('-reviewer')).length).toBeGreaterThanOrEqual(3)
+  })
+})
+
 describe('Anthropic tool_use 翻译器', () => {
   it('system 提取 + tool 结果合并进同一条 user 消息', () => {
     const messages: AgentMessage[] = [

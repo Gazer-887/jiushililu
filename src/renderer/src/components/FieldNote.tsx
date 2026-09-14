@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
  *
  * 起因：通用设置页的「省 token 档位」等段落，注释长到挤占拖放视觉与布局 ——
  * 而设置页的每条说明**都要留着**（它们是"设了不等于生效"那类坑的防线），不能删，只能收。
+ * 2026-09-14 用户定调扩大收取范围：选项卡副说明、组级说明段全部收进 ⓘ（组级一个，气泡内分条）。
  *
  * 三条设计约束：
  * ① **纯 CSS 出气泡** —— 不引库、不用 state。设置项动辄十几个，每处挂一份 JS 弹层不值当；
@@ -24,12 +25,14 @@ export default function FieldNote({
   side = 'right',
   children
 }: {
-  text: string
+  /** 单段说明；传数组 = 气泡内**分条**显示（每条一行）—— 组级 ⓘ 汇总多个选项说明时用 */
+  text: string | string[]
   kind?: 'info' | 'warn'
   side?: 'left' | 'right'
   /** 不传则用默认记号字符 */
   children?: ReactNode
 }): JSX.Element {
+  const items = Array.isArray(text) ? text : [text]
   const mark = children ?? (kind === 'warn' ? '!' : 'i')
   return (
     <span className={side === 'left' ? 'fnote fnote-left' : 'fnote'}>
@@ -38,12 +41,16 @@ export default function FieldNote({
         // tabIndex 让它可聚焦 —— 键盘用户按 Tab 也能读到说明（只靠 :hover 会把键盘挡在外面）
         tabIndex={0}
         role="note"
-        aria-label={text}
+        aria-label={items.join('；')}
       >
         {mark}
       </span>
       <span className="fnote-bubble" role="tooltip">
-        {text}
+        {items.map((line, i) => (
+          <span key={i} className="fnote-line">
+            {line}
+          </span>
+        ))}
       </span>
     </span>
   )

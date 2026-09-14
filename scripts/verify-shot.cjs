@@ -2076,6 +2076,80 @@ app.whenReady().then(async () => {
     writeFileSync(join(SHOTS, 'verify-settings-' + slug + '.png'), png.toPNG())
   }
 
+  // —— 注释收 ⓘ（2026-09-14 用户定调「界面极简」）：卡内不再有直接显示的说明，
+  //    说明住在组级 ⓘ 气泡里 —— 且气泡必须**真的能展开**（只写 aria-label 不算展示）。
+  // ⚠️ 探针跑在分区循环之后，窗口停在「故障排查」——那里本来就没有 choice 卡，
+  //    直接量 = descCount 恒 0 的假绿。必须先点回「通用设置」再量。
+  await sevalRaw(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item')).find((x) => x.textContent.trim() === '通用设置');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  // ⚠️ Chromium 对**失焦窗口**不匹配 :focus（activeElement 有值但伪类不命中）—— 真实用户看 ⓘ 时
+  //    窗口必然是前台的，故先把设置窗口调到前台再聚焦 ⓘ，探针环境才对齐真实使用状态
+  getSettingsWin().focus()
+  await new Promise((r) => setTimeout(r, 300))
+  const minimal = await sevalRaw(`
+    (async () => {
+      const descCount = document.querySelectorAll('.choice-desc').length;
+      const fnoteCount = document.querySelectorAll('.fnote-mark').length;
+      // 聚焦 Token Saver 的 ⓘ，量气泡几何 —— "DOM 存在 ≠ 看得见"（AGENTS §八同源教训）
+      const label = Array.from(document.querySelectorAll('.field-label')).find((l) => l.textContent.trim().startsWith('Token Saver'));
+      const mark = label ? label.querySelector('.fnote-mark') : null;
+      let bubbleVisible = false;
+      let bubbleH = 0;
+      let bubbleLines = 0;
+      let focusDiag = null;
+      if (mark) {
+        mark.focus();
+        await new Promise((r) => setTimeout(r, 300));
+        const bubble = mark.parentElement.querySelector('.fnote-bubble');
+        if (bubble) {
+          const r = bubble.getBoundingClientRect();
+          bubbleVisible = getComputedStyle(bubble).display !== 'none' && r.height > 20;
+          bubbleH = Math.round(r.height);
+          bubbleLines = bubble.querySelectorAll('.fnote-line').length;
+        }
+        // 诊断：activeIsMark=true 而 matchesFocus=false 是 Chromium 对脚本聚焦的已知怪癖
+        // （executeJavaScript 的 focus() 不触发 :focus 伪类），与真实用户悬停/点击无关。
+        focusDiag = {
+          activeIsMark: document.activeElement === mark,
+          matchesFocus: (() => { try { return mark.matches(':focus') } catch { return null } })(),
+          display: bubble ? getComputedStyle(bubble).display : null
+        };
+        mark.blur();
+      }
+      // 展开规则必须**真实存在于已加载的样式表**（悬停/聚焦是浏览器原生行为，规则在即生效）；
+      // 遍历 styleSheets 而不是赌 :focus 伪类在脚本聚焦下命中 —— 后者已被证伪两次
+      let expandRuleFound = false;
+      for (const sheet of document.styleSheets) {
+        try {
+          for (const rule of sheet.cssRules) {
+            const t = rule.cssText || '';
+            if (t.indexOf('fnote-mark') >= 0 && t.indexOf('fnote-bubble') >= 0 && (t.indexOf(':focus') >= 0 || t.indexOf(':hover') >= 0)) {
+              expandRuleFound = true;
+            }
+          }
+        } catch {
+          // 跨域样式表读不了 cssRules —— 本应用的样式全同源，走不到这里
+        }
+      }
+      // 卡片高度对比：去说明后主题卡应明显变薄（>14px 说明文字占了近一行）
+      const themeCard = document.querySelector('[aria-label="主题"] .choice-item');
+      return { descCount, fnoteCount, bubbleVisible, bubbleH, bubbleLines, expandRuleFound, focusDiag, themeCardH: themeCard ? Math.round(themeCard.getBoundingClientRect().height) : 0 };
+    })()
+  `)
+  console.log('MINIMAL_NOTE=' + JSON.stringify(minimal))
+  checkTrue('界面极简：选项卡内不再有直接显示的说明文字（.choice-desc 清零）',
+    minimal?.descCount === 0, minimal)
+  checkTrue('组级 ⓘ 就位（本分区：权限/Token Saver/系统/网络/工作区等 ≥ 4 个记号）',
+    (minimal?.fnoteCount ?? 0) >= 4, minimal)
+  checkTrue('ⓘ 气泡就位：分条内容在（≥5 条）且**展开规则真实存在于已加载样式表**（悬停/聚焦即生效）',
+    (minimal?.bubbleLines ?? 0) >= 5 && minimal?.expandRuleFound === true, minimal)
+
   const m3 = await sevalRaw(`
     (() => {
       const pick = (sel) => {
@@ -3875,6 +3949,8 @@ app.whenReady().then(async () => {
         keep: shape(pick('锁屏与熄屏后继续运行')),
         auto: shape(pick('开机自启')),
         hints: hints.map((p) => p.textContent.trim()),
+        // 注释收 ⓘ 后，承重文案住在 aria-label 里（气泡展开与否它都在，屏幕阅读器读的也是它）
+        fnoteLabels: Array.from(document.querySelectorAll('.fnote-mark')).map((n) => n.getAttribute('aria-label') ?? ''),
         // 几何也要量：DOM 里在 ≠ 用户看得见（AGENTS §八同源教训）
         hintBoxes: hints.map((p) => size(p))
       };
@@ -3894,14 +3970,15 @@ app.whenReady().then(async () => {
   checkTrue('两个勾选框**量出来是看得见的**（宽高 > 0，不是零尺寸的隐形控件）',
     visible(systemBefore.keep.box) && visible(systemBefore.auto.box),
     { keep: systemBefore.keep.box, auto: systemBefore.auto.box })
-  // 承重文案：这两项都是**系统级副作用**，代价与边界必须写在界面上
+  // 承重文案：这两项都是**系统级副作用**，代价与边界必须可达（注释收 ⓘ 后住在 aria-label 里）
   // （"空闲"两个字是承诺范围的边界：合盖/手动睡眠仍会中断，写成"系统绝不睡眠"是兑现不了的）
+  const sysNotes = systemBefore.fnoteLabels.join('|')
   checkTrue('两项都写明了代价/边界（只阻止空闲睡眠 · 功耗代价 · 无托盘且关窗即退出）',
-    systemBefore.hints.some((t) => t.indexOf('空闲') >= 0) &&
-      systemBefore.hints.some((t) => t.indexOf('功耗') >= 0) &&
-      systemBefore.hints.some((t) => t.indexOf('托盘') >= 0) &&
-      systemBefore.hints.some((t) => t.indexOf('关闭主窗口即退出应用') >= 0),
-    systemBefore.hints)
+    sysNotes.indexOf('空闲') >= 0 &&
+      sysNotes.indexOf('功耗') >= 0 &&
+      sysNotes.indexOf('托盘') >= 0 &&
+      sysNotes.indexOf('关闭主窗口即退出应用') >= 0,
+    systemBefore.fnoteLabels)
 
   await sevalRaw(`
     (() => {
@@ -4036,6 +4113,8 @@ app.whenReady().then(async () => {
         hasAddrInput: !!addrInput,
         addrValue: addrInput ? addrInput.value : null,
         effectiveText: eff ? eff.textContent.trim() : '',
+        // 注释收 ⓘ 后，承重文案住在 aria-label 里（气泡展开与否它都在）
+        fnoteLabels: Array.from(document.querySelectorAll('.fnote-mark')).map((n) => n.getAttribute('aria-label') ?? ''),
         hasClearBtn: !!clearBtn,
         hints: hints.map((p) => p.textContent.trim())
       };
@@ -4058,9 +4137,9 @@ app.whenReady().then(async () => {
   checkTrue('三档单选框**量出来是看得见的**（宽高 > 0，不是零尺寸隐形控件）',
     visible(netInitial.system.box) && visible(netInitial.direct.box) && visible(netInitial.custom.box),
     { s: netInitial.system.box, d: netInitial.direct.box, c: netInitial.custom.box })
-  // 承重文案：代理是**只对新请求生效**的，不说清楚会被理解成"改完立刻全局生效"
+  // 承重文案：代理是**只对新请求生效**的，不说清楚会被理解成"改完立刻全局生效"（收 ⓘ 后住 aria-label）
   checkTrue('写明「只影响之后发起的请求」（已建立的连接不受影响）',
-    netInitial.hints.some((t) => t.indexOf('之后发起的') >= 0), netInitial.hints)
+    netInitial.fnoteLabels.join('|').indexOf('之后发起的') >= 0, netInitial.fnoteLabels)
 
   await sevalRaw(`
     (() => {
