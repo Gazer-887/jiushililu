@@ -443,7 +443,7 @@ let fontsStub = { ok: true, fonts: ['Arial', 'Consolas', 'Microsoft YaHei', '微
 let uiPrefsStub = {
   sidebarWidth: 248,
   dockWidth: 360,
-  theme: 'classic',
+  theme: 'qingkong',
   fontScale: 'md',
   uiFont: '',
   workbench: { schemaVersion: 1, panes: [] },
@@ -918,7 +918,7 @@ const STUBS = {
     uiPrefsStub = {
       sidebarWidth: 248,
       dockWidth: 360,
-      theme: 'classic',
+      theme: 'qingkong',
       fontScale: 'md',
       uiFont: '',
       workbench: { schemaVersion: 1, panes: [] },
@@ -3460,19 +3460,19 @@ app.whenReady().then(async () => {
   // ⚠️ 这一条最容易静默坏掉：xterm 运行时插 <style>，被生产 CSP 拒掉后字会变成背景色（什么都看不见）、
   //    white-space 从 pre 掉回 normal —— 而页面照样渲染得出来，“元素在不在”抓不到它。判据必须落在计算样式上、
   //    钉住主题常量（期望色与 TerminalPanel.tsx 的 THEME_* 同源、改配色要同步改；只断言“前景 ≠ 背景”近乎恒真）。
-  // 2026-09-13 用户定调**对调**：经典 → 纯黑底白字；水墨 → 白盖黑（墨字纸底）。
-  // 故这里的期望值也跟着对调，否则门禁会挡住这次有意的配色变更（它本来就该挡住无意的变更）。
-  const themeFg = termState.dataTheme === 'ink' ? 'rgb(43, 43, 40)' : 'rgb(232, 230, 227)'
+  // 2026-09-14 六主题定调：**夜梦 → 黑终端；其余五套 → 纯白终端**（白底深字，用户强调不是旧的黑底白盖）。
+  // 期望值与 TerminalPanel.tsx 的 THEME_* 同源、改配色要同步改；只断言"前景 ≠ 背景"近乎恒真。
+  const themeFg = termState.dataTheme === 'yemeng' ? 'rgb(232, 230, 227)' : 'rgb(31, 35, 40)'
   checkTrue('**终端样式真的生效**（字色 = 当前主题的前景色、white-space:pre、span 是 inline-block）',
     termState.rowsStyle?.color === themeFg &&
       termState.rowsStyle?.whiteSpace === 'pre' &&
       termState.spanStyle?.display === 'inline-block',
     { theme: termState.dataTheme, expect: themeFg, rows: termState.rowsStyle, span: termState.spanStyle })
   // 底色也要钉 —— 只钉前景色的话，"把两套主题的背景色写反"这类错误照样全绿
-  const themeBg = termState.dataTheme === 'ink' ? 'rgb(251, 250, 247)' : 'rgb(28, 28, 26)'
+  const themeBg = termState.dataTheme === 'yemeng' ? 'rgb(28, 28, 26)' : 'rgb(255, 255, 255)'
   // 从 `.xterm-scrollable-element` 取（xterm 把主题底色画在带滚动的那一层；rows/screen 都是透明的）
   const scrollerBg = termState.scrollerStyle?.background
-  checkTrue('终端底色跟着主题走（经典=墨底 / 水墨=纸底），不是两套都一个色',
+  checkTrue('终端底色跟着主题走（夜梦=黑 / 其余=纯白 #ffffff），不是两套都一个色',
     scrollerBg === themeBg,
     { theme: termState.dataTheme, expect: themeBg, actual: scrollerBg, rowsBg: termState.rowsStyle?.background })
   checkTrue('**样式类 CSP 违规为 0**（`style-src-elem` 与 `style-src-attr` 两档都放行了）',
@@ -4123,11 +4123,21 @@ app.whenReady().then(async () => {
       dataTheme: document.documentElement.dataset.theme ?? '(none)'
     }))()
   `)
+  // 2026-09-14 六主题：此前的探针"只 log 不断言"—— TodoPanel 消失案同款盲区，这次补上断言
+  // ⚠️ items 是整个外观分区的 choice-name（主题六项在前 + 字号四项在后），主题断言取前六
+  checkTrue(
+    '「外观」六主题齐（晴空/信纸/桃花/夜梦/春和/极光），默认晴空',
+    themeBefore.items.length === 10 &&
+      themeBefore.items.slice(0, 6).join(',') === '晴空,信纸,桃花,夜梦,春和,极光' &&
+      themeBefore.checked === '晴空' &&
+      themeBefore.dataTheme === 'qingkong',
+    themeBefore
+  )
 
   await sevalRaw(`
     (() => {
       const btn = Array.from(document.querySelectorAll('.choice-item'))
-        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '水墨');
+        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '信纸');
       if (btn) btn.click();
       return !!btn;
     })()
@@ -4142,12 +4152,40 @@ app.whenReady().then(async () => {
   `)
   const shotTheme = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-theme-ink.png'), shotTheme.toPNG())
+  checkTrue(
+    '切「信纸」：data-theme=xinzh、主色变墨（#1c1c1a）—— 旧名 ink 经迁移仍可读，但界面上是新 slug',
+    themeAfter.checked === '信纸' && themeAfter.dataTheme === 'xinzh' && themeAfter.accent === '#1c1c1a',
+    themeAfter
+  )
 
-  // 恢复经典（别把状态留在水墨 —— 验证脚本应可重复运行）
+  // 再切「桃花」：验一套新增主题的变量真的接上（不只选得中，还要换得了色）
   await sevalRaw(`
     (() => {
       const btn = Array.from(document.querySelectorAll('.choice-item'))
-        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '经典');
+        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '桃花');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const themePeach = await sevalRaw(`
+    (() => ({
+      dataTheme: document.documentElement.dataset.theme ?? '(none)',
+      accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+      bg: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+    }))()
+  `)
+  checkTrue(
+    '切「桃花」：data-theme=taohua、主色桃粉（#c9556e）、底色粉白 —— 新主题变量真的生效',
+    themePeach.dataTheme === 'taohua' && themePeach.accent === '#c9556e' && themePeach.bg === '#fdf5f6',
+    themePeach
+  )
+
+  // 恢复晴空（别把状态留在别的主题 —— 验证脚本应可重复运行）
+  await sevalRaw(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.choice-item'))
+        .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '晴空');
       if (btn) btn.click();
       return !!btn;
     })()
@@ -4381,8 +4419,6 @@ app.whenReady().then(async () => {
   console.log('EX_MD_PREVIEW=' + JSON.stringify(exMdPreview))
   console.log('EX_OP_LOG=' + JSON.stringify(fsOpLog))
   console.log('TASKS_PANEL=' + JSON.stringify(tasksState))
-  console.log('THEME_BEFORE=' + JSON.stringify(themeBefore))
-  console.log('THEME_AFTER=' + JSON.stringify(themeAfter))
   console.log('NEWTASK_CENTER=' + JSON.stringify(centerCheck))
   console.log('CSS=' + JSON.stringify(cssCheck))
   console.log('CSP_VIOLATIONS=' + JSON.stringify(cspViolations))

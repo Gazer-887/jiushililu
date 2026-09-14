@@ -16,12 +16,38 @@ export const DOCK_MAX = 640
 /** 主区域保底宽度：别让对话区被拖没 */
 export const MAIN_RESERVE = 320
 
-export type ThemeName = 'classic' | 'ink'
+/**
+ * 六主题（2026-09-14 用户定调，R7）：
+ * - 改名：经典 → **晴空**（qingkong）、水墨 → **信纸**（xinzh）—— 值换新 slug，读盘旧值靠 sanitizeTheme 迁移；
+ * - 新增：桃花（浅粉）/ 夜梦（护眼夜色，非纯黑）/ 春和（浅绿+白）/ 极光（浅蓝）；
+ * - 终端规则（用户强调）：**夜梦 = 黑色终端，其余五套一律纯白终端**（白底深字 —— 不是旧版那种黑底白盖）。
+ * 色值定义在 `styles.css` 的 `html[data-theme=…]` 覆盖块（晴空 = `:root` 默认，无需块）。
+ */
+export const THEME_IDS = ['qingkong', 'xinzh', 'taohua', 'yemeng', 'chunhe', 'jiguang'] as const
+export type ThemeName = (typeof THEME_IDS)[number]
 
+/** 六主题的界面文案（设置页选择器的数据源 —— 加主题只改这里 + styles.css 的变量块） */
 export const THEMES: Array<{ id: ThemeName; label: string; desc: string }> = [
-  { id: 'classic', label: '经典', desc: '蓝白配色（默认）' },
-  { id: 'ink', label: '水墨', desc: '黑白灰 + 朱砂红' }
+  { id: 'qingkong', label: '晴空', desc: '蓝白配色（原「经典」）' },
+  { id: 'xinzh', label: '信纸', desc: '黑白灰 + 朱砂（原「水墨」）' },
+  { id: 'taohua', label: '桃花', desc: '浅粉主色调' },
+  { id: 'yemeng', label: '夜梦', desc: '护眼夜色（非纯黑）' },
+  { id: 'chunhe', label: '春和', desc: '浅绿 + 白' },
+  { id: 'jiguang', label: '极光', desc: '浅蓝主色调' }
 ]
+
+/** 旧主题值的迁移表（读盘兼容：改名前的 ui-prefs 里存的还是 classic/ink） */
+const THEME_MIGRATION: Record<string, ThemeName> = { classic: 'qingkong', ink: 'xinzh' }
+
+/** 读盘保底：非法值回晴空；改名前的 classic/ink 迁到新 slug（宁可迁移，别让老用户的设置悄悄丢） */
+export function sanitizeTheme(t: unknown): ThemeName {
+  if (typeof t === 'string') {
+    const migrated = THEME_MIGRATION[t]
+    if (migrated) return migrated
+    if (THEMES.some((x) => x.id === t)) return t as ThemeName
+  }
+  return 'qingkong'
+}
 
 /**
  * 界面布局偏好（主进程与渲染进程共用同一口径）。
@@ -49,9 +75,7 @@ export interface UIPrefs {
 }
 
 /** 存档/入参都可能被改坏 */
-export function sanitizeTheme(t: unknown): ThemeName {
-  return t === 'ink' ? 'ink' : 'classic'
-}
+// sanitizeTheme 已上移到 THEMES 定义处（六主题 + 旧值迁移，2026-09-14）
 
 // ── 界面字号（plan7 批 F3）────────────────────────────────────────────
 // 四档百分比以"标准 = 100%"为中心对称；87.5% 这类 16 基的分数值保证换算成像素是整数

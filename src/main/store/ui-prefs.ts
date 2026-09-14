@@ -111,7 +111,7 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
 export function resetUIPrefs(): UIPrefs {
   store.set('sidebarWidth', SIDEBAR_DEFAULT)
   store.set('dockWidth', DOCK_DEFAULT)
-  store.set('theme', 'classic')
+  store.set('theme', 'qingkong')
   store.set('fontScale', FONT_SCALE_DEFAULT)
   store.set('uiFont', '')
   store.set('workbench', emptyLayout())
@@ -119,7 +119,7 @@ export function resetUIPrefs(): UIPrefs {
   return {
     sidebarWidth: SIDEBAR_DEFAULT,
     dockWidth: DOCK_DEFAULT,
-    theme: 'classic',
+    theme: 'qingkong',
     fontScale: FONT_SCALE_DEFAULT,
     uiFont: '',
     workbench: emptyLayout(),

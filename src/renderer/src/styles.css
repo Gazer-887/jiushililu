@@ -76,12 +76,12 @@
 }
 
 /*
- * 水墨主题（2026-09-12 用户定稿：黑白灰 + 红，参考 opencode 的克制感）。
+ * 信纸主题（原「水墨」，2026-09-12 定稿：黑白灰 + 红，参考 opencode 的克制感；2026-09-14 改名）。
  * 用色逻辑：灰阶承担全部层次（墨分五色），红只做点睛（朱砂逻辑，面积必须极小）；
  * 语义色服从色彩体系 —— 正向/激活用墨色（不用绿/蓝），负向用朱砂。
- * 详见 DIARY/专题-水墨风配色.md。切换方式：html[data-theme="ink"]。
+ * 详见 DIARY/专题-水墨风配色.md。切换方式：html[data-theme="xinzh"]。
  */
-html[data-theme="ink"] {
+html[data-theme="xinzh"] {
   --bg: #f6f5f2;
   --panel: #ffffff;
   --border: #ebe9e3;
@@ -102,6 +102,120 @@ html[data-theme="ink"] {
   --warn-soft: #f7ece9;
   --warn-border: #e8cfc8;
   --warn-deep: #a8342c;
+}
+
+/*
+ * 桃花主题（2026-09-14 用户定调：浅粉主色调）。
+ * 用色逻辑：粉白纸底 + 桃粉主色（#c9556e），文字走暖褐灰避免冷灰在粉底上发脏；
+ * 语义色里正向用叶绿（花与叶的对照），负向用深桃红 —— 都收在本主题的饱和度体系内。
+ */
+html[data-theme="taohua"] {
+  --bg: #fdf5f6;
+  --panel: #ffffff;
+  --border: #f2e2e5;
+  --text: #433034;
+  --muted: #a4868d;
+  --accent: #c9556e;
+  --accent-hover: #b04360;
+  --on-accent: #ffffff;
+  --accent-soft: #fbe9ed;
+  --accent-border: #f3cdd6;
+  --ok: #4a7c59;
+  --ok-soft: #ecf4ee;
+  --ok-border: #cfe3d6;
+  --danger: #a8323c;
+  --danger-soft: #f9e9ea;
+  --danger-border: #efc9cb;
+  --warn: #b06a1f;
+  --warn-soft: #faf0e0;
+  --warn-border: #f0d2a0;
+  --warn-deep: #8a5212;
+}
+
+/*
+ * 夜梦主题（2026-09-14 用户定调：护眼夜色，**不是纯黑**）。
+ * 用色逻辑：深蓝灰底（#1b1e26）分两层（bg/panel），文字柔白不刺眼；
+ * 主色雾蓝紫只到 #8f9fe8 的亮度（夜间高饱和色会炸眼），on-accent 反转成深字（浅主色上黑字才可读）；
+ * 危险/警告走柔珊瑚与柔琥珀 —— 夜色下大红大橙同样刺眼；warn-deep 夜色下取"更醒目"而不是"更深"。
+ * ⚠️ 终端规则（用户强调）：夜梦是六主题里唯一配黑色终端的。
+ */
+html[data-theme="yemeng"] {
+  --bg: #1b1e26;
+  --panel: #232733;
+  --border: #333849;
+  --text: #d7dae2;
+  --muted: #8b91a3;
+  --accent: #8f9fe8;
+  --accent-hover: #a3b1f0;
+  --on-accent: #14161d;
+  --accent-soft: #2b3040;
+  --accent-border: #3d445c;
+  --ok: #7fb89a;
+  --ok-soft: #263231;
+  --ok-border: #3a4d47;
+  --danger: #e08a90;
+  --danger-soft: #3a2b2f;
+  --danger-border: #573d42;
+  --warn: #d9b36c;
+  --warn-soft: #363024;
+  --warn-border: #56492f;
+  --warn-deep: #e8c78a;
+}
+
+/*
+ * 春和主题（2026-09-14 用户定调：浅绿 + 白）。
+ * 用色逻辑：微绿白底 + 春绿主色（#3f8f5f），文字墨绿灰；
+ * 语义色正向仍是绿系（与主色同族但更深一档保证可辨），负向用赤陶暖红做对比。
+ */
+html[data-theme="chunhe"] {
+  --bg: #f9fbf6;
+  --panel: #ffffff;
+  --border: #e2ead9;
+  --text: #2e3a2c;
+  --muted: #87957f;
+  --accent: #3f8f5f;
+  --accent-hover: #337a4f;
+  --on-accent: #ffffff;
+  --accent-soft: #e8f3ea;
+  --accent-border: #cfe5d4;
+  --ok: #2f7d55;
+  --ok-soft: #e4f2ea;
+  --ok-border: #c2e0cd;
+  --danger: #b04a3c;
+  --danger-soft: #f9ebe7;
+  --danger-border: #efcdc2;
+  --warn: #a8781f;
+  --warn-soft: #f8f1de;
+  --warn-border: #ecd39a;
+  --warn-deep: #7f5a12;
+}
+
+/*
+ * 极光主题（2026-09-14 用户定调：浅蓝主色调）。
+ * 用色逻辑：冰蓝白底 + 极光青蓝主色（#2e8ba8，比晴空的天蓝更偏青、更"冰"）；
+ * 文字深青灰；语义色正向走青绿同族，负向玫瑰红做对比。
+ */
+html[data-theme="jiguang"] {
+  --bg: #f4f9fc;
+  --panel: #ffffff;
+  --border: #dce8ef;
+  --text: #26343e;
+  --muted: #7f929e;
+  --accent: #2e8ba8;
+  --accent-hover: #26788f;
+  --on-accent: #ffffff;
+  --accent-soft: #e3f2f7;
+  --accent-border: #c8e2ec;
+  --ok: #2f8a6e;
+  --ok-soft: #e3f2ec;
+  --ok-border: #c2e2d6;
+  --danger: #b03a4a;
+  --danger-soft: #f9e8ea;
+  --danger-border: #efc8cd;
+  --warn: #b5822a;
+  --warn-soft: #f9f1de;
+  --warn-border: #ecd8a2;
+  --warn-deep: #8a611a;
 }
 
 * {

@@ -369,11 +369,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   sidebarWidth: SIDEBAR_DEFAULT,
   dockWidth: DOCK_DEFAULT,
-  theme: 'classic',
+  theme: 'qingkong',
   setTheme: (t) => {
     const theme = sanitizeTheme(t)
     set({ theme })
-    // 写根元素的 data-theme —— CSS 侧靠 html[data-theme='ink'] 覆盖变量，切换即时生效
+    // 写根元素的 data-theme —— CSS 侧靠 html[data-theme=…] 覆盖变量，切换即时生效
     document.documentElement.dataset.theme = theme
     void useAppStore.getState().persistUIPrefs({ theme })
   },
@@ -429,7 +429,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         sidebarWidth: SIDEBAR_DEFAULT,
         dockWidth: DOCK_DEFAULT,
-        theme: 'classic',
+        theme: 'qingkong',
         fontScale: FONT_SCALE_DEFAULT,
         uiFont: '',
         workbench: emptyLayout(),

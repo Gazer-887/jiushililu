@@ -15,6 +15,7 @@ import {
   fontScalePercent,
   sanitizeFontScale,
   sanitizeStoredWidth,
+  sanitizeTheme,
   sanitizeUiFont
 } from '@shared/splitter'
 
@@ -246,5 +247,24 @@ describe('sanitizeUiFont（白名单清洗，这是 CSS 注入的防线）', () 
 
   it('首尾空白裁掉', () => {
     expect(sanitizeUiFont('  Arial  ')).toBe('Arial')
+  })
+})
+
+// ── 六主题 + 旧值迁移（2026-09-14 R7 配色批）──
+describe('sanitizeTheme：六主题读盘保底', () => {
+  it('六个新 slug 全部合法（round-trip 不变）', () => {
+    const ids = ['qingkong', 'xinzh', 'taohua', 'yemeng', 'chunhe', 'jiguang']
+    for (const id of ids) expect(sanitizeTheme(id)).toBe(id)
+  })
+
+  it('改名前的 classic/ink 迁到新 slug（老用户设置不悄悄丢）', () => {
+    expect(sanitizeTheme('classic')).toBe('qingkong')
+    expect(sanitizeTheme('ink')).toBe('xinzh')
+  })
+
+  it('非法值/缺字段回晴空（默认主题）', () => {
+    expect(sanitizeTheme('nonsense')).toBe('qingkong')
+    expect(sanitizeTheme(undefined)).toBe('qingkong')
+    expect(sanitizeTheme(42)).toBe('qingkong')
   })
 })

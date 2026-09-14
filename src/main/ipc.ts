@@ -1,7 +1,7 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { z } from 'zod'
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
-import { FONT_SCALE_KEYS, UI_FONT_MAX } from '@shared/splitter'
+import { FONT_SCALE_KEYS, THEME_IDS, UI_FONT_MAX } from '@shared/splitter'
 import { revertOneHunk, samePath } from './revert-flow'
 import {
   IPC,
@@ -1140,7 +1140,7 @@ export function registerIpcHandlers(deps: {
       .object({
         sidebarWidth: z.number().min(1).max(4096).optional(),
         dockWidth: z.number().min(1).max(4096).optional(),
-        theme: z.enum(['classic', 'ink']).optional(),
+        theme: z.enum(THEME_IDS).optional(),
         // 字号档/字体名（plan7 批 F3）：形状在这层把关，语义清洗（坏值回落）交给 setUIPref
         fontScale: z.enum(FONT_SCALE_KEYS).optional(),
         uiFont: z.string().max(UI_FONT_MAX).optional(),
