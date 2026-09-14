@@ -13,6 +13,7 @@ import {
   utf8Bytes,
   validateMemoryFields
 } from '@shared/memory'
+import { parseMemoryImport } from '@shared/memory-import'
 
 const ok = { name: 'prefers-tables', description: '回答偏好用表格', body: '正文。' }
 
@@ -172,5 +173,55 @@ describe('撞名比较口径与字节数', () => {
   it('字节数：ASCII 走快路径，非 ASCII 走真编码', () => {
     expect(utf8Bytes('abc')).toBe(3)
     expect(utf8Bytes('中文')).toBe(6)
+  })
+})
+
+describe('导入其他记忆：解析器（0.13.41）', () => {
+  const block = (name: string, summary: string, cls: string, body: string): string =>
+    `### ${name}\n摘要: ${summary}\n分类: ${cls}\n正文:\n${body}`
+
+  it('正常解析多条，中文字段与全角冒号都认', () => {
+    const r = parseMemoryImport(
+      [block('prefers-tables', '回答偏好用表格', '风格', '正文一。', ), '', block('uses-pnpm', '包管理用 pnpm', '知识', '正文二。')].join('\n\n')
+    )
+    expect(r.ok).toBe(true)
+    expect(r.ok && r.drafts).toHaveLength(2)
+    expect(r.ok && r.drafts[0]).toEqual({
+      name: 'prefers-tables',
+      description: '回答偏好用表格',
+      class: 'style',
+      body: '正文一。'
+    })
+  })
+
+  it('正文取「正文:」之后到块尾的全部行（多行正文不丢）', () => {
+    const r = parseMemoryImport(block('a', 's', '默认', '第一行\n第二行'))
+    expect(r.ok && r.drafts[0]?.body).toBe('第一行\n第二行')
+  })
+
+  it('空文本 / 没有 ### 块 → 整体失败并给指路文案', () => {
+    expect(parseMemoryImport('').ok).toBe(false)
+    const r = parseMemoryImport('就一段没有格式的文字')
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.reason).toContain('###')
+  })
+
+  it('部分条目坏不拖累好的：坏的逐条报因、好的照常返回', () => {
+    const r = parseMemoryImport(
+      [block('good', '好的', '默认', '正文'), '', block('bad', '坏的', '权限', '正文')].join('\n\n')
+    )
+    expect(r.ok).toBe(true)
+    expect(r.ok && r.drafts).toHaveLength(1)
+  })
+
+  it('缺名称时用摘要兜底命名', () => {
+    const r = parseMemoryImport('### \n摘要: 回答偏好用表格\n分类: 风格\n正文:\n正文。')
+    expect(r.ok && r.drafts[0]?.name).toBe('回答偏好用表格')
+  })
+
+  it('全坏 → 整体失败并把前几条原因带回来', () => {
+    const r = parseMemoryImport(block('bad', '坏的', '权限', '正文'))
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.reason).toContain('分类')
   })
 })

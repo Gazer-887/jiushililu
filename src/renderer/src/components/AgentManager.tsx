@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import FieldNote from './FieldNote'
 import {
   TOOL_CATALOG,
   TOOL_GROUP_ORDER,
@@ -191,17 +190,8 @@ export default function AgentManager(): JSX.Element {
     <div className="settings-section">
       <h2>子 Agent</h2>
       <div className="ag-list-head">
-        <div className="field-label field-label-with-note">
-          定义
-          <FieldNote
-            text={[
-              'Agent 定义为 Markdown 文件；文件可手动编辑，列表会反映改动。',
-              '内置版本随应用分发；自定义版本存放在应用数据目录；项目版本位于工作区的 .agents 目录。',
-              '同名时项目层优先于自定义层，自定义层优先于内置层；新建撞内置同名会提示覆盖。',
-              '项目节为只读：在资源管理器中编辑工作区的 .agents 目录；内置节随应用分发，不可修改。'
-            ]}
-          />
-        </div>
+        {/* ⓘ 撤除（0.13.41 反馈）：三层来源的规则都写在下面的分组标题与行内标签上，够用了 */}
+        <div className="field-label">定义</div>
         <button className="ag-btn ag-btn-go" onClick={openNew}>
           新建 Agent
         </button>
@@ -222,7 +212,7 @@ export default function AgentManager(): JSX.Element {
           <div key={source} className="ag-section">
             <div className="ag-section-title">{SOURCE_LABEL[source]}</div>
             {groups[source].length === 0 ? (
-              <p className="ag-empty">{source === 'user' ? '暂无自定义定义' : source === 'project' ? '当前工作区没有 .agents 定义' : '无'}</p>
+              <p className="ag-empty">{source === 'user' ? '暂无自定义Agent' : source === 'project' ? '当前工作区没有 .agents 定义' : '无'}</p>
             ) : (
               groups[source].map((e) => (
                 <div key={e.file} className="ag-row">

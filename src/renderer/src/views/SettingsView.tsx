@@ -1026,11 +1026,9 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
           /* 主题切换，切换即时生效并持久化；各主题说明收进组 ⓘ（2026-09-14 界面极简定调） */
           <div className="settings-section">
             <h2>外观</h2>
-            {/* 不写"切换立即生效，重启后保持"：那是**一切设置**的共性，说了等于没说 */}
-            <div className="field-label field-label-with-note">
-              主题
-              <FieldNote text={THEMES.map((t) => `${t.label}：${t.desc}`)} />
-            </div>
+            {/* 不写"切换立即生效，重启后保持"：那是**一切设置**的共性，说了等于没说。
+                ⚠️ 主题名本身自解释（0.13.41 反馈）：组 ⓘ 撤除，说明留在 THEMES 的 desc 里备查 */}
+            <div className="field-label">主题</div>
             <div className="choice-list" role="radiogroup" aria-label="主题">
               {THEMES.map((t) => (
                 <button
@@ -1045,13 +1043,11 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
               ))}
             </div>
 
-            <div className="field-label field-label-with-note">
-              界面字号
-              <FieldNote text={FONT_SCALES.map((s) => `${s.label}：${s.desc}`)} />
-            </div>
+            <div className="field-label">界面字号</div>
             {/* 字号档（plan7 批 F3）：实现是根元素 font-size 缩放，全站 rem token 一起动。
-                档位由 shared 的 FONT_SCALES 出，这里不另拍一组数；改了即时生效。 */}
-            <div className="choice-list" role="radiogroup" aria-label="界面字号">
+                档位由 shared 的 FONT_SCALES 出，这里不另拍一组数；改了即时生效。
+                ⚠️ 末档（特大）单独占满一行且文字居中 —— 0.13.41 反馈：孤零零卡在左上不对称 */}
+            <div className="choice-list choice-list-fontscale" role="radiogroup" aria-label="界面字号">
               {FONT_SCALES.map((s) => (
                 <button
                   key={s.key}
@@ -1065,10 +1061,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
               ))}
             </div>
 
-            <div className="field-label field-label-with-note">
-              界面字体
-              <FieldNote text="代码编辑器与终端保持等宽字号，不跟随此设置。" />
-            </div>
+            <div className="field-label">界面字体</div>
             {/* 字体枚举在主进程（渲染端 document.fonts 只有已加载的）：列得出就给下拉框，
                 列不出就明说原因并退化为手动输入 —— **不做假下拉框**（plan7 批 F3 原话）。 */}
             {fonts?.ok ? (
