@@ -23,6 +23,8 @@ import {
 } from './browser'
 import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
+import { createMemoryStore } from './store/memory-store'
+import { nodeFsAdapter } from './store/conversations-fs'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
 import { createSystemIntegration } from './system-integration'
 import { createNetworkProxy } from './network-proxy'
@@ -349,6 +351,12 @@ app.whenReady().then(async () => {
     log: (message, extra) => log.info(message, extra)
   })
 
+  // 记忆库（plan19 批 1）：组合根建**一次**，同时给 agent 上下文（工具 + 注入）与 IPC（管理界面）。
+  // ⚠️ 数据根由这里注入 —— 记忆层因此不碰 electron；"记忆改不了权限"那条不变量靠守卫乙守着。
+  const memory = createMemoryStore(userDataDir, nodeFsAdapter, {
+    onWarn: (message, extra) => log.warn(message, extra)
+  })
+
   // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
   const agentCtx = createAgentContext({
     getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
@@ -363,6 +371,13 @@ app.whenReady().then(async () => {
     // 提问口（ask_user）：注入的是**桥本体**（只用到 ask 一个方法）—— runner 不许 import electron，故由组合根注入
     ask,
     background,
+    // 记忆（plan19 批 1）：repo 给工具用，确认桥给「确认档」写入问一句。
+    // ⚠️ `conversationId` 不在这里补 —— 同一个上下文会被多条会话共用，由 runner 按轮次补。
+    memory: {
+      repo: memory,
+      confirm: (reason: string, conversationId: string) =>
+        confirm.ask({ tool: 'remember', detail: reason, agent: '记忆', where: '', conversationId })
+    },
     // L0 检索（plan3/plan4）：随包的 ripgrep 放 resources/ripgrep/（extraResources）。
     // ⚠️ 开发态 `process.resourcesPath` 指向 electron 自己的 resources —— 那里没有我们的 rg，
     //    于是会自动退到环境变量 / PATH（本机 WinGet 装的 rg 15.2.0 能接上）；这不是降级事故。
@@ -449,6 +464,7 @@ app.whenReady().then(async () => {
   registerIpcHandlers({
     agent: agentCtx,
     userDataDir,
+    memory,
     confirm,
     ask,
     terminal,

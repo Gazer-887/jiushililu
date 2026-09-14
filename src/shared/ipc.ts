@@ -264,6 +264,16 @@ export const IPC = {
   agentsDelete: 'agents:delete',
   /** save/delete 后的跨窗广播（AGENTS.md 多窗口铁律：广播 + 各窗重读，不搬变更内容） */
   agentsChanged: 'agents:changed',
+  // ── 记忆（plan19 批 1）──
+  /** 索引视图（含被预算截断的条数与解析警告）；正文按 `file` 单独取 */
+  memoryList: 'memory:list',
+  memoryRead: 'memory:read',
+  memorySave: 'memory:save',
+  memoryDelete: 'memory:delete',
+  /** save/delete 后的跨窗广播（同 agents 口径） */
+  memoryChanged: 'memory:changed',
+  /** 护栏 2 的落点（D-043）：**本轮**写入痕迹 —— 只推"刚发生的事实"，全量归巡检区 */
+  memoryNotice: 'memory:notice',
   goalList: 'goal:list',
   goalCreate: 'goal:create',
   goalAction: 'goal:action',
@@ -539,6 +549,15 @@ export interface ApiBridge {
   deleteAgent(file: string): Promise<{ ok: true } | { ok: false; reason: string }>
   /** save/delete 后各窗重读的信号（不搬变更内容） */
   onAgentsChanged(cb: () => void): () => void
+  // ── 记忆（plan19 批 1）──
+  listMemory(): Promise<import('./memory').MemoryIndex>
+  readMemory(file: string): Promise<import('./memory').MemoryEntry | null>
+  saveMemory(input: import('./memory').MemorySaveInput): Promise<import('./memory').MemorySaveResult>
+  deleteMemory(file: string): Promise<boolean>
+  /** save/delete 后各窗重读的信号（不搬变更内容） */
+  onMemoryChanged(cb: () => void): () => void
+  /** 护栏 2：本轮写入痕迹（`<MemoryNotice />` 的数据源，D-043） */
+  onMemoryNotice(cb: (notice: import('./memory').MemoryNoticeEvent) => void): () => void
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
   /** 省 token 档位（plan8 R9.1 §七②）：全局一档，与权限档同样"存在主进程、界面只是视图" */

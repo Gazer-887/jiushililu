@@ -19,6 +19,12 @@ export interface FsAdapter {
   writeFileSync(path: string, data: string, enc: 'utf8'): void
   renameSync(from: string, to: string): void
   rmSync(path: string, opts?: { force?: boolean }): void
+  /** 列目录（只返回名字）。记忆层靠它发现**用户手改的文件** —— 落盘索引会与手改脱钩 */
+  readdirSync(path: string): string[]
+  /** 追加写。⚠️ 与 `writeFileSync` 不同：**事件流是追加型的**，整份重写会随日志增长变成 O(n²) */
+  appendFileSync(path: string, data: string, enc: 'utf8'): void
+  /** 文件字节数（轮转判据）；文件不存在返回 0 */
+  sizeBytes(path: string): number
   /** 把文件内容刷到磁盘（2026-09-13 补）。**不做的话 rename 只是"目录项换了名"** —— 断电后你可能拿到旧内容 */
   fsyncFile(path: string): void
   /** 刷目录项（POSIX 需要；Windows 上打不开目录，实现里吞掉错误） */
@@ -32,6 +38,15 @@ export const nodeFsAdapter: FsAdapter = {
   writeFileSync: (p, d, e) => nodeFs.writeFileSync(p, d, e),
   renameSync: (a, b) => nodeFs.renameSync(a, b),
   rmSync: (p, o) => nodeFs.rmSync(p, o),
+  readdirSync: (p) => nodeFs.readdirSync(p),
+  appendFileSync: (p, d, e) => nodeFs.appendFileSync(p, d, e),
+  sizeBytes: (p) => {
+    try {
+      return nodeFs.statSync(p).size
+    } catch {
+      return 0
+    }
+  },
   fsyncFile: (p) => {
     const fd = nodeFs.openSync(p, 'r+')
     try {

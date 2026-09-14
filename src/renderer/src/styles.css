@@ -5839,3 +5839,256 @@ body[data-resizing] {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
+
+/* ── 记忆（plan19 批 1）────────────────────────────────────────────────
+   两块：工作台「记忆」页签（事后巡检，`.mem-panel`）与对话流里的
+   `<MemoryNotice />`（当场可见，D-043）。两者**时机不同**，不是重复。 */
+
+.mem-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  font-size: var(--fs-sm);
+}
+
+.mem-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-md);
+  color: var(--fg);
+}
+
+.mem-title {
+  font-weight: 600;
+}
+
+.mem-stat {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.mem-empty {
+  padding: 12px 4px;
+  color: var(--muted);
+  line-height: var(--lh-loose);
+}
+
+/* 巡检区：护栅 1（关键词）降级后的兜底 —— 不依赖关键词命中才可见 */
+.mem-inspect {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--ask-cinnabar-line);
+  border-radius: 6px;
+  background: var(--ask-cinnabar-soft);
+}
+
+.mem-inspect-title {
+  font-weight: 600;
+  color: var(--ask-cinnabar);
+}
+
+.mem-inspect-note {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+}
+
+.mem-inspect-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mem-warn {
+  padding: 8px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-soft);
+}
+
+.mem-warn-title {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.mem-warn-row {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  word-break: break-all;
+  line-height: var(--lh-tight);
+}
+
+.mem-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.mem-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mem-badge {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.mem-badge-model {
+  border-color: var(--ask-cinnabar-line);
+  color: var(--ask-cinnabar);
+}
+
+.mem-name {
+  flex: none;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.mem-desc {
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mem-row-actions {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.mem-notice-ok {
+  color: var(--ok);
+}
+
+.mem-notice-err {
+  color: var(--danger);
+}
+
+.mem-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.mem-form-title {
+  font-weight: 600;
+}
+
+.mem-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+}
+
+.mem-field input,
+.mem-field select,
+.mem-field textarea {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+}
+
+.mem-field textarea {
+  resize: vertical;
+}
+
+.mem-form-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* 对话流里的写入痕迹（护栏 2，D-043）：当场、零摩擦、自动消退 */
+.mem-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 8px 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--ask-cinnabar-line);
+  border-radius: 6px;
+  background: var(--ask-cinnabar-soft);
+  font-size: var(--fs-sm);
+}
+
+.mem-notice-text {
+  min-width: 0;
+  color: var(--fg);
+}
+
+.mem-notice-hint {
+  color: var(--muted);
+}
+
+.mem-notice-close {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--ask-line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+/* 通路 B「选中即记」的填写卡：正文是用户选中的**原话**，一字不改 */
+.mem-capture {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 8px 6px;
+  padding: 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+.mem-capture-title {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.mem-capture-body {
+  max-height: 8em;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mem-capture-actions {
+  display: flex;
+  gap: 6px;
+}

@@ -523,6 +523,40 @@ let closeSettingsWinStub = () => true
 // 也就是**第二次拉到的和第一次不一样**。固定值桩会让每一步都"看起来对"，却一条也没真验到。
 // ⚠️ 契约副本：真源是 `src/main/store/git-info.ts` + `src/shared/git-status.ts`
 //    （stage 后 X 位从 ' ' 变 'M'/'A'；未跟踪 add 之后是 `A ` 不是 `M `；commit 后列表清空、ahead +1）。
+// ── 记忆（plan19 批 1）的桩状态 ──
+// ⚠️ **必须有状态**：固定值验不了"保存后列表可见""删除后消失""广播后自动重拉"这条链
+//    （照 `git:*` 的口径；那种只记一下调用的全局变量不算桩）。
+let memoryBroadcast = () => 0
+/** 护栏 2 的推送（D-043）：与 memory:changed 同族，但**带载荷** —— 面板要显示"写了哪几条" */
+let memoryNoticeBroadcast = () => 0
+let memoryEntries = [
+  {
+    name: 'prefers-tables',
+    description: '回答偏好用表格',
+    class: 'style',
+    origin: 'user',
+    evidence: null,
+    createdAt: '2026-09-14T00:00:00.000Z',
+    updatedAt: '2026-09-14T00:00:00.000Z',
+    body: '正文。',
+    file: '/mem/notes/prefers-tables.md'
+  },
+  {
+    name: 'uses-pnpm',
+    description: '本项目包管理用 pnpm',
+    class: 'knowledge',
+    origin: 'model',
+    evidence: { conversationId: 'c1' },
+    createdAt: '2026-09-15T00:00:00.000Z',
+    updatedAt: '2026-09-15T00:00:00.000Z',
+    body: '正文。',
+    file: '/mem/notes/uses-pnpm.md'
+  }
+]
+let memoryWarnings = []
+const memorySaveCalls = []
+const memoryDeleteCalls = []
+
 let gitBroadcast = () => 0
 let gitMode = 'repo' // 'repo' | 'not-repo'
 let gitAhead = 0
@@ -662,6 +696,41 @@ const STUBS = {
     gitAhead += 1
     gitBroadcast()
     return { ok: true, summary: `[master ${'a1b2c3d'}] ${String(message).split('\n')[0]}` }
+  },
+  // ── 记忆（plan19 批 1）── 契约副本（真源 `src/main/ipc.ts` 的四个 handler）；
+  //    ⚠️ save / delete 必须**改状态 + 广播**，否则下面的"广播后自动重拉"与"删除后消失"两条断言绿得没有意义
+  'memory:list': () => ({
+    entries: memoryEntries.map((e) => ({ ...e })),
+    total: memoryEntries.length,
+    omitted: 0,
+    warnings: memoryWarnings.slice()
+  }),
+  'memory:read': (file) => memoryEntries.find((e) => e.file === file) ?? null,
+  'memory:save': (input) => {
+    memorySaveCalls.push(input)
+    const file = input?.file ?? `/mem/notes/${input?.name ?? 'x'}.md`
+    const at = '2026-09-15T02:00:00.000Z'
+    const entry = {
+      name: input?.name ?? '',
+      description: input?.description ?? '',
+      class: input?.class ?? 'style',
+      origin: input?.origin ?? 'model',
+      evidence: input?.evidence ?? null,
+      createdAt: at,
+      updatedAt: at,
+      body: input?.body ?? '',
+      file
+    }
+    memoryEntries = memoryEntries.filter((e) => e.file !== file).concat([entry])
+    memoryBroadcast()
+    return { ok: true, file, guard: { action: 'allow' } }
+  },
+  'memory:delete': (file) => {
+    memoryDeleteCalls.push(file)
+    const before = memoryEntries.length
+    memoryEntries = memoryEntries.filter((e) => e.file !== file)
+    memoryBroadcast()
+    return memoryEntries.length !== before
   },
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   'models:list': () => ({
@@ -1433,6 +1502,35 @@ app.whenReady().then(async () => {
         n += 1
       } catch {
         // 单个窗口发失败不该影响其余（典型场景：窗口正在销毁）
+      }
+    }
+    return n
+  }
+  // 记忆广播（plan19 批 1）：与 git:changed 同语义 —— 发给所有窗口，各窗自己重读。
+  // ⚠️ 这条**不能省**：没有它，"面板靠订阅自动重拉"那条断言就是空的（而空态看起来完全正常）
+  memoryBroadcast = () => {
+    let n = 0
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed() || w.webContents.isDestroyed()) continue
+      try {
+        w.webContents.send('memory:changed')
+        n += 1
+      } catch {
+        // 单个窗口发失败不该影响其余
+      }
+    }
+    return n
+  }
+  // 护栏 2 的推送（plan19 批 1 / D-043）：**带载荷**，不是"变了"信号
+  memoryNoticeBroadcast = (payload) => {
+    let n = 0
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed() || w.webContents.isDestroyed()) continue
+      try {
+        w.webContents.send('memory:notice', payload)
+        n += 1
+      } catch {
+        // 同上：单窗失败不影响其余
       }
     }
     return n
@@ -6880,6 +6978,254 @@ app.whenReady().then(async () => {
     '外面的改动（Agent / 终端）经**广播**自动出现（不用手点刷新）',
     (scmExternal.groups[0]?.items ?? []).some((i) => i.rel === 'src/main/ipc.ts'),
     (scmExternal.groups[0]?.items ?? []).map((i) => i.rel)
+  )
+
+  // ── 记忆（plan19 批 1）：看得见 → 广播自动重拉 → 删除后消失 ──────────────────
+  // 判据 5a（列表 / 删除）· 判据 15（面板形态 + 消息主干**零非消息行**）· 判据 16（走 store、不一次性 pull）
+  // ⚠️ 这三条**不能被"页面没崩"糊过去**：空态与坏掉长得一模一样，故每条都断言"该出现的东西出现了"。
+  const openMemoryPanel = async () => {
+    for (let i = 0; i < 8; i += 1) {
+      const has = await win.webContents.executeJavaScript("(() => !!document.querySelector('.mem-panel'))()")
+      if (has) return true
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const add = document.querySelector('.pane-add');
+          if (add) { add.click(); return true; }
+          const toggle = Array.from(document.querySelectorAll('button')).find((b) => (b.title || '').includes('工作台'));
+          if (toggle) { toggle.click(); return true; }
+          return false;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 400))
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const pick = Array.from(document.querySelectorAll('.wb-pick'))
+            .find((b) => (b.textContent || '').includes('记忆'));
+          if (pick) pick.click();
+          return !!pick;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    return false
+  }
+
+  /** 整份重读面板现状（不做增量推断 —— 面板自己就是这么设计的） */
+  const readMemoryPanel = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const p = document.querySelector('.mem-panel');
+        if (!p) return { hasPanel: false };
+        return {
+          hasPanel: true,
+          title: p.querySelector('.mem-title')?.textContent.trim() ?? null,
+          stat: p.querySelector('.mem-stat')?.textContent.trim() ?? null,
+          inspectTitle: p.querySelector('.mem-inspect-title')?.textContent.trim() ?? null,
+          inspectRows: Array.from(p.querySelectorAll('.mem-inspect-row .mem-name')).map((n) => n.textContent.trim()),
+          names: Array.from(p.querySelectorAll('.mem-row .mem-name')).map((n) => n.textContent.trim()),
+          badges: Array.from(p.querySelectorAll('.mem-row .mem-badge')).map((n) => n.textContent.trim()),
+          warnRows: p.querySelectorAll('.mem-warn-row').length,
+          actions: Array.from(p.querySelectorAll('.mem-row-actions button')).map((b) => b.textContent.trim()),
+          // 消息主干只许承载 user / assistant —— 这条**不许**被"面板自己好看"掩盖
+          msgClasses: Array.from(document.querySelectorAll('.msg')).map((m) => m.className),
+          noticeShown: !!document.querySelector('.mem-notice')
+        };
+      })()
+    `)
+
+  const memReady = await openMemoryPanel()
+  await new Promise((r) => setTimeout(r, 700))
+  const memList = await readMemoryPanel()
+  console.log('MEMORY_LIST=' + JSON.stringify(memList))
+  checkTrue(
+    '记忆页签：列出条目并给出分类徽标（空态不算通过）',
+    memReady === true &&
+      memList.hasPanel === true &&
+      memList.names.includes('prefers-tables') &&
+      memList.names.includes('uses-pnpm') &&
+      memList.badges.includes('风格'),
+    memList
+  )
+  checkTrue(
+    '巡检区只收 `origin: model` 的条目（用户手写的不进巡检），且标出条数',
+    memList.inspectRows.length === 1 &&
+      memList.inspectRows[0] === 'uses-pnpm' &&
+      (memList.inspectTitle || '').includes('1'),
+    memList.inspectRows
+  )
+  // 判据 15 的后半：护栏 2 走面板，**不许**在消息主干里插非消息行
+  checkTrue(
+    '判据 15：消息主干零「非消息行」（`.msg` 只承载 user / assistant）',
+    memList.msgClasses.length > 0 &&
+      memList.msgClasses.every((c) => /^msg msg-(user|assistant)$/.test(c)),
+    { count: memList.msgClasses.length, classes: [...new Set(memList.msgClasses)] }
+  )
+
+  // 判据 16：外面改了（模型写入 / 另一窗口）→ **广播** → 面板自动重拉。
+  // 这一条同时证明"数据走 store 订阅"，因为面板没有重新挂载、也没人点刷新。
+  memoryEntries = memoryEntries.concat([
+    {
+      name: 'from-broadcast',
+      description: '广播来的',
+      class: 'default',
+      origin: 'model',
+      evidence: null,
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '正文。',
+      file: '/mem/notes/from-broadcast.md'
+    }
+  ])
+  memoryBroadcast()
+  await new Promise((r) => setTimeout(r, 800))
+  const memAfterBroadcast = await readMemoryPanel()
+  console.log('MEMORY_BROADCAST=' + JSON.stringify(memAfterBroadcast))
+  checkTrue(
+    '判据 16：外部写入经**广播**自动出现（证明面板数据走 store 订阅，不是一次性 pull）',
+    memAfterBroadcast.names.includes('from-broadcast'),
+    memAfterBroadcast.names
+  )
+
+  // 判据 5a：删除 → 走 IPC（`memory:delete`）→ 列表不再显示
+  // ⚠️ 删的是**预先存在**的那条，不是上面广播加进来的 —— 否则广播一坏、这条跟着红，
+  //    失败理由就变成"删不掉 vs 那条根本没出现"两种，信号是歧义的（证伪实验抓到的）
+  const memDeleteClicked = await win.webContents.executeJavaScript(`
+    (() => {
+      window.confirm = () => true;
+      const row = Array.from(document.querySelectorAll('.mem-row'))
+        .find((r) => (r.querySelector('.mem-name')?.textContent || '').includes('uses-pnpm'));
+      if (!row) return false;
+      const btn = Array.from(row.querySelectorAll('button')).find((b) => b.textContent.trim() === '删除');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const memAfterDelete = await readMemoryPanel()
+  console.log('MEMORY_DELETE=' + JSON.stringify(memAfterDelete))
+  checkTrue(
+    '判据 5a：删除走 `memory:delete`，且列表不再显示那一条（删了还留着 = 假成功）',
+    memDeleteClicked === true &&
+      memoryDeleteCalls.includes('/mem/notes/uses-pnpm.md') &&
+      !memAfterDelete.names.includes('uses-pnpm'),
+    { clicked: memDeleteClicked, calls: memoryDeleteCalls, names: memAfterDelete.names }
+  )
+
+  // 护栏 2（D-043）：本轮写入痕迹的面板。面板只显示**当前会话**的痕迹 ——
+  // 故正反两向都要断言：匹配的会话要出现，不匹配的**必须不出现**（否则"只显示当前会话"就是句空话）
+  memoryNoticeBroadcast({ conversationId: 'not-this-conversation', written: ['x'], rejected: [] })
+  await new Promise((r) => setTimeout(r, 500))
+  const noticeForOther = await win.webContents.executeJavaScript(
+    "(() => !!document.querySelector('.mem-notice'))()"
+  )
+  memoryNoticeBroadcast({ conversationId: 'c1', written: ['prefers-tables'], rejected: [] })
+  await new Promise((r) => setTimeout(r, 600))
+  const memNotice = await win.webContents.executeJavaScript(`
+    (() => {
+      const n = document.querySelector('.mem-notice');
+      return n ? { shown: true, text: n.querySelector('.mem-notice-text')?.textContent.trim() ?? '' } : { shown: false };
+    })()
+  `)
+  console.log('MEMORY_NOTICE=' + JSON.stringify({ noticeForOther, memNotice }))
+  checkTrue(
+    '护栏 2（D-043）：本轮写入痕迹推给对话流里的面板（当场可见，零摩擦）',
+    memNotice.shown === true && memNotice.text.includes('prefers-tables'),
+    memNotice
+  )
+  checkTrue(
+    '护栏 2：别的会话的痕迹**不显示**（"只显示当前会话"必须是条真规矩，不是句空话）',
+    noticeForOther === false,
+    noticeForOther
+  )
+
+  // ── 通路 B「选中即记」（plan19 §九 批 1 · 判据 3）─────────────────────────
+  // 它是**唯一不经过模型**的写入通路：结构上安全、证据是原话、`origin: user` 的落点。
+  // 断言分三下：没选中时**不给**入口 → 选中后出现 → 保存落盘的 input 里 origin=user 且证据指针精确。
+  const openCtxMenuOnMessage = (withSelection) =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const content = document.querySelector('.msg-assistant .msg-content') || document.querySelector('.msg .msg-content');
+        if (!content) return false;
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        if (${withSelection}) {
+          const range = document.createRange();
+          range.selectNodeContents(content);
+          sel.addRange(range);
+        }
+        const box = content.closest('.msg');
+        box.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 300 }));
+        return true;
+      })()
+    `)
+
+  const menuHasCapture = () =>
+    win.webContents.executeJavaScript(`
+      (() => Array.from(document.querySelectorAll('.wb-menu .wb-pick'))
+        .some((b) => (b.textContent || '').includes('记住这句')))()
+    `)
+
+  await openCtxMenuOnMessage(false)
+  await new Promise((r) => setTimeout(r, 400))
+  const captureWithoutSelection = await menuHasCapture()
+  // 关掉菜单（点空白）
+  await win.webContents.executeJavaScript(
+    "(() => { document.body.click(); return true; })()"
+  )
+  await new Promise((r) => setTimeout(r, 300))
+
+  await openCtxMenuOnMessage(true)
+  await new Promise((r) => setTimeout(r, 400))
+  const captureWithSelection = await menuHasCapture()
+  const captureOpened = await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.wb-menu .wb-pick'))
+        .find((b) => (b.textContent || '').includes('记住这句'));
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const captureCard = await win.webContents.executeJavaScript(`
+    (() => {
+      const c = document.querySelector('.mem-capture');
+      return c ? { shown: true, body: c.querySelector('.mem-capture-body')?.textContent ?? '' } : { shown: false };
+    })()
+  `)
+  console.log('MEMORY_CAPTURE=' + JSON.stringify({ captureWithoutSelection, captureWithSelection, captureCard }))
+  checkTrue(
+    '通路 B：**没选中就没有入口**（点进来是空的入口比没有更糟）',
+    captureWithoutSelection === false,
+    captureWithoutSelection
+  )
+  checkTrue(
+    '通路 B：选中后菜单出现「记住这句」，且卡片正文 = 选中的原话',
+    captureWithSelection === true && captureCard.shown === true && captureCard.body.trim().length > 0,
+    { captureWithSelection, captureCard }
+  )
+
+  // 保存 → 断言落到主进程的 input 形状（origin / 证据指针）
+  const saveBefore = memorySaveCalls.length
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = Array.from(document.querySelectorAll('.mem-capture-actions button'))
+        .find((b) => b.textContent.trim() === '保存');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const capturedInput = memorySaveCalls[saveBefore]
+  console.log('MEMORY_CAPTURE_SAVE=' + JSON.stringify(capturedInput ?? null))
+  checkTrue(
+    '判据 3：通路 B 落盘时 `origin: user` 且证据指针精确（会话 id + 消息序号）',
+    !!capturedInput &&
+      capturedInput.origin === 'user' &&
+      capturedInput.evidence &&
+      typeof capturedInput.evidence.conversationId === 'string' &&
+      capturedInput.evidence.conversationId.length > 0 &&
+      Number.isInteger(capturedInput.evidence.turnIndex),
+    capturedInput
   )
 
   reportAndExit()

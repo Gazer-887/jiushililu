@@ -90,6 +90,11 @@ const TEST_ENTRIES = [
   'tests/unit/html-preview.test.ts',
   'tests/unit/chat-concurrency.test.ts',
   'tests/unit/goal.test.ts',
+  'tests/unit/memory-contract.test.ts',
+  'tests/unit/memory-core.test.ts',
+  'tests/unit/memory-fs.test.ts',
+  'tests/unit/memory-tools.test.ts',
+  'tests/unit/memory-injection.test.ts',
   'tests/unit/model-profiles.test.ts',
   'tests/unit/model-source.test.ts',
   'tests/unit/usage.test.ts',
@@ -130,5 +135,90 @@ describe('架构守卫：单测链路不得依赖 electron', () => {
   it('会话存储的基线测试确实覆盖到了 conversations-core（不是空过）', () => {
     const { visited } = walkGraph(join(ROOT, 'tests/unit/conversations-store.test.ts'))
     expect(visited).toContain(join(ROOT, 'src/main/store/conversations-core.ts'))
+  })
+})
+
+// ── 守卫乙：记忆不得触及权限（plan19 §3.3 / D-042）─────────────────────────
+// 为什么单独立一条而**不复用上面的 BANNED**：那个集合只有 electron / electron-store，
+// 往 TEST_ENTRIES 里加一行**不会**让"记忆不得碰 settings"被断言 —— 把两件事混成一条，
+// 得到的正是"判据天生为绿、防线静默缺失"。故：独立目标 + 自己的反向验证。
+
+/** 沿 import 图找"链上是否到达某个本地文件"，返回到达的调用链（空数组 = 没到达） */
+function findReachable(entry: string, target: string): string[] {
+  const hits: string[] = []
+  const visited = new Set<string>()
+  const queue: Array<{ file: string; chain: string[] }> = [{ file: entry, chain: [] }]
+
+  while (queue.length > 0) {
+    const { file, chain } = queue.shift()!
+    if (visited.has(file)) continue
+    visited.add(file)
+
+    let source: string
+    try {
+      source = readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+
+    for (const spec of extractSpecifiers(source)) {
+      const next = resolveLocal(spec, file)
+      if (next === null) continue
+      const nextChain = [...chain, file]
+      if (next === target) {
+        hits.push([...nextChain, next].join(' → '))
+        continue
+      }
+      if (!visited.has(next)) queue.push({ file: next, chain: nextChain })
+    }
+  }
+  return hits
+}
+
+const SETTINGS_MODULE = join(ROOT, 'src/main/store/settings.ts')
+
+describe('守卫乙：记忆层不得触及权限档', () => {
+  const MEMORY_ROOTS = ['src/main/memory/memory-core.ts', 'src/main/memory/inject.ts']
+
+  it.each(MEMORY_ROOTS)('%s 的 import 图里不出现 store/settings', (entry) => {
+    const hits = findReachable(join(ROOT, entry), SETTINGS_MODULE)
+    expect(hits, `记忆层获得了改权限的通路：\n${hits.join('\n')}`).toEqual([])
+  })
+
+  it('守卫乙**不是空转**：真会 import settings 的模块必须被抓出', () => {
+    // 反面验证。没有这一步，守卫乙可能永远绿 —— 而"永远绿的守卫"比没有守卫更危险。
+    const hits = findReachable(join(ROOT, 'src/main/ipc.ts'), SETTINGS_MODULE)
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits[0]).toContain('settings.ts')
+  })
+
+  it('守卫乙的对象覆盖到了真实记忆模块（防"改名后静默变空"）', () => {
+    for (const entry of MEMORY_ROOTS) {
+      expect(readFileSync(join(ROOT, entry), 'utf8').length, entry).toBeGreaterThan(0)
+    }
+  })
+})
+
+// ── 守卫丙：通路 B 不经过模型（plan19 §九 批 1 · 判据 3）─────────────────
+// 为什么单独立一条：通路 B（选中即记）的全部价值就在"**没有模型参与**"——
+// 结构上安全、提示注入够不着它、证据是原话。而"它不调模型"是个**口头约定**，
+// 谁哪天为了"顺手补个摘要" import 一下 provider，这条价值就没了，且不会有人发现。
+
+describe('守卫丙：通路 B 不得经过模型', () => {
+  const CAPTURE_ENTRY = 'src/renderer/src/components/MemoryCapture.tsx'
+  const MODEL_MODULE = /[\\/]providers[\\/]|[\\/]agent[\\/]/
+
+  it('MemoryCapture 的 import 图里不出现 providers / agent 模块', () => {
+    const bad = walkGraph(join(ROOT, CAPTURE_ENTRY)).visited.filter((f) => MODEL_MODULE.test(f))
+    expect(bad, `通路 B 拿到了模型通路：\n${bad.join('\n')}`).toEqual([])
+  })
+
+  it('守卫丙**不是空转**：真会 import provider 的模块必须被抓出', () => {
+    const visited = walkGraph(join(ROOT, 'src/main/agent/runner.ts')).visited
+    expect(visited.some((f) => MODEL_MODULE.test(f))).toBe(true)
+  })
+
+  it('守卫丙的对象确实存在（防改名后静默变空）', () => {
+    expect(readFileSync(join(ROOT, CAPTURE_ENTRY), 'utf8').length).toBeGreaterThan(0)
   })
 })

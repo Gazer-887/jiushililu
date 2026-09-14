@@ -158,6 +158,9 @@ import { sendToAll } from './window-registry'
 import { loadAgentEntries } from './agent/loader'
 import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './store/agents-store'
 import { nodeFsAdapter } from './store/conversations-fs'
+import type { MemoryStore } from './store/memory-store'
+import { composeMemoryBlock } from './memory/inject'
+import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -257,6 +260,11 @@ function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): 
 export function registerIpcHandlers(deps: {
   agent: AgentRuntimeContext
   userDataDir: string
+  /**
+   * 记忆库（plan19 批 1）。同样是组合根建、这里转交 —— 它要落到 userData 下，
+   * 而且一轮对话期间要收集"写了什么"（护栏 2 的上报载荷）。
+   */
+  memory: MemoryStore
   confirm: ConfirmBridge
   /** Agent 提问桥。⚠️ 传进来而不是在这里 new：与 confirm 同理 —— **组合根负责"建"，这里只做转交**（本文件一个裸 `.send(` 都不许有） */
   ask: AskBridge
@@ -460,6 +468,9 @@ export function registerIpcHandlers(deps: {
       controller.abort()
     }, settings.timeoutMs)
 
+    // 记忆注入段（plan19 批 1）：组装 + 开采集。放在 `try` **之前** —— 出错时也要能 drain 到已发生的写入。
+    const memoryBlock = beginMemoryTurn(conversationId)
+
     // D-032：单一通道 —— 带工具清单 + 流式，由模型自决"直接回答还是先调工具"；文本增量 → chat:chunk（上屏），工具生命周期 → chat:tool（进度卡片）。
     try {
       const result = await runAgent(deps.agent, {
@@ -497,6 +508,8 @@ export function registerIpcHandlers(deps: {
         ...(process.env['JSL_TOOL_WINDOW'] === 'off' ? { toolWindow: false } : {}),
         // 省 token 档位（plan8 R9.1 §七②）：**在这里解析**（组合根读设置再往下给 policy）—— runner 不许碰 electron-store（CI 无 Electron），故读设置只能发生在本层；`JSL_TOKEN_TIER` 是**校准钩子**，环境变量不存在时行为与以前一样。
         policy: resolvePolicy(process.env['JSL_TOKEN_TIER'] ?? getTokenTier()),
+        // 记忆段（plan19 批 1）：组合根组装好传进去，runner 只负责拼进 system（接在安全基线之后）
+        memoryBlock,
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
           if (state.runId !== evt.runId) {
@@ -529,6 +542,8 @@ export function registerIpcHandlers(deps: {
     } finally {
       clearTimeout(timer)
       chatGate.end(conversationId)
+      // 护栏 2（D-043）：本轮写了什么 —— 取走上报载荷。空手而归则不推（免界面反复闪"没有写入"）
+      endMemoryTurn(conversationId)
     }
   })
 
@@ -590,8 +605,11 @@ export function registerIpcHandlers(deps: {
         apiKey,
         history: [{ role: 'user', content: req.task }],
         agentName: req.agentName,
-        conversationId: req.conversationId ?? AGENT_TASK_OWNER
+        conversationId: req.conversationId ?? AGENT_TASK_OWNER,
+        // 一次性任务也注入记忆并采集痕迹（少了它，模型在这里 remember 就没人上报 —— 静默缺口）
+        memoryBlock: beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       })
+      endMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       return {
         ok: result.stopReason === 'completed',
         output: result.output,
@@ -870,6 +888,65 @@ export function registerIpcHandlers(deps: {
       sendToAll(IPC.agentsChanged)
     }
     return result
+  })
+
+  // ── 记忆（plan19 批 1）────────────────────────────────────────────────
+  /** 本轮的写入尝试记录。`friendlyParse` 只挡形状，长度与凭据归 `validateMemoryFields`（唯一口径） */
+  const memorySaveSchema = z.object({
+    name: z.string().min(1).max(200),
+    description: z.string().min(1).max(500),
+    class: z.enum(['style', 'default', 'knowledge']),
+    body: z.string().min(1).max(100_000),
+    origin: z.enum(['model', 'user', 'reflection']).optional(),
+    evidence: z
+      .object({ conversationId: z.string().min(1).max(64), turnIndex: z.number().int().min(0).optional() })
+      .nullable()
+      .optional(),
+    file: z.string().min(1).max(1000).optional(),
+    confirmed: z.boolean().optional()
+  })
+
+  /** 开一轮记忆采集并组装注入段。段在这里组装 —— 组合根才知道记忆库在哪（runner 不许碰 electron-store）。 */
+  function beginMemoryTurn(conversationId: string): string | null {
+    const index = deps.memory.list()
+    // 注入事件落在这里：`inject` 去重（集合没变不写）由 repo 负责
+    deps.memory.record({ kind: 'inject', conversationId, names: index.entries.map((e) => e.name) })
+    deps.memory.beginTurn()
+    return composeMemoryBlock(index)
+  }
+
+  /** 取走本轮写入痕迹并推给界面（护栏 2，D-043）。空手而归就**不推** —— 免得界面反复闪"没有写入" */
+  function endMemoryTurn(conversationId: string): void {
+    const turn = deps.memory.drainTurn()
+    if (turn.written.length === 0 && turn.rejected.length === 0) return
+    sendToAll(IPC.memoryNotice, { conversationId, ...turn })
+  }
+
+  ipcMain.handle(IPC.memoryList, (): MemoryIndex => deps.memory.list())
+
+  ipcMain.handle(IPC.memoryRead, (_e, raw: unknown): MemoryEntry | null => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    return deps.memory.get(file)
+  })
+
+  ipcMain.handle(IPC.memorySave, (_e, raw: unknown): MemorySaveResult => {
+    const input = friendlyParse(memorySaveSchema, raw)
+    const result = deps.memory.save(input as MemorySaveInput)
+    if (result.ok) {
+      log.info('记忆已保存', { name: input.name, file: result.file })
+      sendToAll(IPC.memoryChanged)
+    }
+    return result
+  })
+
+  ipcMain.handle(IPC.memoryDelete, (_e, raw: unknown): boolean => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const removed = deps.memory.remove(file, 'user')
+    if (removed) {
+      log.info('记忆已删除', { file })
+      sendToAll(IPC.memoryChanged)
+    }
+    return removed
   })
 
 

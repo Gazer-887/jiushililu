@@ -6,6 +6,8 @@ import InputConsole from '../components/InputConsole'
 import TodoPanel from '../components/TodoPanel'
 import GoalPanel from '../components/GoalPanel'
 import AskPanel from '../components/AskPanel'
+import MemoryNotice from '../components/MemoryNotice'
+import MemoryCapture from '../components/MemoryCapture'
 
 // 对话页（D-032：单一通道）——用不用工具由模型自己决定，界面只负责让过程可见（工具执行卡片）。
 // 输入框为控制台形态（InputConsole）：模型/权限/进度/拓展/发送全在框内。
@@ -30,8 +32,10 @@ export default function ChatView() {
   const rollbackNotice = useAppStore((s) => s.rollbackNotice)
   const rollbackTo = useAppStore((s) => s.rollbackTo)
   const undoRollback = useAppStore((s) => s.undoRollback)
-  /** 消息右键菜单；null = 关着 */
-  const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null)
+  /** 消息右键菜单；null = 关着。`sel` = 右键那一刻**选中的原文**（有它才给「记住这句」） */
+  const [menu, setMenu] = useState<{ x: number; y: number; index: number; sel: string } | null>(null)
+  /** 通路 B 的填写卡（选中即记）；null = 关着 */
+  const [capture, setCapture] = useState<{ text: string; turnIndex: number } | null>(null)
 
   /** 菜单容器：判「点在不在菜单里」全靠它 —— 用法与原因见下面 effect */
   const menuRef = useRef<HTMLDivElement>(null)
@@ -174,7 +178,14 @@ export default function ChatView() {
               // 之前，正好是"删掉这个回答、只留我的问题"，可以直接重问。
               onContextMenu={(e) => {
                 e.preventDefault()
-                setMenu({ x: Math.min(e.clientX, window.innerWidth - 220), y: Math.min(e.clientY, window.innerHeight - 90), index: i })
+                // 选中的原文 → 通路 B 的入口条件（没选中就不给那个按钮，免得点进来是空的）
+                const sel = window.getSelection()?.toString().trim() ?? ''
+                setMenu({
+                  x: Math.min(e.clientX, window.innerWidth - 220),
+                  y: Math.min(e.clientY, window.innerHeight - 90),
+                  index: i,
+                  sel
+                })
               }}
             >
               <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>
@@ -233,6 +244,20 @@ export default function ChatView() {
           >
             回到这条之前
           </button>
+          {/* 通路 B（plan19 §九 批 1）：选中即记 —— **唯一不经过模型**的写入通路。
+              只在真的选中了东西时出现；正文就是用户选中的原话，一字不改 */}
+          {menu.sel ? (
+            <button
+              className="wb-pick"
+              onClick={() => {
+                const picked = menu.sel
+                setCapture({ text: picked, turnIndex: menu.index })
+                setMenu(null)
+              }}
+            >
+              记住这句
+            </button>
+          ) : null}
         </div>
       )}
 
@@ -244,6 +269,20 @@ export default function ChatView() {
         <GoalPanel />
         {/* 待办清单在输入框**上方**（用户 2026-09-12 意见，形制对齐 DSH） */}
         <TodoPanel />
+        {/* 护栏 2（D-043）：本轮写入痕迹 —— 当场、零摩擦、自动消退。⛔ 不是在消息流里插痕迹行（实测零位置） */}
+        <MemoryNotice />
+        {/* 通路 B 的填写卡（选中即记）：正文是用户选中的原话，证据指针由这里精确给出 */}
+        {capture ? (
+          <MemoryCapture
+            text={capture.text}
+            conversationId={activeId ?? ''}
+            turnIndex={capture.turnIndex}
+            onDone={(r) => {
+              setCapture(null)
+              if (r.message) window.alert(r.message)
+            }}
+          />
+        ) : null}
         <InputConsole
           value={input}
           onChange={setInput}

@@ -33,7 +33,8 @@ export const BUILTIN_TYPES = [
   'scm',
   'terminal',
   'browser',
-  'tasks'
+  'tasks',
+  'memory'
 ] as const
 
 export type BuiltinType = (typeof BUILTIN_TYPES)[number]
@@ -44,7 +45,8 @@ export const BUILTIN_LABELS: Record<BuiltinType, string> = {
   scm: '源代码管理',
   terminal: '终端',
   browser: '浏览器',
-  tasks: '任务管理'
+  tasks: '任务管理',
+  memory: '记忆'
 }
 
 export type FileMode = 'preview' | 'edit'

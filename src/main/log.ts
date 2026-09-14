@@ -10,10 +10,10 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 }
 
-/** 单个日志文件上限（超过即轮转） */
-const MAX_FILE_BYTES = 1024 * 1024
-/** 保留的历史文件数（不含当前） */
-const MAX_ARCHIVES = 4
+/** 单个日志文件上限（超过即轮转）。⚠️ 记忆事件流复用它 —— 轮转策略是一件事，不该有两处定义 */
+export const MAX_FILE_BYTES = 1024 * 1024
+/** 保留的历史文件数（不含当前）。同上：事件流共用 */
+export const MAX_ARCHIVES = 4
 
 const CURRENT_NAME = 'app.log'
 

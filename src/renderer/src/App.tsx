@@ -69,11 +69,17 @@ function useStreamSubscriptions(): void {
     // Agent 定义变更（plan17 D8）：设置窗口里 save/delete 后，这里重读（不搬变更内容）
     const offAgents = window.api.onAgentsChanged(() => void s().refreshAgents())
     void s().refreshAgents()
+    // 记忆（plan19 批 1）：定义变更后**重读**；本轮写入痕迹推给护栏 2 的面板（D-043）
+    const offMemory = window.api.onMemoryChanged(() => void s().refreshMemory())
+    const offMemoryNotice = window.api.onMemoryNotice((notice) => s().showMemoryNotice(notice))
+    void s().refreshMemory()
 
     return () => {
       offChunk()
       offDone()
       offError()
+      offMemory()
+      offMemoryNotice()
       offTool()
       offTodos()
       offGoal()

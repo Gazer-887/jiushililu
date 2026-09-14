@@ -175,6 +175,13 @@ interface AppState {
   /** Agent 定义的全量视图（plan17）：PlusMenu 选择器 / ChatView 降级标记共用这一份，不再各自拉取 */
   agentsView: import('@shared/agents').AgentsView | null
   refreshAgents: () => Promise<void>
+  /** 记忆索引视图（plan19 批 1）：工作台记忆页签与巡检区共用这一份，不各自拉取 */
+  memoryView: import('@shared/memory').MemoryIndex | null
+  refreshMemory: () => Promise<void>
+  /** 护栏 2 的本轮写入痕迹（D-043）。非 null 时 `<MemoryNotice />` 显示，可手动关掉 */
+  memoryNotice: import('@shared/memory').MemoryNoticeEvent | null
+  showMemoryNotice: (notice: import('@shared/memory').MemoryNoticeEvent) => void
+  clearMemoryNotice: () => void
   /** 切换某条会话的主 Agent（plan17 D1/D9）：meta 是真相源，内存改完即落盘；空串 = 切回内核默认 */
   selectAgent: (conversationId: string, name: string) => Promise<void>
 
@@ -905,6 +912,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshAgents: async () => {
     set({ agentsView: await window.api.listAgents() })
   },
+
+  memoryView: null,
+  refreshMemory: async () => {
+    set({ memoryView: await window.api.listMemory() })
+  },
+  memoryNotice: null,
+  showMemoryNotice: (notice) => set({ memoryNotice: notice }),
+  clearMemoryNotice: () => set({ memoryNotice: null }),
 
   selectAgent: async (conversationId, name) => {
     // meta 是"会话当前 Agent"的唯一真相源（plan17 D9）：改内存 + 落盘，重启后从这里恢复

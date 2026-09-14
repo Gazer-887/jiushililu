@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { AgentSaveInput } from '@shared/agents'
+import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
 import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { ModelSaveInput } from '@shared/models'
@@ -99,6 +100,14 @@ const api: ApiBridge = {
   saveAgent: (input: AgentSaveInput) => ipcRenderer.invoke(IPC.agentsSave, input),
   deleteAgent: (file: string) => ipcRenderer.invoke(IPC.agentsDelete, file),
   onAgentsChanged: (cb) => subscribe(IPC.agentsChanged, () => cb()),
+  // ── 记忆（plan19 批 1）──
+  listMemory: () => ipcRenderer.invoke(IPC.memoryList),
+  readMemory: (file: string) => ipcRenderer.invoke(IPC.memoryRead, file),
+  saveMemory: (input: MemorySaveInput) => ipcRenderer.invoke(IPC.memorySave, input),
+  deleteMemory: (file: string) => ipcRenderer.invoke(IPC.memoryDelete, file),
+  onMemoryChanged: (cb) => subscribe(IPC.memoryChanged, () => cb()),
+  /** 护栏 2（D-043）：本轮写入痕迹 —— 只推"刚发生的事实"，全量巡检在右抽屉 */
+  onMemoryNotice: (cb) => subscribe(IPC.memoryNotice, (payload) => cb(payload as MemoryNoticeEvent)),
   getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getTokenTier: () => ipcRenderer.invoke(IPC.tokenTierGet),
