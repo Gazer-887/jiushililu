@@ -246,6 +246,9 @@ export interface ConversationUsage {
   tier?: TokenSaverTier
   /** 累计**省下**的估算 token（plan8 R9.1）：**不进** `total` —— 那是厂商真值，这是我们替它做的减法，混一起分不清 */
   avoided: number
+  /** 累计**注入税**（plan19 §5.2）：记忆段每轮占掉的估算 token，**也不进** `total` —— 第三笔账。
+   *  缺 = 老版本主进程没带 → 不显示，**不替它编 0**（与 tier 同一处理）。 */
+  memory: number
 }
 
 /** 把**盘上**的用量并进内存账本（plan8 R9 / R9.1）。规矩：**只许往前长**（取 max）—— 覆盖会让数字倒退，而账本倒退比不显示更难解释。
@@ -258,7 +261,8 @@ function mergeUsage(
   for (const m of metas) {
     const stored = m.usage
     const storedAvoided = m.avoidedTokens ?? 0
-    if (!stored && storedAvoided === 0) continue
+    const storedMemory = m.memoryTokens ?? 0
+    if (!stored && storedAvoided === 0 && storedMemory === 0) continue
     const cur: ConversationUsage | undefined = (next ?? prev)[m.id]
     const cached = mergeOptionalMax(cur?.total.cachedPromptTokens, stored?.cachedPromptTokens)
     const reasoning = mergeOptionalMax(cur?.total.reasoningTokens, stored?.reasoningTokens)
@@ -271,15 +275,18 @@ function mergeUsage(
         }
       : (stored ?? { promptTokens: 0, completionTokens: 0 })
     const avoided = Math.max(cur?.avoided ?? 0, storedAvoided)
+    // 注入税（plan19 §5.2）同样是"只许往前长"：它是累计值，倒退比不显示更难解释
+    const memory = Math.max(cur?.memory ?? 0, storedMemory)
     const same =
       cur &&
       total.promptTokens === cur.total.promptTokens &&
       total.completionTokens === cur.total.completionTokens &&
       (total.cachedPromptTokens ?? null) === (cur.total.cachedPromptTokens ?? null) &&
       (total.reasoningTokens ?? null) === (cur.total.reasoningTokens ?? null) &&
-      avoided === cur.avoided
+      avoided === cur.avoided &&
+      memory === cur.memory
     if (same) continue
-    next = { ...(next ?? prev), [m.id]: { total, last: cur?.last ?? null, avoided } }
+    next = { ...(next ?? prev), [m.id]: { total, last: cur?.last ?? null, avoided, memory } }
   }
   return next ?? prev
 }
@@ -783,15 +790,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 真实用量累加进**那一条会话**的账本。缺字段一律当"厂商没报"：信封另一头是另一个进程，版本不齐 / 事件被截断都可能给不出 usage —— 不许直接炸，也不写假账。
     const usage = e.payload?.usage ?? null
     const avoided = e.payload?.avoided ?? 0
+    // 注入税（plan19 §5.2）：本轮记忆段占掉的估算 token，累计进同一会话的第三笔账
+    const memoryTax = e.payload?.memoryTokens ?? 0
     const tier = e.payload?.tier
     set((s) => {
       const prev = s.usageByConversation[e.conversationId]
       const nextUsage: ConversationUsage | null =
-        usage || avoided > 0
+        usage || avoided > 0 || memoryTax > 0
           ? {
               total: usage ? addUsage(prev?.total ?? emptyUsage(), usage) : (prev?.total ?? emptyUsage()),
               last: usage ?? prev?.last ?? null,
               avoided: (prev?.avoided ?? 0) + avoided,
+              memory: (prev?.memory ?? 0) + memoryTax,
               // 档位：这一轮没带就保留上一次的 —— 老版本主进程不带这个字段，直接覆盖会把已记的档位抹掉
               ...(tier ? { tier } : prev?.tier ? { tier: prev.tier } : {})
             }
@@ -886,7 +896,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       const updated = await window.api.saveConversation(id, snap.messages, {
         agentName: metaAgentName ?? '',
         ...(rec
-          ? { usage: rec.total, avoidedTokens: rec.avoided, ...(rec.tier ? { tokenTier: rec.tier } : {}) }
+          ? {
+              usage: rec.total,
+              avoidedTokens: rec.avoided,
+              // 注入税（plan19 §5.2）：> 0 才带 —— 没有就不写，别把"没记忆"写成"税为 0"
+              ...(rec.memory > 0 ? { memoryTokens: rec.memory } : {}),
+              ...(rec.tier ? { tokenTier: rec.tier } : {})
+            }
           : {})
       })
       if (updated) {

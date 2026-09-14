@@ -111,6 +111,15 @@ export interface MemoryNoticeEvent {
   rejected: { name: string; reason: string }[]
 }
 
+/**
+ * 切换记忆开关的结果。`warnFullAccess` = 开启那一刻正处于**完全访问档** ——
+ * 最大风险组合，界面要**当场**告警（判据 14：只在设置页躺一行字等于没写）。
+ */
+export interface MemorySwitchResult {
+  enabled: boolean
+  warnFullAccess: boolean
+}
+
 /** UTF-8 字节数。快路径：全 ASCII 时字符数即字节数 */
 export function utf8Bytes(text: string): number {
   for (let i = 0; i < text.length; i++) {

@@ -37,7 +37,8 @@ import {
   getNetworkSettings,
   setNetworkSettings,
   getNetworkCredentials,
-  setNetworkCredentials
+  setNetworkCredentials,
+  getMemoryEnabled
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
@@ -375,6 +376,8 @@ app.whenReady().then(async () => {
     // ⚠️ `conversationId` 不在这里补 —— 同一个上下文会被多条会话共用，由 runner 按轮次补。
     memory: {
       repo: memory,
+      // 记忆开关（批 1）：每轮由 runner 读一次 —— 改设置即时生效，不用重启
+      enabled: () => getMemoryEnabled(),
       confirm: (reason: string, conversationId: string) =>
         confirm.ask({ tool: 'remember', detail: reason, agent: '记忆', where: '', conversationId })
     },

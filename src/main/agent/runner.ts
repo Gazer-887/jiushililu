@@ -144,7 +144,13 @@ export interface ToolHooks {
    * 记忆工具口（plan19 批 1）。不传 = 不下发 `remember` / `recall`（「有消费者才注册」，同 todos / ask / subagent）；
    * `conversationId` 由 `runAgent` 在装配处补 —— 同一个 hooks 对象会被多条会话共用，它自己不知道这一轮是谁。
    */
-  memory?: { repo: MemoryRepo; conversationId: string; confirm?: (reason: string) => Promise<boolean> }
+  memory?: {
+    repo: MemoryRepo
+    conversationId: string
+    /** 记忆开关（批 1）：false = 这一轮**不下发** remember / recall（结构性关断，不是提示词层面） */
+    enabled?: () => boolean
+    confirm?: (reason: string) => Promise<boolean>
+  }
   /** 打包态资源根（找随包的 ripgrep）。装配层注入 —— runner 不许 import electron；不传 = 只用环境变量/PATH 上的 rg */
   resourcesPath?: string | null
 }
@@ -163,7 +169,12 @@ export interface AgentRuntimeContext {
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 `process.resourcesPath` —— runner 不许 import electron */
   resourcesPath?: string | null
   /** 记忆库（plan19 批 1）。由组合根注入：runner 不许碰 electron-store / fs，故"读写记忆"只能发生在那一层 */
-  memory?: { repo: MemoryRepo; confirm?: (reason: string, conversationId: string) => Promise<boolean> }
+  memory?: {
+    repo: MemoryRepo
+    /** 记忆开关（批 1）：false = 不下发 remember / recall。每轮读一次 → 改设置即时生效，不用重启 */
+    enabled?: () => boolean
+    confirm?: (reason: string, conversationId: string) => Promise<boolean>
+  }
   confirmCommand?: (req: {
     tool: string
     detail: string
@@ -326,12 +337,15 @@ export async function runAgent(
         }
       : {}),
     ...(args.onTodos ? { onTodos: args.onTodos } : {}),
-    // 记忆（plan19 批 1）：`conversationId` 在这里补 —— 与 `confirmCommand` 同一手法
-    ...(ctx.memory
+    // 记忆（plan19 批 1）：`conversationId` 在这里补 —— 与 `confirmCommand` 同一手法。
+    // ⚠️ 开关在这里**每轮读一次**：关掉就整个不下发 remember / recall（结构性关断，
+    //    不是"工具还在但让它别用"——后者靠提示词，提示词挡不住想用的模型）。
+    ...(ctx.memory && (ctx.memory.enabled?.() ?? true)
       ? {
           memory: {
             repo: ctx.memory.repo,
             conversationId: args.conversationId,
+            enabled: ctx.memory.enabled,
             ...(ctx.memory.confirm
               ? {
                   confirm: (reason: string) =>
@@ -473,7 +487,12 @@ export function createAgentContext(opts: {
   }) => Promise<boolean>
   background?: BackgroundTaskStore
   /** 记忆库（plan19 批 1）。由组合根注入 —— runner 不许碰 electron-store / fs */
-  memory?: { repo: MemoryRepo; confirm?: (reason: string, conversationId: string) => Promise<boolean> }
+  memory?: {
+    repo: MemoryRepo
+    /** 记忆开关（批 1）：false = 不下发 remember / recall。每轮读一次 → 改设置即时生效，不用重启 */
+    enabled?: () => boolean
+    confirm?: (reason: string, conversationId: string) => Promise<boolean>
+  }
   trash?: (abs: string) => Promise<void>
   ask?: AskReporter
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 —— runner 不许 import electron */

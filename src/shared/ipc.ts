@@ -215,6 +215,9 @@ export interface ConversationMeta {
   usage?: TokenUsage
   /** 这条会话**省下**的估算 token（plan8 R9.1）：不是厂商账，故与 `usage` 分开存 —— 混算等于两笔账糊一起 */
   avoidedTokens?: number
+  /** **注入税**累计（plan19 §5.2）：记忆段每轮占掉的**估算** token。与 `usage` / `avoidedTokens` **三笔账分开**
+   *  —— 厂商真值 / 我们替它做的减法 / 我们自己加的固定开销，混一起就分不清谁是谁 */
+  memoryTokens?: number
   /** **最后一轮**用的省 token 档位（plan8 R9.1 §七②）：档位是全局设置、会话中途可换，故它只代表最近一次 —— 逐轮比对是校准 harness 的事。 */
   tokenTier?: TokenSaverTier
   /** 最近一次使用的**主 Agent**（plan17 D9）：缺字段 = 内核默认（老会话零回归）。落盘才能重启恢复 */
@@ -272,6 +275,9 @@ export const IPC = {
   memoryDelete: 'memory:delete',
   /** save/delete 后的跨窗广播（同 agents 口径） */
   memoryChanged: 'memory:changed',
+  /** **记忆开关**（plan19 批 1）：批 1 只管通路 A（模型工具）是否下发，通路 B 不受它管 */
+  memoryGetSwitch: 'memory:get-switch',
+  memorySetSwitch: 'memory:set-switch',
   /** 护栏 2 的落点（D-043）：**本轮**写入痕迹 —— 只推"刚发生的事实"，全量归巡检区 */
   memoryNotice: 'memory:notice',
   goalList: 'goal:list',
@@ -446,6 +452,8 @@ export interface ChatDonePayload {
   avoided?: number
   /** 这一轮用的档位（plan8 R9.1 §七②）：不记档位，事后按档比数字就说不清数是从哪跑出来的。缺字段 = 老主进程 → 界面**不显示档位标签**，不替它编默认值。 */
   tier?: TokenSaverTier
+  /** **注入税**（plan19 §5.2）：本轮记忆段占掉的**本地估算** token。缺/为 0 = 没有记忆段 → 界面**不显示**，不显示 0。 */
+  memoryTokens?: number
 }
 
 export interface StreamEnvelope<T> {
@@ -554,6 +562,9 @@ export interface ApiBridge {
   readMemory(file: string): Promise<import('./memory').MemoryEntry | null>
   saveMemory(input: import('./memory').MemorySaveInput): Promise<import('./memory').MemorySaveResult>
   deleteMemory(file: string): Promise<boolean>
+  /** **记忆开关**：批 1 只管通路 A。`warnFullAccess` = 开启时正处于完全访问档（判据 14 要当场告警） */
+  getMemorySwitch(): Promise<boolean>
+  setMemorySwitch(enabled: boolean): Promise<import('./memory').MemorySwitchResult>
   /** save/delete 后各窗重读的信号（不搬变更内容） */
   onMemoryChanged(cb: () => void): () => void
   /** 护栏 2：本轮写入痕迹（`<MemoryNotice />` 的数据源，D-043） */

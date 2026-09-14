@@ -38,7 +38,7 @@ import {
   type GitOpResult,
   type GitCommitResult
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
 import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
@@ -159,8 +159,8 @@ import { loadAgentEntries } from './agent/loader'
 import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './store/agents-store'
 import { nodeFsAdapter } from './store/conversations-fs'
 import type { MemoryStore } from './store/memory-store'
-import { composeMemoryBlock } from './memory/inject'
-import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult } from '@shared/memory'
+import { composeMemoryBlock, estimateMemoryTokens } from './memory/inject'
+import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemorySwitchResult } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -528,8 +528,9 @@ export function registerIpcHandlers(deps: {
       })
       // 本轮改了文件 → 通知界面刷新「文件变更」页签（plan8 R4）
       if (result.changedFiles > 0) emit.checkpoint(result.runId)
-      // 收尾带货：本轮真实用量（plan8 R9）+ 窗口化省下的估算量（R9.1）
-      emit.done(result.usage, result.avoidedTokens ?? 0, getTokenTier())
+      // 收尾带货：本轮真实用量（plan8 R9）+ 窗口化省下的估算量（R9.1）+ **注入税**（plan19 §5.2，
+      // 本地估算 —— 记忆段这轮占了多少，用量牌上要有个读数，不然"越用越重"没人看得见）
+      emit.done(result.usage, result.avoidedTokens ?? 0, getTokenTier(), estimateMemoryTokens(memoryBlock))
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {
@@ -739,6 +740,8 @@ export function registerIpcHandlers(deps: {
           })
           .optional(),
         avoidedTokens: z.number().finite().nonnegative().optional(),
+        // 注入税（plan19 §5.2）：同样是估算，单独一笔账
+        memoryTokens: z.number().finite().nonnegative().optional(),
         // 主 Agent（plan17 D9）：空串 = 切回内核默认（主进程删字段）；不传 = 不动原值
         agentName: z.string().max(64).optional()
       })
@@ -761,6 +764,7 @@ export function registerIpcHandlers(deps: {
           }
         : {}),
       ...(input.avoidedTokens !== undefined ? { avoidedTokens: Math.round(input.avoidedTokens) } : {}),
+      ...(input.memoryTokens !== undefined ? { memoryTokens: Math.round(input.memoryTokens) } : {}),
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {})
     })
   })
@@ -947,6 +951,28 @@ export function registerIpcHandlers(deps: {
       sendToAll(IPC.memoryChanged)
     }
     return removed
+  })
+
+  // ── 记忆开关（plan19 批 1）── 批 1 只管**通路 A**：关掉就不下发 remember / recall（结构性，
+  //    由 runAgent 每轮按 `enabled()` 判断，"有消费者才注册"的同一口径）。通路 B 是用户主动行为，不受它管。
+  ipcMain.handle(IPC.memoryGetSwitch, (): boolean => getMemoryEnabled())
+
+  ipcMain.handle(IPC.memorySetSwitch, (_e, raw: unknown): MemorySwitchResult => {
+    const enabled = z.boolean().parse(raw)
+    const before = getMemoryEnabled()
+    const after = setMemoryEnabled(enabled)
+    // 判据 14：完全访问档 + 开启记忆 = **最大风险组合**。必须当场告知（判据 14 明文：
+    // 只在设置页躺一行字等于没写），且**每次从关到开**都告一次 —— 风险组合是重新成立的。
+    // 标记落 meta.json：有了落点，"告知过"这三个字才查得到，不是靠"我记得说过"。
+    let warnFullAccess = false
+    if (enabled && !before && getPermissionPreset() === 'full-access') {
+      warnFullAccess = true
+      const meta = deps.memory.backend.readMeta()
+      deps.memory.backend.writeMeta({ ...meta, fullAccessNoticeShownAt: new Date().toISOString() })
+      log.warn('记忆已开启且当前为完全访问档：已当场告知并落痕', {})
+    }
+    if (before !== after) sendToAll(IPC.memoryChanged)
+    return { enabled: after, warnFullAccess }
   })
 
 

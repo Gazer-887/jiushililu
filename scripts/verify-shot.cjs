@@ -556,6 +556,10 @@ let memoryEntries = [
 let memoryWarnings = []
 const memorySaveCalls = []
 const memoryDeleteCalls = []
+// 记忆开关（plan19 批 1）的桩状态；`warnOnNextEnable` 用来模拟"主进程判定这是最大风险组合"
+let memorySwitch = false
+let memoryWarnOnNextEnable = false
+const memorySwitchCalls = []
 
 let gitBroadcast = () => 0
 let gitMode = 'repo' // 'repo' | 'not-repo'
@@ -731,6 +735,15 @@ const STUBS = {
     memoryEntries = memoryEntries.filter((e) => e.file !== file)
     memoryBroadcast()
     return memoryEntries.length !== before
+  },
+  // ── 记忆开关（plan19 批 1）── 判据 14 的**界面契约**：真实判定在 src/main/ipc.ts
+  //    （关→开 且 permissionPreset === 'full-access'）；门禁不加载它，故用 memoryWarnOnNextEnable 直接给值
+  'memory:get-switch': () => memorySwitch,
+  'memory:set-switch': (enabled) => {
+    const before = memorySwitch
+    memorySwitch = enabled
+    memorySwitchCalls.push(enabled)
+    return { enabled, warnFullAccess: memoryWarnOnNextEnable && enabled && !before }
   },
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   'models:list': () => ({
@@ -1971,10 +1984,68 @@ app.whenReady().then(async () => {
   `)
   console.log('SETTINGS_NAV=' + JSON.stringify(navInfo))
 
+  // ── 设置页「记忆」分区（plan19 批 1）· 判据 14 的 UI 契约 ──────────────────
+  // ⚠️ 判据 14 的**判定逻辑**在真主进程（关→开 且 完全访问档）；门禁不加载它，
+  //    故这里钉的是**界面契约**：主进程说 warnFullAccess，界面就必须当场告警、关回去就消失。
+  //    （开关桩在 STUBS 表里 —— 那张表启动时一次性注册，后挂的桩不会生效。）
+  const clickMemorySection = () =>
+    sevalRaw(`
+      (() => {
+        const b = Array.from(document.querySelectorAll('.settings-nav-item'))
+          .find((x) => x.textContent.trim() === '记忆');
+        if (b) b.click();
+        return !!b;
+      })()
+    `)
+  await clickMemorySection()
+  await new Promise((r) => setTimeout(r, 700))
+  const memSettings = await sevalRaw(`
+    (() => {
+      const box = document.querySelector('.settings-section .checkbox input[type="checkbox"]');
+      return {
+        h2: document.querySelector('.settings-body h2')?.textContent?.trim() ?? null,
+        hasCheckbox: !!box,
+        checked: box ? box.checked : null,
+        disabled: box ? box.disabled : null,
+        note: (document.querySelector('.settings-body .field-note')?.textContent ?? '').length
+      };
+    })()
+  `)
+  console.log('SETTINGS_MEMORY=' + JSON.stringify(memSettings))
+  checkTrue(
+    '设置页有「记忆」分区：开关存在、可点、说明走 ⓘ',
+    memSettings.h2 === '记忆' && memSettings.hasCheckbox === true && memSettings.disabled === false,
+    memSettings
+  )
+
+  // 判据 14：完全访问档下开启记忆 → **当场**出现告警（躺一行字等于没写）。
+  // ⚠️ 先把"主进程判定为最大风险组合"这个开关打开 —— 上一版忘了置位，桩返回 false，
+  //    红的其实是探针而不是产品（证伪纪律的又一次兑现：红的必须先查是谁的错）
+  memoryWarnOnNextEnable = true
+  await sevalRaw(
+    "(() => { document.querySelector('.settings-section .checkbox input[type=checkbox]').click(); return true; })()"
+  )
+  await new Promise((r) => setTimeout(r, 600))
+  const warnShown = await sevalRaw(`(() => !!document.querySelector('.mem-settings-warn'))()`)
+  checkTrue(
+    '判据 14：完全访问档下开启记忆 → **当场**出现告警（只躺一行字等于没写）',
+    warnShown === true && memorySwitchCalls.includes(true),
+    { warnShown, calls: memorySwitchCalls }
+  )
+  await sevalRaw(
+    "(() => { document.querySelector('.settings-section .checkbox input[type=checkbox]').click(); return true; })()"
+  )
+  await new Promise((r) => setTimeout(r, 600))
+  const warnGone = await sevalRaw(`(() => !!document.querySelector('.mem-settings-warn'))()`)
+  checkTrue('判据 14：关回去告警即消失（风险组合不再成立）', warnGone === false, warnGone)
+  memorySwitch = false
+  memoryWarnOnNextEnable = false
+
   for (const [label, slug] of [
     ['通用设置', 'general'],
     ['模型', 'model'],
     ['子 Agent', 'agents'],
+    ['记忆', 'memory'],
     ['外观', 'appearance'],
     ['故障排查', 'trouble']
   ]) {
@@ -6642,6 +6713,8 @@ app.whenReady().then(async () => {
           total: el.querySelector('.usage-total')?.textContent ?? null,
           last: el.querySelector('.usage-last')?.textContent ?? null,
           saved: el.querySelector('.usage-saved')?.textContent ?? null,
+          // 注入税（plan19 §5.2）：第三笔账，同样要"有就显示、没有就不显示"
+          memoryTax: el.querySelector('.usage-memory')?.textContent ?? null,
           // 命中率 / 思考占比：两块可能都在、只在一块、或一块都没有（"都没有"正是**厂商没报**那档，不许冒 0%）
           rates: Array.from(el.querySelectorAll('.usage-rate')).map((n) => n.textContent),
           tier: el.querySelector('.usage-tier')?.textContent ?? null,
@@ -6660,11 +6733,16 @@ app.whenReady().then(async () => {
     payload: {
       usage: { promptTokens: 1200, completionTokens: 340, cachedPromptTokens: 0, reasoningTokens: 0 },
       avoided: 4800,
+      // 注入税（plan19 §5.2）：本轮记忆段占掉的估算 token —— 有就显示，且必须标"估"
+      memoryTokens: 340,
       tier: 'light'
     }
   })
   await new Promise((r) => setTimeout(r, 500))
   const chip1 = await readUsageChip()
+  checkTrue('判据 13b：注入税出现在用量牌上，且标明是**估算**',
+    typeof chip1.memoryTax === 'string' && chip1.memoryTax.includes('340') && chip1.memoryTax.includes('估'),
+    chip1.memoryTax)
 
   // 再来一轮：+1000 → 累计 2540 → 2.5k（这条才是“累计”的判据）；命中 800/2000 = 40%，推理 200/540 = 37%
   win.webContents.send('chat:done', {

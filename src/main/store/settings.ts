@@ -20,6 +20,8 @@ interface StoredSettings extends ModelSettings {
   apiKeysEncrypted?: Record<string, string>
   /** 访问权限档（D-032：能力归模型，权限归人） */
   permissionPreset?: PermissionPreset
+  /** **记忆开关**（plan19 批 1）。缺字段 = 老配置 → 视为开（否则记忆批做了等于没做） */
+  memoryEnabled?: boolean
   /**
    * 省 token 档位（plan8 R9.1 §七②）。放**全局设置**而非模型档案：用户定调"**档位是全局的**，不做会话级覆盖"
    * —— 它是"你更在乎能力还是在乎钱"的偏好，跟用哪条连接无关。缺字段 = 老配置 → 按 `DEFAULT_TOKEN_TIER`（平衡）
@@ -53,6 +55,20 @@ export function getPermissionPreset(): PermissionPreset {
 export function setPermissionPreset(preset: PermissionPreset): PermissionPreset {
   store.set('permissionPreset', preset)
   return getPermissionPreset()
+}
+
+/**
+ * **记忆开关**（plan19 批 1）。批 1 只管**通路 A**（模型工具 remember / recall）是否下发 ——
+ * 通路 B（选中即记）是用户主动行为，不受它管（批 2 起这个开关才长出"自动记忆"的语义）。
+ * 缺省 = **开**：否则记忆批做了等于没做。判断走 `!== false`（手改坏成 undefined 也不至于静默关掉）。
+ */
+export function getMemoryEnabled(): boolean {
+  return store.store.memoryEnabled !== false
+}
+
+export function setMemoryEnabled(enabled: boolean): boolean {
+  store.set('memoryEnabled', enabled)
+  return getMemoryEnabled()
 }
 
 /**

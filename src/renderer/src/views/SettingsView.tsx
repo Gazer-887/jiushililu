@@ -10,6 +10,7 @@ import type {
 import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import AgentManager from '../components/AgentManager'
+import MemorySettings from '../components/MemorySettings'
 import FieldNote from '../components/FieldNote'
 import { useAppStore } from '../store'
 import { THEMES, FONT_SCALES } from '@shared/splitter'
@@ -30,7 +31,7 @@ import {
  * 图标是手写内联 SVG：为几个图标引一个图标库不划算，且本项目维持零 UI 框架依赖。
  * 分区按**真实存在的能力**划分，不放空条目（P3 生态的 MCP / 技能届时再加；子 Agent 已随 plan17 落地）。
  */
-type SectionId = 'general' | 'model' | 'agents' | 'appearance' | 'trouble'
+type SectionId = 'general' | 'model' | 'agents' | 'memory' | 'appearance' | 'trouble'
 
 /** 权限档展示顺序：从最严到最松（与输入框工具栏同一口径） */
 const PERM_ORDER: PermissionPreset[] = ['read-only', 'write', 'full-access']
@@ -77,6 +78,16 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
         <circle cx="5.2" cy="4.4" r="2.4" />
         <circle cx="11.6" cy="11.2" r="2.4" />
         <path d="M7.6 5.9 9.5 9.4" />
+      </svg>
+    )
+  },
+  {
+    id: 'memory',
+    label: '记忆',
+    icon: (
+      <svg {...ICON_PROPS} aria-hidden="true">
+        <path d="M8 2.2a3.4 3.4 0 0 1 3.4 3.4v4.8a3.4 3.4 0 0 1-6.8 0V5.6A3.4 3.4 0 0 1 8 2.2z" />
+        <path d="M5.5 8.6h5" />
       </svg>
     )
   },
@@ -1008,6 +1019,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         )}
 
         {section === 'agents' && <AgentManager />}
+
+        {section === 'memory' && <MemorySettings />}
 
         {section === 'appearance' && (
           /* 主题切换，切换即时生效并持久化；各主题说明收进组 ⓘ（2026-09-14 界面极简定调） */

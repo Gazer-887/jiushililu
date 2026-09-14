@@ -108,6 +108,9 @@ const api: ApiBridge = {
   onMemoryChanged: (cb) => subscribe(IPC.memoryChanged, () => cb()),
   /** 护栏 2（D-043）：本轮写入痕迹 —— 只推"刚发生的事实"，全量巡检在右抽屉 */
   onMemoryNotice: (cb) => subscribe(IPC.memoryNotice, (payload) => cb(payload as MemoryNoticeEvent)),
+  // 记忆开关（批 1）：只管通路 A
+  getMemorySwitch: () => ipcRenderer.invoke(IPC.memoryGetSwitch),
+  setMemorySwitch: (enabled: boolean) => ipcRenderer.invoke(IPC.memorySetSwitch, enabled),
   getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getTokenTier: () => ipcRenderer.invoke(IPC.tokenTierGet),

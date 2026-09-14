@@ -6092,3 +6092,25 @@ body[data-resizing] {
   display: flex;
   gap: 6px;
 }
+
+/* 判据 14：开启记忆时正处于完全访问档 —— 当场告警（不是设置页躺一行字） */
+.mem-settings-warn {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-loose);
+}
+
+/* 注入税（plan19 §5.2）：用量牌上的第三笔账，样式与"省"对齐但用 ask 色区分来源 */
+.usage-memory {
+  margin-left: var(--sp-2);
+  padding: 0 var(--sp-2);
+  border-radius: 6px;
+  background: var(--bg-soft, transparent);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
