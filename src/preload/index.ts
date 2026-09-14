@@ -3,7 +3,7 @@ import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { ModelSaveInput } from '@shared/models'
-import type { GoalAction } from '@shared/goal'
+import type { Goal, GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
 import type { TokenUsage } from '@shared/usage'
@@ -173,6 +173,7 @@ const api: ApiBridge = {
   getTodos: (conversationId: string) => ipcRenderer.invoke(IPC.todoGet, conversationId),
   onTodoChanged: (cb) =>
     subscribe(IPC.todoChanged, (e) => cb(e as StreamEnvelope<TodoItem[]>)),
+  onGoalChanged: (cb) => subscribe(IPC.goalChanged, (e) => cb(e as StreamEnvelope<Goal>)),
   getSubagents: (conversationId: string) => ipcRenderer.invoke(IPC.subagentGet, conversationId),
   onSubagentChanged: (cb) =>
     subscribe(IPC.subagentChanged, (e) => cb(e as StreamEnvelope<SubagentJobEvent[]>)),

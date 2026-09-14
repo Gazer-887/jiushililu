@@ -2,6 +2,7 @@
 
 import type { UIPrefs } from './splitter'
 import type { TodoItem } from './todo'
+import type { Goal } from './goal'
 import type { TokenUsage } from './usage'
 import type { TokenSaverTier } from './token-tier'
 import type { SubagentJobEvent } from './agent'
@@ -341,6 +342,8 @@ export const IPC = {
   uiPrefsReset: 'ui-prefs:reset',
   todoChanged: 'todo:changed',
   todoGet: 'todo:get',
+  /** Agent 自建目标时的实时推送（plan12 ⑤，带会话信封）；用户侧操作后由 goal:list 重拉，不走这条 */
+  goalChanged: 'goal:changed',
   subagentChanged: 'subagent:changed',
   subagentGet: 'subagent:get',
   flushRequest: 'app:flush-request',
@@ -626,6 +629,8 @@ export interface ApiBridge {
   // ── 待办清单（plan7 批 D 提前落地）──
   getTodos(conversationId: string): Promise<TodoItem[]>
   onTodoChanged(cb: (e: StreamEnvelope<TodoItem[]>) => void): () => void
+  /** Agent 自建目标（plan12 ⑤）：实时并入当前会话的目标列表 */
+  onGoalChanged(cb: (e: StreamEnvelope<Goal>) => void): () => void
   getSubagents(conversationId: string): Promise<SubagentJobEvent[]>
   onSubagentChanged(cb: (e: StreamEnvelope<SubagentJobEvent[]>) => void): () => void
   // ── 关窗口前的会话落盘（plan11 P0-2）──

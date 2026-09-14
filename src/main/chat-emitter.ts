@@ -15,6 +15,7 @@ import { IPC, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
 import type { AskRequest } from '@shared/ask'
 import type { ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
+import type { Goal } from '@shared/goal'
 import type { SubagentJobEvent } from '@shared/agent'
 import type { TokenUsage } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
@@ -27,6 +28,7 @@ type StreamChannel =
   | typeof IPC.chatDone
   | typeof IPC.chatError
   | typeof IPC.todoChanged
+  | typeof IPC.goalChanged
   | typeof IPC.subagentChanged
   | typeof IPC.checkpointChanged
   | typeof IPC.askRequest
@@ -36,6 +38,8 @@ export interface ChatEmitter {
   reasoning(delta: string): void
   tool(evt: ToolEvent): void
   todos(todos: TodoItem[]): void
+  /** Agent 自建了一条目标（plan12 ⑤）—— 单条推，界面并入当前会话的列表 */
+  goal(goal: Goal): void
   subagents(list: SubagentJobEvent[]): void
   checkpoint(runId: string): void
   /**
@@ -71,6 +75,7 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     reasoning: (delta) => send(IPC.chatReasoning, delta),
     tool: (evt) => send(IPC.chatTool, evt),
     todos: (todos) => send(IPC.todoChanged, todos),
+    goal: (goal) => send(IPC.goalChanged, goal),
     subagents: (list) => send(IPC.subagentChanged, list),
     checkpoint: (runId) => send(IPC.checkpointChanged, runId),
     done: (usage, avoided = 0, tier) =>

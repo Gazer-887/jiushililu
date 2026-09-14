@@ -1520,11 +1520,36 @@ app.whenReady().then(async () => {
         count: items.length,
         marks: items.map((el) => el.querySelector('.todo-mark')?.textContent?.trim() ?? null),
         classes: items.map((el) => el.className),
-        texts: items.map((el) => el.querySelector('.todo-text')?.textContent?.trim() ?? null)
+        texts: items.map((el) => el.querySelector('.todo-text')?.textContent?.trim() ?? null),
+        // 与目标的联动（plan12 ⑥）：挂着进行中的目标时，面板顶部一行"服务于哪条"
+        goalLine: (() => {
+          const line = panel?.querySelector('.todo-goal');
+          return line
+            ? {
+                tag: line.querySelector('.todo-goal-tag')?.textContent?.trim() ?? null,
+                text: line.querySelector('.todo-goal-text')?.textContent?.trim() ?? null,
+                more: line.querySelector('.todo-goal-more')?.textContent?.trim() ?? null
+              }
+            : null;
+        })()
       };
     })()
   `)
   console.log('TODO_PANEL=' + JSON.stringify(todoInfo))
+  // plan12 ⑥：待办面板顶部「服务于哪条目标」联动行 —— 桩的 FAKE_GOALS 前两条都是 open（active+paused），
+  // 主进程 listGoals 已排序（进行中 → 暂停），联动行应取第一条并如实标注总数
+  checkTrue(
+    '挂着进行中的目标时，待办面板顶部出现「目标」联动行，文本是排序后的第一条',
+    todoInfo.goalLine !== null &&
+      todoInfo.goalLine.tag === '目标' &&
+      todoInfo.goalLine.text === FAKE_GOALS[0].text,
+    todoInfo.goalLine
+  )
+  checkTrue(
+    'open 目标不止一条 → 联动行如实标注「等 N 条」（不假装只有一条）',
+    todoInfo.goalLine?.more === '等 2 条',
+    todoInfo.goalLine?.more
+  )
   // 等一帧再拍：面板是“挂载 → 异步拉清单 → 渲染”三步出来的，量完立刻 capturePage 可能是空画面
   await new Promise((r) => setTimeout(r, 500))
   const shotTodo = await win.webContents.capturePage()
@@ -1541,11 +1566,13 @@ app.whenReady().then(async () => {
   const todoCollapsed = await win.webContents.executeJavaScript(`
     (() => ({
       listGone: !document.querySelector('.todo-list'),
+      goalGone: !document.querySelector('.todo-goal'),
       expanded: document.querySelector('.todo-head')?.getAttribute('aria-expanded') ?? null,
       panelH: Math.round(document.querySelector('.todo-panel')?.getBoundingClientRect().height ?? 0)
     }))()
   `)
   console.log('TODO_COLLAPSE=' + JSON.stringify(todoCollapsed))
+  checkTrue('折叠后目标联动行一并收起（不占地方）', todoCollapsed.goalGone === true, todoCollapsed)
 
   await win.webContents.executeJavaScript(`
     (() => {

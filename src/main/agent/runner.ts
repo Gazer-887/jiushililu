@@ -21,6 +21,7 @@ import {
 import { createWebTools } from './tools/web-tools'
 import { createBrowserTools } from './tools/browser-tools'
 import { createTodoTools } from './tools/todo-tools'
+import { createGoalTools } from './tools/goal-tools'
 import { createAskTools, type AskReporter } from './tools/ask-tools'
 import type { AskRequest } from '@shared/ask'
 import { createSubagentTools, type SubagentDispatcher } from './tools/subagent-tools'
@@ -58,6 +59,8 @@ const READ_ONLY_TOOLS = new Set([
   'browser_click',
   'browser_type',
   'update_todos',
+  // 目标与待办同族（plan12 ⑤）：只写应用自身的会话状态（goals.json），不动机器也不碰用户文件
+  'set_goal',
   'ask_user'
 ])
 
@@ -102,6 +105,8 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     ...createBrowserTools(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
     ...(hooks.onTodos ? createTodoTools({ update: hooks.onTodos }) : []),
+    // 目标（plan12 ⑤）：同理 —— onSetGoal 由组合根实现（store + 推送都在那儿，runner 不碰 electron-store）
+    ...(hooks.onSetGoal ? createGoalTools({ setGoal: hooks.onSetGoal }) : []),
     // 提问：同理 —— 没人在界面那头作答时，`ask_user` 只会让模型干等满超时
     ...(hooks.ask ? createAskTools(hooks.ask) : []),
     // 子代理派发：同理 —— 没有运行记录消费方时，模型派了也没人看得见
@@ -116,6 +121,8 @@ export interface ToolHooks {
   /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
   confirmCommand?: CommandConfirm
   onTodos?: (todos: TodoItem[]) => void
+  /** 目标创建口（plan12 ⑤）；不传 = 不下发 set_goal 工具（「有消费者才注册」，同 todos/ask/subagent） */
+  onSetGoal?: (input: { text: string; doneWhen?: string }) => import('@shared/goal').Goal
   /** 提问口（Agent 向用户要主意）；不传 = 不下发 ask_user 工具 */
   ask?: AskReporter
   /** 子代理派发口（plan7 批 D）；不传 = 不下发 spawn_agents 工具 */
@@ -185,6 +192,8 @@ export interface RunAgentArgs {
   onReasoning?: (delta: string) => void
   onToolEvent?: (evt: ToolEvent) => void
   onTodos?: (todos: TodoItem[]) => void
+  /** 目标创建口（plan12 ⑤）：组合根实现——调 goal store + 推送界面；不传 = 不下发 set_goal 工具 */
+  onSetGoal?: (input: { text: string; doneWhen?: string }) => import('@shared/goal').Goal
   onSubagentEvent?: (evt: SubagentJobEvent) => void
   /** 工具输出被**窗口化**时回调（plan8 R9.1）：非要有这条痕 —— 工具事件是渲染进程内存态、每轮清空、重挂载即丢，只靠界面显示"已压缩 xx%"等于"当时没看见就永远查不到"。 */
   onToolWindowed?: (info: { name: string; beforeTokens: number; afterTokens: number; reason: string }) => void
@@ -284,6 +293,7 @@ export async function runAgent(
         }
       : {}),
     ...(args.onTodos ? { onTodos: args.onTodos } : {}),
+    ...(args.onSetGoal ? { onSetGoal: args.onSetGoal } : {}),
     // 提问：conversationId 在这里补（工具层拿不到会话身份，界面要靠它说明"这条问题出自哪条会话"）；
     // 权限档**不做额外限制**（ask_user 只把问题交给用户，只读档也该能问）。
     ...(ctx.ask
@@ -325,6 +335,8 @@ export async function runAgent(
     '4. **多步任务先列清单。** 需要三步以上的活儿，先用 update_todos 列出计划，',
     '   之后每完成一步就更新一次状态——用户据此知道进行到哪了。',
     '   单步小事不必列（清单是给"长活"用的，不是每句话都开一张表）。',
+    '   另外：用户交代了**跨轮次**的长期意图（"以后每次都要…""这个项目最终要…"）时，',
+    '   用 set_goal 登记成目标——目标跨轮次存活、用户能暂停/完成它，与待办是两回事。',
     '5. **能并行的独立活派给子代理。** 有多个互不依赖的子任务（同时审几个文件、分别查几条线索）时，',
     '   用 spawn_agents 一次派出去并行跑，比一件件做快得多。',
     '   但子代理看不到你们的对话，任务书必须自包含；有先后依赖的活别派。',

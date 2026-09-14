@@ -4410,6 +4410,36 @@ body[data-resizing] {
   color: var(--muted);
 }
 
+/* 目标联动行（plan12 ⑥）：待办挂着进行中的目标时，面板顶部一句"服务于哪条" —— 次要色，不与待办条目抢眼 */
+.todo-goal {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-12);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+
+.todo-goal-tag {
+  flex: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.todo-goal-text {
+  flex: 1;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-goal-more {
+  flex: none;
+  color: var(--muted);
+}
+
 .todo-list {
   max-height: 160px;
   overflow-y: auto;

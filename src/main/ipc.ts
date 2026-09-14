@@ -471,6 +471,19 @@ export function registerIpcHandlers(deps: {
           todosByConversation.set(conversationId, todos)
           emit.todos(todos)
         },
+        // 目标创建（plan12 ⑤）：Agent 也能自建 —— store 写入与界面推送都在组合根（runner 不碰 electron-store）。
+        // createdBy 与 runner 的 agentLabel 同口径（chatSend 跑的是内核默认）；子代理走 scheduler、
+        // 不注入 onSetGoal —— 单次报告的子代理不该留下长期意图。
+        onSetGoal: (input) => {
+          const goal = createGoalFor({
+            conversationId,
+            text: input.text,
+            createdBy: '内核默认',
+            ...(input.doneWhen ? { doneWhen: input.doneWhen } : {})
+          })
+          emit.goal(goal)
+          return goal
+        },
         // 工具输出成形留痕（plan8 R9.1）：界面那条是内存态，日志这条才追得回来
         onToolWindowed: (info) => log.info('工具输出已成形', { conversationId, ...info }),
         // 校准开关（plan8 R9.1）：只认 `JSL_TOOL_WINDOW=off`，不给就是默认开 —— 免得留一个"忘了配就悄悄变了行为"的配置面。

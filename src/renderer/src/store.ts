@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Goal, GoalAction } from '@shared/goal'
+import { sortGoals, type Goal, type GoalAction } from '@shared/goal'
 import type {
   ChatDonePayload,
   ChatMessage,
@@ -217,6 +217,8 @@ interface AppState {
   flushAll: () => Promise<void>
   goals: Goal[]
   loadGoals: (conversationId: string) => Promise<void>
+  /** Agent 自建目标（plan12 ⑤）：只并入**当前会话**的目标列表 —— 目标是会话的属性，别会的不串台 */
+  applyAgentGoal: (goal: Goal) => void
   createGoal: (conversationId: string, text: string) => Promise<void>
   actOnGoal: (id: string, action: GoalAction, patch?: { text?: string; doneWhen?: string }) => Promise<void>
   deleteGoal: (id: string) => Promise<void>
@@ -906,6 +908,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch {
       set({ goals: [] })
     }
+  },
+  applyAgentGoal: (goal) => {
+    const s = get()
+    if (goal.conversationId !== s.activeId) return
+    if (s.goals.some((g) => g.id === goal.id)) return
+    set({ goals: sortGoals([goal, ...s.goals]) })
   },
   createGoal: async (conversationId: string, text: string) => {
     await window.api.createGoal({ conversationId, text })

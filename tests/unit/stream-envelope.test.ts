@@ -22,6 +22,8 @@ const STREAM_CONSTS = [
   'IPC.chatDone',
   'IPC.chatError',
   'IPC.todoChanged',
+  // goal:changed —— Agent 自建目标是**某条会话**的事（plan12 ⑤），进会话信封
+  'IPC.goalChanged',
   'IPC.subagentChanged',
   'IPC.checkpointChanged',
   'IPC.confirmRequest',
