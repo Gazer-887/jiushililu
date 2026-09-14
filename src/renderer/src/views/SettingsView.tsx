@@ -9,6 +9,7 @@ import type {
 } from '@shared/ipc'
 import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
+import AgentManager from '../components/AgentManager'
 import FieldNote from '../components/FieldNote'
 import { useAppStore } from '../store'
 import { THEMES, FONT_SCALES } from '@shared/splitter'
@@ -27,9 +28,9 @@ import {
 /*
  * 设置分区导航（plan8 R7）：形制对齐 DSH 设置页 —— 左侧分区导航 + 右侧内容，选中项为圆角胶囊高亮。
  * 图标是手写内联 SVG：为几个图标引一个图标库不划算，且本项目维持零 UI 框架依赖。
- * 分区按**真实存在的能力**划分，不放空条目（将来 P3 生态的 MCP / 技能 / Agent 预设再加）。
+ * 分区按**真实存在的能力**划分，不放空条目（P3 生态的 MCP / 技能届时再加；子 Agent 已随 plan17 落地）。
  */
-type SectionId = 'general' | 'model' | 'appearance' | 'trouble'
+type SectionId = 'general' | 'model' | 'agents' | 'appearance' | 'trouble'
 
 /** 权限档展示顺序：从最严到最松（与输入框工具栏同一口径） */
 const PERM_ORDER: PermissionPreset[] = ['read-only', 'write', 'full-access']
@@ -65,6 +66,17 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
         <path d="M8 1.9 14 5.2v5.6L8 14.1 2 10.8V5.2z" />
         <path d="M2 5.2 8 8.5l6-3.3" />
         <path d="M8 8.5v5.6" />
+      </svg>
+    )
+  },
+  {
+    id: 'agents',
+    label: '子 Agent',
+    icon: (
+      <svg {...ICON_PROPS} aria-hidden="true">
+        <circle cx="5.2" cy="4.4" r="2.4" />
+        <circle cx="11.6" cy="11.2" r="2.4" />
+        <path d="M7.6 5.9 9.5 9.4" />
       </svg>
     )
   },
@@ -985,6 +997,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             )}
           </>
         )}
+
+        {section === 'agents' && <AgentManager />}
 
         {section === 'appearance' && (
           /* 主题切换（水墨 / 经典），切换即时生效并持久化 */

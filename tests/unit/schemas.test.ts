@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mapHttpError, isAbortError } from '@main/providers/errors'
-import { chatMessagesSchema, settingsSchema, storedMessagesSchema } from '@main/schemas'
+import { chatMessagesSchema, chatSendInputSchema, settingsSchema, storedMessagesSchema } from '@main/schemas'
 import { normalizeHistory } from '@main/store/conversations-core'
 
 describe('mapHttpError（HTTP 错误翻译成人话）', () => {
@@ -78,6 +78,18 @@ describe('chatMessagesSchema（发给模型的那份）', () => {
 
   it('合法消息通过', () => {
     expect(chatMessagesSchema.parse([{ role: 'user', content: 'hi' }])).toHaveLength(1)
+  })
+})
+
+describe('chatSendInputSchema（chat:send 入参）', () => {
+  const base = { conversationId: 'c1', messages: [{ role: 'user', content: 'hi' }] }
+
+  it('agentName 可选（plan17）：不带 = 内核默认，老渲染端零回归', () => {
+    expect(chatSendInputSchema.safeParse(base).success).toBe(true)
+  })
+
+  it('agentName 越界（>64 字符）拒绝', () => {
+    expect(chatSendInputSchema.safeParse({ ...base, agentName: 'a'.repeat(65) }).success).toBe(false)
   })
 })
 

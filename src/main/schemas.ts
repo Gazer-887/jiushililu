@@ -56,7 +56,9 @@ export const conversationIdSchema = z.string().min(1).max(64)
 /** `chat:send` 入参：消息 + **这次跑属于哪条会话**（plan11 §2.1，缺 id 就是串台的起点） */
 export const chatSendInputSchema = z.object({
   conversationId: conversationIdSchema,
-  messages: chatMessagesSchema
+  messages: chatMessagesSchema,
+  // 主 Agent（plan17 G2）：不带 = 内核默认；带了但定义不存在 → runAgent 抛人话错误走 chat:error
+  agentName: z.string().max(64).optional()
 })
 
 /**

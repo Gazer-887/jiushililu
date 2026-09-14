@@ -54,7 +54,12 @@ export interface ConversationsRepo {
   saveConversation(
     id: string,
     messages: ChatMessage[],
-    stats?: { usage?: ConversationMeta['usage']; avoidedTokens?: number }
+    stats?: {
+      usage?: ConversationMeta['usage']
+      avoidedTokens?: number
+      /** 最近一次使用的主 Agent（plan17 D9）：给了才更新，不给保持原值——回滚/改名不许抹掉。**空串 = 切回内核默认**（删字段） */
+      agentName?: string
+    }
   ): ConversationMeta | null
   renameConversation(id: string, title: string): ConversationMeta | null
   deleteConversation(id: string): void
@@ -176,7 +181,9 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
         model: input.model,
         // 绑定模型档案（plan7 F5）：有就记上；老数据没有这个字段 → 打开时按名字兜底
         ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
-        skills: input.skills,
+        // 主 Agent（plan17）：创建时选了才记；缺字段 = 内核默认（老会话零回归）
+        ...(input.agentName ? { agentName: input.agentName } : {}),
+        skills: input.skills ?? [],
         createdAt: now,
         updatedAt: now,
         messageCount: messages.length
@@ -242,6 +249,11 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       // 省下的量（plan8 R9.1）：同一条"只长不缩"的规矩
       if (typeof stats?.avoidedTokens === 'number') {
         next.avoidedTokens = Math.max(current.avoidedTokens ?? 0, Math.round(stats.avoidedTokens))
+      }
+      // 主 Agent（plan17 D9）：给才更新，不给保持原值（与 usage 的"没给不许抹"同一原则；它不是账，直接覆盖）。空串 = 切回内核默认
+      if (typeof stats?.agentName === 'string') {
+        if (stats.agentName === '') delete next.agentName
+        else next.agentName = stats.agentName
       }
       // **先正文、后索引**（见上方约定）：索引跟着正文走，不会出现"索引说有、正文没有"
       backend.writeMessages(id, nextLog)

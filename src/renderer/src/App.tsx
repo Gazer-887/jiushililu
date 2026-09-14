@@ -66,6 +66,9 @@ function useStreamSubscriptions(): void {
     // 设置变更（2026-09-13 设置独立窗口）：用户在设置窗口里改了主题/权限档/模型，
     // 这个窗口要跟着变 —— 两个渲染进程的 store 不共享，只能靠主进程广播
     const offSettings = s().subscribeSettingsChanged()
+    // Agent 定义变更（plan17 D8）：设置窗口里 save/delete 后，这里重读（不搬变更内容）
+    const offAgents = window.api.onAgentsChanged(() => void s().refreshAgents())
+    void s().refreshAgents()
 
     return () => {
       offChunk()
@@ -79,6 +82,7 @@ function useStreamSubscriptions(): void {
       offAsk()
       offFlush()
       offSettings()
+      offAgents()
     }
   }, [])
 }

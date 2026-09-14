@@ -63,6 +63,9 @@ export default function ChatView() {
   const stopStreaming = useAppStore((s) => s.stopStreaming)
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
+  // 主 Agent（plan17）：meta 是真相源；定义被删 → 降级标记（回退内核默认，但如实显示原名）
+  const agentsView = useAppStore((s) => s.agentsView)
+  const selectAgent = useAppStore((s) => s.selectAgent)
   const [input, setInput] = useState('')
   /** 思考块展开态；默认展开 —— 流式期看得见它在想什么才叫"过程可见" */
   const [showReasoning, setShowReasoning] = useState(true)
@@ -147,6 +150,16 @@ export default function ChatView() {
               技能 {active.skills.length}
             </span>
           )}
+          {(() => {
+            if (!active.agentName) return null
+            // 定义已删 = 不在生效集合里：如实显示原名并标注，运行时已回退内核默认
+            const alive = (agentsView?.entries ?? []).some((e) => !e.overridden && e.name === active.agentName)
+            return (
+              <span className={`chat-agent ${alive ? '' : 'chat-agent-gone'}`} title={alive ? '当前主 Agent' : '定义已删除，运行时回退为内核默认'}>
+                {alive ? `Agent ${active.agentName}` : `Agent ${active.agentName}（已删除）`}
+              </span>
+            )
+          })()}
         </div>
       )}
 
@@ -238,6 +251,10 @@ export default function ChatView() {
           busy={streaming}
           onStop={() => void stopStreaming()}
           usedTokens={tokens}
+          selectedAgent={active?.agentName ?? null}
+          onSelectAgent={(name) => {
+            if (activeId) void selectAgent(activeId, name ?? '')
+          }}
           dropZone={viewRef}
         />
       </div>

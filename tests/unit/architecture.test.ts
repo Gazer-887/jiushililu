@@ -82,6 +82,7 @@ function findBannedInGraph(entry: string): string[] {
 const TEST_ENTRIES = [
   'tests/unit/agent.test.ts',
   'tests/unit/agent-infra.test.ts',
+  'tests/unit/agents-store.test.ts',
   'tests/unit/context.test.ts',
   'tests/unit/conversation-rollback.test.ts',
   'tests/unit/conversations-fs.test.ts',

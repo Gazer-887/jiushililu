@@ -6,6 +6,7 @@ import type {
   SubagentJobEvent
 } from '@shared/agent'
 import { runAgentLoop } from './loop'
+import { composeAgentPrompt } from './loader'
 import type { TokenPolicy } from '@shared/token-tier'
 import type { AgentDefinition } from './loader'
 
@@ -77,7 +78,8 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
       try {
         const loop = await runAgentLoop({
           systemPrompt:
-            `你是子代理「${def.name}」。${def.description}\n\n${def.systemPrompt}` +
+            // 拼接走 loader 的纯函数（plan17 D10）：与主循环同式，防两处格式漂移
+            composeAgentPrompt(def, 'subagent') +
             // 输出纪律（§七③）：与主代理同一份 —— 子代理的输出同样计费，纪律不该只约束一半
             (opts.systemSuffix ? `\n\n${opts.systemSuffix}` : ''),
           history: [{ role: 'user', content: jobTask }],

@@ -1,25 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SkillInfo } from '@shared/ipc'
+import { useAppStore } from '../store'
 
 // 「＋」号拓展面板（P2）：新建任务页与对话页共用的能力入口。
-// 用户要求页面尽量简洁 —— 技能 / 子 Agent 收进这里按需选取（文件、图片、MCP 也挂这里）。
+// plan17 D1：「技能 / 子 Agent」多选改造成「主 Agent」**单选** —— 多选没有执行语义
+// （plan6 的模型是模型自决派发子代理，预选清单派不出任务书），且旧链路 chat:send 不带它 = 选了不生效。
+// "技能"概念归还 F6（.skills 运行时）。
 
 export interface PlusMenuProps {
-  picked: string[]
-  /** 不传则只提供附件能力（对话页的技能由会话创建时决定） */
-  onToggle?: (name: string) => void
+  /** 当前选中的主 Agent；null = 内核默认 */
+  selectedAgent: string | null
+  /** 不传则只提供附件能力（如对话页由上层决定要不要给选择区） */
+  onSelectAgent?: (name: string | null) => void
   onAttach?: () => void
 }
 
-export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps): JSX.Element {
+export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: PlusMenuProps): JSX.Element {
   const [open, setOpen] = useState(false)
-  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const agentsView = useAppStore((s) => s.agentsView)
+  const refreshAgents = useAppStore((s) => s.refreshAgents)
   const boxRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!onToggle) return // 不需要技能列表就不拉取
-    void window.api.listSkills().then(setSkills)
-  }, [onToggle])
+    if (!onSelectAgent) return // 不需要选择区就不拉取
+    void refreshAgents()
+  }, [onSelectAgent, refreshAgents])
 
   useEffect(() => {
     if (!open) return
@@ -30,6 +34,9 @@ export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps):
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
+  // 生效集合 = 全量视图里未被覆盖的条目（含内置）；被覆盖的不出现在选择器里
+  const effective = (agentsView?.entries ?? []).filter((e) => !e.overridden)
+
   return (
     <div className="plus-wrap" ref={boxRef}>
       <button
@@ -38,7 +45,7 @@ export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps):
         onClick={() => setOpen((v) => !v)}
       >
         ＋
-        {picked.length > 0 && <span className="plus-badge">{picked.length}</span>}
+        {selectedAgent && <span className="plus-badge">A</span>}
       </button>
 
       {open && (
@@ -63,24 +70,37 @@ export default function PlusMenu({ picked, onToggle, onAttach }: PlusMenuProps):
             </div>
           </div>
 
-          {onToggle && (
+          {onSelectAgent && (
             <div className="plus-section">
-              <div className="plus-title">技能 / 子 Agent</div>
-              {skills.length === 0 ? (
-                <div className="plus-empty">未发现可用定义</div>
-              ) : (
-                skills.map((s) => (
-                  <button
-                    key={s.name}
-                    className={`plus-item ${picked.includes(s.name) ? 'on' : ''}`}
-                    onClick={() => onToggle(s.name)}
-                  >
-                    <span className="plus-check">{picked.includes(s.name) ? '✓' : ''}</span>
-                    <span className="plus-name">{s.name}</span>
-                    <span className="plus-desc">{s.description}</span>
-                    {s.source === 'user' && <span className="plus-tag">自建</span>}
-                  </button>
-                ))
+              <div className="plus-title">主 Agent</div>
+              <button
+                className={`plus-item ${!selectedAgent ? 'on' : ''}`}
+                onClick={() => {
+                  onSelectAgent(null)
+                  setOpen(false)
+                }}
+              >
+                <span className="plus-check">{!selectedAgent ? '✓' : ''}</span>
+                <span className="plus-name">内核默认</span>
+                <span className="plus-desc">九十里路的内置 Agent</span>
+              </button>
+              {effective.map((s) => (
+                <button
+                  key={s.file}
+                  className={`plus-item ${selectedAgent === s.name ? 'on' : ''}`}
+                  onClick={() => {
+                    onSelectAgent(s.name)
+                    setOpen(false)
+                  }}
+                >
+                  <span className="plus-check">{selectedAgent === s.name ? '✓' : ''}</span>
+                  <span className="plus-name">{s.name}</span>
+                  <span className="plus-desc">{s.description}</span>
+                  <span className="plus-tag">{s.source === 'user' ? '自建' : s.source === 'project' ? '项目' : '内置'}</span>
+                </button>
+              ))}
+              {agentsView && agentsView.warnings.length > 0 && (
+                <div className="plus-empty">部分定义加载失败：{agentsView.warnings.length} 条（设置页可查看）</div>
               )}
             </div>
           )}

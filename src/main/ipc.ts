@@ -155,7 +155,12 @@ import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { sendToAll } from './window-registry'
+import { loadAgentEntries } from './agent/loader'
+import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './store/agents-store'
+import { nodeFsAdapter } from './store/conversations-fs'
+import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
+import { join } from 'node:path'
 import { getWorkspaceInfo, resetWorkspaceRoot, setWorkspaceRoot } from './store/workspace'
 import { clearPendingDataDir, getStorageLocationInfo, requestRestoreToDefault, setPendingDataDir } from './store/data-location'
 import {
@@ -461,6 +466,8 @@ export function registerIpcHandlers(deps: {
         settings: getSettingsView(),
         apiKey,
         history: messages as AgentMessage[],
+        // 主 Agent（plan17 G2）：渲染端按会话带上；定义不存在 → runAgent 抛人话错误走下方 catch → emit.error
+        agentName: input.agentName,
         permission: getPermissionPreset(),
         conversationId,
         onText: (delta) => emit.chunk(delta),
@@ -472,14 +479,14 @@ export function registerIpcHandlers(deps: {
           emit.todos(todos)
         },
         // 目标创建（plan12 ⑤）：Agent 也能自建 —— store 写入与界面推送都在组合根（runner 不碰 electron-store）。
-        // createdBy 与 runner 的 agentLabel 同口径（chatSend 跑的是内核默认）；子代理走 scheduler、
+        // createdBy 与本轮 agentLabel 同口径（plan17：会话用了自定义 Agent 就归它，不再是写死的"内核默认"）；子代理走 scheduler、
         // 不注入 onSetGoal —— 单次报告的子代理不该留下长期意图。
-        onSetGoal: (input) => {
+        onSetGoal: (goalInput) => {
           const goal = createGoalFor({
             conversationId,
-            text: input.text,
-            createdBy: '内核默认',
-            ...(input.doneWhen ? { doneWhen: input.doneWhen } : {})
+            text: goalInput.text,
+            createdBy: input.agentName ?? '内核默认',
+            ...(goalInput.doneWhen ? { doneWhen: goalInput.doneWhen } : {})
           })
           emit.goal(goal)
           return goal
@@ -676,7 +683,9 @@ export function registerIpcHandlers(deps: {
   const convCreateInput = z.object({
     workspace: z.string().min(1).max(500),
     model: z.string().min(1).max(200),
-    skills: z.array(z.string().max(64)).max(50),
+    // 主 Agent（plan17）：可选；老渲染端不传也能过（skills 同理——plan17 起 PlusMenu 不再写入）
+    agentName: z.string().max(64).optional(),
+    skills: z.array(z.string().max(64)).max(50).optional(),
     firstMessage: z.string().max(200000).optional()
   })
 
@@ -711,7 +720,9 @@ export function registerIpcHandlers(deps: {
             completionTokens: z.number().finite().nonnegative()
           })
           .optional(),
-        avoidedTokens: z.number().finite().nonnegative().optional()
+        avoidedTokens: z.number().finite().nonnegative().optional(),
+        // 主 Agent（plan17 D9）：空串 = 切回内核默认（主进程删字段）；不传 = 不动原值
+        agentName: z.string().max(64).optional()
       })
       .parse(raw)
     const messages = normalizeHistory(input.messages as ChatMessage[])
@@ -731,7 +742,8 @@ export function registerIpcHandlers(deps: {
             }
           }
         : {}),
-      ...(input.avoidedTokens !== undefined ? { avoidedTokens: Math.round(input.avoidedTokens) } : {})
+      ...(input.avoidedTokens !== undefined ? { avoidedTokens: Math.round(input.avoidedTokens) } : {}),
+      ...(input.agentName !== undefined ? { agentName: input.agentName } : {})
     })
   })
 
@@ -801,6 +813,64 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.skillsList, (): SkillInfo[] => listSkills(deps.agent))
+
+  // ── 子 Agent 管理（plan17）：MD 文件是唯一真相源；loadAgentRegistry 每轮重读盘 → 保存即生效，无失效机制 ──
+  // 三层视图（项目 > 用户 > 内置）与 runner 的 loadAgentRegistry 同一份数据源，管理页看到的就是运行时生效的集合（含被覆盖条目）。
+  const agentLayers = () => [
+    { dir: deps.agent.builtinAgentsDir, source: 'builtin' as const },
+    { dir: deps.agent.userAgentsDir, source: 'user' as const },
+    { dir: join(deps.agent.getWorkspaceRoot(), '.agents'), source: 'project' as const }
+  ]
+
+  ipcMain.handle(IPC.agentsList, (): AgentsView => loadAgentEntries(agentLayers()))
+
+  const agentSaveInputSchema = z.object({
+    name: z.string().max(64),
+    description: z.string().max(500),
+    // ⚠️ 只验形状不验成员（plan17 D3）：声明了不存在的工具由 allowedToolsFor 运行时过滤，这里枚举会造成"表单与 loader 两套口径"
+    tools: z.array(z.string().max(64)).max(64),
+    model: z.string().max(200).optional(),
+    systemPrompt: z.string().min(1).max(100000),
+    file: z.string().min(1).max(1000).optional()
+  })
+
+  ipcMain.handle(IPC.agentsRead, (_e, raw: unknown): AgentSaveInput | null => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const def = readAgentDefinition(nodeFsAdapter, file, [deps.agent.userAgentsDir], 'user')
+    if (!def) return null
+    return {
+      name: def.name,
+      description: def.description,
+      tools: def.tools ?? [],
+      ...(def.model ? { model: def.model } : {}),
+      systemPrompt: def.systemPrompt,
+      file: def.file
+    }
+  })
+
+  ipcMain.handle(IPC.agentsSave, (_e, raw: unknown): AgentSaveResult => {
+    const input = friendlyParse(agentSaveInputSchema, raw)
+    const { entries } = loadAgentEntries(agentLayers())
+    const result = saveAgentDefinition(nodeFsAdapter, deps.agent.userAgentsDir, input, {
+      builtinNames: entries.filter((e) => e.source === 'builtin').map((e) => e.name),
+      projectNames: entries.filter((e) => e.source === 'project').map((e) => e.name)
+    })
+    if (result.ok) {
+      log.info('Agent 定义已保存', { name: input.name, file: result.file })
+      sendToAll(IPC.agentsChanged)
+    }
+    return result
+  })
+
+  ipcMain.handle(IPC.agentsDelete, (_e, raw: unknown): { ok: true } | { ok: false; reason: string } => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const result = deleteAgentFile(nodeFsAdapter, file, deps.agent.userAgentsDir)
+    if (result.ok) {
+      log.info('Agent 定义已删除', { file })
+      sendToAll(IPC.agentsChanged)
+    }
+    return result
+  })
 
 
   ipcMain.handle(IPC.permissionGet, (): PermissionPreset => getPermissionPreset())

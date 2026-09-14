@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { ModelSettings, PermissionPreset, SkillInfo } from '@shared/ipc'
 import type {
   AgentChatResult,
@@ -27,7 +28,7 @@ import type { AskRequest } from '@shared/ask'
 import { createSubagentTools, type SubagentDispatcher } from './tools/subagent-tools'
 import type { BackgroundTaskStore } from './background-tasks'
 import { runSubagents } from './scheduler'
-import { mergeAgentLayers } from './loader'
+import { composeAgentPrompt, loadAgentEntries, type LoaderResult } from './loader'
 import { runAgentLoop } from './loop'
 import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
 import type { CheckpointStore } from '../store/checkpoints'
@@ -160,8 +161,18 @@ export function ensureAgentRuntime(ctx: AgentRuntimeContext): void {
   mkdirSync(ctx.userAgentsDir, { recursive: true })
 }
 
-export function loadAgentRegistry(ctx: AgentRuntimeContext): ReturnType<typeof mergeAgentLayers> {
-  return mergeAgentLayers(ctx.builtinAgentsDir, ctx.userAgentsDir)
+/** 三层加载（plan17 D2）：项目 > 用户 > 内置；项目层目录跟随工作区（工作区可切，故惰性派生，不存 ctx）。
+ *  返回**生效集合**（被覆盖的除外）；管理页的全量视图走 IPC 层直接调 `loadAgentEntries`。 */
+export function loadAgentRegistry(ctx: AgentRuntimeContext): LoaderResult {
+  const { entries, warnings } = loadAgentEntries([
+    { dir: ctx.builtinAgentsDir, source: 'builtin' },
+    { dir: ctx.userAgentsDir, source: 'user' },
+    { dir: join(ctx.getWorkspaceRoot(), '.agents'), source: 'project' }
+  ])
+  return {
+    definitions: new Map(entries.filter((e) => !e.overridden).map((e) => [e.name, e])),
+    warnings
+  }
 }
 
 export function listSkills(ctx: AgentRuntimeContext): SkillInfo[] {
@@ -174,7 +185,7 @@ export function listSkills(ctx: AgentRuntimeContext): SkillInfo[] {
     .map((d) => ({
       name: d.name,
       description: d.description,
-      source: d.source === 'global' ? ('builtin' as const) : ('user' as const)
+      source: d.source
     }))
     .sort((a, b) => a.name.localeCompare(b.name))
 }
@@ -320,8 +331,9 @@ export async function runAgent(
 
   /** 省 token 档位（§七②③）：**组合根已解析好传进来**；没传（如单测直接调 `runAgent`）按**平衡档**补齐 */
   const policy: TokenPolicy = args.policy ?? resolvePolicy(null)
+  // 提示词拼接抽成纯函数（plan17 D10）：主循环与 scheduler 同式防漂移；主对话跑自定义 Agent 不自称"子代理"
   const systemPrompt = def
-    ? `你是子代理「${def.name}」。${def.description}\n\n${def.systemPrompt}`
+    ? composeAgentPrompt(def, 'main')
     : '你是九十里路的内核 Agent：专注于完成任务，可使用提供的工具读写工作区内的文件。'
   // 行为纪律（2026-09-12 真机实测后补）：起因是模型没调工具、凭"目录应该是空的"直接作答 —— 结果蒙对了，但那是**运气**，核因是提示词缺"必须先查再答"这条纪律。
   const CONDUCT_RULES = [

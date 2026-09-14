@@ -217,6 +217,8 @@ export interface ConversationMeta {
   avoidedTokens?: number
   /** **最后一轮**用的省 token 档位（plan8 R9.1 §七②）：档位是全局设置、会话中途可换，故它只代表最近一次 —— 逐轮比对是校准 harness 的事。 */
   tokenTier?: TokenSaverTier
+  /** 最近一次使用的**主 Agent**（plan17 D9）：缺字段 = 内核默认（老会话零回归）。落盘才能重启恢复 */
+  agentName?: string
 }
 
 export interface Conversation extends ConversationMeta {
@@ -227,14 +229,17 @@ export interface ConversationCreateInput {
   workspace: string
   model: string
   modelProfileId?: string
-  skills: string[]
+  /** 会话创建时选的主 Agent（plan17）；缺省 = 内核默认 */
+  agentName?: string
+  /** 历史遗留（plan17 起 PlusMenu 不再写入）：老入口的技能勾选，保留兼容 */
+  skills?: string[]
   firstMessage?: string
 }
 
 export interface SkillInfo {
   name: string
   description: string
-  source: 'builtin' | 'user'
+  source: 'builtin' | 'user' | 'project'
 }
 
 export const IPC = {
@@ -251,6 +256,14 @@ export const IPC = {
   modelsTest: 'models:test',
   modelsAvailable: 'models:available',
   modelsSetEntry: 'models:set-entry',
+  // ── 子 Agent 管理（plan17）──
+  /** 三层全量视图（含被覆盖条目与加载警告）；工具目录走 `@shared/agents` 静态常量，不进载荷 */
+  agentsList: 'agents:list',
+  agentsRead: 'agents:read',
+  agentsSave: 'agents:save',
+  agentsDelete: 'agents:delete',
+  /** save/delete 后的跨窗广播（AGENTS.md 多窗口铁律：广播 + 各窗重读，不搬变更内容） */
+  agentsChanged: 'agents:changed',
   goalList: 'goal:list',
   goalCreate: 'goal:create',
   goalAction: 'goal:action',
@@ -482,7 +495,12 @@ export interface ApiBridge {
     patch?: { text?: string; doneWhen?: string }
   ): Promise<import('./goal').Goal>
   deleteGoal(id: string): Promise<void>
-  chatSend(input: { conversationId: string; messages: ChatMessage[] }): Promise<void>
+  chatSend(input: {
+    conversationId: string
+    messages: ChatMessage[]
+    /** 本次发送用的主 Agent（plan17）：不带 = 内核默认；带了但定义不存在 → 主进程报人话错误 */
+    agentName?: string
+  }): Promise<void>
   chatAbort(conversationId: string): Promise<void>
   onChatChunk(cb: (e: StreamEnvelope<string>) => void): () => void
   onChatReasoning(cb: (e: StreamEnvelope<string>) => void): () => void
@@ -508,12 +526,19 @@ export interface ApiBridge {
   saveConversation(
     id: string,
     messages: ChatMessage[],
-    /** 会话统计（plan8 R9 / R9.1）：**给了才更新，不给就保持盘上原值**。用对象而非并列参数 —— 这类"账"以后还会加。 */
-    stats?: { usage?: TokenUsage; avoidedTokens?: number }
+    /** 会话统计（plan8 R9 / R9.1 / plan17）：**给了才更新，不给就保持盘上原值**。用对象而非并列参数 —— 这类"账"以后还会加。 */
+    stats?: { usage?: TokenUsage; avoidedTokens?: number; agentName?: string }
   ): Promise<ConversationMeta | null>
   renameConversation(id: string, title: string): Promise<ConversationMeta | null>
   deleteConversation(id: string): Promise<void>
   listSkills(): Promise<SkillInfo[]>
+  // ── 子 Agent 管理（plan17）──
+  listAgents(): Promise<import('./agents').AgentsView>
+  readAgent(file: string): Promise<import('./agents').AgentSaveInput | null>
+  saveAgent(input: import('./agents').AgentSaveInput): Promise<import('./agents').AgentSaveResult>
+  deleteAgent(file: string): Promise<{ ok: true } | { ok: false; reason: string }>
+  /** save/delete 后各窗重读的信号（不搬变更内容） */
+  onAgentsChanged(cb: () => void): () => void
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
   /** 省 token 档位（plan8 R9.1 §七②）：全局一档，与权限档同样"存在主进程、界面只是视图" */

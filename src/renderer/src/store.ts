@@ -172,6 +172,11 @@ interface AppState {
   renameConversation: (id: string, title: string) => Promise<void>
   removeConversation: (id: string) => Promise<void>
   persistActive: () => Promise<void>
+  /** Agent 定义的全量视图（plan17）：PlusMenu 选择器 / ChatView 降级标记共用这一份，不再各自拉取 */
+  agentsView: import('@shared/agents').AgentsView | null
+  refreshAgents: () => Promise<void>
+  /** 切换某条会话的主 Agent（plan17 D1/D9）：meta 是真相源，内存改完即落盘；空串 = 切回内核默认 */
+  selectAgent: (conversationId: string, name: string) => Promise<void>
 
   /** **回到第 `index` 条消息之前**（plan10 B 批 ④）。两条纪律，缺一条出事故：① 用主进程回传的权威正文覆盖内存（否则下一次保存会把回滚掉的内容写回去）；② 回滚后**不调用** persistActive（存储已是权威状态）。 */
   rollbackTo: (index: number) => Promise<void>
@@ -836,7 +841,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     try {
-      await window.api.chatSend({ conversationId, messages: payload })
+      // 主 Agent（plan17 G2）：从会话 meta 读（真相源），带了但定义不存在 → 主进程报人话错误
+      const agentName = get().conversations.find((c) => c.id === conversationId)?.agentName
+      await window.api.chatSend({ conversationId, messages: payload, ...(agentName ? { agentName } : {}) })
     } catch {
       // 主进程入参校验失败等；常规错误已通过 chatError 事件送达
       get().markError({ conversationId, payload: '发送失败：请求被主进程拒绝（参数校验未通过）。' })
@@ -866,7 +873,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     cancelScheduledPersist(id)
     try {
       const rec = s.usageByConversation[id]
+      // agentName（plan17 D9）：meta 是真相源，每次保存随行回写（空串 = 内核默认，主进程删字段）——
+      // 回滚/改名这类保存传原值 = 幂等，不会破坏"没给不许抹"
+      const metaAgentName = s.conversations.find((c) => c.id === id)?.agentName
       const updated = await window.api.saveConversation(id, snap.messages, {
+        agentName: metaAgentName ?? '',
         ...(rec
           ? { usage: rec.total, avoidedTokens: rec.avoided, ...(rec.tier ? { tokenTier: rec.tier } : {}) }
           : {})
@@ -888,6 +899,25 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   persistActive: async () => {
     await get().persistConversation(get().activeId ?? '')
+  },
+
+  agentsView: null,
+  refreshAgents: async () => {
+    set({ agentsView: await window.api.listAgents() })
+  },
+
+  selectAgent: async (conversationId, name) => {
+    // meta 是"会话当前 Agent"的唯一真相源（plan17 D9）：改内存 + 落盘，重启后从这里恢复
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? name === ''
+            ? { ...c, agentName: undefined }
+            : { ...c, agentName: name }
+          : c
+      )
+    }))
+    await get().persistConversation(conversationId)
   },
 
 /** 关窗口前把所有在跑的会话落盘（plan11 P0-2）：主进程收到 `flushDone` 才真关窗口，所以这里**必须等所有落盘结束**，不能 `void` 掉。 */

@@ -104,7 +104,7 @@ export function backupFilePath(root: string, tag: string): string {
  *
  * tmp 放在同目录：跨盘 rename 会失败（`EXDEV`）。
  */
-function atomicWrite(fs: FsAdapter, path: string, data: string): void {
+export function atomicWrite(fs: FsAdapter, path: string, data: string): void {
   fs.mkdirSync(dirname(path), { recursive: true })
   const tmp = `${path}.tmp`
   fs.writeFileSync(tmp, data, 'utf8')

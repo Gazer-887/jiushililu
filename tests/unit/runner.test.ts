@@ -95,6 +95,36 @@ describe('runAgent（工具链路集成）', () => {
     expect(system).toContain('安全基线')
   })
 
+  it('主循环用自定义 Agent：定义的 systemPrompt 生效、措辞不自称"子代理"（plan17 判据 4）', async () => {
+    const ctx = makeCtx()
+    mkdirSync(ctx.userAgentsDir, { recursive: true })
+    writeFileSync(
+      join(ctx.userAgentsDir, 'word-smith.md'),
+      '---\nname: word-smith\ndescription: 文案专家\n---\n你只写文案，绝不写代码。',
+      'utf8'
+    )
+    await runAgent(ctx, {
+      settings,
+      apiKey: 'k',
+      history: [{ role: 'user', content: '写句标语' }],
+      agentName: 'word-smith'
+    })
+
+    const messages = openaiSpy.mock.calls[0]?.[2] as Array<{ role: string; content: string }>
+    const system = messages.find((m) => m.role === 'system')?.content ?? ''
+    expect(system).toContain('你只写文案，绝不写代码。') // def.systemPrompt 真的进了主循环提示
+    expect(system).toContain('你是「word-smith」') // 主对话不自称"子代理"（措辞修正的守卫）
+    expect(system).not.toContain('你是子代理「word-smith」')
+  })
+
+  it('不带 agentName = 内核默认提示（plan17 判据 5：老会话零回归）', async () => {
+    const ctx = makeCtx()
+    await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: 'x' }] })
+    const messages = openaiSpy.mock.calls[0]?.[2] as Array<{ role: string; content: string }>
+    const system = messages.find((m) => m.role === 'system')?.content ?? ''
+    expect(system).toContain('内核 Agent')
+  })
+
   it('【回归】做事纪律对自定义子代理同样生效（不是只给内核默认加）', async () => {
     const ctx = makeCtx()
     mkdirSync(ctx.userAgentsDir, { recursive: true })

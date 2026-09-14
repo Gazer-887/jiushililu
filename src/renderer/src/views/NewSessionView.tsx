@@ -21,7 +21,8 @@ export default function NewSessionView(): JSX.Element {
   const createConversation = useAppStore((s) => s.createConversation)
 
   const [model, setModel] = useState('')
-  const [picked, setPicked] = useState<string[]>([])
+  // 主 Agent（plan17）：null = 内核默认；创建时随会话落盘
+  const [agent, setAgent] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   // 拖拽落点 = 整块新建任务页，不只是输入框那一小块
@@ -30,10 +31,6 @@ export default function NewSessionView(): JSX.Element {
   useEffect(() => {
     if (settings?.model && !model) setModel(settings.model)
   }, [settings?.model, model])
-
-  const toggleSkill = (name: string): void => {
-    setPicked((p) => (p.includes(name) ? p.filter((n) => n !== name) : [...p, name]))
-  }
 
   const start = async (attachments: Attachment[]): Promise<void> => {
     if (busy) return
@@ -45,7 +42,7 @@ export default function NewSessionView(): JSX.Element {
       await createConversation({
         workspace: ws.path,
         model,
-        skills: picked,
+        ...(agent ? { agentName: agent } : {}),
         ...(text ? { firstMessage: text } : {})
       })
       // 首条输入直接发出去（省一次点击）
@@ -73,15 +70,13 @@ export default function NewSessionView(): JSX.Element {
           busy={busy}
           placeholder="描述你想做的事…（Enter 开始，Shift+Enter 换行）"
           usedTokens={usedTokens([])}
-          pickedSkills={picked}
-          onToggleSkill={toggleSkill}
+          selectedAgent={agent}
+          onSelectAgent={setAgent}
           showWorkspace
           dropZone={pageRef}
         />
 
-        {picked.length > 0 && (
-          <div className="picked-hint">已启用能力：{picked.join('、')}</div>
-        )}
+        {agent && <div className="picked-hint">本次会话由「{agent}」负责</div>}
       </div>
     </div>
   )

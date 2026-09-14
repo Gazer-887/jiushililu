@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
+import type { AgentSaveInput } from '@shared/agents'
 import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { ModelSaveInput } from '@shared/models'
@@ -42,7 +43,7 @@ const api: ApiBridge = {
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
   saveSettings: (input: SettingsSaveInput) => ipcRenderer.invoke(IPC.settingsSave, input),
   testConnection: (input: SettingsSaveInput) => ipcRenderer.invoke(IPC.settingsTest, input),
-  chatSend: (input: { conversationId: string; messages: ChatMessage[] }) =>
+  chatSend: (input: { conversationId: string; messages: ChatMessage[]; agentName?: string }) =>
     ipcRenderer.invoke(IPC.chatSend, input),
   chatAbort: (conversationId: string) => ipcRenderer.invoke(IPC.chatAbort, conversationId),
   // ⚠️ 流式订阅**必须原样透传信封**（plan11 P0-5）：以前这里写的是 `cb(text as string)`，
@@ -84,7 +85,7 @@ const api: ApiBridge = {
   saveConversation: (
     id: string,
     messages: ChatMessage[],
-    stats?: { usage?: TokenUsage; avoidedTokens?: number; tokenTier?: TokenSaverTier }
+    stats?: { usage?: TokenUsage; avoidedTokens?: number; tokenTier?: TokenSaverTier; agentName?: string }
   ) => ipcRenderer.invoke(IPC.convSave, stats ? { id, messages, ...stats } : { id, messages }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
   deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
@@ -92,6 +93,12 @@ const api: ApiBridge = {
     ipcRenderer.invoke(IPC.convRollback, { id, toIndex }),
   undoRollbackConversation: (id: string) => ipcRenderer.invoke(IPC.convUndoRollback, id),
   listSkills: () => ipcRenderer.invoke(IPC.skillsList),
+  // ── 子 Agent 管理（plan17）──
+  listAgents: () => ipcRenderer.invoke(IPC.agentsList),
+  readAgent: (file: string) => ipcRenderer.invoke(IPC.agentsRead, file),
+  saveAgent: (input: AgentSaveInput) => ipcRenderer.invoke(IPC.agentsSave, input),
+  deleteAgent: (file: string) => ipcRenderer.invoke(IPC.agentsDelete, file),
+  onAgentsChanged: (cb) => subscribe(IPC.agentsChanged, () => cb()),
   getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getTokenTier: () => ipcRenderer.invoke(IPC.tokenTierGet),

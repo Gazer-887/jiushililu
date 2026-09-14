@@ -201,6 +201,22 @@ describe('saveConversation（保存正文）', () => {
     expect(dump()).toEqual({})
   })
 
+  it('agentName（plan17 D9）：给了就更新；不给保持原值；空串 = 删字段回内核默认', () => {
+    const { backend, dump } = memBackend({ a: conv({ id: 'a', agentName: 'planner' }) })
+    const repo = createConversationsRepo(backend)
+
+    // 不带 agentName 的保存（回滚/改名/纯正文）不许抹掉
+    expect(repo.saveConversation('a', msgs)!.agentName).toBe('planner')
+
+    // 切到新 Agent
+    expect(repo.saveConversation('a', msgs, { agentName: 'scout' })!.agentName).toBe('scout')
+
+    // 空串 = 切回内核默认：字段删除而不是留空串
+    const back = repo.saveConversation('a', msgs, { agentName: '' })!
+    expect(back.agentName).toBeUndefined()
+    expect(dump()['a']!.agentName).toBeUndefined()
+  })
+
   it('正文被替换、messageCount 跟着走、updatedAt 前进、返回的是 **meta**', () => {
     const { backend, dump } = memBackend({ a: conv({ id: 'a', updatedAt: 1000 }) })
     const repo = createConversationsRepo(backend)

@@ -18,9 +18,9 @@ export interface InputConsoleProps {
   placeholder?: string
   autoFocus?: boolean
   usedTokens: number
-  /** 技能勾选（新建任务页用） */
-  pickedSkills?: string[]
-  onToggleSkill?: (name: string) => void
+  /** 当前选中的主 Agent（plan17）；undefined = 不显示选择区 */
+  selectedAgent?: string | null
+  onSelectAgent?: (name: string | null) => void
   /** 只在**新建任务页**为 true —— 会话一创建就绑定工作区，对话页再放是冗余（D-035） */
   showWorkspace?: boolean
   /**
@@ -53,8 +53,8 @@ export default function InputConsole({
   placeholder = '输入消息，Enter 发送，Shift+Enter 换行',
   autoFocus = false,
   usedTokens,
-  pickedSkills,
-  onToggleSkill,
+  selectedAgent,
+  onSelectAgent,
   showWorkspace = false,
   dropZone
 }: InputConsoleProps): JSX.Element {
@@ -222,8 +222,8 @@ export default function InputConsole({
         {/* 左右各自成簇：换行时整组一起走，避免发送键独自掉到下一行 */}
         <div className="tb-group tb-left">
           <PlusMenu
-            picked={pickedSkills ?? []}
-            {...(onToggleSkill ? { onToggle: onToggleSkill } : {})}
+            selectedAgent={selectedAgent ?? null}
+            {...(onSelectAgent ? { onSelectAgent } : {})}
             onAttach={() => void addAttachment()}
           />
           <BranchChip />

@@ -1387,6 +1387,24 @@ label.radio {
   padding: 1px var(--sp-6);
 }
 
+/* 当前主 Agent 标识（plan17）：与技能徽标同形；定义已删时用删除线明示降级 */
+.chat-agent {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-6);
+}
+
+.chat-agent-gone {
+  color: var(--muted);
+  border-color: var(--border);
+  background: transparent;
+  text-decoration: line-through;
+}
+
 /* ══ P2 布局重构：新建任务页 ═════════════════════════════ */
 
 /*
@@ -5537,4 +5555,280 @@ body[data-resizing] {
 
 .scm-d-file {
   color: var(--muted);
+}
+
+/* ── 子 Agent 管理（plan17）：设置分区 + 表单 ─────────────────────── */
+
+.ag-list-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-12);
+}
+
+.ag-list-head .hint {
+  flex: 1;
+  min-width: 0;
+}
+
+.ag-warn {
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-md);
+  background: var(--warn-soft);
+  font-size: var(--fs-sm);
+  color: var(--warn-deep);
+}
+
+.ag-warn p {
+  margin: 0;
+  line-height: var(--lh-normal);
+  word-break: break-all;
+}
+
+.ag-section {
+  margin-top: var(--sp-16);
+}
+
+.ag-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+
+.ag-note {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ag-empty {
+  margin: var(--sp-8) 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.ag-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-4) var(--sp-8);
+  padding: var(--sp-8) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.ag-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.ag-name {
+  font-size: var(--fs-md);
+  font-family: var(--mono, monospace);
+  color: var(--text);
+}
+
+.ag-tag {
+  padding: 1px var(--sp-6);
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.ag-tag-off {
+  color: var(--muted);
+  border-color: var(--border);
+  text-decoration: line-through;
+}
+
+.ag-desc {
+  flex-basis: 100%;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-meta {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ag-row-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-8);
+}
+
+.ag-link {
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.ag-link:hover {
+  text-decoration: underline;
+}
+
+.ag-link-del {
+  color: var(--danger);
+}
+
+.ag-form-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-12);
+}
+
+.ag-form-head h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.ag-form-hint {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ag-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-12);
+}
+
+.ag-label {
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.ag-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--sp-6) var(--sp-8);
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.ag-input:disabled {
+  color: var(--muted);
+  background: var(--bg);
+  cursor: not-allowed;
+}
+
+.ag-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--sp-8);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  resize: vertical;
+}
+
+.ag-tool-group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  margin-top: var(--sp-4);
+}
+
+.ag-tool-group-name {
+  flex: none;
+  width: 48px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.ag-tool-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-12);
+}
+
+.ag-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ag-tool input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.ag-err {
+  margin: var(--sp-4) 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+.ag-ok {
+  margin: var(--sp-4) 0;
+  font-size: var(--fs-sm);
+  color: var(--ok);
+}
+
+.ag-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-8);
+  margin-top: var(--sp-16);
+}
+
+.ag-btn {
+  padding: var(--sp-6) var(--sp-16);
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ag-btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.ag-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ag-btn-go {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ag-btn-go:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }

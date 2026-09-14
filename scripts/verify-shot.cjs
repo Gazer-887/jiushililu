@@ -552,6 +552,31 @@ function applyStage(rels) {
   }
 }
 
+// ── 子 Agent 管理（plan17）的桩状态：save/delete 后 list 必须看得见（照 git:* 的"有状态"纪律）──
+let agentsBroadcast = () => 0
+const agentEntries = [
+  {
+    name: 'planner',
+    description: '规划员：把目标拆成有序步骤与验收标准',
+    tools: ['read_file'],
+    systemPrompt: '做计划。',
+    source: 'builtin',
+    file: 'C:\\Program Files\\jiushililu\\resources\\agents\\planner.md',
+    overridden: false
+  },
+  {
+    name: 'word-smith',
+    description: '文案专家：只写文案，不写代码',
+    tools: [],
+    systemPrompt: '你只写文案。',
+    source: 'user',
+    file: join(VERIFY_UD, 'agents', 'word-smith.md'),
+    overridden: false
+  }
+]
+const agentSaveCalls = []
+const agentDeleteCalls = []
+
 /** 复刻 `git restore --staged`（**只动暂存区** —— 工作区的改动还在，故 Y 位回到 'M'） */
 function applyUnstage(rels) {
   for (const rel of rels) {
@@ -771,8 +796,9 @@ const STUBS = {
   },
   'conv:create': () => ({ id: 'x' }),
   // 记流水：要验「在别的页面期间流出来的内容有没有被存下来」+ 用量账本有没有跟着走
-  'conv:save': ({ id, messages, usage }) => {
-    convSaveCalls.push({ id, messages, usage })
+  // agentName（plan17）：一并记下 —— G2 的"渲染侧载荷带主 Agent"断言靠它（它只护渲染侧，真生效由 runner 单测钉）
+  'conv:save': ({ id, messages, usage, agentName }) => {
+    convSaveCalls.push({ id, messages, usage, agentName })
     return null
   },
   // 记下调用与载荷，并回一份权威会话 —— 渲染端必须用它覆盖内存（回滚后与撤销后的条数刻意不同）
@@ -823,6 +849,66 @@ const STUBS = {
     { name: 'planner', description: '规划员：把目标拆成有序步骤', source: 'builtin' },
     { name: 'reviewer', description: '审查员：只读审查', source: 'builtin' }
   ],
+  // ── 子 Agent 管理（plan17）── 桩**有状态**（save 后 list 能看见），照 git:* 先例；
+  // 撞名分级与覆盖标记都要能在断言里走到。file 用路径形状与真源一致（用户层绝对路径）。
+  'agents:list': () => ({
+    entries: agentEntries.map((e) => ({ ...e })),
+    warnings: ['[builtin 层] broken.md：name 缺失或非法（需小写字母/数字/- 组成，1~64 字符）']
+  }),
+  'agents:read': (file) => {
+    const e = agentEntries.find((x) => x.file === file)
+    if (!e) return null
+    return {
+      name: e.name,
+      description: e.description,
+      tools: e.tools ?? [],
+      ...(e.model ? { model: e.model } : {}),
+      systemPrompt: e.systemPrompt,
+      file: e.file
+    }
+  },
+  'agents:save': (input) => {
+    agentSaveCalls.push(JSON.parse(JSON.stringify(input ?? {})))
+    // 撞名分级（与 agents-store 同口径）：新建撞用户层同名拒；编辑（带 file）放行
+    const clash = !input?.file && agentEntries.some((x) => x.source === 'user' && x.name === input?.name)
+    if (clash) return { ok: false, reason: '已存在同名定义，请在列表中编辑它，或换一个名字' }
+    const target = input?.file ? agentEntries.find((x) => x.file === input.file) : null
+    let savedFile
+    if (target) {
+      target.name = input.name
+      target.description = input.description
+      target.tools = input.tools
+      target.model = input.model
+      target.systemPrompt = input.systemPrompt
+      savedFile = target.file
+    } else {
+      savedFile = join(VERIFY_UD, 'agents', `${input?.name ?? 'new-agent'}.md`)
+      agentEntries.push({
+        name: input?.name ?? 'new-agent',
+        description: input?.description ?? '',
+        tools: input?.tools ?? [],
+        ...(input?.model ? { model: input.model } : {}),
+        systemPrompt: input?.systemPrompt ?? '',
+        source: 'user',
+        file: savedFile,
+        overridden: false
+      })
+    }
+    agentsBroadcast()
+    return {
+      ok: true,
+      file: savedFile,
+      // 撞内置名带覆盖提示（与真源同口径），让断言能走到这一分支
+      ...(input?.name === 'planner' && !input?.file ? { notice: '已存在同名内置定义：此定义生效后将覆盖内置版本' } : {})
+    }
+  },
+  'agents:delete': (file) => {
+    agentDeleteCalls.push(file)
+    const i = agentEntries.findIndex((x) => x.file === file)
+    if (i >= 0) agentEntries.splice(i, 1)
+    agentsBroadcast()
+    return { ok: true }
+  },
   'permission:get': () => 'write',
   'permission:set': () => 'write',
   // Token Saver 档位：set 回显传入值（与真主进程一致，界面拿返回值更新显示，故 mock 不存状态）
@@ -1322,6 +1408,7 @@ app.whenReady().then(async () => {
 
   // CSP 违规捕获：必须在 loadFile 之前挂监听，否则漏掉加载期错误
   let modelCatalog = null
+  let agentsMgr = null
   const cspViolations = []
   win.webContents.on('console-message', (...a) => {
     // 兼容新旧签名：Electron 33 是 (event, level, message, ...)，35+ 是 (event, details)
@@ -1346,6 +1433,20 @@ app.whenReady().then(async () => {
         n += 1
       } catch {
         // 单个窗口发失败不该影响其余（典型场景：窗口正在销毁）
+      }
+    }
+    return n
+  }
+  // Agent 定义广播（plan17 D8）：与 git:changed 同语义 —— 发给所有窗口，各窗自己重读
+  agentsBroadcast = () => {
+    let n = 0
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed() || w.webContents.isDestroyed()) continue
+      try {
+        w.webContents.send('agents:changed')
+        n += 1
+      } catch {
+        // 同上：单个窗口失败不影响其余
       }
     }
     return n
@@ -1430,6 +1531,51 @@ app.whenReady().then(async () => {
 
   await enterChat()
   const m1 = await measure()
+
+  // —— plan17 G2：输入框「主 Agent」单选（切换真的写进会话保存载荷 —— 它只护渲染侧，真生效由 runner 单测 + 冒烟钉）——
+  const convSaveCallsBefore = convSaveCalls.length
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.plus-btn');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const agentMenu = await win.webContents.executeJavaScript(`
+    (() => {
+      const items = Array.from(document.querySelectorAll('.plus-menu .plus-item'));
+      return {
+        menuOpen: !!document.querySelector('.plus-menu'),
+        // ⚠️ 菜单里有多个 .plus-title（添加 / 主 Agent / 更多）：断言要的是"主 Agent 这一节在"
+        titles: Array.from(document.querySelectorAll('.plus-menu .plus-title')).map((t) => t.textContent.trim()),
+        names: items.map((i) => i.querySelector('.plus-name')?.textContent?.trim() ?? ''),
+        checkedNow: (() => {
+          const on = items.find((i) => i.classList.contains('on'));
+          return on ? on.querySelector('.plus-name')?.textContent?.trim() ?? null : null;
+        })()
+      };
+    })()
+  `)
+  console.log('AGENT_MENU=' + JSON.stringify(agentMenu))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const item = Array.from(document.querySelectorAll('.plus-menu .plus-item'))
+        .find((i) => i.querySelector('.plus-name')?.textContent?.trim() === 'word-smith');
+      if (item) item.click();
+      return !!item;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const agentPicked = await win.webContents.executeJavaScript(`
+    (() => ({
+      badge: document.querySelector('.chat-agent')?.textContent?.trim() ?? null,
+      menuClosed: !document.querySelector('.plus-menu')
+    }))()
+  `)
+  console.log('AGENT_PICKED=' + JSON.stringify(agentPicked))
+  const agentSaveCall = convSaveCalls.slice(convSaveCallsBefore).find((c) => c.agentName !== undefined)
+  console.log('AGENT_SAVE_CALL=' + JSON.stringify(agentSaveCall ? { agentName: agentSaveCall.agentName } : null))
 
   // —— 过程可见：工具调用详情 + 思考流（推送 → preload → store → 组件 这段是真实链路，只有数据由这里伪造）——
   win.webContents.send('chat:tool', {
@@ -1730,6 +1876,7 @@ app.whenReady().then(async () => {
   for (const [label, slug] of [
     ['通用设置', 'general'],
     ['模型', 'model'],
+    ['子 Agent', 'agents'],
     ['外观', 'appearance'],
     ['故障排查', 'trouble']
   ]) {
@@ -1828,6 +1975,102 @@ app.whenReady().then(async () => {
       `)
       console.log('MODEL_CATALOG=' + JSON.stringify({ ...catalog, adv }))
       modelCatalog = { ...catalog, adv }
+    }
+    if (slug === 'agents') {
+      // ── 子 Agent 管理（plan17）：列表三节 + 警告区可见；编辑进表单；表单校验拒绝 ──
+      const listInfo = await sevalRaw(`
+        (() => {
+          const sections = Array.from(document.querySelectorAll('.ag-section'));
+          const rows = Array.from(document.querySelectorAll('.ag-row'));
+          return {
+            sections: sections.length,
+            titles: sections.map((s) => (s.querySelector('.ag-section-title')?.textContent || '').trim()),
+            rows: rows.length,
+            names: rows.map((r) => r.querySelector('.ag-name')?.textContent?.trim() ?? ''),
+            warnShown: !!document.querySelector('.ag-warn'),
+            warnText: document.querySelector('.ag-warn')?.textContent?.trim() ?? '',
+            newBtn: !!Array.from(document.querySelectorAll('.ag-btn-go')).find((b) => b.textContent.includes('新建 Agent')),
+            overriddenTag: !!document.querySelector('.ag-tag-off'),
+            editBtns: rows.filter((r) => r.querySelector('.ag-row-actions')).length
+          };
+        })()
+      `)
+      console.log('AGENTS_LIST=' + JSON.stringify(listInfo))
+
+      // 点「新建 Agent」进表单 → 空 name 直接近保存：校验必须拦（表单与 loader 同口径的可视面）
+      await sevalRaw(`
+        (() => {
+          const b = Array.from(document.querySelectorAll('.ag-btn-go')).find((x) => x.textContent.includes('新建 Agent'));
+          if (b) b.click();
+          return !!b;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 400))
+      const formEmpty = await sevalRaw(`
+        (() => ({
+          formOpen: !!document.querySelector('.ag-form-head'),
+          saveDisabled: (() => {
+            const b = Array.from(document.querySelectorAll('.ag-btn-go')).find((x) => x.textContent.trim() === '保存');
+            return b ? b.disabled : null;
+          })(),
+          errShown: document.querySelector('.ag-err')?.textContent?.trim() ?? null,
+          nameEditable: (() => {
+            const i = document.querySelector('.ag-input');
+            return i ? !i.disabled : null;
+          })()
+        }))()
+      `)
+      console.log('AGENTS_FORM_EMPTY=' + JSON.stringify(formEmpty))
+
+      // 填上合法值再保存 → 列表应多出「code-reviewer」（桩有状态：save 后 list 可见）
+      // ⚠️ 填值与点击之间**必须等 React 重渲染**：受控组件的禁用态由 render 重算，
+      //    立即点击时按钮还停在 disabled（合成 click 打在被禁用的按钮上 = 什么都不会发生）
+      await sevalRaw(`
+        (() => {
+          // .ag-input = name/description/model 三个；systemPrompt 是 .ag-textarea —— 它没填校验就拦（恰好也是一次校验面验证）
+          const inputs = Array.from(document.querySelectorAll('.ag-input'));
+          const name = inputs[0];
+          const desc = inputs[1];
+          const body = document.querySelector('.ag-textarea');
+          const iSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          const tSet = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          if (name && !name.disabled) { iSet.call(name, 'code-reviewer'); name.dispatchEvent(new Event('input', { bubbles: true })); }
+          if (desc) { iSet.call(desc, '代码评审专家'); desc.dispatchEvent(new Event('input', { bubbles: true })); }
+          if (body) { tSet.call(body, '只报告可证明的问题，按 P0~P3 分级。'); body.dispatchEvent(new Event('input', { bubbles: true })); }
+          return true;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 400))
+      const beforeSave = await sevalRaw(`
+        (() => {
+          const inputs = Array.from(document.querySelectorAll('.ag-input'));
+          const b = Array.from(document.querySelectorAll('.ag-btn-go')).find((x) => x.textContent.trim() === '保存');
+          return {
+            nameValue: inputs[0]?.value ?? null,
+            descValue: inputs[1]?.value ?? null,
+            saveDisabled: b ? b.disabled : null,
+            err: document.querySelector('.ag-err')?.textContent?.trim() ?? null
+          };
+        })()
+      `)
+      console.log('AGENTS_BEFORE_SAVE=' + JSON.stringify(beforeSave))
+      await sevalRaw(`
+        (() => {
+          const b = Array.from(document.querySelectorAll('.ag-btn-go')).find((x) => x.textContent.trim() === '保存');
+          if (b) b.click();
+          return !!b;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 700))
+      const afterSave = await sevalRaw(`
+        (() => ({
+          names: Array.from(document.querySelectorAll('.ag-row .ag-name')).map((n) => n.textContent.trim()),
+          notice: document.querySelector('.ag-ok')?.textContent?.trim() ?? '',
+          stillForm: !!document.querySelector('.ag-form-head')
+        }))()
+      `)
+      console.log('AGENTS_AFTER_SAVE=' + JSON.stringify(afterSave))
+      agentsMgr = { list: listInfo, formEmpty, afterSave }
     }
     const png = await getSettingsWin().capturePage()
     writeFileSync(join(SHOTS, 'verify-settings-' + slug + '.png'), png.toPNG())
@@ -6171,6 +6414,42 @@ app.whenReady().then(async () => {
   checkTrue('**每个模型能展开自己的高级设置**（展开前没有面板 → 展开后有，且字段不止一个）',
     modelCatalog?.advBefore === false && modelCatalog?.adv?.panel === true && (modelCatalog?.adv?.fields ?? 0) >= 5,
     modelCatalog?.adv)
+
+  // —— plan17 F8：子 Agent 管理（列表三节 + 警告区 + 表单校验 + 有状态桩的保存链）——
+  checkTrue('设置页「子 Agent」分区：三节列表 + 警告区可见（坏文件不静默）+ 新建入口',
+    (agentsMgr?.list?.sections ?? 0) === 3 &&
+      agentsMgr?.list?.warnShown === true &&
+      agentsMgr?.list?.warnText.includes('broken.md') === true &&
+      agentsMgr?.list?.newBtn === true,
+    agentsMgr?.list)
+  checkTrue('列表条数与编辑入口：内置 + 自定义都有行，自定义行带编辑/删除（内置行不带）',
+    (agentsMgr?.list?.names ?? []).includes('planner') &&
+      (agentsMgr?.list?.names ?? []).includes('word-smith') &&
+      agentsMgr?.list?.editBtns === 1,
+    agentsMgr?.list)
+  checkTrue('新建表单：空表单直接保存被**实时校验拦下**（按钮禁用 + 显示人话错误），name 可编辑',
+    agentsMgr?.formEmpty?.formOpen === true &&
+      agentsMgr?.formEmpty?.saveDisabled === true &&
+      (agentsMgr?.formEmpty?.errShown ?? '').length > 0 &&
+      agentsMgr?.formEmpty?.nameEditable === true,
+    agentsMgr?.formEmpty)
+  checkTrue('保存链真的走通：合法值保存后列表出现新定义（桩有状态，固定值桩验不出这条）',
+    (agentsMgr?.afterSave?.names ?? []).includes('code-reviewer') &&
+      (agentsMgr?.afterSave?.notice ?? '').includes('已保存'),
+    agentsMgr?.afterSave)
+  checkTrue('对话页「主 Agent」单选：菜单有「主 Agent」一节，列出内核默认 + 各定义，默认勾选在内核默认上',
+    agentMenu?.menuOpen === true &&
+      (agentMenu?.titles ?? []).includes('主 Agent') &&
+      (agentMenu?.names ?? []).includes('内核默认') &&
+      (agentMenu?.names ?? []).includes('word-smith') &&
+      agentMenu?.checkedNow === '内核默认',
+    agentMenu)
+  checkTrue('选中 word-smith：会话头出现 Agent 徽标（切会话/重启后从 meta 恢复的就是它）',
+    agentPicked?.badge === 'Agent word-smith' && agentPicked?.menuClosed === true,
+    agentPicked)
+  checkTrue('切换动作写进了 conv:save 载荷（⚠️ 只护渲染侧这一段 —— handler 转发与主循环真生效由 runner 单测与冒烟钉）',
+    agentSaveCall?.agentName === 'word-smith',
+    agentSaveCall ? { agentName: agentSaveCall.agentName } : null)
   checkTrue('切回 A → **A 的字在它自己那条里**（存档/恢复生效，不是靠重新拉盘掩盖）',
     concurrencyResult.aHasOwnText === true, { aHasOwnText: concurrencyResult.aHasOwnText })
 
