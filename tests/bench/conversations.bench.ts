@@ -8,7 +8,9 @@ import { createFsConversationsBackend } from '@main/store/conversations-fs'
 
 // plan10 A 批第三块：**测量定引擎**（plan8 R8 的正题）。
 // 跑法（显式跑，**不进 CI** —— 阈值是耗时，CI 上会抖）：
-//   npx vitest run --config config/vitest.config.ts tests/bench/conversations.bench.ts
+//   npm run bench        （= vitest run --config config/vitest.bench.config.ts）
+//   想让堆增量可信：NODE_OPTIONS=--expose-gc npm run bench
+//   （注意不是 config/vitest.config.ts —— 那份 include 只有 tests/unit，bench 匹配不到）
 //
 // ⚠️ **判据先登记、再跑**（plan10 §2.3）：阈值写死在下面、脚本自己出 PASS/FAIL，
 //    不允许"跑完看数据再挑一个好看的说法"。
