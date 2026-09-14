@@ -4504,11 +4504,6 @@ body[data-resizing] {
   color: var(--text);
 }
 
-.choice-desc {
-  font-size: var(--fs-xs);
-  color: var(--muted);
-}
-
 /* ── 待办清单面板（plan7 批 D 提前落地，2026-09-12 用户意见）────────────
    形态对齐 DSH：输入框上方的独立卡片，可折叠，标题右侧一句统计。
    状态用符号表示而非色块 —— ✓ 已完成（退到背景）· ● 进行中（当前焦点）· ○ 待处理 */
