@@ -102,7 +102,10 @@ describe('目标路径校验（P0-2）', () => {
   const source = process.platform === 'win32' ? 'C:\\data' : '/data'
 
   it('合法兄弟目录通过', () => {
-    expect(validateTargetPath('D:/app-data', source, false).ok).toBe(true)
+    // 目标也要按平台分支：`D:/app-data` 在 Linux 上不是绝对路径（validateTargetPath 用宿主语义），
+    // CI（ubuntu）会因这条写死而红——修法是测试随平台给等价的合法目标，产品语义（Windows）不动
+    const target = process.platform === 'win32' ? 'D:/app-data' : '/app-data'
+    expect(validateTargetPath(target, source, false).ok).toBe(true)
   })
 
   it('空串 / 相对路径 → 拒绝', () => {

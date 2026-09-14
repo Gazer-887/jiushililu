@@ -240,7 +240,10 @@ describe('renderOfficePreview', () => {
   })
 
   it('越界路径拒绝（工作区边界只有一条）', async () => {
-    const res = await renderOfficePreview('D:\\不存在的根', '..\\外部.docx')
+    // Windows 用反斜杠越界；POSIX 上 `\` 不是分隔符，等价越界写法是 `../外部.docx`
+    // （写死任何一侧都会在另一个平台语义走样：CI ubuntu 上这条曾因此红）
+    const isWin = process.platform === 'win32'
+    const res = await renderOfficePreview(isWin ? 'D:\\不存在的根' : '/不存在的根', isWin ? '..\\外部.docx' : '../外部.docx')
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error).toContain('越出工作区')
   })
