@@ -31,5 +31,17 @@ jobs:
       - name: 构建
         run: npm run build
 
+      # plan8 R16：让 4 条「真实 ripgrep 端到端」测试在 CI 上真跑（此前一直 skipIf 跳过，
+      # 这道门禁对 rg 相关改动等于没有）。用与 vendor 同源的 @vscode linux 包（版本钉死），
+      # 再走既有 vendor 脚本复制（sha256 / chmod 逻辑全复用）；装不上则测试照旧显式 skip，不假绿。
+      - name: 补齐随包 ripgrep（真二进制测试用）
+        run: |
+          node scripts/vendor-ripgrep.cjs || true
+          if [ ! -f resources/ripgrep/rg ]; then
+            npm i --no-save @vscode/ripgrep-linux-x64
+            node scripts/vendor-ripgrep.cjs
+          fi
+          test -f resources/ripgrep/rg
+
       - name: 单元测试
         run: npm test
