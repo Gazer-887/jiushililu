@@ -5,6 +5,7 @@ import type {
   ProviderType,
   SettingsSaveInput,
   StorageLocationInfo,
+  TestResult,
   WorkspaceInfo
 } from '@shared/ipc'
 import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
@@ -422,6 +423,21 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     }
   }
 
+  /** 编辑态的 Key 状态取**这条端点自己的**（models 列表真值）；新增态没有档案 → undefined → 显示「尚未保存」 */
+  const editingProfile = editingModel?.id ? models?.profiles.find((p) => p.id === editingModel.id) : undefined
+
+  /**
+   * 新增态测试连接：模型 ID 取**表单模型目录**的第一条非空值。
+   * ⚠️ draft.model 是通用设置的残留值（startCreate 从 settings 拷贝），与正在新增的端点无关——
+   * 拿它打到新 baseURL 必报 Unsupported model（0.13.43 实测）。
+   */
+  const testDraftConnection = async (): Promise<TestResult> => {
+    if (!draft) return { ok: false, message: '表单尚未初始化' }
+    const modelId = draftModels.map((m) => m.model.trim()).find(Boolean)
+    if (!modelId) return { ok: false, message: '请先在「模型目录」填写模型 ID，再测试连接' }
+    return window.api.testConnection({ ...draft, model: modelId, apiKey })
+  }
+
   const test = async (): Promise<void> => {
     if (!draft) return
     setTesting(true)
@@ -430,7 +446,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
       // 编辑既有模型 → 测**它自己**（用它已存的 Key，不必重填）；新增中 → 用表单里的值现测（还没入库，没档案可测）
       const result = editingModel?.id
         ? await window.api.testModel(editingModel.id)
-        : await window.api.testConnection({ ...draft, apiKey })
+        : await testDraftConnection()
       const tail = result.latencyMs != null ? `（${result.latencyMs}ms）` : ''
       setNotice({ ok: result.ok, text: result.message + tail })
     } catch (err) {
@@ -967,7 +983,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   onChange={setDraftModels}
                   onFetch={async () => {
                     if (!editingModel?.id) {
-                      return { ok: false, message: '请先保存该端点（填写地址与 API Key），再拉取模型列表', models: [] }
+                      // 判定的是「端点尚未入库」（新增态没有 id），文案必须说清动作是保存，而非"没填地址/Key"
+                      return { ok: false, message: '该端点尚未保存，请先点「保存模型」，再拉取模型列表', models: [] }
                     }
                     return window.api.listAvailableModels(editingModel.id)
                   }}
@@ -986,12 +1003,14 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   </select>
                 </label>
 
+            {/* Key 状态读**当前编辑端点**的（models 列表里的真值），不读通用 settings ——
+                ⚠️ settings.hasApiKey 是通用设置（官方档案）的 Key，新建端点时显示它会让人误以为 Key 已存进这条 */}
             <label>
-              API 密钥（{settings?.hasApiKey ? `已保存：${settings.apiKeyMasked}` : '尚未保存'}）
+              API 密钥（{editingProfile?.hasApiKey ? `已保存：${editingProfile.apiKeyMasked}` : '尚未保存'})
               <input
                 type="password"
                 value={apiKey}
-                placeholder={settings?.hasApiKey ? '留空则保留已保存的 Key' : 'sk-...'}
+                placeholder={editingProfile?.hasApiKey ? '留空则保留已保存的 Key' : 'sk-...'}
                 onChange={(e) => setApiKey(e.target.value)}
               />
             </label>
