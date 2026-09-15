@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
-import { sourceLabel, type ModelsView } from '@shared/models'
+import { activeEntry, entryLabel, sourceLabel, type ModelsView } from '@shared/models'
 import { cacheHitRate, formatRate, formatTokens, reasoningShare, totalTokens } from '@shared/usage'
 import { tierLabel } from '@shared/token-tier'
 import type { GitInfo, PermissionPreset } from '@shared/ipc'
@@ -103,6 +103,9 @@ export function UsageChip(): JSX.Element | null {
  * 模型快速切换（plan7 F5 之后）：**切的是档案，不是名字**（数据与设置页同一份 `models:list`）。
  * 不靠手输模型名 —— 多模型下光改名字 = 拿新名字去撞**当前那条连接**，多半 400；
  * 换模型去设置页「添加模型」，这里的手输只留给"同一条连接上换个模型名"。
+ *
+ * 分组显示（2026-09-15 用户需求）：端点为组、组名做标题，组下逐条列模型目录，
+ * 点模型 = 切到它（端点没激活时一并切）；当前正在用的那条打勾。
  */
 export function ModelSwitcher(): JSX.Element {
   const settings = useAppStore((s) => s.settings)
@@ -130,9 +133,10 @@ export function ModelSwitcher(): JSX.Element {
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  /** 切档案：主进程切完之后，各处读的都是"当前档案"，拉一次即同步 */
-  const useProfile = async (id: string): Promise<void> => {
-    const next = await window.api.setActiveModel(id)
+  /** 切到某端点的某个模型：端点没激活就一并激活（一次点击 = 定格到这个模型） */
+  const useEntry = async (profileId: string, entryId: string): Promise<void> => {
+    let next = await window.api.setActiveModelEntry(profileId, entryId)
+    if (models && profileId !== models.activeId) next = await window.api.setActiveModel(profileId)
     setModels(next)
     await loadSettings()
     setOpen(false)
@@ -149,11 +153,13 @@ export function ModelSwitcher(): JSX.Element {
   }
 
   const active = models?.profiles.find((p) => p.id === models.activeId) ?? null
-  const label = active?.name ?? settings?.model ?? '未配置模型'
+  const activeModel = active ? activeEntry(active) : null
+  const label = activeModel ? entryLabel(activeModel) : (settings?.model ?? '未配置模型')
+  const labelTitle = active ? `${active.name} / ${activeModel?.model ?? ''}` : '切换模型'
 
   return (
     <div className="model-switch" ref={boxRef}>
-      <button className="tb-btn tb-model" onClick={() => setOpen((v) => !v)} title="切换模型">
+      <button className="tb-btn tb-model" onClick={() => setOpen((v) => !v)} title={labelTitle}>
         {label}
         <span className="tb-caret">▾</span>
       </button>
@@ -161,15 +167,28 @@ export function ModelSwitcher(): JSX.Element {
         <div className="model-menu">
           {models && models.profiles.length > 0 ? (
             models.profiles.map((p) => (
-              <button
-                key={p.id}
-                className={`model-item ${p.id === models.activeId ? 'active' : ''}`}
-                onClick={() => void useProfile(p.id)}
-                title={p.models.map((m) => m.model).join('、')}
-              >
-                {p.name}
-                <span className="model-item-src">{sourceLabel(p.source)}</span>
-              </button>
+              <div key={p.id} className="model-menu-group">
+                <div className="model-group-head">
+                  <span className="model-group-name" title={p.name}>
+                    {p.name}
+                  </span>
+                  <span className="model-group-src">{sourceLabel(p.source)}</span>
+                </div>
+                {p.models.map((m) => {
+                  const cur = p.id === models.activeId && m.id === p.activeModelId
+                  return (
+                    <button
+                      key={m.id}
+                      className={`model-item ${cur ? 'active' : ''}`}
+                      onClick={() => void useEntry(p.id, m.id)}
+                      title={`${p.name} / ${m.model}`}
+                    >
+                      {entryLabel(m)}
+                      {cur && <span className="model-item-cur">✓</span>}
+                    </button>
+                  )
+                })}
+              </div>
             ))
           ) : (
             <button className="model-item" onClick={() => setOpen(false)}>

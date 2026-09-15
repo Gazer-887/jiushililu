@@ -952,7 +952,8 @@ label.radio {
 }
 
 .model-item {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
   text-align: left;
   background: transparent;
@@ -971,6 +972,36 @@ label.radio {
 .model-item.active {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* 下拉分组（端点为组，组下逐条模型）：组名小字弱化，模型项才是可点的主体 */
+.model-menu-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.model-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  padding: var(--sp-8) var(--sp-8) var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.model-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-group-src {
+  flex-shrink: 0;
+}
+
+.model-item-cur {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .model-new {
@@ -2050,6 +2081,77 @@ label.radio {
   align-items: center;
   gap: var(--sp-4);
   flex-shrink: 0;
+}
+
+/* 组下模型清单（2026-09-15 用户需求）：同一条 Key 的全部模型摆在组名下 */
+.model-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 分隔线只画在组与组之间（.model-entries 底部）—— 组名与自家模型之间不画 */
+.model-group .model-row {
+  border-bottom: none;
+}
+
+.model-entries {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-2) 0 var(--sp-8) var(--sp-16);
+  border-bottom: 1px solid var(--border);
+}
+
+.model-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-4) var(--sp-6);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+}
+
+.model-entry:hover {
+  background: var(--bg);
+}
+
+.model-entry-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 显示名 ≠ 模型 ID 时把真 ID 摆出来 —— 模型 ID 才是与厂商文档对齐的那一个 */
+.model-entry-id {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-entry-cur {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+}
+
+.model-entry-use {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-6);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.model-entry-use:hover {
+  color: var(--accent);
+  border-color: var(--accent-border);
 }
 
 /* 三个操作做成图标按钮：它们高频、语义明确，占太多字面反而挡视线 */

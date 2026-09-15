@@ -23,6 +23,12 @@ interface StoredSettings extends ModelSettings {
   /** **记忆开关**（plan19 批 1）。缺字段 = 老配置 → 视为开（否则记忆批做了等于没做） */
   memoryEnabled?: boolean
   /**
+   * **电脑控制开关**（2026-09-15 用户需求）。当前版本**尚无对应的电脑控制工具**——开关先落门控：
+   * 状态进自视段（模型如实报告自身配置），工具上线后此处即权限闸。缺字段 = 老配置 → `false`：
+   * 涉及鼠标键盘的权限必须由用户显式开启，不能替他默认。
+   */
+  computerControlEnabled?: boolean
+  /**
    * 省 token 档位（plan8 R9.1 §七②）。放**全局设置**而非模型档案：用户定调"**档位是全局的**，不做会话级覆盖"
    * —— 它是"你更在乎能力还是在乎钱"的偏好，跟用哪条连接无关。缺字段 = 老配置 → 按 `DEFAULT_TOKEN_TIER`（平衡）
    * 回落，**不写回盘**（写回会让"默认"变成"显式选择"）。
@@ -69,6 +75,19 @@ export function getMemoryEnabled(): boolean {
 export function setMemoryEnabled(enabled: boolean): boolean {
   store.set('memoryEnabled', enabled)
   return getMemoryEnabled()
+}
+
+/**
+ * **电脑控制开关**（2026-09-15 用户需求）。判断走 `=== true`（与记忆开关相反）：权限类开关
+ * 手改坏成 undefined 时宁可"静默关着"，不许"静默开着"。
+ */
+export function getComputerControlEnabled(): boolean {
+  return store.store.computerControlEnabled === true
+}
+
+export function setComputerControlEnabled(enabled: boolean): boolean {
+  store.set('computerControlEnabled', enabled)
+  return getComputerControlEnabled()
 }
 
 /**

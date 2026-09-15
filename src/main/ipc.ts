@@ -38,7 +38,7 @@ import {
   type GitOpResult,
   type GitCommitResult
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
 import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
@@ -367,6 +367,8 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.modelsSetEntry, (_e, raw: unknown): ModelsView => {
     const input = friendlyParse(modelEntryPickSchema, raw)
     setActiveEntry(input.profileId, input.entryId)
+    // 「当前模型」变了要广播：别的窗口（设置窗口等）读的是主进程真值，不喊一声就永远拿旧值
+    deps.onSettingsChanged?.('models')
     return modelsView()
   })
 
@@ -492,6 +494,8 @@ export function registerIpcHandlers(deps: {
         // 主 Agent（plan17 G2）：渲染端按会话带上；定义不存在 → runAgent 抛人话错误走下方 catch → emit.error
         agentName: input.agentName,
         permission: getPermissionPreset(),
+        // 自视段（2026-09-15）：电脑控制开关由组合根读好传入（runner 不碰 electron-store）
+        computerControl: getComputerControlEnabled(),
         conversationId,
         onText: (delta) => {
           if (firstSignalAt === 0) {
@@ -639,6 +643,8 @@ export function registerIpcHandlers(deps: {
         history: [{ role: 'user', content: req.task }],
         agentName: req.agentName,
         conversationId: req.conversationId ?? AGENT_TASK_OWNER,
+        // 自视段：一次性任务同样报告配置（模型名/工具/子代理）
+        computerControl: getComputerControlEnabled(),
         // 一次性任务也注入记忆并采集痕迹（少了它，模型在这里 remember 就没人上报 —— 静默缺口）
         memoryBlock: beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       })
@@ -1005,6 +1011,15 @@ export function registerIpcHandlers(deps: {
     }
     if (before !== after) sendToAll(IPC.memoryChanged)
     return { enabled: after, warnFullAccess }
+  })
+
+  // ── 电脑控制开关（2026-09-15 用户需求）── 当前版本无对应工具：开关先落门控（状态进自视段），
+  //    工具上线后此处即权限闸。纯门控没有"设了≠生效"问题，不需要 trouble 行。
+  ipcMain.handle(IPC.computerControlGet, (): boolean => getComputerControlEnabled())
+
+  ipcMain.handle(IPC.computerControlSet, (_e, raw: unknown): boolean => {
+    const enabled = z.boolean().parse(raw)
+    return setComputerControlEnabled(enabled)
   })
 
 

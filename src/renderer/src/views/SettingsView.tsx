@@ -8,7 +8,7 @@ import type {
   TestResult,
   WorkspaceInfo
 } from '@shared/ipc'
-import { sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
+import { entryLabel, sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import AgentManager from '../components/AgentManager'
 import MemorySettings from '../components/MemorySettings'
@@ -199,6 +199,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   /** 存储位置（plan10 C 批）：应用数据落点，真值在主进程（含待生效迁移与最近一次迁移结果） */
   const [storage, setStorage] = useState<StorageLocationInfo | null>(null)
   const [perm, setPerm] = useState<PermissionPreset>('write')
+  /** 电脑控制开关（2026-09-15）：真值在主进程；当前无对应工具，先落门控（状态进自视段） */
+  const [ccEnabled, setCcEnabled] = useState<boolean | null>(null)
   /** 省 token 档位：跟权限档一样是"人定的档"，真值在主进程 */
   const [tier, setTier] = useState<TokenSaverTier>('balanced')
   /** 系统集成（plan7 批 F1）：值与**真生效状态**都在主进程（blocker 起没起来只有它知道） */
@@ -255,6 +257,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
       .then(setWs)
       .catch(() => setWs(null))
     void window.api.getPermission().then(setPerm)
+    void window.api.getComputerControl().then(setCcEnabled)
     void window.api.getTokenTier().then(setTier)
     void window.api
       .getStorageLocation()
@@ -500,6 +503,11 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     setPerm(await window.api.setPermission(p))
   }
 
+  /** 电脑控制开关（2026-09-15）：主进程返回值回显，不做乐观更新 */
+  const chooseCC = async (value: boolean): Promise<void> => {
+    setCcEnabled(await window.api.setComputerControl(value))
+  }
+
   /** 选省 token 档位：**全局一档**，不做会话级覆盖（用户定调） */
   const chooseTier = async (next: TokenSaverTier): Promise<void> => {
     setTier(await window.api.setTokenTier(next))
@@ -558,6 +566,19 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     try {
       setModels(await window.api.setActiveModel(id))
       // 当前模型变了 → 设置页与输入框读的都是"当前档案"，拉一次保持一致
+      await loadSettings()
+    } catch (err) {
+      setModelNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  /** 切到某端点下的某个模型（组下清单的「用这个」）：端点没激活就一并激活 */
+  const useModelEntry = async (profileId: string, entryId: string): Promise<void> => {
+    setModelNotice(null)
+    try {
+      let next = await window.api.setActiveModelEntry(profileId, entryId)
+      if (models && profileId !== models.activeId) next = await window.api.setActiveModel(profileId)
+      setModels(next)
       await loadSettings()
     } catch (err) {
       setModelNotice({ ok: false, text: err instanceof Error ? err.message : String(err) })
@@ -706,6 +727,31 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                 </button>
               ))}
             </div>
+
+            {/* ── 电脑控制（2026-09-15 用户需求）── 当前版本尚未搭载对应工具：开关先落门控，
+                状态进模型自视段（如实报告）；工具上线后此处即权限闸。开着时必须当场说明现状，
+                防"以为已经在被控制"的错觉。 */}
+            <div className="field-label field-label-with-note">
+              电脑控制
+              <FieldNote
+                text={[
+                  '允许模型操控鼠标键盘、与桌面应用程序交互。',
+                  '当前版本尚未搭载电脑控制工具；开关保存偏好，功能上线后作为权限闸生效。'
+                ]}
+              />
+            </div>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={ccEnabled ?? false}
+                disabled={ccEnabled === null}
+                onChange={(e) => void chooseCC(e.target.checked)}
+              />
+              启用电脑控制
+            </label>
+            {ccEnabled === true && (
+              <p className="hint">已开启。当前版本暂无可用的电脑控制工具；该设置将在功能上线后作为权限闸生效。</p>
+            )}
 
             {/* 省 token 的口号不写在这里 —— 它是"能力 vs 省钱"的取舍，摆进 ⓘ 里让人自己选，
                 不替用户默认一个激进值（plan8 R9.1 §七②）。 */}
@@ -903,40 +949,67 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             {!editingModel && models && models.profiles.length > 0 && (
               <div className="model-list">
                 {models.profiles.map((p) => (
-                  <div key={p.id} className={`model-row ${p.id === models.activeId ? 'on' : ''}`}>
-                    <span className="model-mark" aria-hidden>
-                      {p.source === 'deepseek' ? <IconWhale /> : <IconSpark />}
-                    </span>
-                    <span className="model-name" title={p.name}>
-                      {p.name}
-                    </span>
-                    <span className="model-source">{sourceLabel(p.source)}</span>
-                    {p.id === models.activeId && <span className="model-current">当前</span>}
-                    <span className="model-actions">
-                      <button className="model-act" title="编辑该模型" onClick={() => startEdit(p)}>
-                        <IconPencil />
-                      </button>
-                      <button
-                        className="model-act"
-                        title={p.hasApiKey ? '测试连接（使用该模型已保存的 API Key）' : '尚未填写 API Key'}
-                        disabled={modelBusy === p.id}
-                        onClick={() => void testProfile(p.id)}
-                      >
-                        <IconLink />
-                      </button>
-                      <button className="model-act model-act-del" title="删除该模型" onClick={() => void removeProfileById(p.id)}>
-                        <IconTrash />
-                      </button>
-                      {p.id !== models.activeId && (
-                        <button
-                          className="model-act model-act-use"
-                          title="切换为该模型"
-                          onClick={() => void useProfile(p.id)}
-                        >
-                          改用
+                  <div key={p.id} className="model-group">
+                    <div className={`model-row ${p.id === models.activeId ? 'on' : ''}`}>
+                      <span className="model-mark" aria-hidden>
+                        {p.source === 'deepseek' ? <IconWhale /> : <IconSpark />}
+                      </span>
+                      <span className="model-name" title={p.name}>
+                        {p.name}
+                      </span>
+                      <span className="model-source">{sourceLabel(p.source)}</span>
+                      {p.id === models.activeId && <span className="model-current">当前</span>}
+                      <span className="model-actions">
+                        <button className="model-act" title="编辑该模型" onClick={() => startEdit(p)}>
+                          <IconPencil />
                         </button>
-                      )}
-                    </span>
+                        <button
+                          className="model-act"
+                          title={p.hasApiKey ? '测试连接（使用该模型已保存的 API Key）' : '尚未填写 API Key'}
+                          disabled={modelBusy === p.id}
+                          onClick={() => void testProfile(p.id)}
+                        >
+                          <IconLink />
+                        </button>
+                        <button className="model-act model-act-del" title="删除该模型" onClick={() => void removeProfileById(p.id)}>
+                          <IconTrash />
+                        </button>
+                        {p.id !== models.activeId && (
+                          <button
+                            className="model-act model-act-use"
+                            title="切换为该模型"
+                            onClick={() => void useProfile(p.id)}
+                          >
+                            改用
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                    {/* 组下模型清单（2026-09-15 用户需求）：同一条 Key 的全部模型摆在组名下，点「用这个」即切 */}
+                    <div className="model-entries">
+                      {p.models.map((m) => {
+                        const cur = p.id === models.activeId && m.id === p.activeModelId
+                        return (
+                          <div key={m.id} className={`model-entry ${cur ? 'on' : ''}`}>
+                            <span className="model-entry-name" title={m.model}>
+                              {entryLabel(m)}
+                            </span>
+                            {m.name?.trim() ? <span className="model-entry-id">{m.model}</span> : null}
+                            {cur ? (
+                              <span className="model-entry-cur">当前模型</span>
+                            ) : (
+                              <button
+                                className="model-entry-use"
+                                title="切换为该模型"
+                                onClick={() => void useModelEntry(p.id, m.id)}
+                              >
+                                用这个
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 ))}
               </div>

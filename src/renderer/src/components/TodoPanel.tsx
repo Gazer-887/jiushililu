@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
 import { statsLine, todoStats, type TodoStatus } from '@shared/todo'
 
@@ -18,6 +18,15 @@ export default function TodoPanel(): JSX.Element | null {
   const serving = useAppStore((s) => s.goals).filter((g) => g.status === 'active' || g.status === 'paused')
   const servingFirst = serving[0]
   const [collapsed, setCollapsed] = useState(false)
+
+  // 全部完成的瞬间自动折叠（2026-09-15 用户需求）：活干完了就该收起来，统计行留着当证据。
+  // ⚠️ 只在「有未完成 → 全完成」的**沿**上收一次 —— 收完用户手动展开看，不能又给折回去。
+  const hasOpen = todos.some((t) => t.status !== 'completed')
+  const prevOpenRef = useRef(hasOpen)
+  useEffect(() => {
+    if (prevOpenRef.current && !hasOpen) setCollapsed(true)
+    prevOpenRef.current = hasOpen
+  }, [hasOpen])
 
   // 重启后拉回上一轮的待办（门禁红灯挖出的静默缺陷）：todos 的存档在主进程，但此前只有两条到路 ——
   // Agent 推送（update_todos → todo:changed）、App 挂载时的一次性 pull（彼时 activeId 多半还没就绪，

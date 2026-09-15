@@ -562,6 +562,11 @@ let memoryWarnOnNextEnable = false
 const memorySwitchCalls = []
 /** chat:send 的载荷流水 —— "新会话首条不重复"要断言模型只收到一条 user */
 const chatSendCalls = []
+/** models:set-entry 的调用流水 —— 模型分组下拉「点模型即切」要断言真的发起了切换 */
+const modelEntryCalls = []
+/** 电脑控制开关的当前值与调用流水（2026-09-15 用户需求） */
+let ccEnabled = false
+const ccCalls = []
 
 let gitBroadcast = () => 0
 let gitMode = 'repo' // 'repo' | 'not-repo'
@@ -747,6 +752,13 @@ const STUBS = {
     memorySwitchCalls.push(enabled)
     return { enabled, warnFullAccess: memoryWarnOnNextEnable && enabled && !before }
   },
+  // ── 电脑控制开关（2026-09-15 用户需求）── 真值判定在 src/main/ipc.ts；桩同样给"设了就记住"的契约副本
+  'computer-control:get': () => ccEnabled,
+  'computer-control:set': (enabled) => {
+    ccEnabled = enabled
+    ccCalls.push(enabled)
+    return enabled
+  },
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   'models:list': () => ({
     profiles: [
@@ -762,11 +774,14 @@ const STUBS = {
     message: '拉到 4 个模型',
     models: ['agnes-image-2.5-flash', 'agnes-video-2.5-flash', 'agnes-3.0-flash', 'agnes-3.0-pro']
   }),
-  'models:set-entry': () => ({
-    profiles: [fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true)],
-    activeId: 'm1',
-    filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
-  }),
+  'models:set-entry': (input) => {
+    modelEntryCalls.push({ profileId: input?.profileId, entryId: input?.entryId })
+    return {
+      profiles: [fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true)],
+      activeId: 'm1',
+      filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
+    }
+  },
   'models:save': (input) => ({
     ...FAKE_PROFILE_BASE,
     id: input?.id ?? 'm-new',
@@ -1854,6 +1869,43 @@ app.whenReady().then(async () => {
   `)
   await new Promise((r) => setTimeout(r, 300))
 
+  // —— 全部完成 → 自动折叠（2026-09-15 用户需求）：只在「有未完成 → 全完成」的沿上收一次，
+  //    统计行保留当证据；用户随后手动展开不得被折回（不然等于抢走界面控制权）。——
+  const ALL_DONE = FAKE_TODOS.map((t) => ({ ...t, status: 'completed' }))
+  win.webContents.send('todo:changed', { conversationId: 'c1', payload: ALL_DONE })
+  await new Promise((r) => setTimeout(r, 400))
+  const todoAutoFold = await win.webContents.executeJavaScript(`
+    (() => ({
+      expanded: document.querySelector('.todo-head')?.getAttribute('aria-expanded') ?? null,
+      panelAlive: !!document.querySelector('.todo-panel'),
+      statsText: document.querySelector('.todo-stats')?.textContent?.trim() ?? null
+    }))()
+  `)
+  console.log('TODO_AUTO_FOLD=' + JSON.stringify(todoAutoFold))
+  checkTrue(
+    '清单全部完成 → 面板**自动折叠**（沿触发），统计行保留当证据',
+    todoAutoFold.expanded === 'false' && todoAutoFold.panelAlive === true && (todoAutoFold.statsText ?? '').includes('4 已完成'),
+    todoAutoFold
+  )
+  // 手动展开 → 不被折回（600ms 后仍是展开态才算数）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const head = document.querySelector('.todo-head');
+      if (head) head.click();
+      return !!head;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 600))
+  const todoStayOpen = await win.webContents.executeJavaScript(
+    `document.querySelector('.todo-head')?.getAttribute('aria-expanded') ?? null`
+  )
+  checkTrue('用户手动展开已完成的清单 → **不再被自动折回**（沿只触发一次）', todoStayOpen === 'true', {
+    expanded: todoStayOpen
+  })
+  // 恢复现场：把原清单推回去（后续探针的 todos 语义不变）
+  win.webContents.send('todo:changed', { conversationId: 'c1', payload: FAKE_TODOS })
+  await new Promise((r) => setTimeout(r, 300))
+
   // 顶栏是否还挂着「新建任务」/ 对话页空状态文案（用户 2026-09-12 两条意见）
   const textCheck = await win.webContents.executeJavaScript(`
     (() => {
@@ -2118,6 +2170,43 @@ app.whenReady().then(async () => {
         })()
       `)
       console.log('MODELS=' + JSON.stringify(modelPage))
+
+      // ── 模型分组（2026-09-15 用户需求）：端点为组、组名做标题、组下摆全部模型 ──
+      const modelGroup = await sevalRaw(`
+        (() => {
+          const groups = Array.from(document.querySelectorAll('.model-list .model-group'));
+          return {
+            groups: groups.length,
+            entries: document.querySelectorAll('.model-list .model-entry').length,
+            curMarks: document.querySelectorAll('.model-list .model-entry-cur').length,
+            useBtns: document.querySelectorAll('.model-list .model-entry-use').length,
+            headNames: groups.map((g) => g.querySelector('.model-row .model-name')?.textContent?.trim() ?? ''),
+            firstEntryName: document.querySelector('.model-list .model-entry-name')?.textContent?.trim() ?? '',
+            firstEntryVisible: (() => {
+              const el = document.querySelector('.model-list .model-entry');
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            })()
+          };
+        })()
+      `)
+      console.log('MODELS_GROUP=' + JSON.stringify(modelGroup))
+      checkTrue('设置页模型列表**按端点分组**（组数 = 端点数）', modelGroup.groups === modelPage.rows, {
+        groups: modelGroup.groups,
+        rows: modelPage.rows
+      })
+      checkTrue(
+        '组下列出**全部模型目录条目**且看得见（几何尺寸非零）',
+        modelGroup.entries >= modelGroup.groups && modelGroup.firstEntryVisible === true,
+        { entries: modelGroup.entries, groups: modelGroup.groups, firstEntryVisible: modelGroup.firstEntryVisible }
+      )
+      checkTrue('组下「当前模型」标记**全局唯一**', modelGroup.curMarks === 1, { curMarks: modelGroup.curMarks })
+      checkTrue('非当前模型都有「用这个」入口（数量互补，一个不缺）', modelGroup.useBtns === modelGroup.entries - modelGroup.curMarks, {
+        useBtns: modelGroup.useBtns,
+        entries: modelGroup.entries,
+        curMarks: modelGroup.curMarks
+      })
 
       // ── 模型目录编辑器（F5.1）：点「编辑」→ 一行一个模型 + 每个模型可展开高级设置 ──
       // ⚠️ 2026-09-13：点「编辑」现在进的是**二级页**（表单取代列表）。故这一段同时验二级页形态。
@@ -4129,6 +4218,8 @@ app.whenReady().then(async () => {
       const hints = Array.from(document.querySelectorAll('.settings-body p.hint'));
       return {
         labels: rows.map((r) => r.textContent.trim()),
+        // 电脑控制开关（2026-09-15 新增）混在同一个 .settings-body 里，一并采下默认态
+        cc: shape(pick('启用电脑控制')),
         keep: shape(pick('锁屏与熄屏后继续运行')),
         auto: shape(pick('开机自启')),
         hints: hints.map((p) => p.textContent.trim()),
@@ -4141,11 +4232,54 @@ app.whenReady().then(async () => {
   `)
   const systemBefore = await systemRead()
   const visible = (box) => box !== null && box.w >= 12 && box.h >= 12
-  checkTrue('设置页「系统」有两项：锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
-    systemBefore.labels.length === 2 &&
+  checkTrue('设置页「系统」区三项：启用电脑控制 / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
+    systemBefore.labels.length === 3 &&
+      systemBefore.cc !== null && systemBefore.cc.checked === false && systemBefore.cc.disabled === false &&
       systemBefore.keep !== null && systemBefore.keep.checked === false && systemBefore.keep.disabled === false &&
       systemBefore.auto !== null && systemBefore.auto.checked === false && systemBefore.auto.disabled === false,
     systemBefore)
+  checkTrue('电脑控制初值来自主进程（`computer-control:get` 桩真被调过，勾选框不进禁用死角）',
+    ccEnabled === false && systemBefore.cc !== null && systemBefore.cc.disabled === false,
+    { ccEnabled, cc: systemBefore.cc })
+  // 开关往返：点击 → 桩收到载荷 → **跟随返回值回显**（同档位选择/系统开关的口径：不做乐观更新）→ 开着时提示行必须出现
+  await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('启用电脑控制'));
+      if (c) c.querySelector('input').click();
+      return !!c;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const ccAfter = await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('启用电脑控制'));
+      const hints = Array.from(document.querySelectorAll('.settings-body p.hint')).map((p) => p.textContent.trim());
+      return { checked: c ? c.querySelector('input').checked : null, hints };
+    })()
+  `)
+  checkTrue('电脑控制点一下 → 桩收到 true、界面跟随返回值勾选，且开着时**当场说明**"暂无对应工具"的现状',
+    ccCalls.length === 1 && ccCalls[0] === true &&
+      ccAfter.checked === true &&
+      ccAfter.hints.some((h) => h.indexOf('暂无可用的电脑控制工具') >= 0),
+    { ccCalls, ccAfter })
+  // 恢复：关回去，别让后续探针活在"被开着"的世界里
+  await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('启用电脑控制'));
+      if (c) c.querySelector('input').click();
+      return !!c;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  checkTrue('电脑控制再点一下 → 关回原状（载荷 false、勾选框回未勾）',
+    ccCalls.length === 2 && ccCalls[1] === false && ccEnabled === false,
+    { ccCalls, ccEnabled })
   // 初值必须是**从主进程取到的**：取数失败会回落到"未勾选+禁用"，那与"存根返回 false"在断言层分不开 → 查调用次数
   checkTrue('初值来自主进程（`system:get` 真的被调过，不是界面默认值）',
     systemGetCalls >= 1 && systemBefore.keep !== null && systemBefore.keep.disabled === false,
@@ -6714,6 +6848,51 @@ app.whenReady().then(async () => {
     agentSaveCall ? { agentName: agentSaveCall.agentName } : null)
   checkTrue('切回 A → **A 的字在它自己那条里**（存档/恢复生效，不是靠重新拉盘掩盖）',
     concurrencyResult.aHasOwnText === true, { aHasOwnText: concurrencyResult.aHasOwnText })
+
+  // —— 模型分组下拉（2026-09-15 用户需求，参考图二）：端点为组、组下逐条模型、当前那条打勾 ——
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.tb-model');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const modelMenuGrouped = await win.webContents.executeJavaScript(`
+    (() => {
+      const menu = document.querySelector('.model-menu');
+      if (!menu) return { open: false };
+      return {
+        open: true,
+        groups: menu.querySelectorAll('.model-group-head').length,
+        items: menu.querySelectorAll('.model-item').length,
+        checked: menu.querySelectorAll('.model-item-cur').length,
+        firstHead: menu.querySelector('.model-group-name')?.textContent?.trim() ?? '',
+        checkedItem: menu.querySelector('.model-item.active')?.textContent?.trim() ?? ''
+      };
+    })()
+  `)
+  checkTrue('输入框模型下拉**按端点分组**：组头 = 端点名、组下 = 模型目录、当前那条打勾',
+    modelMenuGrouped.open === true &&
+      modelMenuGrouped.groups === 3 &&
+      modelMenuGrouped.items === 9 &&
+      modelMenuGrouped.checked === 1,
+    modelMenuGrouped)
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const items = Array.from(document.querySelectorAll('.model-menu .model-item'));
+      const target = items.find((b) => !b.querySelector('.model-item-cur'));
+      if (target) target.click();
+      return !!target;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  checkTrue('点组下一条**非当前**模型 → 真的发起了 models:set-entry 切换（不是摆设）',
+    modelEntryCalls.length === 1 &&
+      typeof modelEntryCalls[0]?.profileId === 'string' &&
+      typeof modelEntryCalls[0]?.entryId === 'string' &&
+      modelEntryCalls[0].entryId.endsWith('-e2'),
+    modelEntryCalls)
 
   // —— 真实用量（只计量、不记钱）—— 为什么真推 IPC 事件而不直接看 store：用量从厂商上报 → Provider 解析
   // → runner 累加 → chat:done 带货 → preload 桥 → store 记账 → 界面渲染，推事件能覆盖桥之后的整条链。

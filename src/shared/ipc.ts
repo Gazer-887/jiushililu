@@ -278,6 +278,12 @@ export const IPC = {
   /** **记忆开关**（plan19 批 1）：批 1 只管通路 A（模型工具）是否下发，通路 B 不受它管 */
   memoryGetSwitch: 'memory:get-switch',
   memorySetSwitch: 'memory:set-switch',
+  /**
+   * **电脑控制开关**（2026-09-15 用户需求）。当前版本**尚无对应的电脑控制工具** —— 开关先落门控：
+   * 状态会进自视段（模型对自身配置如实报告），工具上线后此处即权限闸。
+   */
+  computerControlGet: 'computer-control:get',
+  computerControlSet: 'computer-control:set',
   /** 护栏 2 的落点（D-043）：**本轮**写入痕迹 —— 只推"刚发生的事实"，全量归巡检区 */
   memoryNotice: 'memory:notice',
   goalList: 'goal:list',
@@ -565,6 +571,9 @@ export interface ApiBridge {
   /** **记忆开关**：批 1 只管通路 A。`warnFullAccess` = 开启时正处于完全访问档（判据 14 要当场告警） */
   getMemorySwitch(): Promise<boolean>
   setMemorySwitch(enabled: boolean): Promise<import('./memory').MemorySwitchResult>
+  /** **电脑控制开关**（2026-09-15）：当前无对应工具，先落门控（状态进自视段） */
+  getComputerControl(): Promise<boolean>
+  setComputerControl(enabled: boolean): Promise<boolean>
   /** save/delete 后各窗重读的信号（不搬变更内容） */
   onMemoryChanged(cb: () => void): () => void
   /** 护栏 2：本轮写入痕迹（`<MemoryNotice />` 的数据源，D-043） */
