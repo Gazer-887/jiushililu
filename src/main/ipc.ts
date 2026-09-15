@@ -167,6 +167,7 @@ import type { PlaybookStore } from './store/playbook-store'
 import { composeMemoryBlock, estimateMemoryTokens } from './memory/inject'
 import { composePlaybookBlock } from './memory/playbook-inject'
 import { composeSkillBlock } from '@shared/skills'
+import { composeRulesBlock } from './rules/rules'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
 import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
@@ -511,6 +512,8 @@ export function registerIpcHandlers(deps: {
     const playbookBlock = assemblePlaybookBlock(conversationId, lastUserText)
     // 技能清单段（plan22）：静态资产，无条件组装（预算截断在 composeSkillBlock 内完成，截断双侧可见）
     const skillBlock = assembleSkillBlock()
+    // 规则段（plan24）：**无条件注入**的约束（工作区 AGENTS.md + rules/ + 用户层）
+    const rulesBlock = assembleRulesBlock()
     // 诊断①：开始时刻。没有它，"卡死"发生时日志里一片空白，连"请求到底发没发"都说不清
     log.info('对话开始', {
       conversationId,
@@ -578,6 +581,8 @@ export function registerIpcHandlers(deps: {
         playbookBlock,
         // 技能段（plan22）：同上 —— 预算截断已在组合根做完，runner 只拼段
         skillBlock,
+        // 规则段（plan24）：同上 —— 无条件注入的约束
+        rulesBlock,
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
           if (state.runId !== evt.runId) {
@@ -690,7 +695,9 @@ export function registerIpcHandlers(deps: {
         // 一次性任务同样走条件召回（任务描述即"用户原话"，活跃标签从它推断）
         playbookBlock: assemblePlaybookBlock(req.conversationId ?? AGENT_TASK_OWNER, req.task),
         // 一次性任务同样注入技能清单（plan22 D-057）
-        skillBlock: assembleSkillBlock()
+        skillBlock: assembleSkillBlock(),
+        // 一次性任务同样注入规则（plan24）：约束对一次性任务同样生效
+        rulesBlock: assembleRulesBlock()
       })
       endMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       return {
@@ -1240,6 +1247,15 @@ export function registerIpcHandlers(deps: {
         `技能清单超出注入预算：字节上限丢弃 ${droppedByBytes} 条、条数上限丢弃 ${droppedByCount} 条（共 ${store.view().entries.length} 条）`,
         {}
       )
+    }
+    return block
+  }
+
+  /** 组装规则注入段（plan24 D-068）：**无条件注入**的约束（每轮都在）；预算截断时 log 被丢文件名 */
+  function assembleRulesBlock(): string | null {
+    const { block, droppedFiles } = composeRulesBlock(deps.agent.getWorkspaceRoot(), deps.userDataDir)
+    if (droppedFiles.length > 0) {
+      log.warn(`规则文件超出注入预算：未注入 ${droppedFiles.join('、')}`, {})
     }
     return block
   }
