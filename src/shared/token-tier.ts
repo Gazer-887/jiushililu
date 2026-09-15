@@ -115,16 +115,13 @@ export interface TokenTierInfo {
   note: string
 }
 
+/** 展示顺序（0.13.42 用户定调）：**按省力程度从高到低**，默认档「平衡」居中。
+ *  ⚠️ 仅用于设置页展示——档位行为全在 `POLICIES`（按键取用），与本数组顺序无关。 */
 export const TOKEN_TIER_LIST: readonly TokenTierInfo[] = [
   {
-    tier: 'rich',
-    label: '土豪',
-    note: '不做任何压缩：工具输出原样进入上下文，也不附加输出要求。代价是 Token 消耗最高。'
-  },
-  {
-    tier: 'ultimate',
-    label: '极致',
-    note: '仅做零代价压缩：仅在超出上限时压缩，默认不改动工具输出，也不附加输出要求。'
+    tier: 'light',
+    label: '轻量',
+    note: '压缩力度最大、上下文最少、思考强度最低、回答要求最短。允许质量略降，但不伪造缺失数据。'
   },
   {
     tier: 'balanced',
@@ -132,9 +129,14 @@ export const TOKEN_TIER_LIST: readonly TokenTierInfo[] = [
     note: '默认档。压缩克制，并要求回答先给结论、不复述工具原文。'
   },
   {
-    tier: 'light',
-    label: '轻量',
-    note: '压缩力度最大、上下文最少、思考强度最低、回答要求最短。允许质量略降，但不伪造缺失数据。'
+    tier: 'ultimate',
+    label: '极致',
+    note: '仅做零代价压缩：仅在超出上限时压缩，默认不改动工具输出，也不附加输出要求。'
+  },
+  {
+    tier: 'rich',
+    label: '土豪',
+    note: '不做任何压缩：工具输出原样进入上下文，也不附加输出要求。代价是 Token 消耗最高。'
   }
 ]
 

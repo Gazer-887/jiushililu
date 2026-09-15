@@ -75,8 +75,9 @@ describe('档位取值（用户定调的档位表）', () => {
   })
 
   it('设置页的清单覆盖四档，且顺序与说明都在（界面不自己编文案）', () => {
-    expect(TOKEN_TIER_LIST.map((t) => t.tier)).toEqual(['rich', 'ultimate', 'balanced', 'light'])
-    expect(TOKEN_TIER_LIST.map((t) => t.label)).toEqual(['土豪', '极致', '平衡', '轻量'])
+    // 0.13.42 用户定调：展示顺序改为「按省力程度从高到低」，默认档「平衡」居中
+    expect(TOKEN_TIER_LIST.map((t) => t.tier)).toEqual(['light', 'balanced', 'ultimate', 'rich'])
+    expect(TOKEN_TIER_LIST.map((t) => t.label)).toEqual(['轻量', '平衡', '极致', '土豪'])
     expect(TOKEN_TIER_LIST.every((t) => t.note.length > 0)).toBe(true)
   })
 })

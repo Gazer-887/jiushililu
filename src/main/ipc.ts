@@ -463,6 +463,10 @@ export function registerIpcHandlers(deps: {
     const apiKey = getDecryptedApiKey()
     const controller = gate.controller
     let timedOut = false
+    // 诊断三件套（0.13.42 反馈：出现过"长时间无回复"却无从查起）。开始 / 首包 / 完成三个时刻都落日志，
+    // 下次再卡，日志能直接区分"请求没发出去 / 发了没首包 / 首包后断流"三种卡法
+    const startedAt = Date.now()
+    let firstSignalAt = 0
     const timer = setTimeout(() => {
       timedOut = true
       controller.abort()
@@ -470,6 +474,14 @@ export function registerIpcHandlers(deps: {
 
     // 记忆注入段（plan19 批 1）：组装 + 开采集。放在 `try` **之前** —— 出错时也要能 drain 到已发生的写入。
     const memoryBlock = beginMemoryTurn(conversationId)
+    // 诊断①：开始时刻。没有它，"卡死"发生时日志里一片空白，连"请求到底发没发"都说不清
+    log.info('对话开始', {
+      conversationId,
+      model: settings.model,
+      timeoutMs: settings.timeoutMs,
+      historyMessages: messages.length,
+      memoryInjected: memoryBlock !== null
+    })
 
     // D-032：单一通道 —— 带工具清单 + 流式，由模型自决"直接回答还是先调工具"；文本增量 → chat:chunk（上屏），工具生命周期 → chat:tool（进度卡片）。
     try {
@@ -481,8 +493,20 @@ export function registerIpcHandlers(deps: {
         agentName: input.agentName,
         permission: getPermissionPreset(),
         conversationId,
-        onText: (delta) => emit.chunk(delta),
-        onReasoning: (delta) => emit.reasoning(delta),
+        onText: (delta) => {
+          if (firstSignalAt === 0) {
+            firstSignalAt = Date.now()
+            log.info('对话首包（正文）', { conversationId, latencyMs: firstSignalAt - startedAt })
+          }
+          emit.chunk(delta)
+        },
+        onReasoning: (delta) => {
+          if (firstSignalAt === 0) {
+            firstSignalAt = Date.now()
+            log.info('对话首包（思考）', { conversationId, latencyMs: firstSignalAt - startedAt })
+          }
+          emit.reasoning(delta)
+        },
         onToolEvent: (evt) => emit.tool(evt),
         // 待办清单（plan7 批 D）：先存主进程，再推给界面 —— 界面重挂载后仍能拉到
         onTodos: (todos) => {
@@ -530,6 +554,14 @@ export function registerIpcHandlers(deps: {
       if (result.changedFiles > 0) emit.checkpoint(result.runId)
       // 收尾带货：本轮真实用量（plan8 R9）+ 窗口化省下的估算量（R9.1）+ **注入税**（plan19 §5.2，
       // 本地估算 —— 记忆段这轮占了多少，用量牌上要有个读数，不然"越用越重"没人看得见）
+      log.info('对话完成', {
+        conversationId,
+        durationMs: Date.now() - startedAt,
+        firstSignalMs: firstSignalAt > 0 ? firstSignalAt - startedAt : null,
+        stopReason: result.stopReason,
+        rounds: result.rounds,
+        changedFiles: result.changedFiles
+      })
       emit.done(result.usage, result.avoidedTokens ?? 0, getTokenTier(), estimateMemoryTokens(memoryBlock))
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查

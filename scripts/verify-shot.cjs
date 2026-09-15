@@ -560,6 +560,8 @@ const memoryDeleteCalls = []
 let memorySwitch = false
 let memoryWarnOnNextEnable = false
 const memorySwitchCalls = []
+/** chat:send 的载荷流水 —— "新会话首条不重复"要断言模型只收到一条 user */
+const chatSendCalls = []
 
 let gitBroadcast = () => 0
 let gitMode = 'repo' // 'repo' | 'not-repo'
@@ -785,7 +787,11 @@ const STUBS = {
     filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
   }),
   'models:test': () => ({ ok: true, message: '连接正常', latencyMs: 42 }),
-  'chat:send': () => undefined,
+  'chat:send': (payload) => {
+    // 记载荷："新会话首条不重复"要断言发给模型的 messages 里 user 角色只有一条
+    chatSendCalls.push(payload)
+    return undefined
+  },
   'chat:abort': () => undefined,
   'agent:run': () => ({ ok: true, output: '', rounds: 0, stopReason: 'completed', agent: 'x' }),
   'workspace:get': () => ({ ...wsStub }),
@@ -876,7 +882,15 @@ const STUBS = {
             ]
     }
   },
-  'conv:create': () => ({ id: 'x' }),
+  'conv:create': (input) => ({
+    id: 'x',
+    // ⚠️ 契约副本（真源 `conversations-core.ts` 的 createConversation）：firstMessage 会**播种成
+    //    第一条用户消息**并推导标题。"新会话首条不重复"那条断言靠这份桩成立
+    title: (input?.firstMessage ?? '新对话').slice(0, 20),
+    messages: input?.firstMessage?.trim()
+      ? [{ role: 'user', content: input.firstMessage.trim() }]
+      : []
+  }),
   // 记流水：要验「在别的页面期间流出来的内容有没有被存下来」+ 用量账本有没有跟着走
   // agentName（plan17）：一并记下 —— G2 的"渲染侧载荷带主 Agent"断言靠它（它只护渲染侧，真生效由 runner 单测钉）
   'conv:save': ({ id, messages, usage, agentName }) => {
@@ -4068,8 +4082,8 @@ app.whenReady().then(async () => {
       };
     })()
   `)
-  checkTrue('设置页有「Token Saver」一栏，四档都在（土豪/极致/平衡/轻量）',
-    tierBefore.found && tierBefore.items.join('/') === '土豪/极致/平衡/轻量', tierBefore)
+  checkTrue('设置页有「Token Saver」一栏，四档都在（0.13.42 定序：轻量/平衡/极致/土豪，平衡居中）',
+    tierBefore.found && tierBefore.items.join('/') === '轻量/平衡/极致/土豪', tierBefore)
   checkTrue('默认落在**平衡**档（用户定调的默认，不是界面随手编的）',
     tierBefore.checked === '平衡', tierBefore)
 
@@ -7304,6 +7318,80 @@ app.whenReady().then(async () => {
       capturedInput.evidence.conversationId.length > 0 &&
       Number.isInteger(capturedInput.evidence.turnIndex),
     capturedInput
+  )
+
+  // —— 新会话首条不重复（0.13.42 反馈）────────────────────────────────
+  // conv:create 桩已按真实主进程行为把 firstMessage 播种成第一条用户消息；
+  // 若 sendMessage 再追加一次：界面显示两条用户消息、chat:send 载荷里 user 角色两条
+  // （模型收到 [user, user]，部分兼容后端会因此卡住/返回空流）
+  // ⚠️ 探针带**黑匣子步进 + 15s 自超时 + 事后回读**：上一版在渲染端卡过一次却查不出卡在哪步。
+  //    步骤实时写 `window.__fsSteps`，超时后回读它 + 测渲染端是否还响应
+  const fsBlackBox = await win.webContents.executeJavaScript(`
+    (() => {
+      window.__fsSteps = ['probe-start'];
+      return 'armed';
+    })()
+  `)
+  const firstSendProbe = await Promise.race([
+    win.webContents.executeJavaScript(`
+      (async () => {
+        const S = (window.__fsSteps = window.__fsSteps || []);
+        try {
+          const buttons = Array.from(document.querySelectorAll('button')).filter((b) =>
+            (b.textContent || '').includes('新建任务'));
+          S.push('buttons:' + buttons.length);
+          const nav = buttons[0];
+          if (!nav) return { ok: false, why: '找不到「新建任务」按钮' };
+          nav.click();
+          S.push('nav-clicked');
+          await new Promise((r) => setTimeout(r, 600));
+          const ta = document.querySelector('.console-input');
+          if (!ta) return { ok: false, why: '新任务页没有输入框' };
+          const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(ta, '我喜欢你做汇报时用表格出数据');
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          S.push('typed');
+          await new Promise((r) => setTimeout(r, 250));
+          ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          S.push('enter-dispatched');
+          for (let i = 0; i < 12; i += 1) {
+            await new Promise((r) => setTimeout(r, 250));
+            if (document.querySelector('.chat-view')) break
+          }
+          S.push('waited');
+          return {
+            ok: true,
+            view: document.querySelector('.chat-view')
+              ? 'chat'
+              : (document.querySelector('.new-task') ? 'new-task' : '?'),
+            userMsgs: Array.from(document.querySelectorAll('.msg-user')).map((m) => m.textContent.trim())
+          };
+        } catch (err) {
+          return { ok: false, why: String(err && err.message ? err.message : err) };
+        }
+      })()
+    `),
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ ok: false, why: '探针 15s 未返回' }), 15000)
+    )
+  ])
+  // 事后回读黑匣子 + 测渲染端是否还活着（区分"渲染端卡死"与"只是这条脚本没跑完"）
+  const fsAftermath = await Promise.race([
+    win.webContents.executeJavaScript(
+      "(() => ({ steps: window.__fsSteps ?? null, view: document.querySelector('.chat-view') ? 'chat' : (document.querySelector('.new-task') ? 'new-task' : '?'), userMsgs: document.querySelectorAll('.msg-user').length }))()"
+    ),
+    new Promise((resolve) => setTimeout(() => resolve({ steps: null, alive: false }), 5000))
+  ])
+  console.log('FIRST_SEND=' + JSON.stringify({ fsBlackBox, firstSendProbe, fsAftermath }))
+  console.log('FIRST_SEND=' + JSON.stringify(firstSendProbe))
+  const lastSend = chatSendCalls[chatSendCalls.length - 1]
+  checkTrue(
+    '新会话首条只出现一次：界面一条、发给模型的载荷里 user 也只有一条',
+    firstSendProbe.ok === true &&
+      firstSendProbe.userMsgs.filter((t) => t.includes('我喜欢你做汇报时用表格出数据')).length === 1 &&
+      !!lastSend &&
+      (lastSend.messages ?? []).filter((m) => m.role === 'user').length === 1,
+    { probe: firstSendProbe, sent: lastSend ?? null }
   )
 
   reportAndExit()

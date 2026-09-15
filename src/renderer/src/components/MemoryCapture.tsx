@@ -35,9 +35,12 @@ export default function MemoryCapture(props: MemoryCaptureProps): JSX.Element {
   const [description, setDescription] = useState(suggestDescription(props.text))
   const [cls, setCls] = useState<MemoryClass>('default')
   const [busy, setBusy] = useState(false)
+  /** 失败原因就地显示（⛔ 不用 window.alert —— 阻塞渲染进程，自动化探针会被它挂住） */
+  const [err, setErr] = useState<string | null>(null)
 
   const save = async (): Promise<void> => {
     setBusy(true)
+    setErr(null)
     const res = await window.api.saveMemory({
       name,
       description,
@@ -48,11 +51,13 @@ export default function MemoryCapture(props: MemoryCaptureProps): JSX.Element {
       evidence: { conversationId: props.conversationId, turnIndex: props.turnIndex }
     })
     setBusy(false)
-    props.onDone(
-      res.ok
-        ? { ok: true, message: `已记住「${name}」` }
-        : { ok: false, message: res.needsConfirm ? `${res.reason}（请确认后重试）` : res.reason }
-    )
+    if (!res.ok) {
+      // 失败不关卡片：用户改一改（换名字/缩短摘要）就能原地重试
+      setErr(res.needsConfirm ? `${res.reason}（请确认后重试）` : res.reason)
+      return
+    }
+    // 成功的"已记住"反馈由护栏 2 的 `<MemoryNotice />` 面板承担（主进程推送），这里静默关闭
+    props.onDone({ ok: true, message: '' })
   }
 
   return (
@@ -77,6 +82,7 @@ export default function MemoryCapture(props: MemoryCaptureProps): JSX.Element {
           ))}
         </select>
       </label>
+      {err ? <div className="mem-notice-err">{err}</div> : null}
       <div className="mem-capture-actions">
         <button type="button" disabled={busy} onClick={() => void save()}>
           保存

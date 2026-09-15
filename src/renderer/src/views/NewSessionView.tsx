@@ -45,8 +45,10 @@ export default function NewSessionView(): JSX.Element {
         ...(agent ? { agentName: agent } : {}),
         ...(text ? { firstMessage: text } : {})
       })
-      // 首条输入直接发出去（省一次点击）
-      if (text) await useAppStore.getState().sendMessage(text)
+      // 首条输入直接发出去（省一次点击）。
+      // ⚠️ skipAppend：首条已由 createConversation({ firstMessage }) 存进会话（还承担标题推导），
+      //    这里若再追加，界面重复显示、模型收到 [user, user]（0.13.42 反馈实证）
+      if (text) await useAppStore.getState().sendMessage(text, { skipAppend: true })
       setInput('')
     } finally {
       setBusy(false)

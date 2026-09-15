@@ -271,16 +271,14 @@ export default function ChatView() {
         <TodoPanel />
         {/* 护栏 2（D-043）：本轮写入痕迹 —— 当场、零摩擦、自动消退。⛔ 不是在消息流里插痕迹行（实测零位置） */}
         <MemoryNotice />
-        {/* 通路 B 的填写卡（选中即记）：正文是用户选中的原话，证据指针由这里精确给出 */}
+        {/* 通路 B 的填写卡（选中即记）：正文是用户选中的原话，证据指针由这里精确给出。
+            成功的反馈交给护栏 2 面板；失败原因在卡片内就地显示（⛔ 不用 alert 阻塞渲染进程） */}
         {capture ? (
           <MemoryCapture
             text={capture.text}
             conversationId={activeId ?? ''}
             turnIndex={capture.turnIndex}
-            onDone={(r) => {
-              setCapture(null)
-              if (r.message) window.alert(r.message)
-            }}
+            onDone={() => setCapture(null)}
           />
         ) : null}
         <InputConsole

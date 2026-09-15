@@ -223,7 +223,7 @@ interface AppState {
   markDone: (e: StreamEnvelope<ChatDonePayload>) => void
   markError: (e: StreamEnvelope<string>) => void
   clearToolEvents: () => void
-  sendMessage: (text: string) => Promise<void>
+  sendMessage: (text: string, opts?: { skipAppend?: boolean }) => Promise<void>
   stopStreaming: () => Promise<void>
   persistConversation: (id: string) => Promise<void>
   flushAll: () => Promise<void>
@@ -826,7 +826,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     void get().persistConversation(e.conversationId)
   },
 
-  sendMessage: async (text) => {
+  /**
+   * 发送一轮对话。
+   * ⚠️ `skipAppend`：新会话页的「首条直接发」用的 —— `createConversation({ firstMessage })`
+   * 已经把这条存进会话（还承担标题推导），这里**不能再追加同一句**，否则界面显示两条、
+   * 模型收到 `[user, user]` 两条连续同角色消息（部分兼容后端会因此卡住或返回空流，0.13.42 反馈实证）。
+   */
+  sendMessage: async (text, opts) => {
     const content = text.trim()
     const conversationId = get().activeId
     if (!content || get().streaming) return
@@ -834,8 +840,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ streamError: '该消息没有归属的会话，请先新建会话再发送。' })
       return
     }
+    const skipAppend = opts?.skipAppend === true
     const history = get().messages.filter((m) => m.content.trim().length > 0)
-    const payload = [...history, { role: 'user' as const, content }]
+    const payload = skipAppend ? [...history] : [...history, { role: 'user' as const, content }]
     set({
       messages: [...payload, { role: 'assistant', content: '' }],
       streaming: true,
