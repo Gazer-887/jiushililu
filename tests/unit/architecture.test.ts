@@ -90,6 +90,7 @@ const TEST_ENTRIES = [
   'tests/unit/html-preview.test.ts',
   'tests/unit/chat-concurrency.test.ts',
   'tests/unit/goal.test.ts',
+  'tests/unit/mcp-manager.test.ts',
   'tests/unit/memory-contract.test.ts',
   'tests/unit/memory-core.test.ts',
   'tests/unit/memory-fs.test.ts',

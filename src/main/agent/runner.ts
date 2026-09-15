@@ -27,7 +27,9 @@ import { createGoalTools } from './tools/goal-tools'
 import { createMemoryTools } from './tools/memory-tools'
 import { createPlaybookTools } from './tools/playbook-tools'
 import { createSkillTools } from './tools/skill-tools'
+import { createMcpTools } from './tools/mcp-tools'
 import type { SkillsStore } from '../skills/skills-store'
+import type { McpManager } from '../mcp/mcp-manager'
 import type { MemoryRepo } from '../memory/memory-core'
 import type { PlaybookRepo } from '../memory/playbook-core'
 import { createAskTools, type AskReporter } from './tools/ask-tools'
@@ -136,7 +138,14 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
       : []),
     // 技能（plan22 D-059）：同理 —— 没有技能时下发 use_skill 只会让模型对着空清单调用。
     // ⚠️ 判定口是 hasActive()（**生效**技能非空），不是「store 存在」—— 空目录 / 全被覆盖都算没有。
-    ...(hooks.skills?.store.hasActive() ? createSkillTools({ store: hooks.skills.store }) : [])
+    ...(hooks.skills?.store.hasActive() ? createSkillTools({ store: hooks.skills.store }) : []),
+    // MCP（plan23 D-065）：同理 —— 没有已连接服务器时，外部工具不下发（下发即空头承诺）
+    ...(hooks.mcp?.manager.hasConnected()
+      ? createMcpTools({
+          manager: hooks.mcp.manager,
+          ...(hooks.mcp.confirm ? { confirm: hooks.mcp.confirm } : {})
+        })
+      : [])
   ]
 }
 
@@ -190,6 +199,11 @@ export interface ToolHooks {
   skills?: {
     store: SkillsStore
   }
+  /** MCP 客户端（plan23）。不传或无已连接服务器 = 不下发任何 mcp__ 工具（D-065）；执行默认走确认桥（D-064） */
+  mcp?: {
+    manager: McpManager
+    confirm?: (req: { tool: string; detail: string }) => Promise<boolean>
+  }
   /** 打包态资源根（找随包的 ripgrep）。装配层注入 —— runner 不许 import electron；不传 = 只用环境变量/PATH 上的 rg */
   resourcesPath?: string | null
 }
@@ -221,6 +235,10 @@ export interface AgentRuntimeContext {
   /** 技能库（plan22）。由组合根注入（内置 resources/skills + 用户 userData/skills 两层）—— runner 不许碰 fs / electron */
   skills?: {
     store: SkillsStore
+  }
+  /** MCP 管理器（plan23）。由组合根注入 —— runner 不碰 electron；已连接服务器的工具经此聚合与转发 */
+  mcp?: {
+    manager: McpManager
   }
   confirmCommand?: (req: {
     tool: string
@@ -434,6 +452,26 @@ export async function runAgent(
       : {}),
     // 技能（plan22）：只读资产、无开关 —— use_skill 是读操作（D-058），「有消费者才注册」是唯一门槛
     ...(ctx.skills ? { skills: { store: ctx.skills.store } } : {}),
+    // MCP（plan23 D-064）：外部代码执行，确认桥在这里补 conversationId（同一上下文被多会话共用）
+    ...(ctx.mcp
+      ? {
+          mcp: {
+            manager: ctx.mcp.manager,
+            ...(ctx.confirmCommand
+              ? {
+                  confirm: (req: { tool: string; detail: string }) =>
+                    ctx.confirmCommand!({
+                      tool: req.tool,
+                      detail: req.detail,
+                      agent: 'MCP',
+                      where: 'MCP',
+                      conversationId: args.conversationId
+                    })
+                }
+              : {})
+          }
+        }
+      : {}),
     // 提问：conversationId 在这里补（工具层拿不到会话身份，界面要靠它说明"这条问题出自哪条会话"）；
     // 权限档**不做额外限制**（ask_user 只把问题交给用户，只读档也该能问）。
     ...(ctx.ask
@@ -597,6 +635,10 @@ export function createAgentContext(opts: {
   skills?: {
     store: SkillsStore
   }
+  /** MCP 管理器（plan23）。由组合根注入 —— runner 不碰 electron；已连接服务器的工具经此聚合与转发 */
+  mcp?: {
+    manager: McpManager
+  }
   trash?: (abs: string) => Promise<void>
   ask?: AskReporter
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 —— runner 不许 import electron */
@@ -612,6 +654,7 @@ export function createAgentContext(opts: {
     ...(opts.memory ? { memory: opts.memory } : {}),
     ...(opts.playbook ? { playbook: opts.playbook } : {}),
     ...(opts.skills ? { skills: opts.skills } : {}),
+    ...(opts.mcp ? { mcp: opts.mcp } : {}),
     ...(opts.trash ? { trash: opts.trash } : {}),
     ...(opts.ask ? { ask: opts.ask } : {})
   }

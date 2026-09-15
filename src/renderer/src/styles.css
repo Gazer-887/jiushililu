@@ -6592,3 +6592,139 @@ body[data-resizing] {
   font-size: var(--fs-sm);
   color: var(--muted);
 }
+
+/* ── MCP 分区（plan23 S4）──────────────────────────────────────
+   服务器列表（状态徽标 / 工具数）+ 表单；全部走既有 token，不新增裸值。 */
+.mcp-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.mcp-intro {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+.mcp-intro code {
+  font-size: var(--fs-xs);
+}
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.mcp-server {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-2) var(--sp-4);
+}
+.mcp-server-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.mcp-server-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.mcp-server-state {
+  font-size: var(--fs-xs);
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+}
+.mcp-state-connected {
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+}
+.mcp-state-error {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.mcp-state-disabled {
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.mcp-server-transport,
+.mcp-server-tools {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.mcp-server-error {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+}
+.mcp-server-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.mcp-btn {
+  font-size: var(--fs-xs);
+  padding: var(--sp-1, var(--sp-2)) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.mcp-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.mcp-btn-add {
+  align-self: flex-start;
+}
+.mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-4);
+}
+.mcp-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+.mcp-field span {
+  color: var(--muted);
+}
+.mcp-field input,
+.mcp-field select,
+.mcp-field textarea {
+  font-size: var(--fs-sm);
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+}
+.mcp-field-check {
+  flex-direction: row;
+  align-items: center;
+}
+.mcp-form-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+.mcp-notice-ok {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+}
+.mcp-notice-bad {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+}
+.mcp-loading,
+.mcp-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}

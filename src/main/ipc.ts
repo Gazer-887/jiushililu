@@ -36,7 +36,10 @@ import {
   type ConversationRollbackResult,
   type GitStatusResult,
   type GitOpResult,
-  type GitCommitResult
+  type GitCommitResult,
+  type McpSaveResult,
+  type McpServerConfig,
+  type McpServerStatus
 } from '@shared/ipc'
 import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
@@ -84,6 +87,7 @@ import {
   goalActionSchema,
   goalCreateSchema,
   modelSaveSchema,
+  mcpServerSchema,
   settingsSchema,
   storedMessagesSchema
 } from './schemas'
@@ -946,6 +950,41 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.skillsList, (): SkillInfo[] => listSkills(deps.agent))
+
+  // ── MCP（plan23）──────────────────────────────
+  ipcMain.handle(IPC.mcpList, (): McpServerStatus[] => deps.agent.mcp?.manager.listServers() ?? [])
+  ipcMain.handle(IPC.mcpSave, (_e, raw: unknown): McpSaveResult => {
+    const parsed = mcpServerSchema.safeParse(raw)
+    if (!parsed.success) {
+      return { ok: false, reason: parsed.error.issues[0]?.message ?? 'MCP 服务器配置不合法' }
+    }
+    const saved = deps.agent.mcp?.manager.saveServer(parsed.data as McpServerConfig) ?? {
+      ok: false,
+      reason: 'MCP 未初始化'
+    }
+    // 保存后立即重连（enabled 才会真的连），状态经广播刷新到界面
+    if (saved.ok) {
+      void deps.agent
+        .mcp!.manager.reconnect(parsed.data.name)
+        .then(() => sendToAll(IPC.mcpChanged))
+        .catch(() => sendToAll(IPC.mcpChanged))
+    }
+    return saved
+  })
+  ipcMain.handle(IPC.mcpDelete, (_e, name: string): McpSaveResult => {
+    const id = z.string().min(1).max(64).parse(name)
+    const removed = deps.agent.mcp?.manager.deleteServer(id) ?? { ok: false, reason: 'MCP 未初始化' }
+    sendToAll(IPC.mcpChanged)
+    return removed
+  })
+  ipcMain.handle(IPC.mcpReconnect, async (_e, name: string): Promise<McpSaveResult> => {
+    const id = z.string().min(1).max(64).parse(name)
+    const r = (await deps.agent.mcp?.manager.reconnect(id)) ?? { ok: false, reason: 'MCP 未初始化' }
+    sendToAll(IPC.mcpChanged)
+    return r
+  })
+  // 连接状态变化（连接/断开/调用失败）→ 界面刷新状态徽标
+  deps.agent.mcp?.manager.onChange(() => sendToAll(IPC.mcpChanged))
 
   // ── 子 Agent 管理（plan17）：MD 文件是唯一真相源；loadAgentRegistry 每轮重读盘 → 保存即生效，无失效机制 ──
   // 三层视图（项目 > 用户 > 内置）与 runner 的 loadAgentRegistry 同一份数据源，管理页看到的就是运行时生效的集合（含被覆盖条目）。

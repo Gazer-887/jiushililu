@@ -254,6 +254,43 @@ export interface SkillInfo {
   overridden?: boolean
 }
 
+// ── MCP 客户端（plan23）──────────────────────────────
+
+export type McpTransportKind = 'stdio' | 'sse'
+
+export interface McpServerConfig {
+  /** 服务器名（kebab-slug，用作工具前缀 mcp__<name>__） */
+  name: string
+  transport: McpTransportKind
+  command?: string
+  args?: string[]
+  /** ⚠️ 可能含 token —— 配置住 userData/mcp-servers.json（不入 git），写入走原子写 */
+  env?: Record<string, string>
+  url?: string
+  enabled: boolean
+}
+
+export type McpServerState = 'connected' | 'error' | 'disabled'
+
+export interface McpServerTool {
+  name: string
+  description?: string
+  /** MCP inputSchema（JSON Schema）—— manager 聚合工具时透传给模型；UI 不展示 */
+  inputSchema?: Record<string, unknown>
+}
+
+export interface McpServerStatus {
+  config: McpServerConfig
+  state: McpServerState
+  error?: string
+  tools: McpServerTool[]
+}
+
+export interface McpSaveResult {
+  ok: boolean
+  reason?: string
+}
+
 export const IPC = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
@@ -355,6 +392,11 @@ export const IPC = {
    */
   convSwitch: 'conv:switch',
   skillsList: 'skills:list',
+  mcpList: 'mcp:list',
+  mcpSave: 'mcp:save',
+  mcpDelete: 'mcp:delete',
+  mcpReconnect: 'mcp:reconnect',
+  mcpChanged: 'mcp:changed',
   permissionGet: 'permission:get',
   permissionSet: 'permission:set',
   tokenTierGet: 'token-tier:get',
@@ -592,6 +634,12 @@ export interface ApiBridge {
   renameConversation(id: string, title: string): Promise<ConversationMeta | null>
   deleteConversation(id: string): Promise<void>
   listSkills(): Promise<SkillInfo[]>
+  /** MCP（plan23）：服务器列表（含状态与工具数） */
+  mcpListServers(): Promise<McpServerStatus[]>
+  mcpSaveServer(config: McpServerConfig): Promise<McpSaveResult>
+  mcpDeleteServer(name: string): Promise<McpSaveResult>
+  mcpReconnect(name: string): Promise<McpSaveResult>
+  onMcpChanged(cb: () => void): () => void
   // ── 子 Agent 管理（plan17）──
   listAgents(): Promise<import('./agents').AgentsView>
   readAgent(file: string): Promise<import('./agents').AgentSaveInput | null>

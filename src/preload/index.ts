@@ -24,6 +24,7 @@ import {
   type BrowserState,
   type ChatMessage,
   type ConversationCreateInput,
+  type McpServerConfig,
   type PermissionPreset,
   type SettingsSaveInput,
   type ToolConfirmRequest
@@ -97,6 +98,12 @@ const api: ApiBridge = {
     ipcRenderer.invoke(IPC.convRollback, { id, toIndex }),
   undoRollbackConversation: (id: string) => ipcRenderer.invoke(IPC.convUndoRollback, id),
   listSkills: () => ipcRenderer.invoke(IPC.skillsList),
+  // ── MCP 客户端（plan23）──
+  mcpListServers: () => ipcRenderer.invoke(IPC.mcpList),
+  mcpSaveServer: (config: McpServerConfig) => ipcRenderer.invoke(IPC.mcpSave, config),
+  mcpDeleteServer: (name: string) => ipcRenderer.invoke(IPC.mcpDelete, name),
+  mcpReconnect: (name: string) => ipcRenderer.invoke(IPC.mcpReconnect, name),
+  onMcpChanged: (cb: () => void) => subscribe(IPC.mcpChanged, () => cb()),
   // ── 子 Agent 管理（plan17）──
   listAgents: () => ipcRenderer.invoke(IPC.agentsList),
   readAgent: (file: string) => ipcRenderer.invoke(IPC.agentsRead, file),

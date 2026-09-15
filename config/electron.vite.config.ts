@@ -79,7 +79,10 @@ function cspPlugin(): Plugin {
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // ⚠️ @modelcontextprotocol/sdk 是 **ESM-only** 包（plan23 D-060）：externalizeDepsPlugin 默认
+    //    把 dependencies 外置成运行时 require —— ESM 包会被 ERR_REQUIRE_ESM 打死。
+    //    故显式排除，让 vite 把它**打包**进 CJS 产物（构建时转译，运行时无感）。
+    plugins: [externalizeDepsPlugin({ exclude: ['@modelcontextprotocol/sdk'] })],
     resolve: {
       alias: { '@shared': r('src/shared'), '@main': r('src/main') }
     },

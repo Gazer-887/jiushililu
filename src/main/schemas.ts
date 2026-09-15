@@ -156,3 +156,17 @@ export const storedMessagesSchema = z
       })
     }
   })
+
+// MCP 服务器配置（plan23 D-062）：UI 表单与 manager 校验共用同一口径。
+// ⚠️ env 的键值都是自由字符串（token 之类），只限长度防滥用。
+export const mcpServerSchema = z.object({
+  name: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, 'name 需小写字母/数字/-/_ 组成，1~64 字符，以字母或数字开头'),
+  transport: z.enum(['stdio', 'sse']),
+  command: z.string().max(2048).optional(),
+  args: z.array(z.string().max(2048)).max(32).optional(),
+  env: z.record(z.string().max(4096)).optional(),
+  url: z.string().url().max(2048).optional(),
+  enabled: z.boolean()
+})

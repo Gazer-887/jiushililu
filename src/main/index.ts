@@ -26,6 +26,7 @@ import { createBackgroundTaskStore } from './agent/background-tasks'
 import { createMemoryStore } from './store/memory-store'
 import { createPlaybookStore } from './store/playbook-store'
 import { createSkillsStore } from './skills/skills-store'
+import { createMcpManager } from './mcp/mcp-manager'
 import { nodeFsAdapter } from './store/conversations-fs'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
 import { createSystemIntegration } from './system-integration'
@@ -458,6 +459,15 @@ app.whenReady().then(async () => {
     onWarn: (message) => log.warn(message, {})
   })
 
+  // MCP 客户端（plan23）：配置住 userData/mcp-servers.json（用户资产，含 env token → 原子写）。
+  // ⚠️ 启动时全量连接、失败不阻塞（D-063 fail-soft）；不 await —— 连接在后台完成，状态经 IPC 可查。
+  const mcp = createMcpManager({
+    userDataDir,
+    clientVersion: app.getVersion(),
+    onWarn: (message) => log.warn(message, {})
+  })
+  void mcp.connectAll()
+
   // 批 2：关窗时把当前会话入反思队列（installFlushBeforeClose 调）
   enqueueActiveForReflection = () => {
     const id = getActiveConversationId()
@@ -495,6 +505,8 @@ app.whenReady().then(async () => {
     // 技能（plan22）：只读库，供 use_skill 工具与 system prompt 清单注入。
     // ⚠️ 无开关（D-058：use_skill 是读操作，只读档也可用）；"有消费者才注册"（D-059）在 runner 内判空。
     skills: { store: skillsStore },
+    // MCP（plan23）：manager 给工具聚合与转发；执行走确认桥（D-064，conversationId 在 runner 内补）
+    mcp: { manager: mcp },
     // L0 检索（plan3/plan4）：随包的 ripgrep 放 resources/ripgrep/（extraResources）。
     // ⚠️ 开发态 `process.resourcesPath` 指向 electron 自己的 resources —— 那里没有我们的 rg，
     //    于是会自动退到环境变量 / PATH（本机 WinGet 装的 rg 15.2.0 能接上）；这不是降级事故。
