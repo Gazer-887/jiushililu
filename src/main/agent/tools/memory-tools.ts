@@ -14,6 +14,35 @@ export interface MemoryToolDeps {
   turnIndex?: () => number
   /** 确认桥。判定落「确认档」时问一句；**不给 = 直接拒** —— 宁可拒，不可默默放过 */
   confirm?: (reason: string) => Promise<boolean>
+  /**
+   * 本轮**用户原话**（plan19 批 4 纠正识别用）。不给 = 不做纠正判定（退化为批 1 行为）。
+   * ⚠️ 这个数据只有循环层有（`args.history` 最后一条 user），故由装配处注入 ——
+   * 工具层自己拿不到，也**不许**去猜。
+   */
+  lastUserMessage?: () => string | null
+}
+
+/**
+ * 否定词（plan19 §九 批 4 落盘的"纠正"识别启发式）。
+ * ⚠️ 光有否定词**不算纠正** —— 必须与"同名条目被改写"同时成立（因果链，见 `remember.execute`）。
+ * 这是刻意的保守：宁可漏记，不可假记（假记会污染"重复纠正率"这个核心读数）。
+ */
+const NEGATION_WORDS = [
+  '不对',
+  '不是',
+  '错了',
+  '撤回',
+  '收回',
+  '不要',
+  '取消',
+  '有别',
+  '别这样',
+  '我说的是'
+] as const
+
+/** 用户原话里有没有否定词 */
+function hasNegation(text: string): boolean {
+  return NEGATION_WORDS.some((w) => text.includes(w))
 }
 
 const READ_NOTE =
@@ -67,15 +96,31 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
             ? { conversationId }
             : { conversationId, turnIndex }
 
+      // ── 批 4：纠正通路（plan19 §九 批 4）────────────────────────────
+      // 判据 9 的「同名 → 拒绝」防的是**重复写入**；但"用户说不对、模型改写同一条"是**纠正**，
+      // 两者必须分开 —— 否则模型永远改不了自己写错的记忆（批 1 的拒绝理由还叫它"先编辑那一条"，
+      // 而当时**根本没有编辑通路**，等于让它去做一件做不到的事）。
+      // 口子只开在因果链成立时：**用户原话含否定词 + 同名条目确实存在**。
+      const lastUser = deps.lastUserMessage?.() ?? ''
+      const conflict = deps.repo.findConflict(name)
+      const isCorrection = conflict !== null && hasNegation(lastUser)
+      const editFile = isCorrection ? conflict.file : undefined
+
       const first = deps.repo.save({
         name,
         description,
         class: cls as MemoryClass,
         body,
         origin: 'model',
-        evidence
+        evidence,
+        ...(editFile === undefined ? {} : { file: editFile })
       })
-      if (first.ok) return `已记住「${name}」。用户可在工作台的记忆页签里查看或删除它。`
+      if (first.ok) {
+        if (!isCorrection) return `已记住「${name}」。用户可在工作台的记忆页签里查看或删除它。`
+        // 因果链成立 → 落 correct 事件（重复纠正率的唯一数据来源）
+        deps.repo.record({ kind: 'correct', conversationId, name, ...(turnIndex === null ? {} : { turnIndex }) })
+        return `已更正「${name}」。用户可在工作台的记忆页签里查看。`
+      }
       if (first.needsConfirm !== true) return `没有写入：${first.reason}`
 
       if (!deps.confirm) return `没有写入：${first.reason}`
@@ -89,9 +134,14 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
         body,
         origin: 'model',
         evidence,
-        confirmed: true
+        confirmed: true,
+        ...(editFile === undefined ? {} : { file: editFile })
       })
-      return second.ok ? `已记住「${name}」（用户已确认）。` : `没有写入：${second.reason}`
+      if (!second.ok) return `没有写入：${second.reason}`
+      if (isCorrection) {
+        deps.repo.record({ kind: 'correct', conversationId, name, ...(turnIndex === null ? {} : { turnIndex }) })
+      }
+      return `已记住「${name}」（用户已确认）。`
     }
   }
 

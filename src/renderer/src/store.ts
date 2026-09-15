@@ -181,6 +181,11 @@ interface AppState {
   /** 记忆统计（批 2）：存活率/使用率，从事件流算。null = 还没拉 / 主进程没事件 → 显示「暂无」 */
   memoryStats: import('@shared/memory').MemoryStats | null
   refreshMemoryStats: () => Promise<void>
+  /** 标记某条记忆「不对」（批 4）：只落一条 flag 事件 → 误伤率的数据来源 */
+  flagMemory: (name: string) => Promise<void>
+  /** Playbook 索引视图（批 3）：右抽屉 Playbook 页签用 */
+  playbookView: import('@shared/playbook').PlaybookIndex | null
+  refreshPlaybook: () => Promise<void>
   /** 护栏 2 的本轮写入痕迹（D-043）。非 null 时 `<MemoryNotice />` 显示，可手动关掉 */
   memoryNotice: import('@shared/memory').MemoryNoticeEvent | null
   showMemoryNotice: (notice: import('@shared/memory').MemoryNoticeEvent) => void
@@ -965,6 +970,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   memoryStats: null,
   refreshMemoryStats: async () => {
     set({ memoryStats: await window.api.getMemoryStats() })
+  },
+  flagMemory: async (name) => {
+    await window.api.flagMemory(name)
+    // 标记只落事件，但**统计要立刻跟着变** —— 否则用户点完看不到任何反应，
+    // 会以为按钮坏了（这正是本项目点名过的"看起来有按钮但数据链断"）
+    set({ memoryStats: await window.api.getMemoryStats() })
+  },
+  playbookView: null,
+  refreshPlaybook: async () => {
+    set({ playbookView: await window.api.listPlaybook() })
   },
   memoryNotice: null,
   showMemoryNotice: (notice) => set({ memoryNotice: notice }),

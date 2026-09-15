@@ -28,6 +28,7 @@ export default function MemoryManager(): JSX.Element {
   const refresh = useAppStore((s) => s.refreshMemory)
   const stats = useAppStore((s) => s.memoryStats)
   const refreshStats = useAppStore((s) => s.refreshMemoryStats)
+  const flagMemory = useAppStore((s) => s.flagMemory)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -56,6 +57,11 @@ export default function MemoryManager(): JSX.Element {
     })
     setNotice(null)
   }, [refresh])
+
+  const flag = async (name: string): Promise<void> => {
+    await flagMemory(name)
+    setNotice({ ok: true, text: `已标记「${name}」不准确（只记一笔，不改动它）` })
+  }
 
   const save = async (): Promise<void> => {
     if (!draft) return
@@ -120,6 +126,12 @@ export default function MemoryManager(): JSX.Element {
             ? ` · 存活 ${Math.round(stats.survivalRate * 100)}%`
             : ''}
           {stats && stats.usageRate !== null ? ` · 使用 ${Math.round(stats.usageRate * 100)}%` : ''}
+          {stats && stats.repeatCorrectionRate !== null
+            ? ` · 重复纠正 ${Math.round(stats.repeatCorrectionRate * 100)}%`
+            : ''}
+          {stats && stats.falsePositiveRate !== null
+            ? ` · 误伤 ${Math.round(stats.falsePositiveRate * 100)}%`
+            : ''}
         </div>
       ) : null}
 
@@ -186,6 +198,13 @@ export default function MemoryManager(): JSX.Element {
             <span className="mem-desc">{e.description}</span>
           </div>
           <div className="mem-row-actions">
+            <button
+              type="button"
+              title="这条记忆不准确？标记一下（只记一笔，不改动它）"
+              onClick={() => void flag(e.name)}
+            >
+              标记不对
+            </button>
             <button type="button" onClick={() => void openEdit(e)}>
               编辑
             </button>

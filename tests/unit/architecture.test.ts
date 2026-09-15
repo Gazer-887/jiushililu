@@ -102,6 +102,7 @@ const TEST_ENTRIES = [
   'tests/unit/playbook-core.test.ts',
   'tests/unit/playbook-inject.test.ts',
   'tests/unit/playbook-tools.test.ts',
+  'tests/unit/playbook-wiring.test.ts',
   'tests/unit/model-profiles.test.ts',
   'tests/unit/model-source.test.ts',
   'tests/unit/usage.test.ts',

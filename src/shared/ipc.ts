@@ -289,6 +289,8 @@ export const IPC = {
   memoryReject: 'memory:reject',
   /** 取记忆统计（存活率 / 使用率，从事件流算） */
   memoryStats: 'memory:stats',
+  /** 用户手工标记「这条不对」（plan19 批 4）：误伤率的唯一数据来源 */
+  memoryFlag: 'memory:flag',
   // ── 记忆批 2：自动记忆成本设置（开关 + 日上限 + 反思模型）──
   memoryGetAuto: 'memory:get-auto',
   memorySetAuto: 'memory:set-auto',
@@ -303,6 +305,15 @@ export const IPC = {
   computerControlSet: 'computer-control:set',
   /** 护栏 2 的落点（D-043）：**本轮**写入痕迹 —— 只推"刚发生的事实"，全量归巡检区 */
   memoryNotice: 'memory:notice',
+  // ── Playbook（plan19 批 3，会做线）──
+  /** 列出 Playbook 条目（含预算截断信息） */
+  playbookList: 'playbook:list',
+  /** 新建 / 编辑条目（带 file = 编辑） */
+  playbookSave: 'playbook:save',
+  /** 删除条目 */
+  playbookDelete: 'playbook:delete',
+  /** save/delete 后的跨窗广播（同 memory:changed 口径） */
+  playbookChanged: 'playbook:changed',
   goalList: 'goal:list',
   goalCreate: 'goal:create',
   goalAction: 'goal:action',
@@ -610,12 +621,23 @@ export interface ApiBridge {
   rejectMemory(file: string): Promise<boolean>
   /** 取记忆统计（存活率/使用率）。没事件可算 → 返回 null，界面显示「暂无」 */
   getMemoryStats(): Promise<import('./memory').MemoryStats | null>
+  /** 用户手工标记「这条不对」（批 4）：只在事件流落一条 `flag`，**不改条目本身** */
+  flagMemory(name: string): Promise<boolean>
   /**
    * 自动记忆成本设置（批 2）：开关 + 日上限 + 反思模型。
    * ⚠️ `autoMemoryEnabled` 缺省时由档位提供默认值（轻量档关、其余档开）；显式设过不被档位覆盖。
    */
   getMemoryAuto(): Promise<import('./memory').MemoryAutoSettings>
   setMemoryAuto(patch: Partial<import('./memory').MemoryAutoSettings>): Promise<import('./memory').MemoryAutoSettings>
+  // ── Playbook（plan19 批 3，会做线）──
+  /** 列出 Playbook 条目（含预算截断信息） */
+  listPlaybook(): Promise<import('./playbook').PlaybookIndex>
+  /** 新建 / 编辑条目（`file` 有值 = 编辑既有条目） */
+  savePlaybook(input: import('./playbook').PlaybookSaveInput): Promise<import('./playbook').PlaybookSaveResult>
+  /** 删除条目 */
+  deletePlaybook(file: string): Promise<boolean>
+  /** save/delete 后各窗重读的信号（不搬变更内容） */
+  onPlaybookChanged(cb: () => void): () => void
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
   /** 省 token 档位（plan8 R9.1 §七②）：全局一档，与权限档同样"存在主进程、界面只是视图" */

@@ -570,6 +570,8 @@ let memoryEntries = [
 let memoryWarnings = []
 const memorySaveCalls = []
 const memoryDeleteCalls = []
+/** 批 4：标记「这条不对」的调用流水 */
+const memoryFlagCalls = []
 // 记忆开关（plan19 批 1）的桩状态；`warnOnNextEnable` 用来模拟"主进程判定这是最大风险组合"
 let memorySwitch = false
 let memoryWarnOnNextEnable = false
@@ -808,6 +810,11 @@ const STUBS = {
     return memoryCandidates.length !== before
   },
   'memory:stats': () => ({ survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }),
+  // 批 4：用户标记「这条不对」—— 只落事件 + 统计跟着变（契约副本）
+  'memory:flag': (name) => {
+    memoryFlagCalls.push(name)
+    return true
+  },
   // ── 会话切换通知（批 2）── 桩只返回 undefined，不触发副作用
   'conv:switch': () => undefined,
   // ── Playbook（plan19 批 3）── 有状态桩：save/delete 改状态 + 广播
@@ -7529,6 +7536,66 @@ app.whenReady().then(async () => {
     memList.msgClasses.length > 0 &&
       memList.msgClasses.every((c) => /^msg msg-(user|assistant)$/.test(c)),
     { count: memList.msgClasses.length, classes: [...new Set(memList.msgClasses)] }
+  )
+
+  // ── 批 4：重复纠正率 / 误伤率**真的显示在界面上**（不是只算了没地方看）──
+  checkTrue(
+    '批 4：统计行显示重复纠正率与误伤率（两个指标有可观测读数）',
+    (memList.stat || '').includes('重复纠正') && (memList.stat || '').includes('误伤'),
+    memList.stat
+  )
+
+  // ── 批 4：标记「这条不对」真的走 IPC（`memory:flag`）──
+  const flagClicked = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.mem-row'))
+        .find((r) => (r.querySelector('.mem-name')?.textContent || '').includes('prefers-tables'));
+      if (!row) return false;
+      const btn = Array.from(row.querySelectorAll('button')).find((b) => b.textContent.trim() === '标记不对');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 600))
+  checkTrue(
+    '批 4：「标记不对」走 `memory:flag`（误伤率的数据入口真的通了）',
+    flagClicked === true && memoryFlagCalls.length >= 1 && memoryFlagCalls[0] === 'prefers-tables',
+    { flagClicked, calls: memoryFlagCalls }
+  )
+
+  // ── 批 3：Playbook 面板在右抽屉可见（不是"代码在、用户碰不到"）──
+  const pbOpened = await win.webContents.executeJavaScript(`
+    (() => {
+      const pick = Array.from(document.querySelectorAll('.wb-pick'))
+        .find((b) => (b.textContent || '').includes('Playbook'));
+      if (pick) pick.click();
+      return !!pick;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  // ⚠️ 记忆与 Playbook 两块面板共用 `.mem-panel` 类，且可能**同时挂在抽屉里** ——
+  // 故按**标题**定位，而不是 `querySelector` 拿第一个（那会读到记忆面板，红得莫名其妙）
+  const pbPanel = await win.webContents.executeJavaScript(`
+    (() => {
+      const p = Array.from(document.querySelectorAll('.mem-panel'))
+        .find((n) => (n.querySelector('.mem-title')?.textContent || '').trim() === 'Playbook');
+      if (!p) return { hasPanel: false };
+      return {
+        hasPanel: true,
+        title: p.querySelector('.mem-title')?.textContent.trim() ?? null,
+        names: Array.from(p.querySelectorAll('.mem-row .mem-name')).map((n) => n.textContent.trim()),
+        badges: Array.from(p.querySelectorAll('.mem-row .mem-badge')).map((n) => n.textContent.trim())
+      };
+    })()
+  `)
+  console.log('PLAYBOOK_PANEL=' + JSON.stringify(pbPanel))
+  checkTrue(
+    '批 3：Playbook 面板可从右抽屉打开，且列出条目与标签（模型存的东西用户看得见）',
+    pbOpened === true &&
+      pbPanel.hasPanel === true &&
+      pbPanel.names.includes('edit-react-component') &&
+      pbPanel.badges.includes('file-edit'),
+    pbPanel
   )
 
   // 判据 16：外面改了（模型写入 / 另一窗口）→ **广播** → 面板自动重拉。

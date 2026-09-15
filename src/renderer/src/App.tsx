@@ -73,6 +73,9 @@ function useStreamSubscriptions(): void {
     const offMemory = window.api.onMemoryChanged(() => void s().refreshMemory())
     const offMemoryNotice = window.api.onMemoryNotice((notice) => s().showMemoryNotice(notice))
     void s().refreshMemory()
+    // Playbook（plan19 批 3）：同上口径 —— 变了就重读，不搬变更内容
+    const offPlaybook = window.api.onPlaybookChanged(() => void s().refreshPlaybook())
+    void s().refreshPlaybook()
 
     return () => {
       offChunk()
@@ -80,6 +83,7 @@ function useStreamSubscriptions(): void {
       offError()
       offMemory()
       offMemoryNotice()
+      offPlaybook()
       offTool()
       offTodos()
       offGoal()

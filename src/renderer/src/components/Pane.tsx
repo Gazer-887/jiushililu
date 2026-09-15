@@ -6,6 +6,7 @@ import ChangesPanel from './ChangesPanel'
 import ExplorerPanel from './ExplorerPanel'
 import FilePreviewPane from './FilePreviewPane'
 import MemoryManager from './MemoryManager'
+import PlaybookManager from './PlaybookManager'
 import PaneChooser from './PaneChooser'
 import ScmPanel from './ScmPanel'
 import TasksPanel from './TasksPanel'
@@ -38,6 +39,9 @@ function builtinBody(type: BuiltinType): JSX.Element {
       // 记忆（plan19 批 1）：查看 / 编辑 / 删除 + 「本次新增」巡检区。落在这里而不是设置页 ——
       // 巡检是**高频**动作，放独立窗口等于把兜底做成装饰（plan19 §十）
       return <MemoryManager />
+    case 'playbook':
+      // Playbook（plan19 批 3）：会做线 —— 同类任务的经验手册。同样落右抽屉（复用上面的理由）
+      return <PlaybookManager />
   }
 }
 

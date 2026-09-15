@@ -34,7 +34,8 @@ export const BUILTIN_TYPES = [
   'terminal',
   'browser',
   'tasks',
-  'memory'
+  'memory',
+  'playbook'
 ] as const
 
 export type BuiltinType = (typeof BUILTIN_TYPES)[number]
@@ -46,7 +47,8 @@ export const BUILTIN_LABELS: Record<BuiltinType, string> = {
   terminal: '终端',
   browser: '浏览器',
   tasks: '任务管理',
-  memory: '记忆'
+  memory: '记忆',
+  playbook: 'Playbook'
 }
 
 export type FileMode = 'preview' | 'edit'

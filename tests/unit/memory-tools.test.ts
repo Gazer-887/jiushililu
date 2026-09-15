@@ -9,7 +9,9 @@ import { createMemoryTools } from '@main/agent/tools/memory-tools'
 const ROOT = '/mem/notes'
 const FIXED = new Date('2026-09-15T01:30:00.000Z')
 
-function setup(opts: { conversationId?: string | null; turnIndex?: number; confirm?: boolean } = {}) {
+function setup(
+  opts: { conversationId?: string | null; turnIndex?: number; confirm?: boolean; lastUser?: string } = {}
+) {
   const files = new Map<string, string>()
   const events: string[] = []
   const backend = {
@@ -32,6 +34,7 @@ function setup(opts: { conversationId?: string | null; turnIndex?: number; confi
     repo,
     conversationId: () => opts.conversationId ?? 'c1',
     ...(opts.turnIndex === undefined ? {} : { turnIndex: () => opts.turnIndex as number }),
+    ...(opts.lastUser === undefined ? {} : { lastUserMessage: () => opts.lastUser as string }),
     ...(opts.confirm === undefined
       ? {}
       : {
@@ -105,6 +108,63 @@ describe('remember：三条出口', () => {
     const text = [...files.values()][0]!
     expect(text).toContain('evidenceConversation: c1')
     expect(text).not.toContain('evidenceTurn')
+  })
+})
+
+// ── 批 4：纠正通路（plan19 §九 批 4 的「纠正」定义）────────────────────
+describe('纠正通路：同名改写只在**因果链成立**时放行', () => {
+  it('用户说「不对」+ 同名已存在 → 改写那一条，并落 correct 事件', async () => {
+    const s = setup({ lastUser: '不对，我要的是表格不是长段落' })
+    await s.byName('remember').execute(GOOD)
+    const out = await s.byName('remember').execute({ ...GOOD, description: '改过的说法' })
+    expect(out).toContain('已更正')
+    // 只有一条（是改写，不是新建）
+    expect(s.repo.list().total).toBe(1)
+    expect(s.repo.list().entries[0]?.description).toBe('改过的说法')
+    // 事件流有 correct（重复纠正率的唯一来源）
+    const kinds = s.events.map((l) => JSON.parse(l).kind as string)
+    expect(kinds).toContain('correct')
+  })
+
+  it('没有否定词 + 同名 → 照旧拒绝（判据 9 的重复写入仍挡住）', async () => {
+    const s = setup({ lastUser: '以后回答都用表格' })
+    await s.byName('remember').execute(GOOD)
+    const out = await s.byName('remember').execute({ ...GOOD, description: '换个说法' })
+    expect(out).toContain('没有写入')
+    expect(out).toContain('同名')
+    // 不该有 correct 事件（没成立因果链）
+    expect(s.events.map((l) => JSON.parse(l).kind as string)).not.toContain('correct')
+  })
+
+  it('有否定词但**不同名** → 是新建，不是纠正（不误记 correct）', async () => {
+    const s = setup({ lastUser: '不对，顺便记住我喜欢深色' })
+    await s.byName('remember').execute(GOOD)
+    const out = await s.byName('remember').execute({
+      name: 'prefers-dark',
+      description: '偏好深色',
+      class: 'style',
+      body: '正文。'
+    })
+    expect(out).toContain('已记住')
+    expect(s.repo.list().total).toBe(2)
+    expect(s.events.map((l) => JSON.parse(l).kind as string)).not.toContain('correct')
+  })
+
+  it('不注入 lastUserMessage → 退化为批 1 行为（同名仍拒）', async () => {
+    const s = setup()
+    await s.byName('remember').execute(GOOD)
+    const out = await s.byName('remember').execute({ ...GOOD, description: '换个说法' })
+    expect(out).toContain('没有写入')
+  })
+
+  it('纠正保留 createdAt（是改写，不是新建）', async () => {
+    const s = setup({ lastUser: '不对' })
+    await s.byName('remember').execute(GOOD)
+    const before = s.repo.list().entries[0]!
+    await s.byName('remember').execute({ ...GOOD, description: '改过的' })
+    const after = s.repo.list().entries[0]!
+    expect(after.createdAt).toBe(before.createdAt)
+    expect(after.file).toBe(before.file)
   })
 })
 

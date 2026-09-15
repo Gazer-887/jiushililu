@@ -159,7 +159,10 @@ import { loadAgentEntries } from './agent/loader'
 import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './store/agents-store'
 import { nodeFsAdapter } from './store/conversations-fs'
 import type { MemoryStore } from './store/memory-store'
+import type { PlaybookStore } from './store/playbook-store'
 import { composeMemoryBlock, estimateMemoryTokens } from './memory/inject'
+import { composePlaybookBlock } from './memory/playbook-inject'
+import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
 import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
@@ -282,6 +285,11 @@ export function registerIpcHandlers(deps: {
    * 而且一轮对话期间要收集"写了什么"（护栏 2 的上报载荷）。
    */
   memory: MemoryStore
+  /**
+   * Playbook 库（plan19 批 3，会做线）。同样是组合根建、这里转交 ——
+   * 落 userData 下；一轮对话前要组装条件召回段（活跃标签匹配在组合根做，runner 不做推断）。
+   */
+  playbook: PlaybookStore
   confirm: ConfirmBridge
   /** Agent 提问桥。⚠️ 传进来而不是在这里 new：与 confirm 同理 —— **组合根负责"建"，这里只做转交**（本文件一个裸 `.send(` 都不许有） */
   ask: AskBridge
@@ -493,13 +501,17 @@ export function registerIpcHandlers(deps: {
 
     // 记忆注入段（plan19 批 1）：组装 + 开采集。放在 `try` **之前** —— 出错时也要能 drain 到已发生的写入。
     const memoryBlock = beginMemoryTurn(conversationId)
+    // Playbook 条件召回段（plan19 批 3）：活跃标签从**用户这一轮的原话**推断，交集非空才注入。
+    const lastUserText = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    const playbookBlock = assemblePlaybookBlock(conversationId, lastUserText)
     // 诊断①：开始时刻。没有它，"卡死"发生时日志里一片空白，连"请求到底发没发"都说不清
     log.info('对话开始', {
       conversationId,
       model: settings.model,
       timeoutMs: settings.timeoutMs,
       historyMessages: messages.length,
-      memoryInjected: memoryBlock !== null
+      memoryInjected: memoryBlock !== null,
+      playbookInjected: playbookBlock !== null
     })
 
     // D-032：单一通道 —— 带工具清单 + 流式，由模型自决"直接回答还是先调工具"；文本增量 → chat:chunk（上屏），工具生命周期 → chat:tool（进度卡片）。
@@ -555,6 +567,8 @@ export function registerIpcHandlers(deps: {
         policy: resolvePolicy(process.env['JSL_TOKEN_TIER'] ?? getTokenTier()),
         // 记忆段（plan19 批 1）：组合根组装好传进去，runner 只负责拼进 system（接在安全基线之后）
         memoryBlock,
+        // Playbook 段（plan19 批 3）：同上 —— 活跃标签匹配已在组合根做完，runner 只拼段
+        playbookBlock,
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
           if (state.runId !== evt.runId) {
@@ -663,7 +677,9 @@ export function registerIpcHandlers(deps: {
         // 自视段：一次性任务同样报告配置（模型名/工具/子代理）
         computerControl: getComputerControlEnabled(),
         // 一次性任务也注入记忆并采集痕迹（少了它，模型在这里 remember 就没人上报 —— 静默缺口）
-        memoryBlock: beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
+        memoryBlock: beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER),
+        // 一次性任务同样走条件召回（任务描述即"用户原话"，活跃标签从它推断）
+        playbookBlock: assemblePlaybookBlock(req.conversationId ?? AGENT_TASK_OWNER, req.task)
       })
       endMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       return {
@@ -1087,6 +1103,104 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.memoryStats, (): MemoryStats | null => deps.memory.getStats())
+
+  /**
+   * 用户标记「这条不对」（批 4）。⚠️ **只落一条 `flag` 事件，不改条目本身** ——
+   * 用户可能在判断前还要看看，直接改动或删除等于替他做决定。
+   * 它是 `falsePositiveRate` 的唯一数据来源（在此之前该指标恒为 0，属"算了但算不出东西"）。
+   */
+  ipcMain.handle(IPC.memoryFlag, (_e, raw: unknown): boolean => {
+    const name = z.string().min(1).max(200).parse(raw)
+    const ok = deps.memory.record({
+      kind: 'flag',
+      conversationId: getActiveConversationId(),
+      name
+    })
+    if (ok) log.info('记忆已被用户标记为不准确', { name })
+    return ok
+  })
+
+  /** Playbook 保存入参。⚠️ 长度与标签合法性归 `validatePlaybookFields`（唯一口径），这里只挡形状 */
+  const playbookSaveSchema = z.object({
+    name: z.string().min(1).max(200),
+    description: z.string().min(1).max(500),
+    tags: z.array(z.string().min(1).max(100)).min(1).max(50),
+    body: z.string().min(1).max(100_000),
+    origin: z.enum(['model', 'playbook-reflection']).optional(),
+    file: z.string().min(1).max(1000).optional()
+  })
+
+  // ── Playbook（plan19 批 3，会做线）──────────────────────────────────────
+  // ⚠️ 条件召回：活跃标签与条目 tags 交集非空才注入 —— 预算与语义记忆**分开**
+  //    （语义记忆无条件注入，才有"注入税"这个读数；Playbook 只在任务类型匹配时才花）。
+  // ⚠️ 标签推断在**组合根**做（`loader.ts` 是纯函数、不接触运行时状态；
+  //    `runner.ts` 只管拼段），本文件是唯一同时知道"这一轮是谁 + Playbook 库在哪"的地方。
+
+  /**
+   * 关键词 → 活跃标签。⚠️ 这是**声明过的无实验支撑初值**（plan19 §十二）：
+   * 只求"可演示、可机器判定"，不求准；后续可升级为工具序列分析而不影响存储格式。
+   * 全部小写比对（`normalizeTag` 同一口径）。
+   */
+  const PLAYBOOK_TAG_KEYWORDS: Record<string, readonly string[]> = {
+    'file-edit': ['编辑', '改一下', '修改文件', '重命名', 'edit', 'rename'],
+    debug: ['调试', '报错', 'bug', '为什么失败', '排查', 'debug'],
+    research: ['调研', '查一下', '搜索', '对比', 'research', 'search'],
+    build: ['构建', '打包', '编译', 'build', 'compile'],
+    test: ['测试', '跑测试', '单测', 'test'],
+    refactor: ['重构', '整理代码', '拆分', 'refactor']
+  }
+
+  /** 从一句话里推断活跃标签（可多个）。空字符串 → 空数组（不误召回） */
+  function inferActiveTags(text: string): string[] {
+    const lower = text.toLowerCase()
+    const hit: string[] = []
+    for (const [tag, words] of Object.entries(PLAYBOOK_TAG_KEYWORDS)) {
+      if (words.some((w) => lower.includes(w))) hit.push(tag)
+    }
+    return hit
+  }
+
+  /**
+   * 组装 Playbook 条件召回段。⚠️ 与 `beginMemoryTurn` 各自独立 ——
+   * 没有"本轮开始/结束"的配对（Playbook 不需要采集写入痕迹：它是模型显式调用，不是自动写入）。
+   * `text` = 用户这一轮的原话（活跃标签的唯一来源）。
+   */
+  function assemblePlaybookBlock(conversationId: string, text: string): string | null {
+    const activeTags = inferActiveTags(text)
+    if (activeTags.length === 0) return null
+    const index = deps.playbook.list()
+    const block = composePlaybookBlock(index, activeTags)
+    if (block !== null) {
+      // 注入事件：只在真的注入了才记（没注入就不该有痕）
+      const matched = index.entries
+        .filter((e) => e.tags.some((t) => activeTags.includes(t)))
+        .map((e) => e.name)
+      deps.playbook.record({ kind: 'playbook_inject', conversationId, names: matched })
+    }
+    return block
+  }
+
+  ipcMain.handle(IPC.playbookList, (): PlaybookIndex => deps.playbook.list())
+
+  ipcMain.handle(IPC.playbookSave, (_e, raw: unknown): PlaybookSaveResult => {
+    const input = friendlyParse(playbookSaveSchema, raw)
+    const result = deps.playbook.save(input as PlaybookSaveInput)
+    if (result.ok) {
+      log.info('Playbook 已保存', { name: input.name, file: result.file })
+      sendToAll(IPC.playbookChanged)
+    }
+    return result
+  })
+
+  ipcMain.handle(IPC.playbookDelete, (_e, raw: unknown): boolean => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const removed = deps.playbook.remove(file)
+    if (removed) {
+      log.info('Playbook 已删除', { file })
+      sendToAll(IPC.playbookChanged)
+    }
+    return removed
+  })
 
   // 批 2：自动记忆成本设置（开关 + 日上限 + 反思模型）
   ipcMain.handle(IPC.memoryGetAuto, (): MemoryAutoSettings => ({

@@ -24,6 +24,7 @@ import {
 import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
 import { createMemoryStore } from './store/memory-store'
+import { createPlaybookStore } from './store/playbook-store'
 import { nodeFsAdapter } from './store/conversations-fs'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
 import { createSystemIntegration } from './system-integration'
@@ -438,6 +439,14 @@ app.whenReady().then(async () => {
     reflectChat: createReflectChat()
   })
 
+  // Playbook 库（plan19 批 3）：与记忆库同式 —— 组合根建**一次**，同时给 agent 上下文（工具 + 注入）
+  // 与 IPC（管理界面）。⚠️ 数据根同样由这里注入，Playbook 层因此不碰 electron。
+  // ⚠️ 落 `userData/evolution/`（与 `memory/` **物理隔离**：预算语义不同）。
+  const playbook = createPlaybookStore(userDataDir, nodeFsAdapter, {
+    onWarn: (message) => log.warn(message, {}),
+    conversationId: () => getActiveConversationId()
+  })
+
   // 批 2：关窗时把当前会话入反思队列（installFlushBeforeClose 调）
   enqueueActiveForReflection = () => {
     const id = getActiveConversationId()
@@ -469,6 +478,9 @@ app.whenReady().then(async () => {
       confirm: (reason: string, conversationId: string) =>
         confirm.ask({ tool: 'remember', detail: reason, agent: '记忆', where: '', conversationId })
     },
+    // Playbook（plan19 批 3）：repo 给工具用。⚠️ 无开关 —— 它是模型显式调用的程序记忆，
+    // 不像自动记忆那样会自己花钱；"有消费者才注册"（不传就不下发工具）是唯一门槛。
+    playbook: { repo: playbook },
     // L0 检索（plan3/plan4）：随包的 ripgrep 放 resources/ripgrep/（extraResources）。
     // ⚠️ 开发态 `process.resourcesPath` 指向 electron 自己的 resources —— 那里没有我们的 rg，
     //    于是会自动退到环境变量 / PATH（本机 WinGet 装的 rg 15.2.0 能接上）；这不是降级事故。
@@ -556,6 +568,7 @@ app.whenReady().then(async () => {
     agent: agentCtx,
     userDataDir,
     memory,
+    playbook,
     confirm,
     ask,
     terminal,

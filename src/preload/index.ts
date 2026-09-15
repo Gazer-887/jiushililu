@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { AgentSaveInput } from '@shared/agents'
 import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
+import type { PlaybookSaveInput } from '@shared/playbook'
 import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { ModelSaveInput } from '@shared/models'
@@ -117,8 +118,14 @@ const api: ApiBridge = {
   approveMemory: (file: string) => ipcRenderer.invoke(IPC.memoryApprove, file),
   rejectMemory: (file: string) => ipcRenderer.invoke(IPC.memoryReject, file),
   getMemoryStats: () => ipcRenderer.invoke(IPC.memoryStats),
+  flagMemory: (name: string) => ipcRenderer.invoke(IPC.memoryFlag, name),
   getMemoryAuto: () => ipcRenderer.invoke(IPC.memoryGetAuto),
   setMemoryAuto: (patch) => ipcRenderer.invoke(IPC.memorySetAuto, patch),
+  // ── Playbook（plan19 批 3，会做线）──
+  listPlaybook: () => ipcRenderer.invoke(IPC.playbookList),
+  savePlaybook: (input: PlaybookSaveInput) => ipcRenderer.invoke(IPC.playbookSave, input),
+  deletePlaybook: (file: string) => ipcRenderer.invoke(IPC.playbookDelete, file),
+  onPlaybookChanged: (cb) => subscribe(IPC.playbookChanged, () => cb()),
   // 电脑控制开关（2026-09-15）：当前无对应工具，先落门控（状态进自视段）
   getComputerControl: () => ipcRenderer.invoke(IPC.computerControlGet),
   setComputerControl: (enabled: boolean) => ipcRenderer.invoke(IPC.computerControlSet, enabled),
