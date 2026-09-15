@@ -91,7 +91,7 @@ export default function MemorySettings(): JSX.Element {
       ) : null}
 
       <div className="mem-subsection">
-        <div className="mem-subsection-title">自动记忆（批 2）</div>
+        <div className="mem-subsection-title">自动记忆</div>
         <p className="mem-settings-lead mem-settings-lead-muted">
           会话切换时异步跑反思，从历史对话提炼候选记忆，进右栏「记忆」页签的待批准区。
           候选不批准不会注入；反思用量单列在用量牌。

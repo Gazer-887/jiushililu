@@ -81,7 +81,7 @@ export function UsageChip(): JSX.Element | null {
     memory > 0 ? `记忆注入税（本地估算）：约 ${formatTokens(memory)} tokens` : '',
     // 批 2 反思用量：会话切换时跑的额外模型调用，与对话账分开（不进 total）
     reflectionTotal
-      ? `反思用量（批 2 · 会话切换时跑）：${totalTokens(reflectionTotal)} tokens`
+      ? `反思用量（切换会话时调用）：${totalTokens(reflectionTotal)} tokens`
       : ''
   ]
     .filter(Boolean)
