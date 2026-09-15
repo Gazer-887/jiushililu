@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { MEMORY_LIMITS, type MemoryEntry } from '@shared/memory'
-import { buildIndex, createMemoryRepo, indexLine, parseMemoryFile, serializeMemory, slugFor } from '@main/memory/memory-core'
+import { buildIndex, computeStats, createMemoryRepo, indexLine, parseMemoryFile, serializeMemory, slugFor } from '@main/memory/memory-core'
 import { composeMemoryBlock, estimateMemoryTokens } from '@main/memory/inject'
 import { injectionKey, parseEventLine, serializeEvent } from '@main/memory/events'
 
@@ -16,6 +16,8 @@ function memBackend(seed: Record<string, string> = {}) {
     files,
     events,
     listFiles: () => [...files.keys()].sort(),
+    candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
+    listCandidates: () => [],
     read: (f: string) => files.get(f) ?? null,
     write: (f: string, t: string) => void files.set(f, t),
     remove: (f: string) => files.delete(f),
@@ -386,5 +388,171 @@ describe('注入段（护栏 3）', () => {
   it('注入税随内容增长', () => {
     const small = estimateMemoryTokens(composeMemoryBlock({ entries: [e], total: 1, omitted: 0, warnings: [] }))
     expect(small).toBeGreaterThan(0)
+  })
+})
+
+// ── 批 4：LRU 遗忘 ─────────────────────────────────────────────────────
+
+describe('LRU 遗忘（批 4 判据 1/2）', () => {
+  const seedFull = (count: number, cls: 'style' | 'default' | 'knowledge' = 'default') => {
+    const seed: Record<string, string> = {}
+    for (let i = 0; i < count; i++) {
+      const ts = new Date(2026, 0, i + 1).toISOString()
+      seed[`${ROOT}/m${i}.md`] = fileText({ name: `m${i}`, class: cls, createdAt: ts, updatedAt: ts })
+    }
+    return seed
+  }
+
+  it('判据 1：99 条 + 第 100 条 → 全部保留', () => {
+    const seed = seedFull(99)
+    const repo = makeRepo(seed)
+    const r = repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    expect(r.ok).toBe(true)
+    expect(repo.list().total).toBe(100)
+  })
+
+  it('判据 1：100 条 + 第 101 条 → 最旧的非 style 被删 + 新条目写入', () => {
+    const seed = seedFull(100)
+    const repo = makeRepo(seed)
+    const r = repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    expect(r.ok).toBe(true)
+    expect(repo.list().total).toBe(100) // 总数不变（删 1 写 1）
+    // 最旧的 m0 应该被删了
+    expect(repo.get(`${ROOT}/m0.md`)).toBeNull()
+    // 新条目在
+    expect(repo.get(`${ROOT}/new-entry.md`)).not.toBeNull()
+  })
+
+  it('判据 1：最旧的是 style → 跳过，删次旧的', () => {
+    // m0 是 style（最旧），m1 是 default（次旧）
+    const seed: Record<string, string> = {}
+    seed[`${ROOT}/m0.md`] = fileText({ name: 'm0', class: 'style', createdAt: new Date(2026, 0, 1).toISOString(), updatedAt: new Date(2026, 0, 1).toISOString() })
+    for (let i = 1; i < 100; i++) {
+      const ts = new Date(2026, 0, i + 1).toISOString()
+      seed[`${ROOT}/m${i}.md`] = fileText({ name: `m${i}`, class: 'default', createdAt: ts, updatedAt: ts })
+    }
+    const repo = makeRepo(seed)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    // m0（style）应该还在
+    expect(repo.get(`${ROOT}/m0.md`)).not.toBeNull()
+    // m1（default，次旧）应该被删了
+    expect(repo.get(`${ROOT}/m1.md`)).toBeNull()
+  })
+
+  it('判据 2：100 条全是 style → 拒写 + 理由含"全是风格类"', () => {
+    const seed = seedFull(100, 'style')
+    const repo = makeRepo(seed)
+    const r = repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.reason).toContain('风格类')
+  })
+
+  it('遗忘落 delete 事件 + by: system', () => {
+    const seed = seedFull(100)
+    const { repo, backend } = makeRepoWithEvents(seed)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    const deleteEvent = backend.events.find((l) => {
+      const e = JSON.parse(l)
+      return e.kind === 'delete' && e.by === 'system'
+    })
+    expect(deleteEvent).toBeDefined()
+    expect(JSON.parse(deleteEvent!).name).toBe('m0')
+  })
+
+  it('编辑既有条目不触发遗忘（有 input.file）', () => {
+    const seed = seedFull(100)
+    const repo = makeRepo(seed)
+    const r = repo.save({ ...valid, name: 'm0', description: '改过的', file: `${ROOT}/m0.md` })
+    expect(r.ok).toBe(true)
+    expect(repo.list().total).toBe(100)
+    expect(repo.get(`${ROOT}/m0.md`)?.description).toBe('改过的')
+  })
+})
+
+// ── 批 4：computeStats 扩展（纠正率 + 误伤率）────────────────────────────
+
+describe('computeStats 扩展（批 4 判据 3/4）', () => {
+  const evt = (kind: string, name: string, extra: Record<string, unknown> = {}) =>
+    ({ kind, at: FIXED.toISOString(), conversationId: 'c1', name, ...extra } as MemoryEvent)
+
+  it('判据 3：correct × 2（同名）+ correct × 1（另一条）→ repeatCorrectionRate = 0.5', () => {
+    const events: MemoryEvent[] = [
+      evt('correct', 'a'),
+      evt('correct', 'a'),
+      evt('correct', 'b')
+    ]
+    const s = computeStats(events)
+    expect(s.correctedCount).toBe(2) // a 和 b
+    expect(s.repeatCorrectedCount).toBe(1) // 只有 a ≥2 次
+    expect(s.repeatCorrectionRate).toBe(0.5) // 1/2
+  })
+
+  it('判据 4：flag × 3 + 总写入 15 → falsePositiveRate = 0.2', () => {
+    const events: MemoryEvent[] = []
+    for (let i = 0; i < 15; i++) {
+      events.push(evt('write', `m${i}`, { origin: 'model', cls: 'default' }))
+    }
+    events.push(evt('flag', 'm0'))
+    events.push(evt('flag', 'm1'))
+    events.push(evt('flag', 'm2'))
+    const s = computeStats(events)
+    expect(s.flaggedCount).toBe(3)
+    expect(s.written).toBe(15)
+    expect(s.falsePositiveRate).toBeCloseTo(3 / 15, 5)
+  })
+
+  it('无纠正事件 → repeatCorrectionRate = null', () => {
+    const events: MemoryEvent[] = [evt('write', 'a', { origin: 'model', cls: 'default' })]
+    const s = computeStats(events)
+    expect(s.correctedCount).toBe(0)
+    expect(s.repeatCorrectionRate).toBeNull()
+  })
+
+  it('无写入事件 → falsePositiveRate = null', () => {
+    const events: MemoryEvent[] = [evt('flag', 'a')]
+    const s = computeStats(events)
+    expect(s.falsePositiveRate).toBeNull()
+  })
+
+  it('delete by: system 不影响 alive 计算（遗忘的条目 = 已删）', () => {
+    const events: MemoryEvent[] = [
+      evt('write', 'a', { origin: 'model', cls: 'default' }),
+      evt('write', 'b', { origin: 'model', cls: 'default' }),
+      { kind: 'delete', at: FIXED.toISOString(), conversationId: 'c1', name: 'a', by: 'system' } as MemoryEvent
+    ]
+    const s = computeStats(events)
+    expect(s.written).toBe(2)
+    expect(s.alive).toBe(1)
+  })
+})
+
+// ── 批 4：描述相似度警告 ─────────────────────────────────────────────────
+
+describe('描述相似度警告（批 4 判据 5）', () => {
+  it('描述完全相同 → warnings 含"可能重复"', () => {
+    const repo = makeRepo({
+      [`${ROOT}/a.md`]: fileText({ name: 'a', description: '编辑 React 组件' }),
+      [`${ROOT}/b.md`]: fileText({ name: 'b', description: '编辑 React 组件' })
+    })
+    const idx = repo.list()
+    expect(idx.warnings.some((w) => w.includes('可能重复'))).toBe(true)
+  })
+
+  it('描述包含关系 → warnings 含"可能重复"', () => {
+    const repo = makeRepo({
+      [`${ROOT}/a.md`]: fileText({ name: 'a', description: '编辑 React 组件' }),
+      [`${ROOT}/b.md`]: fileText({ name: 'b', description: '编辑 React 组件的步骤' })
+    })
+    const idx = repo.list()
+    expect(idx.warnings.some((w) => w.includes('可能重复'))).toBe(true)
+  })
+
+  it('描述完全不同 → 无相似度警告', () => {
+    const repo = makeRepo({
+      [`${ROOT}/a.md`]: fileText({ name: 'a', description: '编辑 React 组件' }),
+      [`${ROOT}/b.md`]: fileText({ name: 'b', description: '部署到生产环境' })
+    })
+    const idx = repo.list()
+    expect(idx.warnings.some((w) => w.includes('可能重复'))).toBe(false)
   })
 })

@@ -68,7 +68,7 @@ export interface MemoryEntry {
 
 /** 注入用的索引视图。`omitted` / `warnings` 必须如实带到界面与 prompt，不许静默丢 */
 export interface MemoryIndex {
-  /** 只含校验通过且未被预算截断的条目 */
+  /** 只含校验通过且未被预算截断的条目（进注入段） */
   entries: MemoryEntry[]
   /** 盘上全部条目数（含被截断的） */
   total: number
@@ -76,6 +76,12 @@ export interface MemoryIndex {
   omitted: number
   /** 解析或校验失败被跳过的文件与原因（fail-soft，但绝不静默） */
   warnings: string[]
+  /**
+   * 候选条目（批 2）：待批准的反思产出。⚠️ **不进注入段** ——
+   * 物理隔离在 `memory/candidates/`，`listFiles()` 只列 `notes/`（审查 A P0）。
+   * 巡检区用这个字段显示候选 + 批准/拒绝按钮；批准后变成正式条目进 `entries`。
+   */
+  candidates: MemoryEntry[]
 }
 
 /** 保存入参。`file` 缺省 = 新建；带 `file` = 编辑既有条目 */
@@ -89,6 +95,65 @@ export interface MemorySaveInput {
   file?: string
   /** 判定为 `confirm` 档的写入，须经确认桥点头后带 `true` 再来一次 */
   confirmed?: boolean
+  /**
+   * 候选标记（批 2）：指向**被这条候选撞上的旧记忆 file**。
+   * ⚠️ 候选 = 带 `conflictWith` 的 `MemorySaveInput`（即 `MemoryCandidate`）。没有 conflictWith = 全新候选（不撞名）。
+   * 仅在 `saveCandidate` 写入候选目录时使用；正式 save 路径不写它。
+   */
+  conflictWith?: string
+}
+
+/**
+ * 候选记忆（批 2）。形态 = `MemorySaveInput` + `conflictWith`。
+ * ⚠️ 候选**不进索引段**（物理隔离在 `memory/candidates/`，`listFiles()` 只列 `notes/`）——
+ *    不批准就绝不注入，这是护栏（审查 A P0）。
+ * 批准 = 用候选内容覆盖旧记忆 + 删除候选文件（审查 B P1，否则同名双条进索引）。
+ */
+export type MemoryCandidate = MemorySaveInput & { conflictWith?: string }
+
+/**
+ * 记忆层统计（批 2 §六 · 存活率与使用率）。
+ * ⚠️ 全部从事件流算，不读盘 —— 否则"删了又写回"会让数字假性归零。
+ * 存活率 = 未删除 / 写入总数；使用率 = 被 recall / 存活。
+ * 缺字段 = 没事件可算 → 界面显示「暂无」，**不替它编 0**（与 tier/avoided 同口径）。
+ */
+export interface MemoryStats {
+  /** 写入总数（含已删除的） */
+  written: number
+  /** 当前存活数（写入 - 删除） */
+  alive: number
+  /** 被 recall 过的存活条目数 */
+  recalled: number
+  /** 存活率（0–1）：alive / written。written=0 时为 null */
+  survivalRate: number | null
+  /** 使用率（0–1）：recalled / alive。alive=0 时为 null */
+  usageRate: number | null
+  // ── 批 4：纠正与误伤 ──
+  /** 被纠正 ≥1 次的条目数（按 name 聚类） */
+  correctedCount: number
+  /** 被纠正 ≥2 次的条目数（重复纠正 = 同一条记忆被二次纠正） */
+  repeatCorrectedCount: number
+  /** 被用户 flag 的条目数 */
+  flaggedCount: number
+  /** 重复纠正率（0–1）：repeatCorrectedCount / correctedCount。correctedCount=0 时为 null */
+  repeatCorrectionRate: number | null
+  /** 误伤率（0–1）：flaggedCount / written。written=0 时为 null */
+  falsePositiveRate: number | null
+}
+
+/**
+ * 自动记忆成本设置（批 2）。
+ * ⚠️ `autoMemoryEnabled` 缺省 = 未设，由档位提供默认值（轻量档关、其余档开）；显式设过不被档位覆盖。
+ * `reflectionModel` 缺省 = 跟随对话模型。
+ * `reflectionDailyLimit` 缺省 = 20（§五声明的无实验支撑初值，校准协议在 §十二）。
+ */
+export interface MemoryAutoSettings {
+  /** 自动记忆开关。undefined = 未设（由档位提供默认值） */
+  autoMemoryEnabled?: boolean
+  /** 反思用哪个模型。undefined = 跟随对话模型 */
+  reflectionModel?: string
+  /** 日上限。undefined = 20 */
+  reflectionDailyLimit?: number
 }
 
 /**

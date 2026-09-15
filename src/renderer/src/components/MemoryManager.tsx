@@ -26,14 +26,18 @@ interface Draft {
 export default function MemoryManager(): JSX.Element {
   const view = useAppStore((s) => s.memoryView)
   const refresh = useAppStore((s) => s.refreshMemory)
+  const stats = useAppStore((s) => s.memoryStats)
+  const refreshStats = useAppStore((s) => s.refreshMemoryStats)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
 
   useEffect(() => {
     void refresh()
-  }, [refresh])
+    void refreshStats()
+  }, [refresh, refreshStats])
 
   const entries = view?.entries ?? []
+  const candidates = view?.candidates ?? []
   const inspected = entries.filter((e) => e.origin === 'model')
 
   const openEdit = useCallback(async (entry: MemoryEntry): Promise<void> => {
@@ -79,6 +83,22 @@ export default function MemoryManager(): JSX.Element {
     void refresh()
   }
 
+  const approve = async (entry: MemoryEntry): Promise<void> => {
+    const res = await window.api.approveMemory(entry.file)
+    if (!res.ok) {
+      setNotice({ ok: false, text: res.reason })
+      return
+    }
+    setNotice({ ok: true, text: '已批准' })
+    void refresh()
+  }
+
+  const reject = async (entry: MemoryEntry): Promise<void> => {
+    const removed = await window.api.rejectMemory(entry.file)
+    setNotice(removed ? { ok: true, text: '已拒绝' } : { ok: false, text: '拒绝失败：候选可能已不存在' })
+    void refresh()
+  }
+
   return (
     <div className="mem-panel">
       <div className="mem-head">
@@ -96,6 +116,34 @@ export default function MemoryManager(): JSX.Element {
         <div className="mem-stat">
           共 {view.total} 条
           {view.omitted > 0 ? `，其中 ${view.omitted} 条因超出注入上限未生效` : ''}
+          {stats && stats.survivalRate !== null
+            ? ` · 存活 ${Math.round(stats.survivalRate * 100)}%`
+            : ''}
+          {stats && stats.usageRate !== null ? ` · 使用 ${Math.round(stats.usageRate * 100)}%` : ''}
+        </div>
+      ) : null}
+
+      {candidates.length > 0 ? (
+        <div className="mem-candidates">
+          <div className="mem-candidates-title">待批准 {candidates.length} 条</div>
+          <div className="mem-candidates-note">
+            反思从历史会话提炼的候选。批准后生效（覆盖同名旧记忆）；不批准不会注入。
+          </div>
+          {candidates.map((c) => (
+            <div key={c.file} className="mem-candidate-row">
+              <span className="mem-badge mem-badge-reflection">候选</span>
+              <span className="mem-name">{c.name}</span>
+              <span className="mem-desc">{c.description}</span>
+              <div className="mem-candidate-actions">
+                <button type="button" onClick={() => void approve(c)}>
+                  批准
+                </button>
+                <button type="button" onClick={() => void reject(c)}>
+                  拒绝
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
 

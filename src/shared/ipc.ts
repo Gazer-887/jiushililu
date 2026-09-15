@@ -220,6 +220,13 @@ export interface ConversationMeta {
   memoryTokens?: number
   /** **最后一轮**用的省 token 档位（plan8 R9.1 §七②）：档位是全局设置、会话中途可换，故它只代表最近一次 —— 逐轮比对是校准 harness 的事。 */
   tokenTier?: TokenSaverTier
+  /**
+   * 会话正文的 **UTF-8 字节数**（批 2 plan19）：反思前置门用它判断是否值得跑（< 2048 字节跳过）。
+   * ⚠️ 是 `Buffer.byteLength(JSON.stringify(messages), 'utf8')`，**不是字符数**
+   *    （审查 B5 P0：中文字符 1 字符 = 3 字节，字符数会让中文会话全部误判为"过前置门"）。
+   * 缺字段 = 老数据 / 还没保存过 → 反思前置门跳过（不跑反思，不报错）。
+   */
+  bodyBytes?: number
   /** 最近一次使用的**主 Agent**（plan17 D9）：缺字段 = 内核默认（老会话零回归）。落盘才能重启恢复 */
   agentName?: string
 }
@@ -275,6 +282,16 @@ export const IPC = {
   memoryDelete: 'memory:delete',
   /** save/delete 后的跨窗广播（同 agents 口径） */
   memoryChanged: 'memory:changed',
+  // ── 记忆批 2：候选批准/拒绝 + 统计 ──
+  /** 批准候选条目（用候选覆盖旧记忆 + 删候选文件）；返回新条目 file */
+  memoryApprove: 'memory:approve',
+  /** 拒绝候选条目（删候选文件，不动旧记忆） */
+  memoryReject: 'memory:reject',
+  /** 取记忆统计（存活率 / 使用率，从事件流算） */
+  memoryStats: 'memory:stats',
+  // ── 记忆批 2：自动记忆成本设置（开关 + 日上限 + 反思模型）──
+  memoryGetAuto: 'memory:get-auto',
+  memorySetAuto: 'memory:set-auto',
   /** **记忆开关**（plan19 批 1）：批 1 只管通路 A（模型工具）是否下发，通路 B 不受它管 */
   memoryGetSwitch: 'memory:get-switch',
   memorySetSwitch: 'memory:set-switch',
@@ -318,6 +335,12 @@ export const IPC = {
   convSave: 'conv:save',
   convRename: 'conv:rename',
   convDelete: 'conv:delete',
+  /**
+   * **会话切换通知**（批 2 plan19）：渲染端切会话时主动告知主进程 prevId / nextId。
+   * ⚠️ 主进程据此维护 `activeConversationId`（关窗落盘队列用它）+ 异步触发反思（不 await，50ms 内返回）。
+   * **不是真相源**（真相源是渲染端 `activeId`），只是主进程的缓存，可能过时但**关窗时写队列是幂等的**。
+   */
+  convSwitch: 'conv:switch',
   skillsList: 'skills:list',
   permissionGet: 'permission:get',
   permissionSet: 'permission:set',
@@ -578,6 +601,21 @@ export interface ApiBridge {
   onMemoryChanged(cb: () => void): () => void
   /** 护栏 2：本轮写入痕迹（`<MemoryNotice />` 的数据源，D-043） */
   onMemoryNotice(cb: (notice: import('./memory').MemoryNoticeEvent) => void): () => void
+  // ── 记忆批 2：会话切换通知 + 候选批准/拒绝 + 统计 ──
+  /** 通知主进程会话切换（prevId 可为 null = 从空切换；nextId 可为 null = 切到空会话） */
+  switchConversation(prevId: string | null, nextId: string | null): Promise<void>
+  /** 批准候选：用候选内容覆盖旧记忆 + 删候选文件；返回新条目 file */
+  approveMemory(file: string): Promise<import('./memory').MemorySaveResult>
+  /** 拒绝候选：删候选文件，旧记忆不动 */
+  rejectMemory(file: string): Promise<boolean>
+  /** 取记忆统计（存活率/使用率）。没事件可算 → 返回 null，界面显示「暂无」 */
+  getMemoryStats(): Promise<import('./memory').MemoryStats | null>
+  /**
+   * 自动记忆成本设置（批 2）：开关 + 日上限 + 反思模型。
+   * ⚠️ `autoMemoryEnabled` 缺省时由档位提供默认值（轻量档关、其余档开）；显式设过不被档位覆盖。
+   */
+  getMemoryAuto(): Promise<import('./memory').MemoryAutoSettings>
+  setMemoryAuto(patch: Partial<import('./memory').MemoryAutoSettings>): Promise<import('./memory').MemoryAutoSettings>
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
   /** 省 token 档位（plan8 R9.1 §七②）：全局一档，与权限档同样"存在主进程、界面只是视图" */

@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import MemoryImportDialog from './MemoryImportDialog'
-import { MEMORY_LIMITS } from '@shared/memory'
+import { MEMORY_LIMITS, type MemoryAutoSettings } from '@shared/memory'
 
-// 记忆设置分区（plan19 批 1 / 0.13.41 反馈改版）。
+// 记忆设置分区（plan19 批 1 + 批 2 / 0.13.41 反馈改版）。
 // ⚠️ 开关的**批 1 语义只管通路 A**（模型工具 remember / recall 是否下发）：
 //    通路 B（选中即记）是用户主动行为，不受它管 —— 关掉开关不该剥夺用户"亲手记一条"的能力。
-//    批 2 起它才长出"自动记忆"的语义（额外管反思是否跑），到时用词统一（plan19 §九 批 2）。
+//    批 2 起"自动记忆"开关额外管反思是否跑（会话切换时异步提炼候选）。
 // ⚠️ 判据 14：开启时若正处于**完全访问档**，必须**当场**告警 —— 只在设置页躺一行字等于没写。
-// ⚠️ 0.13.41 反馈：注释**不收 ⓘ**，直接排成文字（参考 WorkBuddy 记忆页的排版）；并新增「导入其他记忆」。
+// ⚠️ 0.13.41 反馈：注释**不收 ⓘ**，直接排成文字（参考 WorkBuddy 记忆页的排版）。
 
 export default function MemorySettings(): JSX.Element {
   const [enabled, setEnabled] = useState<boolean | null>(null)
@@ -15,9 +15,12 @@ export default function MemorySettings(): JSX.Element {
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
+  const [auto, setAuto] = useState<MemoryAutoSettings | null>(null)
+  const [savingAuto, setSavingAuto] = useState(false)
 
   useEffect(() => {
     void window.api.getMemorySwitch().then(setEnabled)
+    void window.api.getMemoryAuto().then(setAuto)
   }, [])
 
   const toggle = async (): Promise<void> => {
@@ -25,16 +28,40 @@ export default function MemorySettings(): JSX.Element {
     setSaving(true)
     const res = await window.api.setMemorySwitch(!enabled)
     setEnabled(res.enabled)
-    // 只在"关 → 开"且完全访问档时出现；关回去它就该消失（风险组合不成立了）
     setWarn(res.warnFullAccess)
     setSaving(false)
+  }
+
+  const toggleAuto = async (): Promise<void> => {
+    if (auto === null || savingAuto) return
+    setSavingAuto(true)
+    const next = await window.api.setMemoryAuto({
+      autoMemoryEnabled: !auto.autoMemoryEnabled
+    })
+    setAuto(next)
+    setSavingAuto(false)
+  }
+
+  const setDailyLimit = async (n: number): Promise<void> => {
+    if (auto === null || savingAuto) return
+    setSavingAuto(true)
+    const next = await window.api.setMemoryAuto({ reflectionDailyLimit: n })
+    setAuto(next)
+    setSavingAuto(false)
+  }
+
+  const setReflectionModel = async (m: string): Promise<void> => {
+    if (auto === null || savingAuto) return
+    setSavingAuto(true)
+    const next = await window.api.setMemoryAuto({ reflectionModel: m || undefined })
+    setAuto(next)
+    setSavingAuto(false)
   }
 
   return (
     <div className="settings-section">
       <h2>记忆</h2>
 
-      {/* 直接注释（0.13.41 反馈：不用 ⓘ 收纳）。三句话把"是什么/去哪管/边界"说完 */}
       <p className="mem-settings-lead">
         记忆让应用跨会话记住你的偏好与项目事实，后续对话自动生效。
         查看与管理在主界面右栏的「记忆」页签；导入的记忆同样可以在那里编辑或删除。
@@ -62,6 +89,48 @@ export default function MemorySettings(): JSX.Element {
           经常巡检。
         </div>
       ) : null}
+
+      <div className="mem-subsection">
+        <div className="mem-subsection-title">自动记忆（批 2）</div>
+        <p className="mem-settings-lead mem-settings-lead-muted">
+          会话切换时异步跑反思，从历史对话提炼候选记忆，进右栏「记忆」页签的待批准区。
+          候选不批准不会注入；反思用量单列在用量牌。
+        </p>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={auto?.autoMemoryEnabled ?? false}
+            disabled={auto === null || savingAuto}
+            onChange={() => void toggleAuto()}
+          />
+          自动记忆
+        </label>
+        {auto?.autoMemoryEnabled ? (
+          <div className="mem-auto-options">
+            <label className="mem-field">
+              <span>日上限</span>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={auto.reflectionDailyLimit ?? 20}
+                disabled={savingAuto}
+                onChange={(e) => void setDailyLimit(Number(e.target.value))}
+              />
+            </label>
+            <label className="mem-field">
+              <span>反思模型</span>
+              <input
+                type="text"
+                placeholder="留空跟随对话模型"
+                value={auto.reflectionModel ?? ''}
+                disabled={savingAuto}
+                onChange={(e) => void setReflectionModel(e.target.value)}
+              />
+            </label>
+          </div>
+        ) : null}
+      </div>
 
       <div className="mem-import-card">
         <div className="mem-import-card-main">

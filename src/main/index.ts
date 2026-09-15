@@ -4,7 +4,7 @@ import { getBootstrapOutcome, releaseBootstrapLock } from './bootstrap-data-dir'
 import { app, BrowserWindow, Menu, powerSaveBlocker, session, shell } from 'electron'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
-import { registerIpcHandlers } from './ipc'
+import { registerIpcHandlers, getActiveConversationId } from './ipc'
 import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
@@ -38,13 +38,21 @@ import {
   setNetworkSettings,
   getNetworkCredentials,
   setNetworkCredentials,
-  getMemoryEnabled
+  getMemoryEnabled,
+  getAutoMemoryEnabled,
+  getReflectionDailyLimit
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
 // 窗口登记制（2026-09-13）：取代散落各处的 `getAllWindows()[0]` —— 多窗口后那个前提不再成立
 import { getMainWindow, getWindow, isWindowOpen, registerWindow, sendToAll } from './window-registry'
+// 批 2：反思执行器接线 —— 模型调用走 provider 抽象（与对话同一出口），会话读取走 conversations 单例
+import { getSettingsView, getDecryptedApiKey, hasApiKey } from './store/models'
+import { createProvider } from './providers'
+import { getConversation } from './store/conversations'
+import type { ChatMessage } from '@shared/ipc'
+import type { ReflectChat } from './memory/reflection'
 
 // 主进程入口：窗口生命周期 + IPC 注册（Agent 内核跑在 worker_threads，不在这里）。
 
@@ -133,6 +141,13 @@ const FLUSH_TIMEOUT_MS = 2000
 /** 当前窗口的"落盘完成 → 真关"回调；由 createWindow 装上，IPC 层回调它 */
 let finishClose: (() => void) | null = null
 
+/**
+ * 关窗时把当前会话入反思队列（批 2 plan19）。
+ * 与 `finishClose` 同口径：模块级单槽，由 app init 装上，`installFlushBeforeClose` 调。
+ * ⚠️ 队列已落盘（meta.json）—— 即使反思没跑完，下次启动补跑队列会接着跑。
+ */
+let enqueueActiveForReflection: (() => void) | null = null
+
 function installFlushBeforeClose(win: BrowserWindow): void {
   const log = createLogger('main')
   let flushed = false
@@ -152,6 +167,8 @@ function installFlushBeforeClose(win: BrowserWindow): void {
 
   win.on('close', (event) => {
     if (flushed || win.webContents.isDestroyed()) return
+    // 批 2：关窗前把当前会话入反思队列（队列落盘在 meta.json，下次启动补跑）
+    enqueueActiveForReflection?.()
     event.preventDefault()
     try {
       win.webContents.send(IPC.flushRequest)
@@ -170,6 +187,56 @@ function installFlushBeforeClose(win: BrowserWindow): void {
     if (timer) clearTimeout(timer)
     finishClose = null
   })
+}
+
+// ── 反思执行器接线（批 2 plan19）─────────────────────────────────────────
+//
+// 装配层职责：① 组装 system prompt ② 把会话正文 + system prompt 发给模型 ③ 收回文本。
+// 反思执行器（reflection.ts）只管"调 chat → 解析 JSON → 找冲突"，不碰 system prompt 与模型出口。
+// ⚠️ 不传 conversationId 给模型 —— ReflectChat 接口只有 messages，id 留在 runner 里用于事件落痕。
+
+const REFLECTION_SYSTEM_PROMPT = [
+  '你是一个记忆反思助手。分析以下对话，提取值得长期记住的事实。',
+  '只提取**稳定**的事实（用户偏好、项目约定、反复出现的模式），不提取一次性问题或临时上下文。',
+  '输出一个 JSON 数组，每个元素代表一条记忆候选，字段如下：',
+  '- name: 唯一标识，简短（如 "prefers-tabs-over-spaces"）',
+  '- description: 一句话概括这条记忆说的是什么',
+  '- class: 分类，只能是 "style"（风格偏好）、"default"（通用习惯）、"knowledge"（领域知识）',
+  '- body: 记忆正文，客观陈述事实',
+  '如果没有值得记住的事实，返回空数组 []。',
+  '只输出 JSON，不要解释。'
+].join('\n')
+
+/**
+ * 建反思用的 chat 接口。用**当前激活模型**调一次非流式对话（流式收集 chunks 即可）。
+ * ⚠️ 不带工具、不带记忆注入 —— 反思是**旁观**，不参与对话。
+ * 模型不可用（没配 Key / 没配端点）→ 返回空内容，反思执行器收到空串后返回空候选。
+ */
+function createReflectChat(): ReflectChat {
+  return async (messages: ChatMessage[]): Promise<{ content: string }> => {
+    const settings = getSettingsView()
+    if (!settings.baseURL || !settings.model || !hasApiKey()) {
+      return { content: '' }
+    }
+    const apiKey = getDecryptedApiKey()
+    const provider = createProvider(settings.providerType)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), settings.timeoutMs)
+    const assembled: ChatMessage[] = [
+      { role: 'system', content: REFLECTION_SYSTEM_PROMPT },
+      ...messages
+    ]
+    let content = ''
+    try {
+      await provider.streamChat(
+        { settings, apiKey, messages: assembled, signal: controller.signal },
+        { onChunk: (text) => { content += text } }
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+    return { content }
+  }
 }
 
 function createWindow(): void {
@@ -352,11 +419,32 @@ app.whenReady().then(async () => {
     log: (message, extra) => log.info(message, extra)
   })
 
-  // 记忆库（plan19 批 1）：组合根建**一次**，同时给 agent 上下文（工具 + 注入）与 IPC（管理界面）。
+  // 记忆库（plan19 批 1 + 批 2）：组合根建**一次**，同时给 agent 上下文（工具 + 注入）与 IPC（管理界面）。
   // ⚠️ 数据根由这里注入 —— 记忆层因此不碰 electron；"记忆改不了权限"那条不变量靠守卫乙守着。
+  // 批 2：反思执行器也在这里接线 —— 装配层负责取数据 + 组装 system prompt + 注入 chat 接口。
   const memory = createMemoryStore(userDataDir, nodeFsAdapter, {
-    onWarn: (message, extra) => log.warn(message, extra)
+    onWarn: (message, extra) => log.warn(message, extra),
+    onReflectionLog: (message, extra) => log.info(message, extra),
+    dailyLimit: getReflectionDailyLimit(),
+    // 校验会话存在（审查 C P1：不重试坏 id，不卡住队列）
+    conversationsExists: (id) => getConversation(id) !== null,
+    // 取会话正文（含 bodyBytes）—— 反思前置门靠 bodyBytes 判断是否值得跑
+    getConversationForReflect: (id) => {
+      const conv = getConversation(id)
+      if (!conv) return null
+      return { messages: conv.messages, bodyBytes: conv.bodyBytes ?? 0 }
+    },
+    // 反思 chat 接口：把会话正文 + 反思 system prompt 发给模型，收回 JSON 候选
+    reflectChat: createReflectChat()
   })
+
+  // 批 2：关窗时把当前会话入反思队列（installFlushBeforeClose 调）
+  enqueueActiveForReflection = () => {
+    const id = getActiveConversationId()
+    if (id && getAutoMemoryEnabled() && getMemoryEnabled()) {
+      memory.enqueueReflection(id)
+    }
+  }
 
   // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
   const agentCtx = createAgentContext({
@@ -511,6 +599,29 @@ app.whenReady().then(async () => {
       click: browserClick,
       type: browserType
     })
+  }
+
+  // ── 启动补跑反思队列（批 2 plan19）─────────────────────────────────────
+  // 上次会话切走时入了队但没跑完（崩溃 / 关窗口 / 模型不可用）→ 队列留在 meta.json 里。
+  // 启动时把队列里的会话逐条出队 + 异步跑反思（不阻塞启动，不 await）。
+  // ⚠️ 只在自动记忆开启时跑 —— 用户关了自动记忆就不补跑（省 token）。
+  if (getAutoMemoryEnabled() && getMemoryEnabled()) {
+    const pending = memory.backend.readMeta().reflectionQueue
+    if (pending.length > 0) {
+      log.info('启动补跑反思队列', { count: pending.length })
+      void (async () => {
+        for (;;) {
+          const id = memory.dequeueReflection()
+          if (!id) break
+          await memory.runReflection(id).catch((err) => {
+            log.warn('补跑反思失败', {
+              conversationId: id,
+              error: err instanceof Error ? err.message : String(err)
+            })
+          })
+        }
+      })()
+    }
   }
 
   app.on('activate', () => {

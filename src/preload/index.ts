@@ -88,6 +88,8 @@ const api: ApiBridge = {
     messages: ChatMessage[],
     stats?: { usage?: TokenUsage; avoidedTokens?: number; tokenTier?: TokenSaverTier; agentName?: string }
   ) => ipcRenderer.invoke(IPC.convSave, stats ? { id, messages, ...stats } : { id, messages }),
+  switchConversation: (prevId: string | null, nextId: string | null) =>
+    ipcRenderer.invoke(IPC.convSwitch, { prevId, nextId }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),
   deleteConversation: (id: string) => ipcRenderer.invoke(IPC.convDelete, id),
   rollbackConversation: (id: string, toIndex: number) =>
@@ -111,6 +113,12 @@ const api: ApiBridge = {
   // 记忆开关（批 1）：只管通路 A
   getMemorySwitch: () => ipcRenderer.invoke(IPC.memoryGetSwitch),
   setMemorySwitch: (enabled: boolean) => ipcRenderer.invoke(IPC.memorySetSwitch, enabled),
+  // ── 记忆批 2：候选批准/拒绝 + 统计 + 会话切换通知 ──
+  approveMemory: (file: string) => ipcRenderer.invoke(IPC.memoryApprove, file),
+  rejectMemory: (file: string) => ipcRenderer.invoke(IPC.memoryReject, file),
+  getMemoryStats: () => ipcRenderer.invoke(IPC.memoryStats),
+  getMemoryAuto: () => ipcRenderer.invoke(IPC.memoryGetAuto),
+  setMemoryAuto: (patch) => ipcRenderer.invoke(IPC.memorySetAuto, patch),
   // 电脑控制开关（2026-09-15）：当前无对应工具，先落门控（状态进自视段）
   getComputerControl: () => ipcRenderer.invoke(IPC.computerControlGet),
   setComputerControl: (enabled: boolean) => ipcRenderer.invoke(IPC.computerControlSet, enabled),

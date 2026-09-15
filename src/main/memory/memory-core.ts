@@ -9,6 +9,7 @@ import {
   memoryNameKey,
   utf8Bytes,
   validateMemoryFields,
+  type MemoryCandidate,
   type MemoryClass,
   type MemoryEntry,
   type MemoryEvidence,
@@ -16,19 +17,24 @@ import {
   type MemoryIndex,
   type MemoryOrigin,
   type MemorySaveInput,
-  type MemorySaveResult
+  type MemorySaveResult,
+  type MemoryStats
 } from '@shared/memory'
 import { injectionKey, serializeEvent, type MemoryEvent, type MemoryEventPayload } from './events'
 
-/** 存/取的唯一接缝。⚠️ read/remove 必须自行拒绝 `notes/` 之外的路径（file 来自渲染进程） */
+/** 存/取的唯一接缝。⚠️ read/remove 必须自行拒绝 `notes/` 与 `candidates/` 之外的路径（file 来自渲染进程） */
 export interface MemoryBackend {
   /** 列出全部条目文件的绝对路径 */
   listFiles(): string[]
   read(file: string): string | null
   write(file: string, text: string): void
   remove(file: string): boolean
-  /** slug → 绝对路径。布局只由 store 层知道，本文件不认路径拼接 */
+  /** slug → notes 绝对路径。布局只由 store 层知道，本文件不认路径拼接 */
   pathFor(slug: string): string
+  /** 批 2：slug → candidates 绝对路径。⚠️ 候选**不进 notes/**，不调 `pathFor` */
+  candidatePathFor(slug: string): string
+  /** 批 2：列出候选目录全部文件。⚠️ 与 `listFiles()` 互斥 —— 候选不进注入索引段（审查 A P0） */
+  listCandidates(): string[]
   /** 追加一行事件（追加型，不是原子写 —— 半行尾部可容忍） */
   appendEvent(line: string): void
 }
@@ -43,6 +49,11 @@ export interface ParsedMemory {
   createdAt: string
   updatedAt: string
   body: string
+  /**
+   * 批 2：候选文件才带的字段，指向**被撞的旧记忆 file 路径**。
+   * ⚠️ 只在候选 frontmatter 里出现；正式条目 serialize 不写它（写进 notes 会让普通条目带着指向自己的标记，无意义）。
+   */
+  conflictWith?: string
 }
 
 export type ParseResult = { ok: true; parsed: ParsedMemory } | { ok: false; reason: string }
@@ -59,7 +70,9 @@ const KNOWN_KEYS = new Set([
   'evidenceConversation',
   'evidenceTurn',
   'createdAt',
-  'updatedAt'
+  'updatedAt',
+  // 批 2：候选 frontmatter 才会写它，普通条目不写但解析要认（否则 approve 时读不出旧记忆 file）
+  'conflictWith'
 ])
 
 const REQUIRED_KEYS = ['name', 'description', 'class', 'origin', 'createdAt', 'updatedAt'] as const
@@ -116,6 +129,8 @@ export function parseMemoryFile(text: string): ParseResult {
   // 每存一次多攒一个空行（正文逐次下移），剥多个又会吃掉正文自己的缩进。
   const after = normalized.slice(end + 5)
   const body = after.startsWith('\n') ? after.slice(1) : after
+  // 批 2：conflictWith 只在候选 frontmatter 出现，可有可无
+  const conflictWith = fields['conflictWith'] || undefined
   return {
     ok: true,
     parsed: {
@@ -126,7 +141,8 @@ export function parseMemoryFile(text: string): ParseResult {
       evidence,
       createdAt: fields['createdAt']!,
       updatedAt: fields['updatedAt']!,
-      body
+      body,
+      ...(conflictWith === undefined ? {} : { conflictWith })
     }
   }
 }
@@ -149,6 +165,8 @@ export function serializeMemory(parsed: ParsedMemory): string {
       : []),
     `createdAt: ${parsed.createdAt}`,
     `updatedAt: ${parsed.updatedAt}`,
+    // 批 2：候选才写 conflictWith。普通条目无此字段（写成 `undefined` 不会出现在数组里）
+    ...(parsed.conflictWith ? [`conflictWith: ${parsed.conflictWith}`] : []),
     '---',
     ''
   ]
@@ -206,7 +224,8 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
     bytes += lineBytes
     kept.push(entry)
   }
-  return { entries: kept, total: entries.length, omitted: entries.length - kept.length, warnings: [] }
+  // candidates 由 list() 填真值；buildIndex 只管索引段，故给空数组占位（类型要它，语义不需要它）
+  return { entries: kept, total: entries.length, omitted: entries.length - kept.length, warnings: [], candidates: [] }
 }
 
 export interface MemoryRepoOptions {
@@ -237,6 +256,24 @@ export interface MemoryRepo {
    * ⚠️ `inject` **仅在注入集合变化时才写**（§7.1：它是唯一可能每轮多次的事件，全写会让它主导日志增长）。
    */
   record(payload: MemoryEventPayload): boolean
+  // ── 批 2：反思候选通路 ──
+  /** 找出与给定 name 撞名的既有条目（按 `memoryNameKey` 比较） */
+  findConflict(name: string): MemoryEntry | null
+  /**
+   * 写一条候选到 `candidates/`。⚠️ 必须先调 `validateMemoryFields` ——
+   * 反思从会话正文提炼，正文里可能含用户贴过的凭据（审查 E P0）。
+   * 命中凭据形状 → 候选不落盘 + 留痕 + 返回空串。
+   */
+  saveCandidate(input: MemoryCandidate, conflictWith?: string): string
+  /**
+   * 批准候选：若有 conflictWith，用候选内容覆盖旧记忆 + 删候选；否则把候选提升为正式条目。
+   * ⚠️ 必须删候选文件（审查 B P1，否则同名双条进索引）。
+   */
+  approveCandidate(file: string): MemorySaveResult
+  /** 拒绝候选：删候选文件（幂等；不落事件 —— 拒绝是用户行为，不进事件流） */
+  rejectCandidate(file: string): boolean
+  /** 从事件流算统计（存活率 / 使用率）。⚠️ 不读盘 —— 否则"删了又写回"会让数字假性归零 */
+  computeStats(events: MemoryEvent[]): MemoryStats
 }
 
 /**
@@ -285,7 +322,30 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       }
       entries.push({ ...p, file })
     }
+    // 批 4：描述相似度检测（不自动合并，只标记让用户决定）
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const a = entries[i]!.description
+        const b = entries[j]!.description
+        if (a === b || a.includes(b) || b.includes(a)) {
+          warnings.push(`「${entries[i]!.name}」与「${entries[j]!.name}」的描述高度相似，可能重复`)
+        }
+      }
+    }
     return { entries, warnings }
+  }
+
+  /** 候选条目（批 2）：从 candidates/ 读，**不进注入索引段**（buildIndex 不见它们） */
+  function loadCandidates(): MemoryEntry[] {
+    const out: MemoryEntry[] = []
+    for (const file of backend.listCandidates()) {
+      const text = backend.read(file)
+      if (text === null) continue
+      const result = parseMemoryFile(text)
+      if (!result.ok) continue
+      out.push({ ...result.parsed, file })
+    }
+    return out
   }
 
   const currentConversation = opts.conversationId ?? (() => null)
@@ -316,7 +376,8 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
 
     list() {
       const { entries, warnings } = loadAll()
-      return { ...buildIndex(entries), warnings }
+      const candidates = loadCandidates()
+      return { ...buildIndex(entries), warnings, candidates }
     },
 
     get(file) {
@@ -359,10 +420,24 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           return refuse(input.name, '已存在同名条目。请换一个 name，或先编辑那一条')
         }
         if (existing.length >= MEMORY_LIMITS.maxEntries) {
-          return refuse(
-            input.name,
-            `记忆已达上限（${MEMORY_LIMITS.maxEntries} 条）。请先删除或合并一些条目再写`
-          )
+          // 批 4：LRU 遗忘 —— 按 updatedAt 找最旧的非 style 条目删除
+          const candidates = existing
+            .filter((e) => e.class !== 'style')
+            .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0))
+          if (candidates.length === 0) {
+            return refuse(
+              input.name,
+              `记忆已达上限（${MEMORY_LIMITS.maxEntries} 条），且全是风格类条目无法自动遗忘。请先手动删除一些条目再写`
+            )
+          }
+          const toForget = candidates[0]!
+          backend.remove(toForget.file)
+          record({
+            kind: 'delete',
+            conversationId: currentConversation(),
+            name: toForget.name,
+            by: 'system'
+          })
         }
         file = backend.pathFor(slug)
         createdAt = now().toISOString()
@@ -402,6 +477,194 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       return removed
     },
 
-    record
+    record,
+
+    findConflict(name) {
+      const key = memoryNameKey(name)
+      return loadAll().entries.find((e) => memoryNameKey(e.name) === key) ?? null
+    },
+
+    saveCandidate(input, conflictWith) {
+      // ⚠️ 必须先调 validateMemoryFields（审查 E P0：反思从会话正文提炼，
+      //    正文里可能含用户贴过的凭据 —— 候选不能凭"模型说的"就落盘）
+      const validation = validateMemoryFields({
+        name: input.name,
+        description: input.description,
+        body: input.body,
+        evidence: input.evidence ?? null
+      })
+      if (!validation.ok) {
+        // 候选不落盘 + 留痕（走 write 事件 rejected 变体，与 refuse 同口径）
+        record({
+          kind: 'write',
+          conversationId: currentConversation(),
+          name: input.name,
+          rejected: true,
+          reason: validation.reason
+        })
+        notify({ name: input.name, ok: false, reason: validation.reason })
+        return ''
+      }
+
+      const slug = slugFor(input.name)
+      if (slug === null) {
+        const reason = 'name 无法用作文件名（含保留字或全为空白）'
+        record({
+          kind: 'write',
+          conversationId: currentConversation(),
+          name: input.name,
+          rejected: true,
+          reason
+        })
+        notify({ name: input.name, ok: false, reason })
+        return ''
+      }
+
+      const ts = now().toISOString()
+      const file = backend.candidatePathFor(slug)
+      backend.write(
+        file,
+        serializeMemory({
+          name: input.name,
+          description: input.description,
+          class: input.class,
+          origin: 'reflection',
+          evidence: input.evidence ?? null,
+          createdAt: ts,
+          updatedAt: ts,
+          body: input.body,
+          ...(conflictWith ? { conflictWith } : {})
+        })
+      )
+      return file
+    },
+
+    approveCandidate(file) {
+      const text = backend.read(file)
+      if (text === null) return { ok: false, reason: '候选文件读不出来或不存在' }
+      const parsed = parseMemoryFile(text)
+      if (!parsed.ok) return { ok: false, reason: `候选解析失败：${parsed.reason}` }
+      const p = parsed.parsed
+
+      // 带冲突：用候选内容覆盖旧记忆 + 删候选（审查 B P1，否则同名双条进索引）
+      if (p.conflictWith) {
+        const oldEntry = this.get(p.conflictWith)
+        // 旧记忆可能已被删了 —— origin / createdAt 兜底，不报错（用户删旧记忆后还能批准候选）
+        const origin = oldEntry?.origin ?? 'reflection'
+        const createdAt = oldEntry?.createdAt ?? now().toISOString()
+        backend.write(
+          p.conflictWith,
+          serializeMemory({
+            name: p.name,
+            description: p.description,
+            class: p.class,
+            origin,
+            evidence: p.evidence,
+            createdAt,
+            updatedAt: now().toISOString(),
+            body: p.body
+            // ⚠️ 正式条目不写 conflictWith（只在候选 frontmatter 里出现）
+          })
+        )
+        backend.remove(file)
+        const oldName = oldEntry?.name ?? p.name
+        record({
+          kind: 'approve',
+          conversationId: currentConversation(),
+          name: p.name,
+          oldName
+        })
+        notify({ name: p.name, ok: true })
+        return { ok: true, file: p.conflictWith, guard: { action: 'allow' } }
+      }
+
+      // 全新候选：调 save 提升为正式条目 + 删候选（save 会自动落 write 事件）。
+      // ⚠️ 批准 = 用户认可 → origin 变成 'user'（plan19 判据 2 注意点；
+      //    不是 'reflection' —— 候选批准后就是正式记忆，反思只负责"产出"，不决定"接受"）
+      const saveResult = this.save({
+        name: p.name,
+        description: p.description,
+        class: p.class,
+        body: p.body,
+        origin: 'user',
+        evidence: p.evidence
+      })
+      if (saveResult.ok) {
+        backend.remove(file)
+        record({
+          kind: 'approve',
+          conversationId: currentConversation(),
+          name: p.name,
+          oldName: ''
+        })
+      }
+      return saveResult
+    },
+
+    rejectCandidate(file) {
+      // 幂等：文件不存在 = 成功。不落事件（拒绝是用户行为，不进事件流）
+      if (backend.read(file) === null) return true
+      return backend.remove(file)
+    },
+
+    computeStats: (events) => computeStats(events)
+  }
+}
+
+/**
+ * 从事件流算记忆统计（批 2 §六 · 存活率与使用率）。
+ * ⚠️ 纯逻辑、不读盘 —— "删了又写回"会让盘上条数假性归零，事件流才是历史真相。
+ */
+export function computeStats(events: MemoryEvent[]): MemoryStats {
+  let written = 0
+  let deleted = 0
+  const recalledNames = new Set<string>()
+  const deletedNames = new Set<string>()
+  // 批 4：纠正与误伤计数
+  const correctedCounts = new Map<string, number>() // name → 纠正次数
+  let flaggedCount = 0
+
+  for (const e of events) {
+    if (e.kind === 'write') {
+      const rejected = 'rejected' in e && (e as { rejected?: unknown }).rejected === true
+      if (!rejected) written++
+    } else if (e.kind === 'delete') {
+      deleted++
+      deletedNames.add((e as { name: string }).name)
+    } else if (e.kind === 'recall' && (e as { found?: boolean }).found === true) {
+      recalledNames.add((e as { name: string }).name)
+    } else if (e.kind === 'correct') {
+      const name = (e as { name: string }).name
+      correctedCounts.set(name, (correctedCounts.get(name) ?? 0) + 1)
+    } else if (e.kind === 'flag') {
+      flaggedCount++
+    }
+  }
+  const alive = Math.max(0, written - deleted)
+  let recalled = 0
+  for (const name of recalledNames) {
+    if (!deletedNames.has(name)) recalled++
+  }
+  recalled = Math.min(alive, recalled)
+
+  // 批 4：纠正率
+  let correctedCount = 0
+  let repeatCorrectedCount = 0
+  for (const count of correctedCounts.values()) {
+    if (count >= 1) correctedCount++
+    if (count >= 2) repeatCorrectedCount++
+  }
+
+  return {
+    written,
+    alive,
+    recalled,
+    survivalRate: written === 0 ? null : alive / written,
+    usageRate: alive === 0 ? null : recalled / alive,
+    correctedCount,
+    repeatCorrectedCount,
+    flaggedCount,
+    repeatCorrectionRate: correctedCount === 0 ? null : repeatCorrectedCount / correctedCount,
+    falsePositiveRate: written === 0 ? null : flaggedCount / written
   }
 }

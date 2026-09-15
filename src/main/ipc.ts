@@ -38,7 +38,7 @@ import {
   type GitOpResult,
   type GitCommitResult
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
 import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
@@ -160,7 +160,7 @@ import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './sto
 import { nodeFsAdapter } from './store/conversations-fs'
 import type { MemoryStore } from './store/memory-store'
 import { composeMemoryBlock, estimateMemoryTokens } from './memory/inject'
-import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemorySwitchResult } from '@shared/memory'
+import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -219,6 +219,23 @@ const log = createLogger('ipc')
 /** 检查点轮次的**归属哨兵**（plan11 P0-11）：`begin` 的第三参必须给得出答案 —— 界面直接发起的文件操作、单次 Agent 调用都没有对话上下文，两者都记成明确的哨兵而不是留空（留空 = 查不出"这轮是谁跑的"）。 */
 const UI_RUN_OWNER = 'ui'
 const AGENT_TASK_OWNER = 'agent-task'
+
+/**
+ * **当前活跃会话 id**（批 2 plan19）：主进程对"用户当前在用哪条会话"的缓存。
+ * ⚠️ **不是真相源**（真相源是渲染端 `activeId`）—— 主进程据此做两件事：
+ *   ① 关窗落盘时把当前会话入反思队列（`installFlushBeforeClose`）；
+ *   ② 会话切换通知触发异步反思（`convSwitch` handler）。
+ * `null` 表示用户当前不在任何会话上（启动初始态 / 切到空会话）。
+ */
+let activeConversationId: string | null = null
+
+export function getActiveConversationId(): string | null {
+  return activeConversationId
+}
+
+export function setActiveConversationId(id: string | null): void {
+  activeConversationId = id
+}
 
 const fieldLabels: Record<string, string> = {
   providerType: '协议类型',
@@ -792,6 +809,9 @@ export function registerIpcHandlers(deps: {
       log.error('会话保存被拒', { id: input.id, count: messages.length, reason })
       throw new Error(`会话未能写入磁盘：${reason}`)
     }
+    // 批 2：会话正文的 UTF-8 字节数。⚠️ 用 Buffer.byteLength 而非 .length
+    //    （审查 B5 P0：中文字符 1 字符 = 3 字节，字符数会让中文会话误判"过反思前置门"）
+    const bodyBytes = Buffer.byteLength(JSON.stringify(parsed.data), 'utf8')
     return saveConversation(input.id, parsed.data as ChatMessage[], {
       ...(input.usage
         ? {
@@ -803,13 +823,43 @@ export function registerIpcHandlers(deps: {
         : {}),
       ...(input.avoidedTokens !== undefined ? { avoidedTokens: Math.round(input.avoidedTokens) } : {}),
       ...(input.memoryTokens !== undefined ? { memoryTokens: Math.round(input.memoryTokens) } : {}),
-      ...(input.agentName !== undefined ? { agentName: input.agentName } : {})
+      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      bodyBytes
     })
   })
 
   ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {
     const input = z.object({ id: z.string().min(1).max(64), title: z.string().max(60) }).parse(raw)
     return renameConversation(input.id, input.title)
+  })
+
+  // ── 会话切换通知（批 2 plan19）────────────────────────────────────────
+  // ⚠️ 主进程据此维护 `activeConversationId` + 异步触发反思（不 await，50ms 内返回）。
+  //    **不是真相源**（真相源是渲染端 `activeId`），主进程只是缓存。
+  //    反思异步跑：handler 不 await，避免渲染端切会话时被反思堵住。
+  ipcMain.handle(IPC.convSwitch, (_e, raw: unknown): void => {
+    const input = z
+      .object({
+        prevId: z.string().min(1).max(64).nullable(),
+        nextId: z.string().min(1).max(64).nullable()
+      })
+      .parse(raw)
+    activeConversationId = input.nextId
+    // 切走有内容的会话 → 入反思队列 + 异步跑（不 await）
+    if (
+      input.prevId &&
+      input.prevId !== input.nextId &&
+      getAutoMemoryEnabled() &&
+      getMemoryEnabled()
+    ) {
+      deps.memory.enqueueReflection(input.prevId)
+      void deps.memory.runReflection(input.prevId).catch((err) => {
+        log.warn('反思异步执行失败', {
+          conversationId: input.prevId,
+          error: err instanceof Error ? err.message : String(err)
+        })
+      })
+    }
   })
 
   // 会话回滚（plan10 B 批 ④）三条边界：① **正在生成回复时拒绝回滚**（流式没结束就动历史 = 在动的数据上做手术）；② **走 R5 确认桥**（`kind: 'rollback-messages'`，文案必须与**文件回滚**分得清）；③ **回传权威正文**（渲染端用它覆盖内存）。
@@ -1012,6 +1062,57 @@ export function registerIpcHandlers(deps: {
     if (before !== after) sendToAll(IPC.memoryChanged)
     return { enabled: after, warnFullAccess }
   })
+
+  // ── 记忆批 2：候选批准/拒绝 + 统计 ──
+  // 候选由反思执行器写入 candidates/，批准 = 覆盖旧记忆 + 删候选，拒绝 = 删候选。
+  // ⚠️ file 来自渲染进程，backend.remove 内已有 `insideCandidates` 边界检查。
+  ipcMain.handle(IPC.memoryApprove, (_e, raw: unknown): MemorySaveResult => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const result = deps.memory.approveCandidate(file)
+    if (result.ok) {
+      log.info('候选已批准', { file, newFile: result.file })
+      sendToAll(IPC.memoryChanged)
+    }
+    return result
+  })
+
+  ipcMain.handle(IPC.memoryReject, (_e, raw: unknown): boolean => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const removed = deps.memory.rejectCandidate(file)
+    if (removed) {
+      log.info('候选已拒绝', { file })
+      sendToAll(IPC.memoryChanged)
+    }
+    return removed
+  })
+
+  ipcMain.handle(IPC.memoryStats, (): MemoryStats | null => deps.memory.getStats())
+
+  // 批 2：自动记忆成本设置（开关 + 日上限 + 反思模型）
+  ipcMain.handle(IPC.memoryGetAuto, (): MemoryAutoSettings => ({
+    autoMemoryEnabled: getAutoMemoryEnabled(),
+    reflectionModel: getReflectionModel(),
+    reflectionDailyLimit: getReflectionDailyLimit()
+  }))
+  ipcMain.handle(
+    IPC.memorySetAuto,
+    (_e, patch: Partial<MemoryAutoSettings>): MemoryAutoSettings => {
+      if (typeof patch.autoMemoryEnabled === 'boolean') {
+        setAutoMemoryEnabled(patch.autoMemoryEnabled)
+      }
+      if (typeof patch.reflectionModel === 'string') {
+        setReflectionModel(patch.reflectionModel || null)
+      }
+      if (typeof patch.reflectionDailyLimit === 'number') {
+        setReflectionDailyLimit(patch.reflectionDailyLimit)
+      }
+      return {
+        autoMemoryEnabled: getAutoMemoryEnabled(),
+        reflectionModel: getReflectionModel(),
+        reflectionDailyLimit: getReflectionDailyLimit()
+      }
+    }
+  )
 
   // ── 电脑控制开关（2026-09-15 用户需求）── 当前版本无对应工具：开关先落门控（状态进自视段），
   //    工具上线后此处即权限闸。纯门控没有"设了≠生效"问题，不需要 trouble 行。

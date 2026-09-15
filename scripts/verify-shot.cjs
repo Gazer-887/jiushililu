@@ -529,6 +529,20 @@ let closeSettingsWinStub = () => true
 let memoryBroadcast = () => 0
 /** 护栏 2 的推送（D-043）：与 memory:changed 同族，但**带载荷** —— 面板要显示"写了哪几条" */
 let memoryNoticeBroadcast = () => 0
+// 批 2：候选条目（待批准）。⚠️ 与 memoryEntries 物理分开 —— 候选不进注入索引段
+let memoryCandidates = [
+  {
+    name: 'likes-dark-mode',
+    description: '偏好深色界面',
+    class: 'style',
+    origin: 'reflection',
+    evidence: null,
+    createdAt: '2026-09-15T02:00:00.000Z',
+    updatedAt: '2026-09-15T02:00:00.000Z',
+    body: '从历史会话提炼：用户多次切换到深色主题。',
+    file: '/mem/candidates/likes-dark-mode.md'
+  }
+]
 let memoryEntries = [
   {
     name: 'prefers-tables',
@@ -560,6 +574,22 @@ const memoryDeleteCalls = []
 let memorySwitch = false
 let memoryWarnOnNextEnable = false
 const memorySwitchCalls = []
+// ── Playbook（plan19 批 3）的桩状态 ──
+let playbookEntries = [
+  {
+    name: 'edit-react-component',
+    description: '编辑 React 组件的标准流程',
+    tags: ['file-edit', 'react'],
+    origin: 'model',
+    createdAt: '2026-09-15T02:00:00.000Z',
+    updatedAt: '2026-09-15T02:00:00.000Z',
+    body: '正文。',
+    file: '/evo/playbooks/edit-react-component.md'
+  }
+]
+const playbookSaveCalls = []
+const playbookDeleteCalls = []
+
 /** chat:send 的载荷流水 —— "新会话首条不重复"要断言模型只收到一条 user */
 const chatSendCalls = []
 /** models:set-entry 的调用流水 —— 模型分组下拉「点模型即切」要断言真的发起了切换 */
@@ -714,7 +744,8 @@ const STUBS = {
     entries: memoryEntries.map((e) => ({ ...e })),
     total: memoryEntries.length,
     omitted: 0,
-    warnings: memoryWarnings.slice()
+    warnings: memoryWarnings.slice(),
+    candidates: memoryCandidates.map((c) => ({ ...c }))
   }),
   'memory:read': (file) => memoryEntries.find((e) => e.file === file) ?? null,
   'memory:save': (input) => {
@@ -751,6 +782,63 @@ const STUBS = {
     memorySwitch = enabled
     memorySwitchCalls.push(enabled)
     return { enabled, warnFullAccess: memoryWarnOnNextEnable && enabled && !before }
+  },
+  // ── 批 2：候选通路（plan19）── approve = 从候选提升到正式条目；reject = 删候选
+  'memory:approve': (file) => {
+    const cand = memoryCandidates.find((c) => c.file === file)
+    if (!cand) return { ok: false, reason: '候选文件不存在' }
+    if (cand.conflictWith) {
+      // 覆盖旧记忆
+      memoryEntries = memoryEntries.map((e) =>
+        e.file === cand.conflictWith
+          ? { ...cand, file: e.file, origin: e.origin, createdAt: e.createdAt, updatedAt: '2026-09-15T02:01:00.000Z' }
+          : e
+      )
+    } else {
+      // 全新提升
+      memoryEntries.push({ ...cand, file: `/mem/notes/${cand.name}.md`, origin: 'user' })
+    }
+    memoryCandidates = memoryCandidates.filter((c) => c.file !== file)
+    memoryBroadcast()
+    return { ok: true, file: cand.conflictWith ?? `/mem/notes/${cand.name}.md`, guard: { action: 'allow' } }
+  },
+  'memory:reject': (file) => {
+    const before = memoryCandidates.length
+    memoryCandidates = memoryCandidates.filter((c) => c.file !== file)
+    return memoryCandidates.length !== before
+  },
+  'memory:stats': () => ({ survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }),
+  // ── 会话切换通知（批 2）── 桩只返回 undefined，不触发副作用
+  'conv:switch': () => undefined,
+  // ── Playbook（plan19 批 3）── 有状态桩：save/delete 改状态 + 广播
+  'playbook:list': () => ({
+    entries: playbookEntries.map((e) => ({ ...e })),
+    total: playbookEntries.length,
+    omitted: 0,
+    warnings: []
+  }),
+  'playbook:save': (input) => {
+    playbookSaveCalls.push(input)
+    const file = input?.file ?? `/evo/playbooks/${input?.name ?? 'x'}.md`
+    const at = '2026-09-15T02:00:00.000Z'
+    const entry = {
+      name: input?.name ?? '',
+      description: input?.description ?? '',
+      tags: input?.tags ?? [],
+      origin: input?.origin ?? 'model',
+      createdAt: at,
+      updatedAt: at,
+      body: input?.body ?? '',
+      file
+    }
+    playbookEntries = playbookEntries.filter((e) => e.file !== file).concat([entry])
+    return { ok: true, file }
+  },
+  'playbook:delete': (file) => {
+    playbookDeleteCalls.push(file)
+    const before = playbookEntries.length
+    playbookEntries = playbookEntries.filter((e) => e.file !== file)
+    return playbookEntries.length !== before
   },
   // ── 电脑控制开关（2026-09-15 用户需求）── 真值判定在 src/main/ipc.ts；桩同样给"设了就记住"的契约副本
   'computer-control:get': () => ccEnabled,

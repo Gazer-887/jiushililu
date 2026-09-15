@@ -54,7 +54,7 @@ export function UsageChip(): JSX.Element | null {
   // 没会话、或还没拿到过真实用量 → 整块不渲染（工具栏不为"暂无"占位）
   if (!record) return null
 
-  const { total, last, avoided, memory } = record
+  const { total, last, avoided, memory, reflectionTotal } = record
   /**
    * 命中率与思考占比（plan8 R9.1）。`null` = **厂商没报这个数** → 什么都不显示（连 0% 都不写，
    * 写 0% 等于替厂商宣布"一点没命中"）。但 `思考 0%` 会出现：厂商明确报了 0 就是事实，该显示。
@@ -78,7 +78,11 @@ export function UsageChip(): JSX.Element | null {
     avoided > 0 ? `工具输出成形省下（本地估算）：约 ${formatTokens(avoided)} tokens` : '',
     // 注入税（plan19 §5.2）：记忆段每轮占掉的**估算** token —— 它是"越用越重"的直接读数。
     // 同样必须说清是估算；没有记忆时不显示（不是显示 0，那等于宣布"没有开销"）
-    memory > 0 ? `记忆注入税（本地估算）：约 ${formatTokens(memory)} tokens` : ''
+    memory > 0 ? `记忆注入税（本地估算）：约 ${formatTokens(memory)} tokens` : '',
+    // 批 2 反思用量：会话切换时跑的额外模型调用，与对话账分开（不进 total）
+    reflectionTotal
+      ? `反思用量（批 2 · 会话切换时跑）：${totalTokens(reflectionTotal)} tokens`
+      : ''
   ]
     .filter(Boolean)
     .join('\n')
@@ -95,6 +99,10 @@ export function UsageChip(): JSX.Element | null {
       {avoided > 0 && <span className="usage-saved">省 {formatTokens(avoided)}</span>}
       {/* 注入税（plan19 §5.2）：本地估算，照既有诚实口径标"估" */}
       {memory > 0 && <span className="usage-memory">记忆税 {formatTokens(memory)}(估)</span>}
+      {/* 批 2 反思用量：会话切换时跑的额外模型调用，与对话账分开 */}
+      {reflectionTotal && (
+        <span className="usage-reflection">反思 {formatTokens(totalTokens(reflectionTotal))}</span>
+      )}
     </span>
   )
 }

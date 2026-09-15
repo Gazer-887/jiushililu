@@ -33,6 +33,21 @@ export interface UsageRecord {
   /** 是哪一轮（runId，没有就空） */
   runId?: string
   at: number
+  /**
+   * 这一笔是**对话**还是**反思**（批 2 plan19 §5.2）。
+   * ⚠️ 缺省 = `'chat'`（向后兼容：老记录没字段，不当反思）—— 不标的话会把反思用量算进对话账。
+   * 用量牌走 `ConversationUsage.reflectionTotal`（聚合后的字段），不直接 filter `kind`；
+   * `kind` 用于**事件流归因**（复盘时回答"反思花了多少"）。
+   */
+  kind?: 'chat' | 'reflection'
+}
+
+/**
+ * 按 kind 筛记录。⚠️ 缺省 `'chat'`（与 UsageRecord 字段口径一致）——
+ * 老数据没 kind 字段，按 chat 算才不会把反思用量误归到对话账。
+ */
+export function filterByKind(records: UsageRecord[], kind: 'chat' | 'reflection'): UsageRecord[] {
+  return records.filter((r) => (r.kind ?? 'chat') === kind)
 }
 
 export function emptyUsage(): TokenUsage {

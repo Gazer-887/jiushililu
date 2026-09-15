@@ -3,13 +3,39 @@
 //    记忆层因此**物理上**没有通路能碰到 `store/settings.ts`（权限档的唯一真相源）——
 //    这是"记忆改不了权限"那条架构不变量在代码上的落点，由 `architecture.test.ts` 的守卫乙看守。
 
+import type { ChatMessage } from '@shared/ipc'
+import type { MemoryStats } from '@shared/memory'
+import type { TokenUsage } from '@shared/usage'
 import { createMemoryRepo, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
+import { createReflectionRunner, type ReflectChat, type ReflectOutput } from '../memory/reflection'
 import { nodeFsAdapter, type FsAdapter } from './conversations-fs'
 import {
   createFsMemoryBackend,
   migrateMemoryFormat,
   type FsMemoryBackend
 } from './memory-fs'
+
+/** 反思用的会话数据（装配层从 conversations 取出后注入） */
+export interface ReflectConversation {
+  messages: ChatMessage[]
+  bodyBytes: number
+}
+
+/** 反思依赖注入（装配层负责取数据 + 组装 system prompt） */
+export interface MemoryStoreReflectionOptions {
+  /** 校验会话 id 存在（审查 C P1：不重试坏 id）。不传 = 跳过校验 */
+  conversationsExists?: (id: string) => boolean
+  /** 取会话正文（含 bodyBytes）。不传 = 反思无法跑 */
+  getConversationForReflect?: (id: string) => ReflectConversation | null
+  /** 反思 chat 接口（组装好的 messages 进来，反思输出出去） */
+  reflectChat?: ReflectChat
+  /** 反思用量记录回调。装配层把它接到 UsageRecord（kind='reflection'） */
+  onReflectionUsage?: (conversationId: string, usage: TokenUsage) => void
+  /** 反思日志（不传 = 静默） */
+  onReflectionLog?: (message: string, extra?: Record<string, unknown>) => void
+  /** 反思日上限（缺省 20，跨日重置） */
+  dailyLimit?: number
+}
 
 export interface MemoryStore extends MemoryRepo {
   /** 供批 2 的反思队列与告知标记使用（批 1 只保证它存在且持久） */
@@ -20,14 +46,33 @@ export interface MemoryStore extends MemoryRepo {
    */
   beginTurn(): void
   drainTurn(): { written: string[]; rejected: { name: string; reason: string }[] }
+  // ── 批 2：反思通路 ──
+  /** 入队反思会话（幂等；日上限超了返 false）。⚠️ 不校验会话存在 —— 写队列是投机性操作 */
+  enqueueReflection(conversationId: string): boolean
+  /** 出队一条反思会话（队列空返 null） */
+  dequeueReflection(): string | null
+  /**
+   * 跑反思。⚠️ **先校验会话存在**（审查 C P1：不重试坏 id，不存在的会话直接跳过 + 出队）。
+   * 候选进 candidates/，不进 notes/；冲突的候选带 conflictWith 指向旧记忆 file。
+   */
+  runReflection(conversationId: string): Promise<void>
+  /** 取记忆统计。事件流读不出来 → 返回 null（界面显示「暂无」） */
+  getStats(): MemoryStats | null
+}
+
+const DEFAULT_REFLECTION_DAILY_LIMIT = 20
+
+function todayString(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
 export function createMemoryStore(
   root: string,
   fs: FsAdapter = nodeFsAdapter,
-  opts: MemoryRepoOptions = {}
+  opts: MemoryRepoOptions & MemoryStoreReflectionOptions = {}
 ): MemoryStore {
   const warn = opts.onWarn ?? (() => {})
+  const reflLog = opts.onReflectionLog ?? (() => {})
   let collecting: { written: string[]; rejected: { name: string; reason: string }[] } | null = null
 
   // 每次启动都跑一遍（幂等：已是新格式就立刻返回，代价是一次 existsSync + 一次 JSON.parse）
@@ -44,6 +89,104 @@ export function createMemoryStore(
     }
   })
 
+  const reflectionRunner = opts.reflectChat
+    ? createReflectionRunner({ chat: opts.reflectChat })
+    : null
+
+  /** 局部出队（runReflection 和返回对象的方法都用它） */
+  function dequeueOne(): string | null {
+    const meta = backend.readMeta()
+    const next = meta.reflectionQueue.shift()
+    if (next === undefined) return null
+    backend.writeMeta(meta)
+    return next
+  }
+
+  async function runReflection(conversationId: string): Promise<void> {
+    // ⚠️ 限额检查在出队之前 —— 超限时提前返回，不丢失队列项（队列保持不动）
+    const meta = backend.readMeta()
+    const today = todayString()
+    if (meta.reflectionDate !== today) {
+      meta.reflectionDate = today
+      meta.reflectionCount = 0
+      // ⚠️ 重置后立即落盘（meta 是局部对象，不写回去下次读又回到旧值）
+      backend.writeMeta(meta)
+    }
+    const limit = opts.dailyLimit ?? DEFAULT_REFLECTION_DAILY_LIMIT
+    if (meta.reflectionCount >= limit) {
+      reflLog('反思已达日上限，本轮跳过（队列项保留）', {
+        conversationId,
+        count: meta.reflectionCount,
+        limit
+      })
+      return
+    }
+
+    // 出队（限额检查已在上方通过，现在正式消耗队列项）
+    dequeueOne()
+
+    // 审查 C P1：先校验会话存在 —— 坏 id 不重试，跳过（不卡住队列）
+    if (opts.conversationsExists && !opts.conversationsExists(conversationId)) {
+      reflLog('反思跳过：会话不存在', { conversationId })
+      return
+    }
+    if (!opts.getConversationForReflect) {
+      reflLog('反思跳过：未注入会话读取口', { conversationId })
+      return
+    }
+    const conv = opts.getConversationForReflect(conversationId)
+    if (!conv) {
+      reflLog('反思跳过：会话正文读不出来', { conversationId })
+      return
+    }
+    if (!reflectionRunner) {
+      reflLog('反思跳过：未注入 reflectChat', { conversationId })
+      return
+    }
+
+    let output: ReflectOutput
+    try {
+      output = await reflectionRunner.reflect({
+        id: conversationId,
+        messages: conv.messages,
+        bodyBytes: conv.bodyBytes,
+        memory: inner
+      })
+    } catch (err) {
+      reflLog('反思执行器抛错', {
+        conversationId,
+        error: err instanceof Error ? err.message : String(err)
+      })
+      output = { candidates: [] }
+    }
+
+    for (const c of output.candidates) {
+      const file = inner.saveCandidate(c, c.conflictWith)
+      if (file && c.conflictWith) {
+        const oldEntry = inner.get(c.conflictWith)
+        const oldName = oldEntry?.name ?? c.name
+        inner.record({
+          kind: 'conflict',
+          conversationId,
+          name: c.name,
+          oldName
+        })
+      }
+    }
+
+    // 计数：⚠️ 即使反思没出候选也要计数 —— 一次失败的反思也是一次额度
+    // ⚠️ 重新读 meta（runReflection 是异步的，期间可能被其他调用写过）
+    const afterMeta = backend.readMeta()
+    afterMeta.reflectionCount += 1
+    backend.writeMeta(afterMeta)
+
+    reflLog('反思完成', {
+      conversationId,
+      candidates: output.candidates.length,
+      todayCount: afterMeta.reflectionCount
+    })
+  }
+
   return {
     ...inner,
     backend,
@@ -54,6 +197,36 @@ export function createMemoryStore(
       const out = collecting ?? { written: [], rejected: [] }
       collecting = null
       return out
+    },
+    enqueueReflection: (conversationId) => {
+      const limit = opts.dailyLimit ?? DEFAULT_REFLECTION_DAILY_LIMIT
+      const meta = backend.readMeta()
+      const today = todayString()
+      if (meta.reflectionDate !== today) {
+        meta.reflectionDate = today
+        meta.reflectionCount = 0
+      }
+      // ⚠️ 队列长度判限（不查 reflectionCount —— reflectionCount 在 runReflection 里是执行限额，
+      //    在 enqueueReflection 里用会误杀已执行过但队列还满的情况）
+      if (meta.reflectionQueue.length >= limit) {
+        reflLog('反思入队被拒：队列已达上限', {
+          conversationId,
+          queueLength: meta.reflectionQueue.length,
+          limit
+        })
+        return false
+      }
+      if (meta.reflectionQueue.includes(conversationId)) return true
+      meta.reflectionQueue.push(conversationId)
+      backend.writeMeta(meta)
+      return true
+    },
+    dequeueReflection: () => dequeueOne(),
+    runReflection,
+    getStats: () => {
+      const { events } = backend.readEvents()
+      if (events.length === 0) return null
+      return inner.computeStats(events)
     }
   }
 }

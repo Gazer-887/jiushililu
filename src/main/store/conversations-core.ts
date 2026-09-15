@@ -59,6 +59,8 @@ export interface ConversationsRepo {
       avoidedTokens?: number
       /** 最近一次使用的主 Agent（plan17 D9）：给了才更新，不给保持原值——回滚/改名不许抹掉。**空串 = 切回内核默认**（删字段） */
       agentName?: string
+      /** 会话正文 UTF-8 字节数（批 2 plan19）：反思前置门用它判断是否值得跑 */
+      bodyBytes?: number
     }
   ): ConversationMeta | null
   renameConversation(id: string, title: string): ConversationMeta | null
@@ -254,6 +256,10 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       if (typeof stats?.agentName === 'string') {
         if (stats.agentName === '') delete next.agentName
         else next.agentName = stats.agentName
+      }
+      // 会话正文 UTF-8 字节数（批 2 plan19）：与 messages 同步更新 —— 反思前置门靠它判断
+      if (typeof stats?.bodyBytes === 'number' && Number.isFinite(stats.bodyBytes)) {
+        next.bodyBytes = Math.max(0, Math.round(stats.bodyBytes))
       }
       // **先正文、后索引**（见上方约定）：索引跟着正文走，不会出现"索引说有、正文没有"
       backend.writeMessages(id, nextLog)

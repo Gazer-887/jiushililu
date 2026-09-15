@@ -14,6 +14,8 @@ function setup(opts: { conversationId?: string | null; turnIndex?: number; confi
   const events: string[] = []
   const backend = {
     listFiles: () => [...files.keys()].sort(),
+    candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
+    listCandidates: () => [],
     read: (f: string) => files.get(f) ?? null,
     write: (f: string, t: string) => void files.set(f, t),
     remove: (f: string) => files.delete(f),

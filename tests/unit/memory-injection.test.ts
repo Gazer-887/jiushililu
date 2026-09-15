@@ -70,6 +70,8 @@ function fakeRepo(): MemoryRepo {
   return createMemoryRepo(
     {
       listFiles: () => [...files.keys()].sort(),
+      candidatePathFor: (slug: string) => `/mem/candidates/${slug}.md`,
+      listCandidates: () => [],
       read: (f) => files.get(f) ?? null,
       write: (f, t) => void files.set(f, t),
       remove: (f) => files.delete(f),

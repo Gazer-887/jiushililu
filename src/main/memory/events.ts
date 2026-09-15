@@ -18,9 +18,21 @@ export type MemoryEventPayload =
     }
   | { kind: 'write'; conversationId: string | null; name: string; rejected: true; reason: string }
   | { kind: 'recall'; conversationId: string | null; name: string; found: boolean }
-  | { kind: 'delete'; conversationId: string | null; name: string; by: 'user' | 'model' }
+  | { kind: 'delete'; conversationId: string | null; name: string; by: 'user' | 'model' | 'system' }
   | { kind: 'flag'; conversationId: string | null; name: string }
   | { kind: 'inject'; conversationId: string | null; names: string[] }
+  // 批 2：候选批准（name=新候选 name，oldName=被覆盖的旧记忆 name）
+  | { kind: 'approve'; conversationId: string | null; name: string; oldName: string }
+  // 批 2：反思发现冲突（name=候选 name，oldName=被撞的旧记忆 name）
+  // ⚠️ 只记 name 不记 file 路径（审查 G P2：file 路径含用户名）
+  | { kind: 'conflict'; conversationId: string | null; name: string; oldName: string }
+  // ── 批 3：Playbook 事件（与 memory 事件同结构，前缀区分；事件文件物理隔离）──
+  | { kind: 'playbook_write'; conversationId: string | null; name: string; origin: string; cls: string }
+  | { kind: 'playbook_write'; conversationId: string | null; name: string; rejected: true; reason: string }
+  | { kind: 'playbook_recall'; conversationId: string | null; name: string; found: boolean }
+  | { kind: 'playbook_inject'; conversationId: string | null; names: string[] }
+  // ── 批 4：纠正事件 ──
+  | { kind: 'correct'; conversationId: string | null; name: string; turnIndex?: number }
 
 export type MemoryEvent = MemoryEventPayload & { at: string }
 
@@ -34,7 +46,11 @@ export function serializeEvent(event: MemoryEvent): string {
   return JSON.stringify(event)
 }
 
-const KINDS = new Set(['write', 'recall', 'delete', 'flag', 'inject'])
+const KINDS = new Set([
+  'write', 'recall', 'delete', 'flag', 'inject', 'approve', 'conflict',
+  'playbook_write', 'playbook_recall', 'playbook_inject',
+  'correct'
+])
 
 /**
  * 解析一行。坏行一律返回 `null`（读时跳过）—— 追加型日志的半行尾部是**预期内**的，

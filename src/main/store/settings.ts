@@ -23,6 +23,19 @@ interface StoredSettings extends ModelSettings {
   /** **记忆开关**（plan19 批 1）。缺字段 = 老配置 → 视为开（否则记忆批做了等于没做） */
   memoryEnabled?: boolean
   /**
+   * **自动记忆（反思）开关**（批 2 plan19）。`undefined` = 未显式设 → 由省 token 档位提供默认值
+   * （轻量档关、其余开 —— 反思是额外一次模型调用，省 token 用户不应被默认烧钱）。
+   * ⚠️ 显式设过的不会被档位覆盖（用户的选择优先于档位默认）。
+   */
+  autoMemoryEnabled?: boolean
+  /**
+   * 反思模型（批 2）。缺字段 = 跟随对话模型；非空 = 用户为反思单独指定了一个模型档案 id。
+   * ⚠️ 反思是写长期资产，**不该用轻量档的 `reasoningEffortOverride: 'low'`**（§8.3 第 3 条）。
+   */
+  reflectionModel?: string
+  /** 反思日上限（批 2）。缺字段 = 20。⚠️ 反思也烧 token，需要日上限挡失控 */
+  reflectionDailyLimit?: number
+  /**
    * **电脑控制开关**（2026-09-15 用户需求）。当前版本**尚无对应的电脑控制工具**——开关先落门控：
    * 状态进自视段（模型如实报告自身配置），工具上线后此处即权限闸。缺字段 = 老配置 → `false`：
    * 涉及鼠标键盘的权限必须由用户显式开启，不能替他默认。
@@ -75,6 +88,56 @@ export function getMemoryEnabled(): boolean {
 export function setMemoryEnabled(enabled: boolean): boolean {
   store.set('memoryEnabled', enabled)
   return getMemoryEnabled()
+}
+
+/**
+ * **自动记忆（反思）开关**（批 2 plan19）。
+ * 未显式设过 → 按**省 token 档位**给默认：轻量档关（反思是额外一次模型调用，省 token 用户不应被默认烧钱）；
+ * 其余档开（rich / ultimate / balanced）。
+ * ⚠️ 显式设过的不被档位覆盖 —— 用户的明确选择优先于档位默认。
+ */
+export function getAutoMemoryEnabled(): boolean {
+  const stored = store.store.autoMemoryEnabled
+  if (typeof stored === 'boolean') return stored
+  const tier = getTokenTier()
+  return tier !== 'light'
+}
+
+export function setAutoMemoryEnabled(enabled: boolean): boolean {
+  store.set('autoMemoryEnabled', enabled)
+  return getAutoMemoryEnabled()
+}
+
+/**
+ * 反思模型（批 2）。返回 `undefined` = 跟随对话模型；
+ * 返回非空字符串 = 用户为反思单独指定的**模型档案 id**。
+ */
+export function getReflectionModel(): string | undefined {
+  const v = store.store.reflectionModel
+  return typeof v === 'string' && v.length > 0 ? v : undefined
+}
+
+export function setReflectionModel(model: string | null): void {
+  // null = 切回"跟随对话模型"
+  if (model === null) {
+    store.delete('reflectionModel' as keyof StoredSettings)
+    return
+  }
+  store.set('reflectionModel', model)
+}
+
+/**
+ * 反思日上限（批 2）。缺省 20（与 `DEFAULT_REFLECTION_DAILY_LIMIT` 同口径）。
+ * 老数据 / 手改坏值都回落到 20 —— 配置坏了让应用照常能跑。
+ */
+export function getReflectionDailyLimit(): number {
+  const v = store.store.reflectionDailyLimit
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 20
+}
+
+export function setReflectionDailyLimit(limit: number): number {
+  store.set('reflectionDailyLimit', limit)
+  return getReflectionDailyLimit()
 }
 
 /**

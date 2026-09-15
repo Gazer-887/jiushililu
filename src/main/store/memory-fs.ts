@@ -24,6 +24,12 @@ export interface MemoryMeta {
   pendingReflection: string[]
   /** 「完全访问档 + 自动记忆」的告知标记（§九 判据 14）：每次从关到开都重新告知一次 */
   fullAccessNoticeShownAt?: string
+  /** 批 2：今日已跑反思次数（与 `reflectionDate` 配对，跨日重置） */
+  reflectionCount: number
+  /** 批 2：当前计数的日期（'YYYY-MM-DD'）。跨日重置时更新 */
+  reflectionDate: string
+  /** 批 2：待反思会话 id 队列（关窗 / 切换时入队，启动时补跑） */
+  reflectionQueue: string[]
 }
 
 export function memoryDir(root: string): string {
@@ -34,8 +40,18 @@ export function notesDir(root: string): string {
   return join(root, 'notes')
 }
 
+/** 批 2：候选目录。⚠️ 与 `notes/` **物理隔离** —— `listFiles()` 只列 `notes/`，候选不进索引段（审查 A P0） */
+export function candidatesDir(root: string): string {
+  return join(root, 'candidates')
+}
+
 export function notePathFor(root: string, slug: string): string {
   return join(notesDir(root), `${slug}.md`)
+}
+
+/** 候选文件路径：`<root>/candidates/<slug>.md` */
+export function candidatePathFor(root: string, slug: string): string {
+  return join(candidatesDir(root), `${slug}.md`)
 }
 
 export function metaPath(root: string): string {
@@ -43,7 +59,13 @@ export function metaPath(root: string): string {
 }
 
 export function emptyMeta(): MemoryMeta {
-  return { schemaVersion: MEMORY_SCHEMA_VERSION, pendingReflection: [] }
+  return {
+    schemaVersion: MEMORY_SCHEMA_VERSION,
+    pendingReflection: [],
+    reflectionCount: 0,
+    reflectionDate: '',
+    reflectionQueue: []
+  }
 }
 
 export interface MemoryFsOptions {
@@ -92,9 +114,20 @@ function sanitizeMeta(raw: unknown): MemoryMeta {
     ? r['pendingReflection'].filter((v): v is string => typeof v === 'string')
     : []
   const shown = typeof r['fullAccessNoticeShownAt'] === 'string' ? r['fullAccessNoticeShownAt'] : undefined
+  const reflectionCount =
+    typeof r['reflectionCount'] === 'number' && Number.isFinite(r['reflectionCount'])
+      ? Math.max(0, Math.floor(r['reflectionCount']))
+      : 0
+  const reflectionDate = typeof r['reflectionDate'] === 'string' ? r['reflectionDate'] : ''
+  const reflectionQueue = Array.isArray(r['reflectionQueue'])
+    ? r['reflectionQueue'].filter((v): v is string => typeof v === 'string')
+    : []
   return {
     schemaVersion: MEMORY_SCHEMA_VERSION,
     pendingReflection: queue,
+    reflectionCount,
+    reflectionDate,
+    reflectionQueue,
     ...(shown === undefined ? {} : { fullAccessNoticeShownAt: shown })
   }
 }
@@ -106,6 +139,7 @@ export function createFsMemoryBackend(
 ): FsMemoryBackend {
   const warn = opts.onWarn ?? (() => {})
   const notes = notesDir(root)
+  const candidates = candidatesDir(root)
 
   /**
    * `file` 来自渲染进程 —— 必须挡在 `notes/` 之内。
@@ -114,6 +148,21 @@ export function createFsMemoryBackend(
   function insideNotes(file: string): boolean {
     const rel = relative(resolve(notes), resolve(file))
     return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
+  }
+
+  /**
+   * 批 2：候选目录的边界检查。与 `insideNotes` 同口径 —— `relative` 而非前缀。
+   * ⚠️ 候选路径**只由主进程内部生成**（slug 来自校验过的 name），但 approve/reject 的 file 经渲染进程回传，
+   *    仍要做边界检查 —— 否则"删候选"接口会被传任意路径。
+   */
+  function insideCandidates(file: string): boolean {
+    const rel = relative(resolve(candidates), resolve(file))
+    return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
+  }
+
+  /** read/write/remove 同时接受 `notes/` 与 `candidates/` 之内的文件（批 2 候选流通需要） */
+  function insideMemory(file: string): boolean {
+    return insideNotes(file) || insideCandidates(file)
   }
 
   return {
@@ -134,7 +183,7 @@ export function createFsMemoryBackend(
     },
 
     read(file) {
-      if (!insideNotes(file)) return null
+      if (!insideMemory(file)) return null
       try {
         return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
       } catch {
@@ -143,12 +192,16 @@ export function createFsMemoryBackend(
     },
 
     write(file, text) {
-      if (!insideNotes(file)) throw new Error(`记忆文件越界：${file}`)
+      if (!insideMemory(file)) throw new Error(`记忆文件越界：${file}`)
+      // 候选目录可能还没建（首次写候选时）—— 不建就写不进去
+      if (insideCandidates(file)) {
+        fs.mkdirSync(candidates, { recursive: true })
+      }
       atomicWrite(fs, file, text)
     },
 
     remove(file) {
-      if (!insideNotes(file)) return false
+      if (!insideMemory(file)) return false
       if (!fs.existsSync(file)) return false
       fs.rmSync(file, { force: true })
       return true
@@ -156,6 +209,24 @@ export function createFsMemoryBackend(
 
     pathFor(slug) {
       return notePathFor(root, slug)
+    },
+
+    candidatePathFor(slug) {
+      return candidatePathFor(root, slug)
+    },
+
+    listCandidates() {
+      const dir = candidatesDir(root)
+      if (!fs.existsSync(dir)) return []
+      try {
+        return fs
+          .readdirSync(dir)
+          .filter((n) => n.endsWith('.md'))
+          .map((n) => join(dir, n))
+      } catch {
+        // 候选目录读不到不影响正式条目 —— 返回空即可（正式条目才是真相源）
+        return []
+      }
     },
 
     /**
@@ -224,6 +295,8 @@ export function migrateMemoryFormat(
   const warn = onWarn ?? (() => {})
   try {
     fs.mkdirSync(notesDir(root), { recursive: true })
+    // 批 2：候选目录也建（幂等；首次写候选时 write 还会兜底建一次，但启动时就建能让"首次反思"少一次 I/O）
+    fs.mkdirSync(candidatesDir(root), { recursive: true })
     const path = metaPath(root)
     if (!fs.existsSync(path)) {
       fs.mkdirSync(dirname(path), { recursive: true })

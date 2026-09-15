@@ -95,6 +95,13 @@ const TEST_ENTRIES = [
   'tests/unit/memory-fs.test.ts',
   'tests/unit/memory-tools.test.ts',
   'tests/unit/memory-injection.test.ts',
+  'tests/unit/memory-conflict.test.ts',
+  'tests/unit/memory-reflection.test.ts',
+  'tests/unit/memory-queue.test.ts',
+  'tests/unit/usage-kind.test.ts',
+  'tests/unit/playbook-core.test.ts',
+  'tests/unit/playbook-inject.test.ts',
+  'tests/unit/playbook-tools.test.ts',
   'tests/unit/model-profiles.test.ts',
   'tests/unit/model-source.test.ts',
   'tests/unit/usage.test.ts',
@@ -178,7 +185,15 @@ function findReachable(entry: string, target: string): string[] {
 const SETTINGS_MODULE = join(ROOT, 'src/main/store/settings.ts')
 
 describe('守卫乙：记忆层不得触及权限档', () => {
-  const MEMORY_ROOTS = ['src/main/memory/memory-core.ts', 'src/main/memory/inject.ts']
+  const MEMORY_ROOTS = [
+    'src/main/memory/memory-core.ts',
+    'src/main/memory/inject.ts',
+    // 批 2：反思执行器也是纯逻辑，不碰 settings（守卫乙覆盖）
+    'src/main/memory/reflection.ts',
+    // 批 3：Playbook 纯逻辑与注入，不碰 settings（守卫乙覆盖）
+    'src/main/memory/playbook-core.ts',
+    'src/main/memory/playbook-inject.ts'
+  ]
 
   it.each(MEMORY_ROOTS)('%s 的 import 图里不出现 store/settings', (entry) => {
     const hits = findReachable(join(ROOT, entry), SETTINGS_MODULE)

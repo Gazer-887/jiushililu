@@ -178,6 +178,9 @@ interface AppState {
   /** 记忆索引视图（plan19 批 1）：工作台记忆页签与巡检区共用这一份，不各自拉取 */
   memoryView: import('@shared/memory').MemoryIndex | null
   refreshMemory: () => Promise<void>
+  /** 记忆统计（批 2）：存活率/使用率，从事件流算。null = 还没拉 / 主进程没事件 → 显示「暂无」 */
+  memoryStats: import('@shared/memory').MemoryStats | null
+  refreshMemoryStats: () => Promise<void>
   /** 护栏 2 的本轮写入痕迹（D-043）。非 null 时 `<MemoryNotice />` 显示，可手动关掉 */
   memoryNotice: import('@shared/memory').MemoryNoticeEvent | null
   showMemoryNotice: (notice: import('@shared/memory').MemoryNoticeEvent) => void
@@ -249,6 +252,14 @@ export interface ConversationUsage {
   /** 累计**注入税**（plan19 §5.2）：记忆段每轮占掉的估算 token，**也不进** `total` —— 第三笔账。
    *  缺 = 老版本主进程没带 → 不显示，**不替它编 0**（与 tier 同一处理）。 */
   memory: number
+  /**
+   * 累计**反思用量**（批 2 plan19 §5.2）：反思是会话切换时跑的额外模型调用，它的 token 账**单列** ——
+   * 与对话 `total` 分开，混一起就分不清"这笔 token 是用户聊出来的还是机器自己复盘复出来的"。
+   * ⚠️ 缺 = 老版本主进程没带 / 这条会话还没跑过反思 → 界面**不显示反思用量**，不替它编 0。
+   * 来源是主进程聚合后的 `UsageRecord.kind === 'reflection'` —— 渲染端不自己 filter records
+   *    （审查 B8 P1：用量牌走这个聚合字段，不走 records 的 kind 字段）。
+   */
+  reflectionTotal?: TokenUsage
 }
 
 /** 把**盘上**的用量并进内存账本（plan8 R9 / R9.1）。规矩：**只许往前长**（取 max）—— 覆盖会让数字倒退，而账本倒退比不显示更难解释。
@@ -604,6 +615,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openConversation: async (id) => {
     const prev = get().activeId
     await get().persistConversation(prev ?? '') // 切走前先把当前会话存好（空 id = 什么都没做）
+    // 批 2：通知主进程会话切换 → 主进程维护 activeConversationId + 异步触发反思（不 await，不阻塞切会话）
+    if (prev !== id) await window.api.switchConversation(prev, id)
     const conv = await window.api.getConversation(id)
     if (!conv) {
       await get().loadConversations()
@@ -642,7 +655,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ usageByConversation: mergeUsage(s.usageByConversation, [conv]) }))
   },
 
-  newSession: () =>
+  newSession: () => {
+    // 批 2：切到空会话也通知主进程（prev → null），让上一条进反思队列
+    const prev = get().activeId
+    if (prev !== null) void window.api.switchConversation(prev, null)
     set({
       view: 'new',
       activeId: null,
@@ -650,10 +666,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamError: null,
       toolEvents: [],
       reasoning: ''
-    }),
+    })
+  },
 
   createConversation: async (input) => {
+    const prev = get().activeId
     const conv = await window.api.createConversation(input)
+    // 批 2：新建会话后通知主进程（prev → conv.id），让上一条进反思队列
+    if (prev !== conv.id) void window.api.switchConversation(prev, conv.id)
     await get().loadConversations()
     // ⚠️ 必须清掉上一轮的过程状态 —— 不然工具卡片与思考会留在新会话里把界面占满、报告看不见
     set({
@@ -673,6 +693,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   removeConversation: async (id) => {
+    // 批 2：删的是当前会话 → 通知主进程切到空（让上一条进反思队列；删除后主进程反思会校验 id 存在 → 跳过）
+    if (get().activeId === id) void window.api.switchConversation(id, null)
     await window.api.deleteConversation(id)
     if (get().activeId === id) {
       set({ activeId: null, messages: [], view: 'new' })
@@ -939,6 +961,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   memoryView: null,
   refreshMemory: async () => {
     set({ memoryView: await window.api.listMemory() })
+  },
+  memoryStats: null,
+  refreshMemoryStats: async () => {
+    set({ memoryStats: await window.api.getMemoryStats() })
   },
   memoryNotice: null,
   showMemoryNotice: (notice) => set({ memoryNotice: notice }),

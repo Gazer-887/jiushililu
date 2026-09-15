@@ -4,7 +4,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FsAdapter } from '@main/store/conversations-fs'
 import {
-  MEMORY_SCHEMA_VERSION,
   createFsMemoryBackend,
   emptyMeta,
   eventsPath,
@@ -121,7 +120,7 @@ describe('meta.json：默认值、收敛、迁移幂等', () => {
       })
     })
     expect(createFsMemoryBackend(ROOT, fs).readMeta()).toEqual({
-      schemaVersion: MEMORY_SCHEMA_VERSION,
+      ...emptyMeta(),
       pendingReflection: ['ok']
     })
   })
