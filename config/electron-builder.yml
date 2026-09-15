@@ -47,6 +47,8 @@ extraResources:
     to: icon.ico
   - from: resources/agents
     to: agents
+  - from: resources/skills
+    to: skills
   # L0 检索（plan3/plan4）：随包 ripgrep —— **必须在 asar 外**（asar 里的可执行文件没法 spawn）。
   # ⚠️ 前置：`npm run vendor:ripgrep`（已挂在 `dist` 脚本上）把它从 node_modules 复制过来。
   #    目录不存在时 electron-builder 会**直接报错**（不是静默少一份），这是有意的：

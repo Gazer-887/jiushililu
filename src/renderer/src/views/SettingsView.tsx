@@ -11,6 +11,7 @@ import type {
 import { entryLabel, sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import AgentManager from '../components/AgentManager'
+import SkillsPanel from '../components/SkillsPanel'
 import MemorySettings from '../components/MemorySettings'
 import FieldNote from '../components/FieldNote'
 import { useAppStore } from '../store'
@@ -32,7 +33,7 @@ import {
  * 图标是手写内联 SVG：为几个图标引一个图标库不划算，且本项目维持零 UI 框架依赖。
  * 分区按**真实存在的能力**划分，不放空条目（P3 生态的 MCP / 技能届时再加；子 Agent 已随 plan17 落地）。
  */
-type SectionId = 'general' | 'model' | 'agents' | 'memory' | 'appearance' | 'trouble'
+type SectionId = 'general' | 'model' | 'agents' | 'skills' | 'memory' | 'appearance' | 'trouble'
 
 /** 权限档展示顺序：从最严到最松（与输入框工具栏同一口径） */
 const PERM_ORDER: PermissionPreset[] = ['read-only', 'write', 'full-access']
@@ -79,6 +80,16 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
         <circle cx="5.2" cy="4.4" r="2.4" />
         <circle cx="11.6" cy="11.2" r="2.4" />
         <path d="M7.6 5.9 9.5 9.4" />
+      </svg>
+    )
+  },
+  {
+    id: 'skills',
+    label: '技能',
+    icon: (
+      <svg {...ICON_PROPS} aria-hidden="true">
+        <path d="M3 3.5h7.2L13 6.3v6.2a1.3 1.3 0 0 1-1.3 1.3H3z" />
+        <path d="M5.6 6.4h4.8M5.6 9h4.8" />
       </svg>
     )
   },
@@ -1111,6 +1122,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         )}
 
         {section === 'agents' && <AgentManager />}
+        {section === 'skills' && <SkillsPanel />}
 
         {section === 'memory' && <MemorySettings />}
 

@@ -162,6 +162,7 @@ import type { MemoryStore } from './store/memory-store'
 import type { PlaybookStore } from './store/playbook-store'
 import { composeMemoryBlock, estimateMemoryTokens } from './memory/inject'
 import { composePlaybookBlock } from './memory/playbook-inject'
+import { composeSkillBlock } from '@shared/skills'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
 import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
@@ -504,6 +505,8 @@ export function registerIpcHandlers(deps: {
     // Playbook 条件召回段（plan19 批 3）：活跃标签从**用户这一轮的原话**推断，交集非空才注入。
     const lastUserText = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
     const playbookBlock = assemblePlaybookBlock(conversationId, lastUserText)
+    // 技能清单段（plan22）：静态资产，无条件组装（预算截断在 composeSkillBlock 内完成，截断双侧可见）
+    const skillBlock = assembleSkillBlock()
     // 诊断①：开始时刻。没有它，"卡死"发生时日志里一片空白，连"请求到底发没发"都说不清
     log.info('对话开始', {
       conversationId,
@@ -569,6 +572,8 @@ export function registerIpcHandlers(deps: {
         memoryBlock,
         // Playbook 段（plan19 批 3）：同上 —— 活跃标签匹配已在组合根做完，runner 只拼段
         playbookBlock,
+        // 技能段（plan22）：同上 —— 预算截断已在组合根做完，runner 只拼段
+        skillBlock,
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
           if (state.runId !== evt.runId) {
@@ -679,7 +684,9 @@ export function registerIpcHandlers(deps: {
         // 一次性任务也注入记忆并采集痕迹（少了它，模型在这里 remember 就没人上报 —— 静默缺口）
         memoryBlock: beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER),
         // 一次性任务同样走条件召回（任务描述即"用户原话"，活跃标签从它推断）
-        playbookBlock: assemblePlaybookBlock(req.conversationId ?? AGENT_TASK_OWNER, req.task)
+        playbookBlock: assemblePlaybookBlock(req.conversationId ?? AGENT_TASK_OWNER, req.task),
+        // 一次性任务同样注入技能清单（plan22 D-057）
+        skillBlock: assembleSkillBlock()
       })
       endMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       return {
@@ -1176,6 +1183,24 @@ export function registerIpcHandlers(deps: {
         .filter((e) => e.tags.some((t) => activeTags.includes(t)))
         .map((e) => e.name)
       deps.playbook.record({ kind: 'playbook_inject', conversationId, names: matched })
+    }
+    return block
+  }
+
+  /**
+   * 组装技能清单段（plan22 D-057）。技能是**静态资产**（无活跃标签推断），
+   * 组装即全量交给 composeSkillBlock 做预算截断；截断发生时 log 一条
+   * —— 模型侧的块尾有「另有 N 条」，开发侧有这条日志，**双侧都不静默**。
+   */
+  function assembleSkillBlock(): string | null {
+    const store = deps.agent.skills?.store
+    if (!store) return null
+    const { block, droppedByBytes, droppedByCount } = composeSkillBlock(store.view().entries)
+    if (droppedByBytes + droppedByCount > 0) {
+      log.warn(
+        `技能清单超出注入预算：字节上限丢弃 ${droppedByBytes} 条、条数上限丢弃 ${droppedByCount} 条（共 ${store.view().entries.length} 条）`,
+        {}
+      )
     }
     return block
   }

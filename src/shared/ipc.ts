@@ -250,6 +250,8 @@ export interface SkillInfo {
   name: string
   description: string
   source: 'builtin' | 'user' | 'project'
+  /** plan22：被高层同名技能覆盖（不在生效集合，仅列表可见） */
+  overridden?: boolean
 }
 
 export const IPC = {

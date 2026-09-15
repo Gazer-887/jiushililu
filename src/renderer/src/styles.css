@@ -6531,3 +6531,64 @@ body[data-resizing] {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ── 技能分区（plan22 S8）──────────────────────────────────────
+   只读列表：名称 + 来源徽标 + 描述；被覆盖的条目给降级说明。
+   全部走既有 token（--sp-* / --fs-* / --radius-* / --accent-*），不新增裸值。 */
+.skills-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.skills-intro {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+.skills-intro code {
+  font-size: var(--fs-xs);
+}
+.skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.skills-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-2) var(--sp-4);
+}
+.skills-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.skills-item-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.skills-item-source {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-2);
+}
+.skills-item-overridden {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.skills-item-desc {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-xs);
+}
+.skills-loading,
+.skills-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}

@@ -25,6 +25,7 @@ import { setBrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
 import { createMemoryStore } from './store/memory-store'
 import { createPlaybookStore } from './store/playbook-store'
+import { createSkillsStore } from './skills/skills-store'
 import { nodeFsAdapter } from './store/conversations-fs'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
 import { createSystemIntegration } from './system-integration'
@@ -447,6 +448,16 @@ app.whenReady().then(async () => {
     conversationId: () => getActiveConversationId()
   })
 
+  // 技能库（plan22）：内置随包分发（resources/skills，extraResources），用户层在 userData/skills。
+  // **只读资产** —— 本期无写路径（导入功能后续版本），reload 接口已预留。
+  const skillsStore = createSkillsStore({
+    builtinDir: app.isPackaged
+      ? join(process.resourcesPath, 'skills')
+      : join(app.getAppPath(), 'resources/skills'),
+    userDir: join(userDataDir, 'skills'),
+    onWarn: (message) => log.warn(message, {})
+  })
+
   // 批 2：关窗时把当前会话入反思队列（installFlushBeforeClose 调）
   enqueueActiveForReflection = () => {
     const id = getActiveConversationId()
@@ -481,6 +492,9 @@ app.whenReady().then(async () => {
     // Playbook（plan19 批 3）：repo 给工具用。⚠️ 无开关 —— 它是模型显式调用的程序记忆，
     // 不像自动记忆那样会自己花钱；"有消费者才注册"（不传就不下发工具）是唯一门槛。
     playbook: { repo: playbook },
+    // 技能（plan22）：只读库，供 use_skill 工具与 system prompt 清单注入。
+    // ⚠️ 无开关（D-058：use_skill 是读操作，只读档也可用）；"有消费者才注册"（D-059）在 runner 内判空。
+    skills: { store: skillsStore },
     // L0 检索（plan3/plan4）：随包的 ripgrep 放 resources/ripgrep/（extraResources）。
     // ⚠️ 开发态 `process.resourcesPath` 指向 electron 自己的 resources —— 那里没有我们的 rg，
     //    于是会自动退到环境变量 / PATH（本机 WinGet 装的 rg 15.2.0 能接上）；这不是降级事故。

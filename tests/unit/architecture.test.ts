@@ -110,6 +110,8 @@ const TEST_ENTRIES = [
   'tests/unit/retrieval.test.ts',
   'tests/unit/runner.test.ts',
   'tests/unit/schemas.test.ts',
+  'tests/unit/skill-tools.test.ts',
+  'tests/unit/skills.test.ts',
   'tests/unit/system-web-tools.test.ts',
   'tests/unit/system-integration.test.ts',
   'tests/unit/tokens.test.ts'
