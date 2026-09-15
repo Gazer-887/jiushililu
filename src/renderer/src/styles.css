@@ -315,6 +315,105 @@ nav {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* 会话大纲的悬浮入口以本容器定位 */
+  position: relative;
+}
+
+/* ── 会话大纲（plan7 批 D，2026-09-15）────────────────────
+   右缘悬浮「大纲」入口 → 展开各轮提问列表 → 点击平滑定位 + 高亮。
+   入口挂在消息区右 padding 带里，不遮正文；两轮起才渲染（单条无跳可跳）。 */
+.chat-outline-wrap {
+  position: absolute;
+  right: var(--sp-8);
+  top: 96px;
+  bottom: 180px;
+  display: flex;
+  align-items: center;
+  z-index: 30;
+}
+
+.chat-outline-btn {
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+  padding: 10px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.chat-outline-btn:hover {
+  color: var(--text);
+  border-color: var(--accent, var(--border));
+}
+
+.chat-outline {
+  position: absolute;
+  right: calc(100% + var(--sp-8));
+  top: 0;
+  width: min(320px, 60vw);
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+
+.chat-outline-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-6);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-outline-item:hover {
+  background: rgb(127 127 127 / 12%);
+}
+
+.chat-outline-no {
+  flex-shrink: 0;
+  min-width: 1.4em;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-outline-text {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.5;
+}
+
+/* 跳转落点的高亮：朱砂一闪（1.4s 后由 JS 摘掉 class）——「跳到了哪」要看得见 */
+.msg-jump-hl {
+  animation: msg-jump-flash 1.4s ease-out;
+}
+
+@keyframes msg-jump-flash {
+  0% {
+    background: rgb(178 58 52 / 16%);
+    box-shadow: inset 2px 0 0 var(--accent, #b23a34);
+  }
+  100% {
+    background: transparent;
+    box-shadow: inset 2px 0 0 transparent;
+  }
 }
 
 .chat-messages {
@@ -2456,6 +2555,9 @@ label.radio {
   flex-direction: column;
   gap: var(--sp-8);
   min-width: 0;
+  /* 拿满栏高：父级 .dock-body 是 flex item（flex:1），高度 definite，100% 可解析。
+     没有这行，.fp-office 的 flex:1 无高度可分 —— iframe 塌成内容高（2026-09-15 用户报）。 */
+  height: 100%;
 }
 
 .fp-head {
@@ -2541,8 +2643,9 @@ label.radio {
 }
 
 /* ── HTML 沙箱预览 ──
-   高度写死一档而不是 `100%`：栏的祖先链没有确定高度，`100%` 会退化成默认 150px
-   （或者干脆 0），预览区忽高忽低反而难用。给一个够看又不会顶破栏的高度，超出交给 iframe 自己滚。
+   高度写死一档而不是 `100%`：.fp 的 height:100% 只在「dock-body 高度 definite」时成立，
+   而 HTML 预览当年做的时候链条未定，写死是当时的保守选择；如今链条已通，
+   但 60vh 档（够看、不顶破栏）已被门禁断言钉住，维持不动 —— 产品选择，不是遗漏。
    白底是**故意的**：网页天生按白底写样式，硬塞进水墨深底会渲染成另一个样子 —— 预览要的是"浏览器里长什么样"。 */
 .fp-html-wrap {
   display: flex;
@@ -2566,8 +2669,9 @@ label.radio {
   color: var(--muted);
 }
 
-/* 图片预览（批 A3）：居中 + 限高，超出交给滚动，别把栏撑破 */
+/* 图片预览（批 A3）：居中 + 限高，铺满剩余栏高，大图在区内滚（img 的 max-height:100% 也因此可解析） */
 .fp-image {
+  flex: 1;
   display: flex;
   justify-content: center;
   min-height: 0;
@@ -2588,8 +2692,10 @@ label.radio {
   background-position: 0 0, 0 6px, 6px -6px, -6px 0;
 }
 
-/* 二进制文件的十六进制转储（批 A3 的降级展示） */
+/* 二进制文件的十六进制转储（批 A3 的降级展示）：铺满剩余栏高，滚动收在区内 */
 .fp-hex {
+  flex: 1;
+  min-height: 0;
   font-family: Consolas, 'Courier New', monospace;
   font-size: var(--fs-xs);
   line-height: 1.5;

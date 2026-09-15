@@ -3327,13 +3327,23 @@ app.whenReady().then(async () => {
     (() => {
       const f = document.querySelector('.fp-office');
       const btns = Array.from(document.querySelectorAll('.fp-head button')).map(b => b.textContent.trim());
+      // 几何判据（2026-09-15 用户报「预览不向下铺满」= 高度链断裂）：iframe 必须吃满
+      // 栏（.dock-body）里除「文件名行 + gap + 栏 padding」之外的高度 —— 实测这部分
+      // 固定开销约占 22%（门禁小窗），修复前 iframe 只有内容高、比率远低于此。
+      // "DOM 存在"防不住这条，只能量 rect。
+      const pane = f ? f.closest('.dock-body') : null;
+      const fillRatio = f && pane && pane.clientHeight > 0
+        ? f.getBoundingClientRect().height / pane.clientHeight
+        : 0;
       return {
         clicked: ${clickDocx},
         hasFrame: !!f,
         srcOk: !!f && (f.getAttribute('src') || '').startsWith('jsl-preview://mem/'),
         // sandbox=""（空串 = 全锁）：少了这个属性，沙箱就是摆设
         sandboxEmpty: !!f && f.getAttribute('sandbox') === '',
-        hasOpenSys: btns.some(t => t.includes('用系统程序打开'))
+        hasOpenSys: btns.some(t => t.includes('用系统程序打开')),
+        fillsPane: fillRatio >= 0.75,
+        fillRatio: Math.round(fillRatio * 100) / 100
       };
     })()
   `)
@@ -5488,6 +5498,11 @@ app.whenReady().then(async () => {
     docxPreview.hasOpenSys === true
   )
   checkTrue(
+    'docx：iframe 铺满栏高 ≥75%（2026-09-15 高度链断裂修复的几何判据）',
+    docxPreview.fillsPane === true,
+    { fillRatio: docxPreview.fillRatio }
+  )
+  checkTrue(
     'xlsx：sheet 按钮组在（多 sheet 可切，不是只看第一个）',
     sheetPreview.clicked === true && sheetPreview.tabCount === 2 &&
       sheetPreview.names.join(',') === '一月,二月',
@@ -5636,12 +5651,47 @@ app.whenReady().then(async () => {
   `)
   console.log('RB_PRECONDITION=' + JSON.stringify(rbPre))
 
+  // 右键前先把消息区滚回顶部：自动滚底后第一条消息上半截会钻到 chat-head 底下，
+  // centerOf 的「几何中心」命中的就是 chat-head 而不是消息 —— CDP 右键落在 head 上，
+  // 菜单永远开不出来（2026-09-15 诊断实锤：hitTag=DIV.chat-head，合成派发却能开出 → 探针选点 bug）
+  await win.webContents.executeJavaScript(`document.querySelector('.chat-messages')?.scrollTo(0, 0)`)
+  await new Promise((r) => setTimeout(r, 250))
   const msgPos = await centerOf('.msg')
   let rbMenu = { ok: false, reason: 'no-msg-or-no-input' }
   if (rbInputReady && msgPos) {
     await realClick(msgPos.x, msgPos.y, 'right')
-    await new Promise((r) => setTimeout(r, 400))
-    rbMenu = { ok: true, via: 'real-right-click' }
+    // ⚠️ 不能死等固定 ms：机器高负载（连跑 build/门禁、CI）时 React 渲染菜单会超过
+    //    400ms，判据齐红全是"传导伤"（回滚/撤销/大纲连带空转）。改成轮询等浮层出现，
+    //    上限 2s —— 语义不变（菜单真没开照样红），只是不再把"渲染慢"误判成"功能坏"。
+    let menuShown = false
+    for (let i = 0; i < 20; i++) {
+      menuShown = await win.webContents.executeJavaScript(`!!document.querySelector('.wb-menu')`)
+      if (menuShown) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    // 轮询超时 → 带一组对照证据再走：命中测试（那个坐标上最顶层元素是谁）+
+    // 合成 contextmenu 派发（能开 = CDP 路由/坐标问题；不能开 = React 层问题）
+    if (!menuShown) {
+      rbMenu.diag = await win.webContents.executeJavaScript(`
+        (() => {
+          const el = document.querySelector('.chat-messages .msg')
+          if (!el) return { noMsg: true }
+          const r = el.getBoundingClientRect()
+          const cx = Math.round(r.left + r.width / 2)
+          const cy = Math.round(r.top + r.height / 2)
+          const hit = document.elementFromPoint(cx, cy)
+          el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }))
+          return new Promise((res) =>
+            setTimeout(() => res({
+              rect: { x: cx, y: cy, w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) },
+              hitTag: hit ? hit.tagName + '.' + String(hit.className).slice(0, 40) : null,
+              syntheticOpens: !!document.querySelector('.wb-menu')
+            }), 300)
+          )
+        })()
+      `)
+    }
+    rbMenu = { ok: true, via: 'real-right-click', menuShown, ...(rbMenu.diag ? { diag: rbMenu.diag } : {}) }
   }
   const rbMenuState = await win.webContents.executeJavaScript(`
     (() => {
@@ -5687,6 +5737,55 @@ app.whenReady().then(async () => {
     }))()
   `)
   console.log('RB_UNDONE=' + JSON.stringify({ calls: convUndoCalls.length, ...rbUndone }))
+
+  // —— 会话大纲（plan7 批 D，2026-09-15）：右缘「大纲」入口 → 各轮提问 → 点击定位 ——
+  // 此刻 msgs=4（两轮问答），正是"两轮起才出按钮"的验证时机。判据：
+  // ① 按钮在；② 展开后列表项数 = 用户消息数（2）；③ 点击第 1 项真的往回滚（scrollTop 变小）+
+  // 高亮 class 在（"跳到了哪"要看得见）+ 浮层自动收起；④ Esc 收起（开着时）。
+  const outlineBtn = await win.webContents.executeJavaScript(
+    `(() => {
+      const b = document.querySelector('.chat-outline-btn');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { visible: r.width > 0 && r.height > 0 };
+    })()`
+  )
+  const outlineBefore = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.chat-messages');
+      // msgs 一起输出：按钮不在时先看这里 —— 上游（回滚/撤销链）断了会传导成大纲判据齐挂
+      return {
+        msgs: document.querySelectorAll('.chat-messages .msg').length,
+        scrollTop: box ? Math.round(box.scrollTop) : -1
+      };
+    })()
+  `)
+  await win.webContents.executeJavaScript(`document.querySelector('.chat-outline-btn')?.click()`)
+  await new Promise((r) => setTimeout(r, 300))
+  const outlineOpen = await win.webContents.executeJavaScript(`
+    (() => {
+      const panel = document.querySelector('.chat-outline');
+      return { open: !!panel, items: panel ? panel.querySelectorAll('.chat-outline-item').length : 0 };
+    })()
+  `)
+  await win.webContents.executeJavaScript(`document.querySelector('.chat-outline-item')?.click()`)
+  await new Promise((r) => setTimeout(r, 900))
+  const outlineAfter = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.chat-messages');
+      const firstUser = document.querySelector('.chat-messages .msg-user');
+      return {
+        scrollTop: box ? Math.round(box.scrollTop) : -1,
+        firstUserTop: firstUser ? Math.round(firstUser.getBoundingClientRect().top) : null,
+        panelGone: !document.querySelector('.chat-outline'),
+        highlighted: !!document.querySelector('.msg-jump-hl')
+      };
+    })()
+  `)
+  console.log(
+    'OUTLINE=' +
+      JSON.stringify({ btn: outlineBtn, before: outlineBefore, ...outlineOpen, after: outlineAfter })
+  )
 
   // 确认框文案：会话回滚 vs 文件回滚**必须分得清**（plan10 §六 第 6 条）
   win.webContents.send('confirm:request', {
@@ -6714,6 +6813,18 @@ app.whenReady().then(async () => {
     cfText.text.includes('仅回滚对话消息'), cfText.text.slice(0, 120))
   checkTrue('确认框**不含**文件回滚的措辞（分得清）',
     !/文件已还原|已还原文件|回滚文件/.test(cfText.text), cfText.text.slice(0, 160))
+
+  // —— 会话大纲判据（plan7 批 D）——
+  checkTrue('多轮会话（2 轮起）右缘出「大纲」入口（单轮不摆按钮）',
+    outlineBtn !== null && outlineBtn.visible === true, outlineBtn)
+  checkTrue('点「大纲」→ 浮层展开，列表项数 = 用户消息数（2）',
+    outlineOpen.open === true && outlineOpen.items === 2, outlineOpen)
+  checkTrue('点第 1 项 → 真的往回滚（scrollTop 变小，不是摆设）',
+    outlineAfter.scrollTop >= 0 && outlineBefore.scrollTop >= 0 &&
+      outlineAfter.scrollTop < outlineBefore.scrollTop,
+    { before: outlineBefore.scrollTop, after: outlineAfter.scrollTop })
+  checkTrue('跳转落点带高亮（「跳到了哪」看得见）', outlineAfter.highlighted === true, outlineAfter)
+  checkTrue('点击列表项后浮层自动收起', outlineAfter.panelGone === true)
 
   checkTrue('前置：文件开在预览栏里，且有「编辑」入口', editPre.hasPane === true && editPre.hasModeBtn === true, editPre)
   checkTrue('前置：**还没进编辑态**（不然下面"点了才出现"什么也说明不了）', editPre.hasEditBar === false, editPre)
