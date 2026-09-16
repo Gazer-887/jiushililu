@@ -6728,3 +6728,130 @@ body[data-resizing] {
   font-size: var(--fs-sm);
   color: var(--muted);
 }
+
+/* ── 时间线（plan26 S2 · D-078）────────────────────────────────────────
+   执行事件流回放：工具/审批/裁剪的结构化痕迹。事件只有元数据（D-077 隐私口径），
+   列表项是一行摘要 —— 正文回看走对话流里的工具卡片，不是这里。 */
+
+.tl-root {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  font-size: var(--fs-sm);
+}
+
+.tl-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tl-scope {
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tl-scope-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tl-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.tl-refresh {
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tl-empty {
+  padding: 12px 4px;
+  color: var(--muted);
+  line-height: var(--lh-loose);
+}
+
+.tl-empty-hint {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  opacity: 0.8;
+}
+
+.tl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tl-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+
+.tl-item:hover {
+  background: var(--accent-soft);
+}
+
+.tl-kind {
+  flex-shrink: 0;
+  min-width: 48px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.tl-item.tl-tool_call .tl-kind,
+.tl-item.tl-tool_result .tl-kind {
+  color: var(--accent);
+}
+
+.tl-item.tl-approve .tl-kind {
+  color: var(--danger);
+}
+
+.tl-item.tl-trim .tl-kind {
+  color: #a3671e;
+}
+
+.tl-sub {
+  flex-shrink: 0;
+  padding: 0 4px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.tl-text {
+  flex: 1;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-time {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}

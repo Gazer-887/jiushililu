@@ -1,6 +1,17 @@
 import { join } from 'node:path'
 import { appendJsonlLine, rotateJsonlIfNeeded } from '../store/jsonl'
 import type { FsAdapter } from '../store/conversations-fs'
+import {
+  EXEC_EVENT_KINDS,
+  type AgentScope,
+  type ExecEvent,
+  type ExecEventKind
+} from '@shared/exec-events'
+
+// 跨层共享的**类型与常量**在 `@shared/exec-events`（渲染层/preload 也 import 它）；
+// 本模块只管 main 侧的能力：白名单强制的 recorder + fs 落盘 + 读取。
+export { EXEC_EVENT_KINDS }
+export type { AgentScope, ExecEvent, ExecEventKind }
 
 /**
  * **统一执行事件流**（plan26 D-077）—— 时间线回放的地基。
@@ -19,13 +30,6 @@ import type { FsAdapter } from '../store/conversations-fs'
  * inject 事件 —— exec 流再记 token 就是「同一事实两处存放必然漂移」。
  */
 
-export const EXEC_EVENT_KINDS = ['run_start', 'tool_call', 'tool_result', 'approve', 'trim', 'run_end'] as const
-
-export type ExecEventKind = (typeof EXEC_EVENT_KINDS)[number]
-
-/** 事件归属：主代理 / 子代理（盲审 A P0-2：scheduler 不传 onToolEvent，子代理曾全程不可见） */
-export type AgentScope = 'main' | 'sub'
-
 /**
  * 白名单：每种 kind 允许的 payload 字段。**schema 即白名单** —— 负向断言（判据 2）按
  * key 集合断言，不用正文 grep（转义/截断会击穿）。
@@ -37,15 +41,6 @@ export const EXEC_PAYLOAD_WHITELIST: Record<ExecEventKind, readonly string[]> = 
   approve: ['tool', 'allowed', 'reason'],
   trim: ['droppedCount', 'bytes', 'summarized'],
   run_end: ['rounds', 'durationMs', 'stopReason']
-}
-
-/** 一条执行事件：固定头（at/kind/conversationId/agentScope）+ 白名单内 payload */
-export interface ExecEvent {
-  at: string
-  kind: ExecEventKind
-  conversationId: string
-  agentScope: AgentScope
-  [key: string]: unknown
 }
 
 /** 落盘通道（注入式，单测用内存 sink；主进程用 createFsExecEventSink） */
@@ -151,6 +146,24 @@ export function createFsExecEventSink(
         })
       }
     }
+  }
+}
+
+/**
+ * 查询入参净化（`exec-events:list` 的 handler 用它）——渲染端来的 raw 一律不信任：
+ * 类型不对就丢弃、limit 收敛到 [1, 5000]。纯函数，可单测。
+ */
+export function sanitizeExecEventQuery(raw: unknown): { conversationId?: string; limit?: number } {
+  const q = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const conversationId =
+    typeof q['conversationId'] === 'string' && q['conversationId'].length > 0 ? q['conversationId'] : undefined
+  const limit =
+    typeof q['limit'] === 'number' && Number.isFinite(q['limit'])
+      ? Math.max(1, Math.min(5000, Math.floor(q['limit'])))
+      : undefined
+  return {
+    ...(conversationId ? { conversationId } : {}),
+    ...(limit ? { limit } : {})
   }
 }
 

@@ -133,6 +133,8 @@ const api: ApiBridge = {
   savePlaybook: (input: PlaybookSaveInput) => ipcRenderer.invoke(IPC.playbookSave, input),
   deletePlaybook: (file: string) => ipcRenderer.invoke(IPC.playbookDelete, file),
   onPlaybookChanged: (cb) => subscribe(IPC.playbookChanged, () => cb()),
+  // ── 执行事件流（plan26 D-077）──
+  listExecEvents: (query) => ipcRenderer.invoke(IPC.execEventsList, query),
   // 电脑控制开关（2026-09-15）：当前无对应工具，先落门控（状态进自视段）
   getComputerControl: () => ipcRenderer.invoke(IPC.computerControlGet),
   setComputerControl: (enabled: boolean) => ipcRenderer.invoke(IPC.computerControlSet, enabled),

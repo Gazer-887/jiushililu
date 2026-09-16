@@ -155,7 +155,8 @@ const systemSetSchema = z.object({
 // 网络代理（plan7 批 F2）：schema 与 `networkSetSchema` 同源（放在 @shared 是为了让界面与这里共用一份判据）
 const netProxySetSchema = networkSetSchema
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
-import { createExecEventRecorder, type ExecEventSink } from './agent/exec-events'
+import { createExecEventRecorder, readExecEvents, sanitizeExecEventQuery, type ExecEventSink } from './agent/exec-events'
+import type { ExecEventListResult } from '@shared/exec-events'
 import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
@@ -1276,6 +1277,12 @@ export function registerIpcHandlers(deps: {
   }
 
   ipcMain.handle(IPC.playbookList, (): PlaybookIndex => deps.playbook.list())
+
+  // 执行事件流（plan26 D-077）：时间线回放的数据源 —— 只读 JSONL，倒序 + 会话过滤 + limit。
+  // ⚠️ 事件里只有元数据（白名单在 recorder 侧强制），这里原样交出、不做二次裁剪。
+  ipcMain.handle(IPC.execEventsList, (_e, raw: unknown): ExecEventListResult => {
+    return readExecEvents(deps.userDataDir, nodeFsAdapter, sanitizeExecEventQuery(raw))
+  })
 
   ipcMain.handle(IPC.playbookSave, (_e, raw: unknown): PlaybookSaveResult => {
     const input = friendlyParse(playbookSaveSchema, raw)

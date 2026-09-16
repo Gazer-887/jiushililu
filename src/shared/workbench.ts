@@ -35,7 +35,8 @@ export const BUILTIN_TYPES = [
   'browser',
   'tasks',
   'memory',
-  'playbook'
+  'playbook',
+  'timeline'
 ] as const
 
 export type BuiltinType = (typeof BUILTIN_TYPES)[number]
@@ -48,7 +49,8 @@ export const BUILTIN_LABELS: Record<BuiltinType, string> = {
   browser: '浏览器',
   tasks: '任务管理',
   memory: '记忆',
-  playbook: 'Playbook'
+  playbook: 'Playbook',
+  timeline: '时间线'
 }
 
 export type FileMode = 'preview' | 'edit'

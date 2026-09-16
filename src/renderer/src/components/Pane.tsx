@@ -11,6 +11,7 @@ import PaneChooser from './PaneChooser'
 import ScmPanel from './ScmPanel'
 import TasksPanel from './TasksPanel'
 import TerminalPanel from './TerminalPanel'
+import TimelinePanel from './TimelinePanel'
 
 // 工作台的一栏（plan9 W3）：标题栏 + 栏内页签条 + 内容。
 //
@@ -42,6 +43,10 @@ function builtinBody(type: BuiltinType): JSX.Element {
     case 'playbook':
       // Playbook（plan19 批 3）：会做线 —— 同类任务的经验手册。同样落右抽屉（复用上面的理由）
       return <PlaybookManager />
+    case 'timeline':
+      // 时间线（plan26 S2）：执行事件流回放 —— 工具/审批/裁剪的**结构化痕迹**
+      // （比对话流里的工具卡片多一层：跨轮次、按时间排、可跨会话过滤）
+      return <TimelinePanel />
   }
 }
 

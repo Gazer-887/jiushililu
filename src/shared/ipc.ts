@@ -353,6 +353,9 @@ export const IPC = {
   playbookDelete: 'playbook:delete',
   /** save/delete 后的跨窗广播（同 memory:changed 口径） */
   playbookChanged: 'playbook:changed',
+  // ── 执行事件流（plan26 D-077）──
+  /** 时间线回放：读 `<userData>/exec-events.jsonl`，按会话过滤 + limit，倒序 */
+  execEventsList: 'exec-events:list',
   goalList: 'goal:list',
   goalCreate: 'goal:create',
   goalAction: 'goal:action',
@@ -688,6 +691,9 @@ export interface ApiBridge {
   deletePlaybook(file: string): Promise<boolean>
   /** save/delete 后各窗重读的信号（不搬变更内容） */
   onPlaybookChanged(cb: () => void): () => void
+  // ── 执行事件流（plan26 D-077）──
+  /** 时间线回放数据源：读执行事件（倒序）。不给 conversationId = 全部会话 */
+  listExecEvents(query?: import('./exec-events').ExecEventQuery): Promise<import('./exec-events').ExecEventListResult>
   getPermission(): Promise<PermissionPreset>
   setPermission(preset: PermissionPreset): Promise<PermissionPreset>
   /** 省 token 档位（plan8 R9.1 §七②）：全局一档，与权限档同样"存在主进程、界面只是视图" */

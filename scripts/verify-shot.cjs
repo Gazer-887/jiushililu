@@ -592,6 +592,25 @@ let playbookEntries = [
 const playbookSaveCalls = []
 const playbookDeleteCalls = []
 
+// ── 执行事件流（plan26 S2）的桩状态 ──
+// 契约副本（真源 src/main/agent/exec-events.ts 的 ExecEvent + main/ipc.ts 的 exec-events:list）：
+// 六种 kind 全覆盖 + 一条 sub 作用域 + 一条拒绝审批。时间戳相对现在（相对时间列才渲染得出来）。
+const execEventsBase = Date.now()
+const FAKE_EXEC_EVENTS = [
+  { at: new Date(execEventsBase - 9000).toISOString(), kind: 'run_start', conversationId: 'c1', agentScope: 'main', agentName: '内核默认' },
+  { at: new Date(execEventsBase - 8000).toISOString(), kind: 'tool_call', conversationId: 'c1', agentScope: 'main', tool: 'read_file' },
+  { at: new Date(execEventsBase - 7500).toISOString(), kind: 'tool_result', conversationId: 'c1', agentScope: 'main', tool: 'read_file', ok: true, ms: 120, bytes: 4096 },
+  { at: new Date(execEventsBase - 7000).toISOString(), kind: 'tool_call', conversationId: 'c1', agentScope: 'sub', tool: 'grep' },
+  { at: new Date(execEventsBase - 6500).toISOString(), kind: 'tool_result', conversationId: 'c1', agentScope: 'sub', tool: 'grep', ok: false, ms: 30, bytes: 12 },
+  { at: new Date(execEventsBase - 5000).toISOString(), kind: 'approve', conversationId: 'c1', agentScope: 'main', tool: 'run_command', allowed: false, reason: 'user' },
+  { at: new Date(execEventsBase - 3000).toISOString(), kind: 'trim', conversationId: 'c1', agentScope: 'main', droppedCount: 12, bytes: 65536, summarized: true },
+  { at: new Date(execEventsBase - 1000).toISOString(), kind: 'run_end', conversationId: 'c1', agentScope: 'main', rounds: 3, durationMs: 8800, stopReason: 'completed' },
+  { at: new Date(execEventsBase - 500).toISOString(), kind: 'run_start', conversationId: 'c2', agentScope: 'main', agentName: '内核默认' }
+]
+/** exec-events:list 的最后一次入参 —— 「本会话/全部」切换要断言 query 真的变了（不是只改了本地状态） */
+let lastExecEventsQuery = null
+
+
 /** chat:send 的载荷流水 —— "新会话首条不重复"要断言模型只收到一条 user */
 const chatSendCalls = []
 /** models:set-entry 的调用流水 —— 模型分组下拉「点模型即切」要断言真的发起了切换 */
@@ -817,6 +836,14 @@ const STUBS = {
   },
   // ── 会话切换通知（批 2）── 桩只返回 undefined，不触发副作用
   'conv:switch': () => undefined,
+  // ── 执行事件流（plan26 S2）── 有状态桩：记录查询入参；按 query 过滤（倒序 = 最新在前）
+  'exec-events:list': (query) => {
+    lastExecEventsQuery = query ?? null
+    const filtered = query?.conversationId
+      ? FAKE_EXEC_EVENTS.filter((e) => e.conversationId === query.conversationId)
+      : FAKE_EXEC_EVENTS.slice()
+    return { events: filtered.slice().reverse(), skipped: 0 }
+  },
   // ── Playbook（plan19 批 3）── 有状态桩：save/delete 改状态 + 广播
   'playbook:list': () => ({
     entries: playbookEntries.map((e) => ({ ...e })),
@@ -7764,6 +7791,112 @@ app.whenReady().then(async () => {
       Number.isInteger(capturedInput.evidence.turnIndex),
     capturedInput
   )
+
+  // ── 时间线（plan26 S2 · D-078）：执行事件流回放 —— 页签可达 + 六 kind 渲染 + scope 切换真的走 IPC ──
+  // 判据 4（真渲染门禁）：验的是**布局与渲染**；数据链路（IPC 往返）由本段断言入参+列表变化，
+  // 但桩全部 IPC 的老局限仍在 —— 真数据链路由单测与真机冒烟兜底。
+  const openTimelinePanel = async () => {
+    for (let i = 0; i < 8; i += 1) {
+      const has = await win.webContents.executeJavaScript("(() => !!document.querySelector('.tl-root'))()")
+      if (has) return true
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const add = document.querySelector('.pane-add');
+          if (add) { add.click(); return true; }
+          const toggle = Array.from(document.querySelectorAll('button')).find((b) => (b.title || '').includes('工作台'));
+          if (toggle) { toggle.click(); return true; }
+          return false;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 400))
+      await win.webContents.executeJavaScript(`
+        (() => {
+          const pick = Array.from(document.querySelectorAll('.wb-pick'))
+            .find((b) => (b.textContent || '').includes('时间线'));
+          if (pick) pick.click();
+          return !!pick;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    return false
+  }
+  const readTimelinePanel = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const p = document.querySelector('.tl-root');
+        if (!p) return { hasPanel: false };
+        return {
+          hasPanel: true,
+          count: p.querySelectorAll('.tl-item').length,
+          kinds: Array.from(p.querySelectorAll('.tl-item .tl-kind')).map((n) => n.textContent.trim()),
+          subBadges: p.querySelectorAll('.tl-item .tl-sub').length,
+          texts: Array.from(p.querySelectorAll('.tl-item .tl-text')).map((n) => n.textContent.trim()),
+          countLabel: p.querySelector('.tl-count')?.textContent.trim() ?? null
+        };
+      })()
+    `)
+
+  const tlOpened = await openTimelinePanel()
+  await new Promise((r) => setTimeout(r, 700))
+  const tlFirst = await readTimelinePanel()
+  console.log('TIMELINE=' + JSON.stringify(tlFirst))
+  checkTrue(
+    '时间线页签：从右抽屉打开，且六种事件 kind 全部渲染（空态不算通过）',
+    tlOpened === true &&
+      tlFirst.hasPanel === true &&
+      ['开始', '工具调用', '工具结果', '审批', '裁剪', '结束'].every((k) => tlFirst.kinds.includes(k)),
+    tlFirst
+  )
+  checkTrue(
+    '时间线：子代理事件带「子」徽标（agentScope=sub 在界面上可区分，盲审 A P0-2 的可见性）',
+    tlFirst.hasPanel === true && tlFirst.subBadges >= 2,
+    tlFirst.subBadges
+  )
+  checkTrue(
+    '时间线：摘要行渲染 耗时/大小/审批结论（元数据可读，不渲染正文）',
+    tlFirst.texts.some((t) => t.includes('ms')) &&
+      tlFirst.texts.some((t) => t.includes('KB')) &&
+      tlFirst.texts.some((t) => t.includes('拒绝')),
+    tlFirst.texts
+  )
+  // scope 切换：点「全部」→ 查询不带会话过滤（桩按 query 过滤，列表条数会变）→ 点回「本会话」
+  const tlSwitchToAll = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.tl-root .tl-scope')).find((x) => x.textContent.trim() === '全部');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const tlAll = await readTimelinePanel()
+  checkTrue(
+    '时间线：「全部」切档真的走 IPC（查询不带会话过滤 → 列表多出别的会话的事件）',
+    tlSwitchToAll === true &&
+      lastExecEventsQuery !== null &&
+      !lastExecEventsQuery.conversationId &&
+      tlAll.count === tlFirst.count + 1,
+    { query: lastExecEventsQuery, before: tlFirst.count, after: tlAll.count }
+  )
+  const tlSwitchBack = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.tl-root .tl-scope')).find((x) => x.textContent.trim() === '本会话');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const tlBack = await readTimelinePanel()
+  checkTrue(
+    '时间线：「本会话」切回（查询带 conversationId=c1 → 列表回到本会话集合）',
+    tlSwitchBack === true &&
+      lastExecEventsQuery !== null &&
+      lastExecEventsQuery.conversationId === 'c1' &&
+      tlBack.count === tlFirst.count,
+    { query: lastExecEventsQuery, count: tlBack.count }
+  )
+  const shotTimeline = await win.webContents.capturePage()
+  writeFileSync(join(SHOTS, 'verify-timeline.png'), shotTimeline.toPNG())
 
   // —— 新会话首条不重复（0.13.42 反馈）────────────────────────────────
   // conv:create 桩已按真实主进程行为把 firstMessage 播种成第一条用户消息；
