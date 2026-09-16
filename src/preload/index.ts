@@ -110,6 +110,7 @@ const api: ApiBridge = {
   saveAgent: (input: AgentSaveInput) => ipcRenderer.invoke(IPC.agentsSave, input),
   deleteAgent: (file: string) => ipcRenderer.invoke(IPC.agentsDelete, file),
   onAgentsChanged: (cb) => subscribe(IPC.agentsChanged, () => cb()),
+  onConversationsChanged: (cb) => subscribe(IPC.convChanged, () => cb()),
   // ── 记忆（plan19 批 1）──
   listMemory: () => ipcRenderer.invoke(IPC.memoryList),
   readMemory: (file: string) => ipcRenderer.invoke(IPC.memoryRead, file),

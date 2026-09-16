@@ -234,6 +234,31 @@ function createReflectChat(): ReflectChat {
   }
 }
 
+/**
+ * 建智能标题用的轻调用（plan26 D-080）。与 ReflectChat 同款：**当前激活模型**、非流式、不带工具。
+ * prompt 由 ipc 层组装（messages 原样转发）；模型不可用 → 返回空串（调用方 fail-soft 退机械标题）。
+ */
+function createTitleChat(): (messages: ChatMessage[]) => Promise<string> {
+  return async (messages: ChatMessage[]): Promise<string> => {
+    const settings = getSettingsView()
+    if (!settings.baseURL || !settings.model || !hasApiKey()) return ''
+    const apiKey = getDecryptedApiKey()
+    const provider = createProvider(settings.providerType)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, 30_000))
+    let content = ''
+    try {
+      await provider.streamChat(
+        { settings, apiKey, messages, signal: controller.signal },
+        { onChunk: (text) => { content += text } }
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+    return content
+  }
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1200,
@@ -607,6 +632,8 @@ app.whenReady().then(async () => {
     network,
     // 执行事件流（plan26 D-077）：组合根建的 sink，ipc 层摊到每轮对话的 recorder 上
     execEventSink,
+    // 智能标题（plan26 D-080）：轻调用出口在组合根（它持有模型 Provider）——同 ReflectChat 口径
+    titleChat: createTitleChat(),
     // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
     onFlushDone: () => finishClose?.(),
     // ── 设置独立窗口（2026-09-13）────────────────────────────────

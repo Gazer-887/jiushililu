@@ -22,6 +22,11 @@ export interface TrimOptions {
   thresholdRatio?: number
   /** 最近多少条消息永不裁剪（默认 6） */
   keepRecent?: number
+  /**
+   * 模型生成的摘要文本（plan26 D-080 滚动摘要）：给了就用它替换机械占位。
+   * 不给 = 机械占位（现状行为，零退化）——fail-soft 的兜底路径也走这里。
+   */
+  summaryText?: string
 }
 
 export interface TrimResult {
@@ -31,7 +36,23 @@ export interface TrimResult {
   droppedCount: number
   /** 被裁内容的字节数（plan26 D-080 裁剪可见性：trim 事件留痕用） */
   droppedBytes: number
+  /** 被裁掉的消息原文（plan26 D-080）：**只在内存传递**（喂给摘要调用），
+   *  **绝不进执行事件流**（正文禁区，D-077 白名单口径） */
+  dropped: AgentMessage[]
 }
+
+/**
+ * 滚动摘要的 system prompt（plan26 D-080）——独立常量，单测断言内容（防悄悄改坏）。
+ * 要点：只输出摘要本身（无前后缀/无解释）；保留事实与决定（尤其"已决定/已否决"）；宁短勿编。
+ */
+export const SUMMARY_SYSTEM_PROMPT = [
+  '你是一个对话压缩器。把给定对话压缩成要点摘要，供后续轮次参考。',
+  '要求：',
+  '1. 只输出摘要正文，不要任何前后缀、标题或解释；',
+  '2. 保留：用户的目标与约束、已做出的决定（含作废的方案与原因）、关键事实与数字、未完成事项；',
+  '3. 丢弃：寒暄、重复、已在结论中体现的中间过程；',
+  '4. 宁短勿编：不确定的内容不要写；总长控制在 400 字以内。'
+].join('\n')
 
 /** 保留开头 system 与末尾 keepRecent 条，中段合并为一条摘要占位；不调模型，只做确定性裁剪 */
 export function trimMessages(messages: AgentMessage[], opts: TrimOptions): TrimResult {
@@ -40,7 +61,7 @@ export function trimMessages(messages: AgentMessage[], opts: TrimOptions): TrimR
   const budget = opts.contextWindow * threshold
 
   if (estimateMessagesTokens(messages) <= budget) {
-    return { messages, trimmed: false, droppedCount: 0, droppedBytes: 0 }
+    return { messages, trimmed: false, droppedCount: 0, droppedBytes: 0, dropped: [] }
   }
 
   const head: AgentMessage[] = []
@@ -56,21 +77,27 @@ export function trimMessages(messages: AgentMessage[], opts: TrimOptions): TrimR
   const tail = rest.slice(tailStart)
   const middle = rest.slice(0, tailStart)
 
-  if (middle.length === 0) return { messages, trimmed: false, droppedCount: 0, droppedBytes: 0 }
+  if (middle.length === 0) return { messages, trimmed: false, droppedCount: 0, droppedBytes: 0, dropped: [] }
 
+  // 模型摘要（D-080）优先；不给 = 机械占位（确定性、零模型依赖 —— fail-soft 的兜底就是它）
   const summary: AgentMessage = {
     role: 'user',
-    content: `[历史摘要] 此前的 ${middle.length} 条消息因上下文接近上限已折叠。要点：${middle
-      .filter((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.length > 0)
-      .map((m) => (m.content as string).slice(0, 120))
-      .slice(-3)
-      .join(' / ') || '（无文本要点）'}`
+    content:
+      opts.summaryText && opts.summaryText.trim().length > 0
+        ? `[历史摘要] 此前的 ${middle.length} 条消息因上下文接近上限已折叠。
+${opts.summaryText.trim()}`
+        : `[历史摘要] 此前的 ${middle.length} 条消息因上下文接近上限已折叠。要点：${middle
+            .filter((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.length > 0)
+            .map((m) => (m.content as string).slice(0, 120))
+            .slice(-3)
+            .join(' / ') || '（无文本要点）'}`
   }
 
   return {
     messages: [...head, summary, ...tail],
     trimmed: true,
     droppedCount: middle.length,
-    droppedBytes: middle.reduce((sum, m) => sum + Buffer.byteLength(String(m.content ?? ''), 'utf8'), 0)
+    droppedBytes: middle.reduce((sum, m) => sum + Buffer.byteLength(String(m.content ?? ''), 'utf8'), 0),
+    dropped: middle
   }
 }

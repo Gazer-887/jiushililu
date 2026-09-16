@@ -394,6 +394,11 @@ export const IPC = {
    * **不是真相源**（真相源是渲染端 `activeId`），只是主进程的缓存，可能过时但**关窗时写队列是幂等的**。
    */
   convSwitch: 'conv:switch',
+  /**
+   * 会话列表变更广播（plan26 D-080 智能标题）：主进程**异步改名**（生成完才改）——
+   * 渲染端无从预知，必须有一条推送让它重拉列表（同 agents:changed 的列表级口径，不带会话身份）。
+   */
+  convChanged: 'conv:changed',
   skillsList: 'skills:list',
   mcpList: 'mcp:list',
   mcpSave: 'mcp:save',
@@ -650,6 +655,8 @@ export interface ApiBridge {
   deleteAgent(file: string): Promise<{ ok: true } | { ok: false; reason: string }>
   /** save/delete 后各窗重读的信号（不搬变更内容） */
   onAgentsChanged(cb: () => void): () => void
+  /** 会话列表变更（plan26 D-080 智能标题异步改名后推送，渲染端重拉列表） */
+  onConversationsChanged(cb: () => void): () => void
   // ── 记忆（plan19 批 1）──
   listMemory(): Promise<import('./memory').MemoryIndex>
   readMemory(file: string): Promise<import('./memory').MemoryEntry | null>

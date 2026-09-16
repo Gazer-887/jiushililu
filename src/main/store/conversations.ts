@@ -74,6 +74,11 @@ export function renameConversation(id: string, title: string) {
   return repo().renameConversation(id, title)
 }
 
+/** 原子条件改名（plan26 D-080）：仅当标题仍等于 expected 才更新（防异步竞态冲掉用户改名） */
+export function setConversationTitleIfEquals(id: string, expected: string, next: string) {
+  return repo().setTitleIfEquals(id, expected, next)
+}
+
 export function deleteConversation(id: string) {
   return repo().deleteConversation(id)
 }

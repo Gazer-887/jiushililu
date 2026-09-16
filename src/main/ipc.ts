@@ -205,9 +205,15 @@ import {
   renameConversation,
   rollbackConversation,
   saveConversation,
+  setConversationTitleIfEquals,
   undoRollback
 } from './store/conversations'
-import { normalizeHistory } from './store/conversations-core'
+import {
+  buildTitlePrompt,
+  deriveTitle,
+  normalizeHistory,
+  sanitizeGeneratedTitle
+} from './store/conversations-core'
 
 // 所有来自渲染进程的入参一律过 zod 校验——坏数据挡在主进程门外。schema 定义在 ./schemas（不 import electron，可独立单测）；本文件只做翻译与分发。
 
@@ -310,6 +316,11 @@ export function registerIpcHandlers(deps: {
    * 以 conversationId 绑定（每条会话一份），时间线据此过滤回放。
    */
   execEventSink: ExecEventSink
+  /**
+   * 智能标题的轻调用（plan26 D-080）：组合根装配（它持有模型出口）。同 ReflectChat 口径 ——
+   * 不带工具、不带记忆注入；**不传 = 不启用**（标题保持 deriveTitle 机械推导，零退化）。
+   */
+  titleChat?: (messages: ChatMessage[]) => Promise<string>
   /** 网络代理（plan7 批 F2）：同样是组合根建 —— session 是进程级的、凭据要过 safeStorage，两件都不能在这里 new */
   network: NetworkProxy
   onFlushDone?: () => void
@@ -327,6 +338,52 @@ export function registerIpcHandlers(deps: {
    */
   openSettingsWindow?: () => void
 }): void {
+  /**
+   * 滚动摘要缓存（plan26 D-080）：进程内、会话级、不落盘 —— 重启后首轮裁剪重新摘要（如实登记的取舍）。
+   * 由本层创建并传给 runner（它组装 summarize 闭包）；会话删除时不清（量小，进程退出自然回收）。
+   */
+  const summaryCache = new Map<string, string>()
+
+  /**
+   * 智能标题（plan26 D-080）：首答落盘后（convSave 且 messages 恰为 1 user + 1 assistant）触发一次。
+   * 触发时机选在 **convSave** 而不是对话流收尾 —— 后者跑在渲染端落盘之前，读不到首答。
+   * 四条防线（防乱起名/防冲掉用户改名/防重复烧钱/防拖慢主链路）：
+   *   ① 只在「当前标题 === deriveTitle(首条 user)」时动手（用户改过 = 条件不成立，天然让位）；
+   *   ② 改名前走 setTitleIfEquals 原子条件更新（生成期间用户改名 → 静默放弃）；
+   *   ③ 成功后标题不再是机械候选 → 后续每轮天然不再触发（只跑一次，无需额外状态）；
+   *   ④ fire-and-forget + fail-soft（标题是锦上添花，任何失败都静默）。
+   */
+  const maybeGenerateSmartTitle = (conversationId: string): void => {
+    if (!deps.titleChat) return
+    void (async () => {
+      try {
+        const conv = getConversation(conversationId)
+        if (!conv) return
+        const firstUser = conv.messages.find((m) => m.role === 'user')?.content
+        const firstAssistant = conv.messages.find((m) => m.role === 'assistant')?.content
+        if (!firstUser || !firstAssistant) return
+        const expected = deriveTitle(firstUser)
+        if (conv.title !== expected) return // ① 标题已非机械候选（用户改过 / 已智能生成过）
+        const raw = await deps.titleChat!([
+          { role: 'user', content: buildTitlePrompt(firstUser, firstAssistant) }
+        ])
+        const clean = sanitizeGeneratedTitle(raw)
+        if (!clean || clean === expected) return
+        const updated = setConversationTitleIfEquals(conversationId, expected, clean) // ②
+        if (updated) {
+          log.info('智能标题已生成', { conversationId, title: clean })
+          sendToAll(IPC.convChanged)
+        }
+      } catch (err) {
+        // ④ fail-soft：静默退机械标题
+        log.warn('智能标题生成失败（保留机械标题）', {
+          conversationId,
+          error: err instanceof Error ? err.message : String(err)
+        })
+      }
+    })()
+  }
+
   ipcMain.handle(IPC.settingsOpenWindow, () => {
     deps.openSettingsWindow?.()
   })
@@ -597,6 +654,8 @@ export function registerIpcHandlers(deps: {
           agentScope: 'main',
           onDropped: (kind, keys) => log.warn('执行事件含白名单外字段，已丢弃', { kind, keys })
         }),
+        // 滚动摘要（plan26 D-080）：缓存由本层持有（跨轮），runner 据此组装 summarize 闭包
+        summaryCache,
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
           if (state.runId !== evt.runId) {
@@ -860,7 +919,7 @@ export function registerIpcHandlers(deps: {
     // 批 2：会话正文的 UTF-8 字节数。⚠️ 用 Buffer.byteLength 而非 .length
     //    （审查 B5 P0：中文字符 1 字符 = 3 字节，字符数会让中文会话误判"过反思前置门"）
     const bodyBytes = Buffer.byteLength(JSON.stringify(parsed.data), 'utf8')
-    return saveConversation(input.id, parsed.data as ChatMessage[], {
+    const savedMeta = saveConversation(input.id, parsed.data as ChatMessage[], {
       ...(input.usage
         ? {
             usage: {
@@ -874,6 +933,11 @@ export function registerIpcHandlers(deps: {
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
       bodyBytes
     })
+    // 智能标题（plan26 D-080）：首答刚落盘时触发一次（条件收在 maybeGenerateSmartTitle 内部）
+    if (savedMeta && parsed.data.length === 2 && parsed.data.some((m) => m.role === 'assistant')) {
+      maybeGenerateSmartTitle(input.id)
+    }
+    return savedMeta
   })
 
   ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {

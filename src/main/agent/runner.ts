@@ -45,6 +45,7 @@ import type { CheckpointStore } from '../store/checkpoints'
 import { createCheckpointStore } from '../store/checkpoints'
 import { streamWithToolsOpenAI } from '../providers/openai-agent'
 import { streamWithToolsAnthropic } from '../providers/anthropic-agent'
+import { SUMMARY_SYSTEM_PROMPT } from './context'
 
 // Agent 运行入口（IPC agent:run 的后端）：把加载器、门控、工具、Provider 通道拼成一杆枪。职责单一：不碰 UI、不碰流式对话。
 // ⚠️ 本模块**不得 import 任何 electron 模块**（含 electron-store）：runner 被单测直接 import，而 CI 的 Linux 无 Electron 二进制，一旦引入即 `Electron failed to install correctly`（踩过）。
@@ -303,6 +304,12 @@ export interface RunAgentArgs {
    * runner 不建 recorder，只向 loop/scheduler 透传。不传 = 不记录。
    */
   execEvents?: ExecEventRecorder
+  /**
+   * 滚动摘要缓存（plan26 D-080）：`Map<conversationId, 摘要文本>`，由组合根创建、跨轮持有。
+   * 给了才启用滚动摘要（裁剪时调模型）；**不给 = 机械占位**（现状行为，零退化）。
+   * 进程内会话级缓存（不落盘）——重启后首轮裁剪重新摘要，如实登记的取舍（D-080）。
+   */
+  summaryCache?: Map<string, string>
   onTodos?: (todos: TodoItem[]) => void
   /** 目标创建口（plan12 ⑤）：组合根实现——调 goal store + 推送界面；不传 = 不下发 set_goal 工具 */
   onSetGoal?: (input: { text: string; doneWhen?: string }) => import('@shared/goal').Goal
@@ -598,6 +605,39 @@ export async function runAgent(
     return res
   }
 
+  // ── 滚动摘要（plan26 D-080）：裁剪发生时对被裁段 + 旧摘要调一次模型 ──
+  // 空工具表 = 纯对话请求；结果写回缓存（下次裁剪复用，不必重新摘要全史）。
+  // ⚠️ 用量计入 usageAcc（D-080）：摘要确实花了钱，账单数字应与厂商对得上 —— 用户能看到的
+  //    「本轮用量」里包含它；归因说明见台账。
+  const summarize = async (dropped: AgentMessage[]): Promise<string | null> => {
+    const prior = args.summaryCache?.get(args.conversationId) ?? null
+    const transcript = dropped
+      .map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : ''}`)
+      .join('\n')
+      .slice(0, 8000) // 摘要输入预算（8k 字符 ≈ 2k token 上限；超了截断——摘要宁短勿爆）
+    const summarizeMessages: AgentMessage[] = [
+      { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `${prior ? `【已有摘要】\n${prior}\n\n` : ''}【新增被折叠的对话】\n${transcript}`
+      }
+    ]
+    try {
+      const signal = AbortSignal.timeout(30_000) // 摘要不拖主链路：30s 兜底
+      const res =
+        effective.providerType === 'anthropic'
+          ? await streamWithToolsAnthropic(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
+          : await streamWithToolsOpenAI(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
+      if (res.usage) usageAcc = addUsage(usageAcc ?? emptyUsage(), res.usage)
+      const text = (res.text ?? '').trim()
+      if (!text) return null
+      args.summaryCache?.set(args.conversationId, text)
+      return text
+    } catch {
+      return null // fail-soft 内聚：回调自己兜底；loop 侧还有一层 catch（防注入回调不守约）
+    }
+  }
+
   let result: AgentLoopResult
   try {
     result = await runAgentLoop({
@@ -613,7 +653,9 @@ export async function runAgent(
       ...(args.toolWindow === undefined ? {} : { toolWindow: args.toolWindow }),
       ...(args.policy ? { policy: args.policy } : {}),
       // plan26 D-077：执行事件流（组合根装配 recorder，不传 = 不记录）
-      ...(args.execEvents ? { execEvents: args.execEvents } : {})
+      ...(args.execEvents ? { execEvents: args.execEvents } : {}),
+      // plan26 D-080：滚动摘要 —— 只在组合根给了缓存时启用（没缓存 = 机械占位，零退化）
+      ...(args.summaryCache ? { summarize } : {})
     })
   } finally {
     // 无论正常结束、抛异常还是被中止都要收尾 —— 否则 manifest 停在 running，界面把完成的轮次显示成"中断"（即便没收尾，快照也已增量落盘、仍可回滚）。

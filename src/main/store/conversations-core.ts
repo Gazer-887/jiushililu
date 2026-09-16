@@ -64,6 +64,12 @@ export interface ConversationsRepo {
     }
   ): ConversationMeta | null
   renameConversation(id: string, title: string): ConversationMeta | null
+  /**
+   * **原子条件改名**（plan26 D-080 智能标题）：仅当当前 title 仍等于 `expected` 时才更新。
+   * 智能标题生成是**异步**的（调模型期间用户可能已手动改名）——无条件覆盖会把用户的改名冲掉，
+   * 这就是那次竞态的防波堤。返回 null = 条件不成立（标题已被改过）或会话不存在。
+   */
+  setTitleIfEquals(id: string, expected: string, next: string): ConversationMeta | null
   deleteConversation(id: string): void
   /** **回到第 `toIndex` 条消息之前**（B 批 ④ 会话回滚） */
   rollbackConversation(id: string, toIndex: number): RollbackOutcome | null
@@ -114,6 +120,41 @@ export function deriveTitle(firstMessage: string | undefined | null): string {
     .trim()
   const text = cleaned.length > 0 ? cleaned : '新对话'
   return text.length > 24 ? `${text.slice(0, 24)}…` : text
+}
+
+// ── 智能标题（plan26 D-080）：prompt 组装与清洗是**纯函数**，放这里让单测盯住 ──
+
+/** 智能标题的输入上限（首条 user / 首答各截这么多字符——标题只需知道"在聊什么"） */
+const TITLE_INPUT_MAX = 300
+
+/** 组装标题生成的用户消息（配合 IPC 层的 titleChat 轻调用使用） */
+export function buildTitlePrompt(firstUser: string, firstAssistant: string): string {
+  const u = (firstUser ?? '').trim().slice(0, TITLE_INPUT_MAX)
+  const a = (firstAssistant ?? '').trim().slice(0, TITLE_INPUT_MAX)
+  return [
+    '根据以下对话开头，起一个能概括主题的短标题。',
+    '要求：不超过 12 个字；只输出标题本身，不要引号、前缀、标点结尾或解释。',
+    '',
+    `【用户】${u}`,
+    `【助手】${a}`
+  ].join('\n')
+}
+
+/**
+ * 清洗模型产出的标题：去引号/前缀/换行、截断；清洗后为空 = 无效（调用方退 deriveTitle 的既有标题）。
+ * ⚠️ 只做清洗不做"创作"——加词、补全一律不做（宁可保留机械标题，不许编一个）。
+ */
+export function sanitizeGeneratedTitle(raw: string | undefined | null): string | null {
+  let t = (raw ?? '').trim()
+  if (!t) return null
+  t = t.split(/\r?\n/)[0]!.trim() // 只要第一行（模型偶尔带解释行）
+  // 常见前缀/包裹：标题：xxx / 【xxx】 / 《xxx》/"xxx" / xxx。
+  t = t.replace(/^(标题|题目|title)\s*[:：]\s*/i, '')
+  t = t.replace(/^[【《"'「']+/, '').replace(/[】》"'」'。！？!?]+$/, '')
+  t = t.trim()
+  if (!t) return null
+  if (t.length > 24) t = `${t.slice(0, 24)}…`
+  return t
 }
 
 /** 工作区展示名：取路径末段（侧边栏一行放得下），完整路径留给悬停提示 */
@@ -276,6 +317,18 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       const next: ConversationMeta = { ...current, title: clean, updatedAt: Date.now() }
       backend.putMeta(id, next)
       return next
+    },
+
+    setTitleIfEquals(id, expected, next) {
+      const current = backend.readMeta()[id]
+      if (!current) return null
+      // 条件不成立 = 期间有人改过（用户手改 / 另一条智能标题先到）——静默让位，不覆盖
+      if (current.title !== expected) return null
+      const clean = next.trim().slice(0, 60)
+      if (clean.length === 0) return null
+      const updated: ConversationMeta = { ...current, title: clean, updatedAt: Date.now() }
+      backend.putMeta(id, updated)
+      return updated
     },
 
     deleteConversation(id) {

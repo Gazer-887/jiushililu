@@ -49,6 +49,14 @@ export interface AgentLoopOptions {
    */
   execEvents?: ExecEventRecorder
   /**
+   * 滚动摘要（plan26 D-080）：裁剪发生时，对被裁段 + 旧摘要调一次模型。
+   * **由 runner 装配**（它持有模型通道与用量账）；不传 = 机械占位（现状行为）。
+   * fail-soft 是**调用方**的职责（本循环只认 Promise 结果，null = 没摘要出来）。
+   * prior（旧摘要）由回调内部从缓存读 —— 本循环不持有缓存。
+   * ⚠️ 摘要文本会进消息流（替换占位），但**不进执行事件流**（D-077 正文禁区）。
+   */
+  summarize?: (dropped: AgentMessage[]) => Promise<string | null>
+  /**
    * 工具输出被窗口化时回调（plan8 R9.1）。压缩**不许静默**：界面那条痕是内存态、
    * 会随重挂载丢，所以还得有一条能事后追的（主进程日志由调用方接上）。
    */
@@ -126,20 +134,36 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     const trimOpts: TrimOptions | null = opts.contextWindow ? { contextWindow: opts.contextWindow } : null
     let sent = messages
     if (trimOpts) {
-      const trim = trimMessages(messages, trimOpts)
-      sent = trim.messages
+      let trim = trimMessages(messages, trimOpts)
       /**
        * ⚠️ **前缀稳定的已知破坏点**（plan8 R9.1 §七④）：折叠会在**中间**插一条「[历史摘要]」，
        * 而前缀缓存要求"开头一模一样" —— 从摘要往后**缓存全部失效**（本轮输入 token 明显偏高）。
        * 这是**值得的代价**（不折叠就撞上下文上限、整轮作废），但必须是**知情的代价**，故在此留痕。
-       * plan26 D-080：log 升级为结构化 trim 事件（裁了什么从此可回放，清偿 plan8:550 可见性欠账）。
+       * plan26 D-080：滚动摘要 —— 裁剪发生时对被裁段调一次模型（fail-soft：失败退机械占位）。
        */
+      let summarized = false
+      if (trim.trimmed && opts.summarize) {
+        try {
+          const text = await opts.summarize(trim.dropped)
+          if (text && text.trim().length > 0) {
+            // 用模型摘要重新裁剪（同一份逻辑，只换摘要文本）——确定性仍然由 trimMessages 保证
+            trim = trimMessages(messages, { ...trimOpts, summaryText: text })
+            summarized = true
+          }
+        } catch (err) {
+          // 摘要失败不阻塞主链路（fail-soft）—— 机械占位就是兜底
+          log.warn('滚动摘要生成失败，本轮退回机械占位', {
+            error: err instanceof Error ? err.message : String(err)
+          })
+        }
+      }
+      sent = trim.messages
       if (trim.trimmed) {
         log.info('历史已折叠：前缀缓存将从摘要处失效', { 折叠条数: trim.droppedCount, 轮次: rounds })
         opts.execEvents?.record('trim', {
           droppedCount: trim.droppedCount,
-          bytes: trim.droppedBytes ?? 0,
-          summarized: false
+          bytes: trim.droppedBytes,
+          summarized
         })
       }
     }

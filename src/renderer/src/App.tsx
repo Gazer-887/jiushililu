@@ -75,6 +75,8 @@ function useStreamSubscriptions(): void {
     void s().refreshMemory()
     // Playbook（plan19 批 3）：同上口径 —— 变了就重读，不搬变更内容
     const offPlaybook = window.api.onPlaybookChanged(() => void s().refreshPlaybook())
+    // 会话列表变更（plan26 D-080 智能标题：主进程异步改名后推送）——重拉列表让侧栏标题跟着变
+    const offConv = window.api.onConversationsChanged(() => void s().loadConversations())
     void s().refreshPlaybook()
 
     return () => {
@@ -84,6 +86,7 @@ function useStreamSubscriptions(): void {
       offMemory()
       offMemoryNotice()
       offPlaybook()
+      offConv()
       offTool()
       offTodos()
       offGoal()
