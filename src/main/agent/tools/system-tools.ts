@@ -262,7 +262,9 @@ function buildSystemTools(
                 resolvePromise(
                   `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
                     `以下是终止前收到的前 ${mb}MB：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
-                    `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）`
+                    `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）\n` +
+                    // plan31 D-095：机器可判尾标 —— 模型不必从自然语言里猜成败（规格 §3.2 输出契约）
+                    `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`
                 )
                 return
               }
@@ -280,14 +282,23 @@ function buildSystemTools(
                 resolvePromise(
                   `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
                     `已收到的部分输出：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
-                    `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）`
+                    `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）\n` +
+                    `exit_code=null error_class=timeout elapsed_ms=${elapsed}`
                 )
                 return
               }
-              resolvePromise(`命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}`)
+              // plan31 D-095：退出码只在数字时给出（被信号杀掉的场景 code 是字符串如 'SIGTERM'，如实给 null）
+              const exitCode = typeof error.code === 'number' ? error.code : null
+              resolvePromise(
+                `命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}\n` +
+                  `exit_code=${exitCode ?? 'null'} error_class=error elapsed_ms=${elapsed}`
+              )
               return
             }
-            resolvePromise(`[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}`)
+            resolvePromise(
+              `[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
+                `exit_code=0 error_class=ok elapsed_ms=${elapsed}`
+            )
           }
         )
       })
