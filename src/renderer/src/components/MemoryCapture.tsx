@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass } from '@shared/memory'
+import { MODEL_MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass } from '@shared/memory'
 
 // 通路 B「选中即记」（plan19 §九 批 1）—— **唯一不经过模型的写入通路**。
 // 三样价值：① 结构上安全（没有模型参与，提示注入够不着它）② 证据质量最高（用户选中的就是原话）
@@ -75,7 +75,8 @@ export default function MemoryCapture(props: MemoryCaptureProps): JSX.Element {
       <label className="mem-field">
         <span>分类</span>
         <select value={cls} onChange={(e) => setCls(e.target.value as MemoryClass)}>
-          {MEMORY_CLASSES.map((c) => (
+          {/* plan25 D-073：通路 B 不提供画像选项 —— 画像由反思候选或记忆页手动维护产生 */}
+          {MODEL_MEMORY_CLASSES.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>

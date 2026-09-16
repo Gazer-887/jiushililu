@@ -6,6 +6,8 @@ import {
   MEMORY_CLASSES,
   MEMORY_CLASS_POLICY,
   MEMORY_LIMITS,
+  MODEL_MEMORY_CLASSES,
+  PROFILE_NAME,
   findCredentialShape,
   guardMemoryText,
   memoryNameKey,
@@ -17,12 +19,20 @@ import { parseMemoryImport } from '@shared/memory-import'
 
 const ok = { name: 'prefers-tables', description: '回答偏好用表格', body: '正文。' }
 
-describe('影响面三分类与注入策略', () => {
-  it('三类，且 style 总是注入、另两类条件注入', () => {
-    expect([...MEMORY_CLASSES]).toEqual(['style', 'default', 'knowledge'])
+describe('影响面分类与注入策略（plan25 D-071 扩画像）', () => {
+  it('四类：三影响面 + 画像；style 与 profile 总是注入，另两类条件注入', () => {
+    expect([...MEMORY_CLASSES]).toEqual(['style', 'default', 'knowledge', 'profile'])
     expect(MEMORY_CLASS_POLICY.style).toBe('always')
+    expect(MEMORY_CLASS_POLICY.profile).toBe('always')
     expect(MEMORY_CLASS_POLICY.default).toBe('conditional')
     expect(MEMORY_CLASS_POLICY.knowledge).toBe('conditional')
+  })
+  it('模型可见分类不含 profile（D-073：画像只能由反思或用户手动产生）', () => {
+    expect([...MODEL_MEMORY_CLASSES]).toEqual(['style', 'default', 'knowledge'])
+    expect(MODEL_MEMORY_CLASSES).not.toContain('profile')
+  })
+  it('画像条目固定 name', () => {
+    expect(PROFILE_NAME).toBe('user-profile')
   })
 })
 

@@ -50,7 +50,13 @@ function pickField(block: string, key: string): string | null {
 
 function toClass(raw: string | null): { cls?: MemoryClass; error?: string } {
   if (!raw) return { error: '缺「分类」' }
-  const cls = CLASS_ALIASES[raw.trim().toLowerCase()] ?? CLASS_ALIASES[raw.trim()]
+  // plan25 判据 14：画像不支持导入 —— 画像是本机自动维护的单一档案（全库最多一条、原地覆盖），
+  // 从外部批量导入「画像条目」会与它冲突；给**专门文案**指路，不是笼统的"无法识别"。
+  const norm = raw.trim().toLowerCase()
+  if (norm === '画像' || norm === 'profile' || norm === '用户画像') {
+    return { error: '画像不支持导入：画像是本机自动维护的档案（每次反思整体覆盖），请在记忆页直接编辑它' }
+  }
+  const cls = CLASS_ALIASES[norm] ?? CLASS_ALIASES[raw.trim()]
   return cls ? { cls } : { error: `「分类」无法识别：${raw}` }
 }
 

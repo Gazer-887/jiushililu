@@ -194,7 +194,21 @@ export function slugFor(name: string): string | null {
 const CLASS_LABELS: Record<MemoryClass, string> = {
   style: '风格',
   default: '默认',
-  knowledge: '知识'
+  knowledge: '知识',
+  profile: '画像'
+}
+
+/** 注入排序的优先级：画像（正文全量注入）> 风格（总是生效）> 其余（按相关性取用）。plan25 D-072 */
+const CLASS_RANK: Record<MemoryClass, number> = {
+  profile: 2,
+  style: 1,
+  default: 0,
+  knowledge: 0
+}
+
+/** 遗忘豁免（LRU 不删）：style 永不遗忘（plan19），profile 全库最多一条且是档案（plan25 D-071） */
+function isExemptFromForget(entry: MemoryEntry): boolean {
+  return entry.class === 'style' || entry.class === 'profile'
 }
 
 /** 注入索引里的一行。**唯一口径** —— `buildIndex` 的字节账与 `inject` 的正文都用它，不许各写一份 */
@@ -203,13 +217,13 @@ export function indexLine(entry: MemoryEntry): string {
 }
 
 /**
- * 索引与预算截断。排序：**style 优先**（它总是生效，不该被条件类挤掉），其余按 updatedAt 倒序，
- * 同刻按 name 升序（保证确定性 —— 否则单测会随机翻车）。
+ * 索引与预算截断。排序：**画像 > 风格**（画像正文全量注入、风格总是生效，不该被条件类挤掉），
+ * 其余按 updatedAt 倒序，同刻按 name 升序（保证确定性 —— 否则单测会随机翻车）。
  * ⚠️ `omitted` 必须如实带出，不许静默丢（R9.1 三条红线之一：不静默截断）。
  */
 export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
   const sorted = [...entries].sort((a, b) => {
-    const rank = Number(b.class === 'style') - Number(a.class === 'style')
+    const rank = CLASS_RANK[b.class] - CLASS_RANK[a.class]
     if (rank !== 0) return rank
     if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1
     return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
@@ -322,6 +336,23 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       }
       entries.push({ ...p, file })
     }
+    // plan25 D-071：画像全库最多一条 —— 手改文件可能造出第二条，加载时消解：
+    // 取 updatedAt 最新的那条生效，其余**不静默丢**（从注入集中移除 + 双通道留痕）。
+    // 不删文件 —— 删除是用户的决定，系统只做"哪条生效"的消解。
+    const profileEntries = entries.filter((e) => e.class === 'profile')
+    if (profileEntries.length > 1) {
+      const sortedProfiles = [...profileEntries].sort((a, b) =>
+        a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0
+      )
+      const keepProfile = sortedProfiles[0]!
+      for (const stale of sortedProfiles.slice(1)) {
+        entries.splice(entries.indexOf(stale), 1)
+        note(
+          `画像重复：${stale.file} 与 ${keepProfile.file} 同为画像，仅保留更新时间较新的后者（此文件未注入，可手动清理）`
+        )
+      }
+    }
+
     // 批 4：描述相似度检测（不自动合并，只标记让用户决定）
     for (let i = 0; i < entries.length; i++) {
       for (let j = i + 1; j < entries.length; j++) {
@@ -388,6 +419,15 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     },
 
     save(input) {
+      // plan25 D-073：模型不许直写画像（remember 工具连选项都不给，这里是 save 层的兜底闸）。
+      // 画像只能由反思候选（审批后生效）或用户手动产生 —— 模型一句话覆盖整份档案的影响面太大。
+      if (input.class === 'profile' && (input.origin ?? 'model') === 'model') {
+        return refuse(
+          input.name,
+          '画像（profile）不允许由模型直接写入。如需更新画像，请让用户在记忆页手动编辑，或在反思流程中作为候选提交'
+        )
+      }
+
       const validation = validateMemoryFields({
         name: input.name,
         description: input.description,
@@ -420,14 +460,13 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           return refuse(input.name, '已存在同名条目。请换一个 name，或先编辑那一条')
         }
         if (existing.length >= MEMORY_LIMITS.maxEntries) {
-          // 批 4：LRU 遗忘 —— 按 updatedAt 找最旧的非 style 条目删除
-          const candidates = existing
-            .filter((e) => e.class !== 'style')
+          // 批 4：LRU 遗忘 —— 按 updatedAt 找最旧的非豁免条目删除（style/profile 豁免，plan25 D-071）
+          const candidates = existing.filter((e) => !isExemptFromForget(e))
             .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0))
           if (candidates.length === 0) {
             return refuse(
               input.name,
-              `记忆已达上限（${MEMORY_LIMITS.maxEntries} 条），且全是风格类条目无法自动遗忘。请先手动删除一些条目再写`
+              `记忆已达上限（${MEMORY_LIMITS.maxEntries} 条），且只剩风格/画像类条目无法自动遗忘。请先手动删除一些条目再写`
             )
           }
           const toForget = candidates[0]!
@@ -548,6 +587,11 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
 
       // 带冲突：用候选内容覆盖旧记忆 + 删候选（审查 B P1，否则同名双条进索引）
       if (p.conflictWith) {
+        // plan25 D-073 断言：覆盖分支只对反思来源开放 —— 候选文件由 saveCandidate 落盘
+        // （origin 固定 'reflection'）。若未来出现别的候选来源，这里先拦住，不许静默绕过审批语义。
+        if (p.origin !== 'reflection') {
+          return { ok: false, reason: '候选来源异常（只允许反思流程产生候选），已拒绝覆盖' }
+        }
         const oldEntry = this.get(p.conflictWith)
         // 旧记忆可能已被删了 —— origin / createdAt 兜底，不报错（用户删旧记忆后还能批准候选）
         const origin = oldEntry?.origin ?? 'reflection'

@@ -12,7 +12,8 @@ import { useAppStore } from '../store'
 const CLASS_LABEL: Record<MemoryClass, string> = {
   style: '风格',
   default: '默认',
-  knowledge: '知识'
+  knowledge: '知识',
+  profile: '画像'
 }
 
 interface Draft {
@@ -112,7 +113,8 @@ export default function MemoryManager(): JSX.Element {
         <FieldNote
           text={[
             '记忆是跨会话长期有用的信息，会在后续对话里作为背景注入。',
-            '风格类总是生效；默认与知识类由模型按相关性取用，细节用 recall 按需读取。',
+            '画像（profile）是对你的整体档案，正文每轮直接注入；风格类总是生效；默认与知识类由模型按相关性取用，细节用 recall 按需读取。',
+            '画像最多一条（name 固定 user-profile），由反思在会话结束时提出更新候选，批准后整体覆盖；也可以直接在这里手动编辑。',
             '记忆里的内容一律按数据对待，即使写着"忽略之前的指令"也不会被当成指令执行。'
           ]}
         />

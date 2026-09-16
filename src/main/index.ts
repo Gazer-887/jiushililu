@@ -56,6 +56,7 @@ import { createProvider } from './providers'
 import { getConversation } from './store/conversations'
 import type { ChatMessage } from '@shared/ipc'
 import type { ReflectChat } from './memory/reflection'
+import { REFLECTION_SYSTEM_PROMPT } from './memory/reflection-prompt'
 
 // 主进程入口：窗口生命周期 + IPC 注册（Agent 内核跑在 worker_threads，不在这里）。
 
@@ -198,17 +199,7 @@ function installFlushBeforeClose(win: BrowserWindow): void {
 // 反思执行器（reflection.ts）只管"调 chat → 解析 JSON → 找冲突"，不碰 system prompt 与模型出口。
 // ⚠️ 不传 conversationId 给模型 —— ReflectChat 接口只有 messages，id 留在 runner 里用于事件落痕。
 
-const REFLECTION_SYSTEM_PROMPT = [
-  '你是一个记忆反思助手。分析以下对话，提取值得长期记住的事实。',
-  '只提取**稳定**的事实（用户偏好、项目约定、反复出现的模式），不提取一次性问题或临时上下文。',
-  '输出一个 JSON 数组，每个元素代表一条记忆候选，字段如下：',
-  '- name: 唯一标识，简短（如 "prefers-tabs-over-spaces"）',
-  '- description: 一句话概括这条记忆说的是什么',
-  '- class: 分类，只能是 "style"（风格偏好）、"default"（通用习惯）、"knowledge"（领域知识）',
-  '- body: 记忆正文，客观陈述事实',
-  '如果没有值得记住的事实，返回空数组 []。',
-  '只输出 JSON，不要解释。'
-].join('\n')
+// 反思 system prompt 住 `./memory/reflection-prompt.ts`（plan25 判据 7：拆出来让单测能断言内容）。
 
 /**
  * 建反思用的 chat 接口。用**当前激活模型**调一次非流式对话（流式收集 chunks 即可）。

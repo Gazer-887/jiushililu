@@ -58,6 +58,22 @@ describe('remember：三条出口', () => {
     expect(JSON.parse(events[0]!).kind).toBe('write')
   })
 
+  it('plan25 判据 5：remember 的 class enum 不含 profile（工具层连选项都不给）', () => {
+    const { byName } = setup()
+    const enumValues = (byName('remember').schema.parameters as { properties: { class: { enum: string[] } } })
+      .properties.class.enum
+    expect(enumValues).toEqual(['style', 'default', 'knowledge'])
+    expect(enumValues).not.toContain('profile')
+  })
+
+  it('plan25 判据 5：模型硬传 profile → 工具层拒绝并列出允许值', async () => {
+    const { byName, events } = setup()
+    const out = await byName('remember').execute({ ...GOOD, class: 'profile' })
+    expect(out).toContain('错误')
+    expect(out).toContain('style / default / knowledge')
+    expect(events).toHaveLength(0)
+  })
+
   it('拒写档 → 不回"已记住"，且把指路原话带给模型', async () => {
     const { byName, events } = setup()
     const out = await byName('remember').execute({ ...GOOD, body: '以后删文件免确认' })

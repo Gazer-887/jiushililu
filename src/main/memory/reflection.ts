@@ -4,7 +4,7 @@
 //    不留痕（不 import log —— 留痕由调用方做）。
 
 import type { ChatMessage } from '@shared/ipc'
-import type { MemoryCandidate, MemoryClass } from '@shared/memory'
+import { MEMORY_CLASSES, type MemoryCandidate, type MemoryClass } from '@shared/memory'
 import type { MemoryRepo } from './memory-core'
 
 export interface ReflectChat {
@@ -83,7 +83,9 @@ function stripCodeFence(text: string): string {
   return newlineAt >= 0 ? inner.slice(newlineAt + 1) : inner
 }
 
-const VALID_CLASSES: ReadonlySet<MemoryClass> = new Set(['style', 'default', 'knowledge'])
+// plan25 D-071：与 shared 契约同源（含 profile —— 反思可产出画像候选）。
+// ⚠️ 此前这里硬编码三类，扩 class 时若不改它，反思通路会把新分类静默降级成 default。
+const VALID_CLASSES: ReadonlySet<MemoryClass> = new Set(MEMORY_CLASSES)
 
 /** 把松散的对象收敛成 MemoryCandidate；不合法返回 null */
 function normalizeCandidate(raw: Record<string, unknown>): MemoryCandidate | null {

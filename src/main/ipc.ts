@@ -1056,7 +1056,9 @@ export function registerIpcHandlers(deps: {
   const memorySaveSchema = z.object({
     name: z.string().min(1).max(200),
     description: z.string().min(1).max(500),
-    class: z.enum(['style', 'default', 'knowledge']),
+    // plan25 D-071：class 含 profile —— 用户手动编辑/新建画像走这条 IPC（UI 下拉不给新建画像的
+    // 入口，但编辑既有画像条目时分类要能保留）；模型直写 profile 由 save 层拒绝（D-073）。
+    class: z.enum(['style', 'default', 'knowledge', 'profile']),
     body: z.string().min(1).max(100_000),
     origin: z.enum(['model', 'user', 'reflection']).optional(),
     evidence: z

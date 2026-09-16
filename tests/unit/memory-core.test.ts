@@ -154,6 +154,16 @@ describe('索引与预算截断（omitted 必须如实）', () => {
     expect(idx.entries.map((e) => e.name)).toEqual(['s1', 'k2', 'k1'])
   })
 
+  it('画像最前（先于 style）——plan25 判据 2', () => {
+    const idx = buildIndex([
+      entry('s1', 'style', '2026-09-15T00:00:03.000Z'),
+      entry('p1', 'profile', '2026-09-15T00:00:01.000Z'),
+      entry('k1', 'knowledge', '2026-09-15T00:00:02.000Z')
+    ])
+    // 画像更新时间最旧也排最前：正文全量注入的档案不该被条件类挤掉
+    expect(idx.entries.map((e) => e.name)).toEqual(['p1', 's1', 'k1'])
+  })
+
   it('行数超限即截断，omitted 如实带出', () => {
     const many = Array.from({ length: MEMORY_LIMITS.maxIndexLines + 5 }, (_, i) =>
       entry(`n${String(i).padStart(3, '0')}`, 'default')
@@ -439,12 +449,12 @@ describe('LRU 遗忘（批 4 判据 1/2）', () => {
     expect(repo.get(`${ROOT}/m1.md`)).toBeNull()
   })
 
-  it('判据 2：100 条全是 style → 拒写 + 理由含"全是风格类"', () => {
+  it('判据 2：100 条全是 style → 拒写 + 理由说明无法自动遗忘（plan25 文案扩为风格/画像）', () => {
     const seed = seedFull(100, 'style')
     const repo = makeRepo(seed)
     const r = repo.save({ ...valid, name: 'new-entry', description: 'd' })
     expect(r.ok).toBe(false)
-    expect(r.ok === false && r.reason).toContain('风格类')
+    expect(r.ok === false && r.reason).toContain('风格/画像类')
   })
 
   it('遗忘落 delete 事件 + by: system', () => {

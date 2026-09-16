@@ -3,16 +3,29 @@
 // ⚠️ 不 import electron —— 渲染进程要引用它；architecture.test.ts 的守卫甲会沿 import 图抓。
 // ⚠️ 判定结果只当"快速通道"，不是防线：可被同义改写绕过。真正的兜底是巡检区 + 架构守卫。
 
-/** 影响面三分类：决定注入策略与是否需要证据（plan19 §4.2） */
-export const MEMORY_CLASSES = ['style', 'default', 'knowledge'] as const
+/** 影响面三分类 + 画像（plan25 D-071）：决定注入策略与是否需要证据。
+ * ⚠️ `profile` 是 LangMem「形态轴」（profile vs collection）折进本字段的**有意取舍**（plan25 §D-071）：
+ * 画像 = 单一档案、原地更新、正文直接注入；其余三类 = 多条演进、追加修正、正文走 recall。 */
+export const MEMORY_CLASSES = ['style', 'default', 'knowledge', 'profile'] as const
 export type MemoryClass = (typeof MEMORY_CLASSES)[number]
 
-/** 注入策略。语义记忆是无条件上下文，故 style 总是注入，另两类按相关性 */
+/** 注入策略。style 与 profile 总是注入（画像正文全量进注入段，plan25 D-072），另两类按相关性 */
 export const MEMORY_CLASS_POLICY: Record<MemoryClass, 'always' | 'conditional'> = {
   style: 'always',
+  profile: 'always',
   default: 'conditional',
   knowledge: 'conditional'
 }
+
+/** 画像条目的固定 name（全库最多一条；slug 同名）。plan25 D-071 */
+export const PROFILE_NAME = 'user-profile'
+
+/**
+ * 模型可见的分类集合：remember 工具 enum 与错误文案用（plan25 D-073）。
+ * ⚠️ **不含 profile** —— 画像改错的影响面是整份档案，模型直写在 save 层被拒，
+ * 工具层连选项都不给（双保险）；画像只能由反思（候选审批）或用户手动产生。
+ */
+export const MODEL_MEMORY_CLASSES = ['style', 'default', 'knowledge'] as const
 
 /** 谁写的。`reflection` 由批 2 的反思产出，批 1 不会出现，形状先留好 */
 export const MEMORY_ORIGINS = ['model', 'user', 'reflection'] as const

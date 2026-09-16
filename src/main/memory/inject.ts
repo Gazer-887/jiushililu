@@ -13,12 +13,23 @@ const DATA_BOUNDARY =
  * 组装注入段。`null` = **一条都没有，整段不出现**（不许注入一个空的 `<memory>` 壳子 ——
  * 那既白花 token，又让模型以为"记忆是空的"这件事本身有意义）。
  * ⚠️ 返回里**不含** `warnings`：那是给界面看的，进 prompt 只会变成噪音。
+ *
+ * plan25 D-072：画像条目（`class='profile'`，全库最多一条）**正文全量置顶注入**，不再出一行索引
+ * （一行摘要的取用价值远低于整份画像直接可见）。画像正文的预算独立于 8KB 索引账
+ * （写入侧已按 `maxBodyBytes` 拒超长）；无画像条目 → 画像段不出现，不注入空壳。
+ * 静态约束不变：正文来自文件，文件不变输出不变 —— 前缀缓存安全。
  */
 export function composeMemoryBlock(index: MemoryIndex): string | null {
   if (index.entries.length === 0) return null
 
+  const profile = index.entries.find((entry) => entry.class === 'profile') ?? null
+  const rest = index.entries.filter((entry) => entry.class !== 'profile')
+
   const lines = ['<memory>', DATA_BOUNDARY, '']
-  for (const entry of index.entries) lines.push(indexLine(entry))
+  if (profile) {
+    lines.push('<user-profile>', profile.body, '</user-profile>', '')
+  }
+  for (const entry of rest) lines.push(indexLine(entry))
   if (index.omitted > 0) {
     lines.push('', `（另有 ${index.omitted} 条记忆因超出上限未列出；需要时用 recall 按名取正文。）`)
   }

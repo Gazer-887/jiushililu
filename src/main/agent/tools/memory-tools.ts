@@ -3,7 +3,7 @@
 // ⚠️ 证据指针**不由模型填** —— 会话 id 与轮次由运行时给，否则模型可以伪造来源。
 
 import type { AgentTool } from '@shared/agent'
-import { MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass } from '@shared/memory'
+import { MODEL_MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass } from '@shared/memory'
 import type { MemoryRepo } from '@main/memory/memory-core'
 
 export interface MemoryToolDeps {
@@ -69,7 +69,9 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
           },
           class: {
             type: 'string',
-            enum: [...MEMORY_CLASSES],
+            // plan25 D-073：模型可见的分类不含 profile —— 画像只由反思或用户手动产生，
+            // 工具层连选项都不给（save 层另有兜底闸拦 origin='model' 的 profile）
+            enum: [...MODEL_MEMORY_CLASSES],
             description: 'style=表达偏好；default=做事默认；knowledge=项目事实（需证据）'
           },
           body: { type: 'string', description: '正文（想记住的具体内容）' }
@@ -82,8 +84,8 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
       const description = typeof args['description'] === 'string' ? args['description'].trim() : ''
       const cls = args['class']
       const body = typeof args['body'] === 'string' ? args['body'].trim() : ''
-      if (!MEMORY_CLASSES.includes(cls as MemoryClass)) {
-        return `错误：class 只能是 ${MEMORY_CLASSES.join(' / ')}`
+      if (!MODEL_MEMORY_CLASSES.includes(cls as (typeof MODEL_MEMORY_CLASSES)[number])) {
+        return `错误：class 只能是 ${MODEL_MEMORY_CLASSES.join(' / ')}`
       }
 
       const conversationId = deps.conversationId()
