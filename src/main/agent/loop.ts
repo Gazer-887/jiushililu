@@ -4,6 +4,7 @@ import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { trimMessages, type TrimOptions } from './context'
+import type { ExecEventRecorder } from './exec-events'
 
 // Agent 主循环（plan6；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，直到出最终答案或预算耗尽。
 // 缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停；contextWindow 控历史裁剪。
@@ -41,6 +42,12 @@ export interface AgentLoopOptions {
   policy?: TokenPolicy
   /** 工具执行生命周期（界面显示"正在读 xx / 完成 / 失败"） */
   onToolEvent?: (evt: ToolEvent) => void
+  /**
+   * 执行事件流（plan26 D-077）：工具/裁剪/起止的结构化留痕，落盘由组合根装配。
+   * **可选依赖** —— 不传 = 不记录（单测与既有路径零影响）。
+   * ⚠️ 记的是元数据白名单字段；工具入参与输出正文**不进事件流**（隐私口径见 exec-events.ts）。
+   */
+  execEvents?: ExecEventRecorder
   /**
    * 工具输出被窗口化时回调（plan8 R9.1）。压缩**不许静默**：界面那条痕是内存态、
    * 会随重挂载丢，所以还得有一条能事后追的（主进程日志由调用方接上）。
@@ -91,8 +98,26 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   /** 这一轮靠窗口化省下的估算 token（plan8 R9.1 记账用） */
   let avoidedTokens = 0
 
+  // ── 执行事件流（plan26 D-077）：run_start / run_end（finally 补发，error 路径不丢）──
+  const startedAt = Date.now()
+  opts.execEvents?.record('run_start')
+  let stopReason: AgentLoopResult['stopReason'] | undefined
+
+  try {
+    return await runRounds()
+  } finally {
+    // 异常中断时不带 stopReason（AgentStopReason 只有正常两态，不为此扩共享契约）
+    opts.execEvents?.record('run_end', {
+      rounds,
+      durationMs: Date.now() - startedAt,
+      ...(stopReason ? { stopReason } : {})
+    })
+  }
+
+  async function runRounds(): Promise<AgentLoopResult> {
   for (;;) {
     if (rounds >= maxRounds) {
+      stopReason = 'max-rounds'
       return { output: lastText, rounds, stopReason: 'max-rounds', avoidedTokens }
     }
     rounds++
@@ -107,9 +132,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
        * ⚠️ **前缀稳定的已知破坏点**（plan8 R9.1 §七④）：折叠会在**中间**插一条「[历史摘要]」，
        * 而前缀缓存要求"开头一模一样" —— 从摘要往后**缓存全部失效**（本轮输入 token 明显偏高）。
        * 这是**值得的代价**（不折叠就撞上下文上限、整轮作废），但必须是**知情的代价**，故在此留痕。
+       * plan26 D-080：log 升级为结构化 trim 事件（裁了什么从此可回放，清偿 plan8:550 可见性欠账）。
        */
       if (trim.trimmed) {
         log.info('历史已折叠：前缀缓存将从摘要处失效', { 折叠条数: trim.droppedCount, 轮次: rounds })
+        opts.execEvents?.record('trim', {
+          droppedCount: trim.droppedCount,
+          bytes: trim.droppedBytes ?? 0,
+          summarized: false
+        })
       }
     }
 
@@ -118,6 +149,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     // 没有工具调用 = 模型认为任务完成，文本即最终交付
     if (res.toolCalls.length === 0) {
+      stopReason = 'completed'
       return { output: res.text ?? '', rounds, stopReason: 'completed', avoidedTokens }
     }
 
@@ -141,7 +173,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         phase: 'start',
         detail: toolCallDetail(tc.name, tc.arguments)
       })
+      // plan26 D-077：tool_call 只记工具名 —— **入参不进事件流**（content 类参数即文件正文）
+      opts.execEvents?.record('tool_call', { tool: tc.name })
 
+      const toolStartedAt = Date.now()
       let output: string
       if (!tool) {
         output = `错误：未知工具「${tc.name}」。可用工具：${[...toolMap.keys()].join('、') || '（无）'}`
@@ -189,6 +224,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         summary: summarize(output),
         ...(saved > 0 ? { savedTokens: saved } : {})
       })
+      // plan26 D-077：tool_result 只记元数据 —— bytes 是输出大小、**正文不进事件流**
+      opts.execEvents?.record('tool_result', {
+        tool: tc.name,
+        ok: !failed,
+        ms: Date.now() - toolStartedAt,
+        bytes: Buffer.byteLength(output, 'utf8'),
+        windowed: saved > 0
+      })
 
       // 注入边界标记：工具产出（文件内容/网页/命令输出）一律是**数据**，不是指令
       messages.push({
@@ -197,5 +240,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         tool_call_id: tc.id
       })
     }
+  }
   }
 }

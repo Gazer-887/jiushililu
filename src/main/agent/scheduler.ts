@@ -9,6 +9,7 @@ import { runAgentLoop } from './loop'
 import { composeAgentPrompt } from './loader'
 import type { TokenPolicy } from '@shared/token-tier'
 import type { AgentDefinition } from './loader'
+import { withAgentScope, type ExecEventRecorder } from './exec-events'
 
 // 子代理调度器（plan6 D3/D5）：并发上限 + 单代理预算，独立上下文执行，结果带名字回流。
 // plan7 批 D 追加 onJobEvent：右栏「任务」页签要显示"谁在跑、跑了几轮"，光有最终结果数组不够 ——
@@ -47,6 +48,12 @@ export interface SubagentRunOptions {
   policy?: TokenPolicy
   /** 输出纪律提示（§七③）：拼在子代理系统提示末尾；**与主代理同档**（不给就不加） */
   systemSuffix?: string
+  /**
+   * 执行事件流（plan26 D-077）：**盲审 A P0-2**——scheduler 原本不传 onToolEvent/execEvents，
+   * 子代理的工具调用/审批全程不可见。透传主代理的 recorder，本层自动把 agentScope 标成 'sub'
+   * （withAgentScope 派生），时间线上子代理活动与主代理可区分。不给 = 不记录。
+   */
+  execEvents?: ExecEventRecorder
 }
 
 /** 事件里任务书与结果摘要的截断长度（界面只显示一行） */
@@ -87,7 +94,9 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           maxRounds: opts.maxRoundsPerAgent,
           chat: opts.chatFactory(def),
           // 子代理跟主代理**同一个档位**：否则用户看到的省钱行为跟自己的设置对不上，最难解释
-          ...(opts.policy ? { policy: opts.policy } : {})
+          ...(opts.policy ? { policy: opts.policy } : {}),
+          // plan26 D-077：子代理执行事件标 'sub'（tool_call/tool_result/run_start/run_end 全覆盖）
+          ...(opts.execEvents ? { execEvents: withAgentScope(opts.execEvents, 'sub') } : {})
         })
         results[index] = {
           name: def.name,

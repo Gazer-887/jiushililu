@@ -10,6 +10,7 @@ import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
 import { installCrashGuards } from './crash-guard'
 import { createConfirmBridge } from './confirm'
+import { createExecEventRecorder, createFsExecEventSink } from './agent/exec-events'
 import { createAskBridge } from './ask'
 import { IPC } from '@shared/ipc'
 import {
@@ -348,6 +349,11 @@ app.whenReady().then(async () => {
 
   // 危险操作确认桥（plan8 R5）：推到当前窗口问用户。
   // 注意用**惰性取窗口**（调用时才查），因为桥是在 createWindow 之前建的。
+  // 执行事件流 sink（plan26 D-077）：**组合根建一次**，ipc 层（对话轮次）与 confirm 桥（审批）共用
+  const execEventSink = createFsExecEventSink(userDataDir, nodeFsAdapter, {
+    onWarn: (message, extra) => log.warn(message, extra)
+  })
+
   const confirm = createConfirmBridge({
     send: (req) => {
       // ⚠️ 必须取**主窗口**（2026-09-13）：确认框问的是"要不要执行这条命令"，那是**主窗口那条会话**的事。
@@ -358,7 +364,15 @@ app.whenReady().then(async () => {
       createChatEmitter(win.webContents, req.conversationId).confirm(req)
       return true
     },
-    log: (message, extra) => log.info(message, extra)
+    log: (message, extra) => log.info(message, extra),
+    // plan26 D-077：审批结论进执行事件流（user/timeout/undeliverable/aborted 各留其痕）
+    onDecide: (info) => {
+      createExecEventRecorder({
+        sink: execEventSink,
+        conversationId: info.conversationId,
+        agentScope: 'main'
+      }).record('approve', { tool: info.tool, allowed: info.allowed, reason: info.reason })
+    }
   })
 
   // 后台任务注册表（plan7 批 D）：**进程级单例** —— 窗口关闭时统一终止，留一堆没人管的进程是隐患
@@ -591,6 +605,8 @@ app.whenReady().then(async () => {
     terminal,
     system,
     network,
+    // 执行事件流（plan26 D-077）：组合根建的 sink，ipc 层摊到每轮对话的 recorder 上
+    execEventSink,
     // 渲染端回执"落盘完成" → 才真关窗口（plan11 P0-2）
     onFlushDone: () => finishClose?.(),
     // ── 设置独立窗口（2026-09-13）────────────────────────────────

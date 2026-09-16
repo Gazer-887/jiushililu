@@ -155,6 +155,7 @@ const systemSetSchema = z.object({
 // 网络代理（plan7 批 F2）：schema 与 `networkSetSchema` 同源（放在 @shared 是为了让界面与这里共用一份判据）
 const netProxySetSchema = networkSetSchema
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
+import { createExecEventRecorder, type ExecEventSink } from './agent/exec-events'
 import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
@@ -303,6 +304,11 @@ export function registerIpcHandlers(deps: {
   terminal: TerminalSessionStore
   /** 系统集成（plan7 批 F1）：同样是组合根建、这里转交 —— 它持有 blocker id 与自启状态，**每个进程只能有一份** */
   system: SystemIntegration
+  /**
+   * 执行事件流 sink（plan26 D-077）：组合根建、这里转交 —— 本轮对话的 recorder
+   * 以 conversationId 绑定（每条会话一份），时间线据此过滤回放。
+   */
+  execEventSink: ExecEventSink
   /** 网络代理（plan7 批 F2）：同样是组合根建 —— session 是进程级的、凭据要过 safeStorage，两件都不能在这里 new */
   network: NetworkProxy
   onFlushDone?: () => void
@@ -583,6 +589,13 @@ export function registerIpcHandlers(deps: {
         skillBlock,
         // 规则段（plan24）：同上 —— 无条件注入的约束
         rulesBlock,
+        // 执行事件流（plan26 D-077）：每轮对话一份 recorder —— 工具/裁剪/起止/审批进时间线
+        execEvents: createExecEventRecorder({
+          sink: deps.execEventSink,
+          conversationId,
+          agentScope: 'main',
+          onDropped: (kind, keys) => log.warn('执行事件含白名单外字段，已丢弃', { kind, keys })
+        }),
         onSubagentEvent: (evt) => {
           const state = subagentsByConversation.get(conversationId) ?? { runId: null, events: [] }
           if (state.runId !== evt.runId) {

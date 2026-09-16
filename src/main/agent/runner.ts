@@ -11,6 +11,7 @@ import type {
 } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { ToolGate } from './guard'
+import type { ExecEventRecorder } from './exec-events'
 import { composeSelfView } from './self-view'
 import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
 import { createFileTools } from './tools/file-tools'
@@ -297,6 +298,11 @@ export interface RunAgentArgs {
   /** 思考增量回调（DeepSeek 系 `reasoning_content`），界面上显示"思考过程"。⚠️ Anthropic 的 thinking 与 tools 互斥，故工具循环里只对 OpenAI 兼容协议生效。 */
   onReasoning?: (delta: string) => void
   onToolEvent?: (evt: ToolEvent) => void
+  /**
+   * 执行事件流（plan26 D-077）。**由组合根装配**（conversationId 已知、fs sink 在 main）——
+   * runner 不建 recorder，只向 loop/scheduler 透传。不传 = 不记录。
+   */
+  execEvents?: ExecEventRecorder
   onTodos?: (todos: TodoItem[]) => void
   /** 目标创建口（plan12 ⑤）：组合根实现——调 goal store + 推送界面；不传 = 不下发 set_goal 工具 */
   onSetGoal?: (input: { text: string; doneWhen?: string }) => import('@shared/goal').Goal
@@ -385,7 +391,9 @@ export async function runAgent(
         ...(args.onSubagentEvent ? { onJobEvent: args.onSubagentEvent } : {}),
         ...(args.policy ? { policy: args.policy } : {}),
         // 输出纪律（§七③）：与主代理**同一份** —— 子代理的输出同样计费，纪律不该只约束一半
-        ...(discipline ? { systemSuffix: discipline } : {})
+        ...(discipline ? { systemSuffix: discipline } : {}),
+        // plan26 D-077：执行事件流透传（子代理活动标 'sub'，盲审 A P0-2）
+        ...(args.execEvents ? { execEvents: args.execEvents } : {})
       })
       const parts = results.map((r) =>
         r.ok
@@ -603,7 +611,9 @@ export async function runAgent(
       ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {}),
       ...(args.onToolWindowed ? { onToolWindowed: args.onToolWindowed } : {}),
       ...(args.toolWindow === undefined ? {} : { toolWindow: args.toolWindow }),
-      ...(args.policy ? { policy: args.policy } : {})
+      ...(args.policy ? { policy: args.policy } : {}),
+      // plan26 D-077：执行事件流（组合根装配 recorder，不传 = 不记录）
+      ...(args.execEvents ? { execEvents: args.execEvents } : {})
     })
   } finally {
     // 无论正常结束、抛异常还是被中止都要收尾 —— 否则 manifest 停在 running，界面把完成的轮次显示成"中断"（即便没收尾，快照也已增量落盘、仍可回滚）。

@@ -29,6 +29,8 @@ export interface TrimResult {
   trimmed: boolean
   /** 被裁掉的消息条数（用于给用户提示与 ACE 复盘） */
   droppedCount: number
+  /** 被裁内容的字节数（plan26 D-080 裁剪可见性：trim 事件留痕用） */
+  droppedBytes: number
 }
 
 /** 保留开头 system 与末尾 keepRecent 条，中段合并为一条摘要占位；不调模型，只做确定性裁剪 */
@@ -38,7 +40,7 @@ export function trimMessages(messages: AgentMessage[], opts: TrimOptions): TrimR
   const budget = opts.contextWindow * threshold
 
   if (estimateMessagesTokens(messages) <= budget) {
-    return { messages, trimmed: false, droppedCount: 0 }
+    return { messages, trimmed: false, droppedCount: 0, droppedBytes: 0 }
   }
 
   const head: AgentMessage[] = []
@@ -54,7 +56,7 @@ export function trimMessages(messages: AgentMessage[], opts: TrimOptions): TrimR
   const tail = rest.slice(tailStart)
   const middle = rest.slice(0, tailStart)
 
-  if (middle.length === 0) return { messages, trimmed: false, droppedCount: 0 }
+  if (middle.length === 0) return { messages, trimmed: false, droppedCount: 0, droppedBytes: 0 }
 
   const summary: AgentMessage = {
     role: 'user',
@@ -68,6 +70,7 @@ export function trimMessages(messages: AgentMessage[], opts: TrimOptions): TrimR
   return {
     messages: [...head, summary, ...tail],
     trimmed: true,
-    droppedCount: middle.length
+    droppedCount: middle.length,
+    droppedBytes: middle.reduce((sum, m) => sum + Buffer.byteLength(String(m.content ?? ''), 'utf8'), 0)
   }
 }

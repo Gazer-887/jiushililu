@@ -24,6 +24,12 @@ export interface ConfirmBridgeDeps {
   send(req: ToolConfirmRequest): boolean
   /** 日志留痕 */
   log(message: string, extra?: unknown): void
+  /**
+   * 审批结论回调（plan26 D-077）：每次「用户真的决定了」时触发（含超时/abort 的按拒绝）。
+   * ⚠️ guard.ts 是纯白名单函数埋不了点 —— 审批的落地点在这里（confirm 桥是唯一真出口）。
+   * reason = 用户答复 / timeout / aborted，供时间线分辨「拒是怎么来的」。
+   */
+  onDecide?: (info: { conversationId: string; tool: string; allowed: boolean; reason: string }) => void
   /** 超时毫秒数（默认 60s）；测试用短超时 */
   timeoutMs?: number
 }
@@ -46,6 +52,7 @@ export function createConfirmBridge(deps: ConfirmBridgeDeps): ConfirmBridge {
       // 推不出去 = 没有人能确认 = 拒绝（而不是"悄悄放行"）
       if (!deps.send(req)) {
         deps.log('危险操作确认无法送达界面，按拒绝处理', { tool: base.tool })
+        deps.onDecide?.({ conversationId: base.conversationId, tool: base.tool, allowed: false, reason: 'undeliverable' })
         return Promise.resolve(false)
       }
 
@@ -55,6 +62,7 @@ export function createConfirmBridge(deps: ConfirmBridgeDeps): ConfirmBridge {
         const timer = setTimeout(() => {
           pending.delete(id)
           deps.log('危险操作确认超时，按拒绝处理', { tool: base.tool })
+          deps.onDecide?.({ conversationId: base.conversationId, tool: base.tool, allowed: false, reason: 'timeout' })
           resolve(false)
         }, timeoutMs)
         pending.set(id, { resolve, timer, req })
@@ -67,6 +75,7 @@ export function createConfirmBridge(deps: ConfirmBridgeDeps): ConfirmBridge {
       pending.delete(result.id)
       clearTimeout(p.timer)
       deps.log('危险操作确认结果', { tool: p.req.tool, allowed: result.allowed })
+      deps.onDecide?.({ conversationId: p.req.conversationId, tool: p.req.tool, allowed: result.allowed, reason: 'user' })
       p.resolve(result.allowed)
       return true
     },
@@ -74,6 +83,7 @@ export function createConfirmBridge(deps: ConfirmBridgeDeps): ConfirmBridge {
     abortAll(reason) {
       for (const [, p] of pending) {
         clearTimeout(p.timer)
+        deps.onDecide?.({ conversationId: p.req.conversationId, tool: p.req.tool, allowed: false, reason })
         p.resolve(false) // 按拒绝处理
       }
       if (pending.size > 0) deps.log('丢弃全部待决确认（按拒绝）', { reason, count: pending.size })

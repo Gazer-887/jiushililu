@@ -4,8 +4,8 @@
 //    正文是用户攒下来的东西，值得"要么看到新内容、要么看到完整旧内容"。
 
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { MAX_ARCHIVES, MAX_FILE_BYTES } from '../log'
 import { parseEventLine, type MemoryEvent } from '../memory/events'
+import { rotateJsonlIfNeeded } from './jsonl'
 import type { MemoryBackend } from '../memory/memory-core'
 import {
   atomicWrite,
@@ -85,25 +85,12 @@ export function eventsPath(root: string): string {
   return join(memoryDir(root), EVENTS_NAME)
 }
 
-function archivePath(root: string, index: number): string {
-  return join(memoryDir(root), `events.${index}.jsonl`)
-}
-
 /**
- * 事件流轮转：超过单文件上限时后移（`events.1.jsonl ← events.jsonl` …），最旧的删掉。
- * ⚠️ 上限与份数**共用 `log.ts` 的常量** —— 轮转策略是一件事，两处各拍一套数迟早分叉。
+ * 事件流轮转（plan26 D-077 起改为薄壳）：逻辑提取到 `store/jsonl.ts` 共用
+ * （执行事件流同款策略）—— 上限与份数仍共用 `log.ts` 的常量，行为不变（单测兜底）。
  */
 export function rotateEventsIfNeeded(root: string, fs: FsAdapter): boolean {
-  const current = eventsPath(root)
-  if (fs.sizeBytes(current) < MAX_FILE_BYTES) return false
-  const oldest = archivePath(root, MAX_ARCHIVES)
-  if (fs.existsSync(oldest)) fs.rmSync(oldest, { force: true })
-  for (let i = MAX_ARCHIVES - 1; i >= 1; i--) {
-    const from = archivePath(root, i)
-    if (fs.existsSync(from)) fs.renameSync(from, archivePath(root, i + 1))
-  }
-  fs.renameSync(current, archivePath(root, 1))
-  return true
+  return rotateJsonlIfNeeded(eventsPath(root), fs)
 }
 
 /** 把 meta.json 收敛成合法形状。老文件缺字段、手改坏字段都不该让应用起不来 */
