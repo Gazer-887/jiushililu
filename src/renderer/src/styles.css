@@ -4126,6 +4126,27 @@ label.radio {
   word-break: break-all;
 }
 
+/* ── 计划批准卡（plan27）：与命令确认共用 cf-* 骨架，只加两处 —— 框更宽、方案区更高 ── */
+.pa-box {
+  max-width: 720px;
+}
+
+.pa-plan {
+  font-family: var(--font, inherit);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-12);
+  /* 方案比一条命令长得多：给足高度并**允许滚动** —— 截断方案等于让人对没读完的东西点头 */
+  max-height: 45vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .cf-meta {
   display: flex;
   flex-direction: column;
@@ -5936,6 +5957,11 @@ body[data-resizing] {
   flex-direction: column;
   gap: var(--sp-4);
   margin-bottom: var(--sp-12);
+}
+
+/* 从属字段（如「执行者」只在勾了「计划批准」时出现）—— 缩进表示它依附于上面那一条 */
+.ag-subfield {
+  margin-left: var(--sp-24);
 }
 
 .ag-label {

@@ -1,4 +1,4 @@
-import { useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
+import { memo, useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
 import type { BuiltinType, FileMode, Pane as PaneModel, PaneTab } from '@shared/workbench'
 import { useAppStore } from '../store'
 import BrowserPanel from './BrowserPanel'
@@ -13,40 +13,56 @@ import TasksPanel from './TasksPanel'
 import TerminalPanel from './TerminalPanel'
 import TimelinePanel from './TimelinePanel'
 
+// 内置面板全部**无 props**（数据自己订阅 store）→ memo 后父级（Pane）任意重渲染都到不了它们，
+// 各面板只在自己的订阅切片变化时才渲染（plan30：Pane 因拖拽/折叠/页签条等本地面部状态频繁重渲染）。
+// 保活（注释①）之后 Pane 重渲染也不再卸载面板，memo 让"常驻"进一步等于"常静"。
+const MemoBrowser = memo(BrowserPanel)
+const MemoChanges = memo(ChangesPanel)
+const MemoExplorer = memo(ExplorerPanel)
+const MemoMemory = memo(MemoryManager)
+const MemoPlaybook = memo(PlaybookManager)
+const MemoScm = memo(ScmPanel)
+const MemoTasks = memo(TasksPanel)
+const MemoTerminal = memo(TerminalPanel)
+const MemoTimeline = memo(TimelinePanel)
+
 // 工作台的一栏（plan9 W3）：标题栏 + 栏内页签条 + 内容。
 //
-// ⚠️ ① **切换页签 = 卸载**，不许用 display:none 保活：`BrowserPanel` 只在**卸载时**才调
-//    `setBrowserVisible(false)` 摘掉主进程的原生视图；保活会让 getBoundingClientRect() 归零
-//    却不摘视图 → 原生 WebContentsView 留在窗口上遮挡界面。草稿存在 tab 模型的 `content` 里，不靠组件保活。
+// ⚠️ ① **页签保活（plan30）**：失活页签**隐藏不卸载**（xterm/Monaco 重建一次几十上百 ms，
+//    plan29 S4 量测定案渲染层占切换卡顿 97%）。**唯一例外是 browser 页签**：`BrowserPanel`
+//    只在**卸载时**才调 `setBrowserVisible(false)` 摘掉主进程的原生视图；保活会让
+//    getBoundingClientRect() 归零却不摘视图 → 原生 WebContentsView 留在窗口上遮挡界面
+//    （plan9 的血泪，见 git 历史）。故 browser 页签失活即卸载，其余页签常驻。
+//    隐藏期 ResizeObserver 报 0 尺寸、重新显示时再触发 → xterm fit / monaco layout 自愈。
 // ② **折叠 = 隐藏标题栏与页签条、内容占满，宽度不变**（照抄参照实现的语义），不是"收成一条窄条"。
 
 function builtinBody(type: BuiltinType): JSX.Element {
   switch (type) {
     case 'explorer':
-      return <ExplorerPanel />
+      return <MemoExplorer />
     case 'changes':
-      return <ChangesPanel />
+      return <MemoChanges />
     case 'browser':
-      return <BrowserPanel />
+      return <MemoBrowser />
     case 'tasks':
-      return <TasksPanel />
+      return <MemoTasks />
     case 'terminal':
       // 真 PTY 终端：会话活在主进程，这个组件是可丢弃的视图（plan7 批 C）
-      return <TerminalPanel />
+      return <MemoTerminal />
     case 'scm':
       // 源代码管理（plan16）：变更列表 → 勾选暂存 → 写消息 → 提交
-      return <ScmPanel />
+      return <MemoScm />
     case 'memory':
       // 记忆（plan19 批 1）：查看 / 编辑 / 删除 + 「本次新增」巡检区。落在这里而不是设置页 ——
       // 巡检是**高频**动作，放独立窗口等于把兜底做成装饰（plan19 §十）
-      return <MemoryManager />
+      return <MemoMemory />
     case 'playbook':
       // Playbook（plan19 批 3）：会做线 —— 同类任务的经验手册。同样落右抽屉（复用上面的理由）
-      return <PlaybookManager />
+      return <MemoPlaybook />
     case 'timeline':
       // 时间线（plan26 S2）：执行事件流回放 —— 工具/审批/裁剪的**结构化痕迹**
       // （比对话流里的工具卡片多一层：跨轮次、按时间排、可跨会话过滤）
-      return <TimelinePanel />
+      return <MemoTimeline />
   }
 }
 
@@ -246,9 +262,36 @@ export default function Pane({
 
       <div className={`dock-body ${isFlush(active) ? 'dock-body-flush' : ''}`}>
         {active ? (
-          tabBody(active, {
-            onModeChange: (m) => wbSetFileMode(pane.id, active.id, m),
-            onDirtyChange: (d) => wbSetFileDirty(pane.id, active.id, d)
+          // 保活渲染（plan30，注释①）：每个页签常驻，失活只隐藏；browser 页签例外（失活即卸载）
+          // ⚠️ 激活页签的包装层必须 `display: contents`（plan30 第二批返工）：包装 div 若参与布局，
+          //    会把 .dock-body（高度 definite）和 .fp（height:100%）之间的高度链打断 ——
+          //    docx 预览"卡在旧窗口大小"就是这么来的（0.13.50 用户实测，与 2026-09-15 的塌高同型）。
+          //    contents = 包装层不生成盒子，子元素布局与"直接是 .dock-body 子级"完全等价；
+          //    失活页签照常 display:none（hidden 属性）。
+          pane.tabs.map((t) => {
+            const isActive = t === active
+            // fileProps 按**各自页签**闭包 —— 保活后失活页签如果共用 active.id 的闭包，会拿到错的回调
+            const props = {
+              onModeChange: (m: FileMode) => wbSetFileMode(pane.id, t.id, m),
+              onDirtyChange: (d: string | undefined) => wbSetFileDirty(pane.id, t.id, d)
+            }
+            if (t.content.kind === 'builtin' && t.content.type === 'browser') {
+              return isActive ? (
+                <div key={t.id} style={{ display: 'contents' }}>
+                  {tabBody(t, props)}
+                </div>
+              ) : null
+            }
+            return (
+              <div
+                key={t.id}
+                hidden={!isActive}
+                aria-hidden={!isActive}
+                style={isActive ? { display: 'contents' } : undefined}
+              >
+                {tabBody(t, props)}
+              </div>
+            )
           })
         ) : (
           // 关掉最后一个页签 → 就地给选择器，不把栏一起收掉

@@ -77,6 +77,7 @@ import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { TerminalSessionStore } from './terminal-session'
 import type { TerminalSessionSnapshot, TerminalStartResult } from '@shared/terminal'
 import type { ConfirmBridge } from './confirm'
+import type { PlanApprovalBridge } from './agent/plan-approval'
 import type { AskBridge } from './ask'
 import { ASK_MAX_OPTIONS, type AskResult } from '@shared/ask'
 import {
@@ -285,8 +286,10 @@ function friendlyParse<T>(schema: z.ZodType<T>, raw: unknown): T {
   throw new Error(`参数不合法：${label} —— ${detail}`)
 }
 
-function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): string {
-  if (timedOut) return `请求超时（${timeoutMs}ms）：可在设置页调大超时时间，或检查网络 / 代理`
+function friendlyChatError(err: unknown): string {
+  // ⚠️ 这里**不再有**「请求超时（Xms）：可在设置页调大超时时间」那一档（plan29 D-091）：
+  // 它指向的是一个从不存在的实体 —— 超的从来不是「请求」，而且那个数字已被删除。
+  // 现在超时由 provider 层分型上报（首包 / 流中断），带具体层级的原话，直接透传即可。
   if (err instanceof Error && err.name === 'AbortError') return '已停止生成'
   return err instanceof Error ? err.message : String(err)
 }
@@ -307,6 +310,8 @@ export function registerIpcHandlers(deps: {
   confirm: ConfirmBridge
   /** Agent 提问桥。⚠️ 传进来而不是在这里 new：与 confirm 同理 —— **组合根负责"建"，这里只做转交**（本文件一个裸 `.send(` 都不许有） */
   ask: AskBridge
+  /** 计划批准桥（plan27）。同 confirm / ask：**组合根负责建，这里只把渲染端的答复转交回去** */
+  planApproval: PlanApprovalBridge
   /** 内置终端会话（plan7 批 C）。⚠️ 传进来而不是在这里 new：**广播代码必须放 `main/index.ts`**（本文件里一个裸 `.send(` 都不许有，见 `tests/unit/stream-envelope.test.ts`），而会话的 `onData` 要往所有窗口推 —— 故"建会话"在组合根，这里只做转交。 */
   terminal: TerminalSessionStore
   /** 系统集成（plan7 批 F1）：同样是组合根建、这里转交 —— 它持有 blocker id 与自启状态，**每个进程只能有一份** */
@@ -558,16 +563,23 @@ export function registerIpcHandlers(deps: {
     }
 
     const apiKey = getDecryptedApiKey()
+    // ⚠️ plan29 D-090：这里原来有一层**整轮墙钟**（`setTimeout(() => controller.abort(), settings.timeoutMs)`），
+    // 已按用户决议**彻底删除** —— 不保留为「默认关闭的设置项」（保留会多一层误用风险 + 误用后的处理成本）。
+    //
+    // 为什么删掉它不留下"毫无兜底"的窗口：它本来就是个**错口径**的选择 —— 把五种性质完全不同的情况
+    // （建连慢 / 首包迟迟不来 / 吐了一半断流 / 工具跑得久 / 子代理在并行）压成同一个数字，
+    // 于是任何一种慢都被报成同一句话「请求超时」，用户按那句话去调大，只会把正常的情况也一起等更久。
+    // 现在三层各有归属，且各自都能说清自己是哪一层：
+    //   · 首包慢   → providers/stream-guard.ts 的首包守卫（60s）
+    //   · 流中断   → 同上的分片间隔守卫（90s，**唯一能识别真卡死**的指标）
+    //   · 工具卡住 → run_command 自己的超时（可调、上限 600s）
+    // 而「整轮总时长」这件事**本来就该由人决定** —— 随时可点停止。这与项目原则同源：
+    // **该不该停是人判断的，不该由代码替他猜一个数字**。
     const controller = gate.controller
-    let timedOut = false
     // 诊断三件套（0.13.42 反馈：出现过"长时间无回复"却无从查起）。开始 / 首包 / 完成三个时刻都落日志，
     // 下次再卡，日志能直接区分"请求没发出去 / 发了没首包 / 首包后断流"三种卡法
     const startedAt = Date.now()
     let firstSignalAt = 0
-    const timer = setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, settings.timeoutMs)
 
     // 记忆注入段（plan19 批 1）：组装 + 开采集。放在 `try` **之前** —— 出错时也要能 drain 到已发生的写入。
     const memoryBlock = beginMemoryTurn(conversationId)
@@ -689,13 +701,11 @@ export function registerIpcHandlers(deps: {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {
         conversationId,
-        timedOut,
         model: settings.model,
         error: err instanceof Error ? err.message : String(err)
       })
-      emit.error(friendlyChatError(err, timedOut, settings.timeoutMs))
+      emit.error(friendlyChatError(err))
     } finally {
-      clearTimeout(timer)
       chatGate.end(conversationId)
       // 护栏 2（D-043）：本轮写了什么 —— 取走上报载荷。空手而归则不推（免界面反复闪"没有写入"）
       endMemoryTurn(conversationId)
@@ -1087,6 +1097,9 @@ export function registerIpcHandlers(deps: {
     // ⚠️ 只验形状不验成员（plan17 D3）：声明了不存在的工具由 allowedToolsFor 运行时过滤，这里枚举会造成"表单与 loader 两套口径"
     tools: z.array(z.string().max(64)).max(64),
     model: z.string().max(200).optional(),
+    // plan27：只认 'plan' 这一个字面量（与 loader 同口径 —— 乱写忽略，不报错，免得一个笔误卡住整条保存）
+    approval: z.literal('plan').optional(),
+    executor: z.string().max(64).optional(),
     systemPrompt: z.string().min(1).max(100000),
     file: z.string().min(1).max(1000).optional()
   })
@@ -1100,6 +1113,9 @@ export function registerIpcHandlers(deps: {
       description: def.description,
       tools: def.tools ?? [],
       ...(def.model ? { model: def.model } : {}),
+      // plan27：不回填的话，用户一打开表单再保存就把批准配置丢了（表单管理的字段必须完整往返）
+      ...(def.approval === 'plan' ? { approval: 'plan' as const } : {}),
+      ...(def.executor ? { executor: def.executor } : {}),
       systemPrompt: def.systemPrompt,
       file: def.file
     }
@@ -1714,6 +1730,17 @@ export function registerIpcHandlers(deps: {
       .safeParse(raw)
     if (!parsed.success) return
     deps.confirm.respond(parsed.data)
+  })
+
+  // 计划批准回执（plan27）：同样只做**形状校验 + 转交** —— 配对、超时、按拒绝的语义都在
+  // `agent/plan-approval.ts` 那层（它是纯函数、可单测；本文件 import 了 electron，CI 上跑不了）。
+  // 返回 `false` = 主进程**没认领**（已超时 / 已中断）：界面据此如实说明，不许当成送达。
+  ipcMain.handle(IPC.planApprovalRespond, (_e, raw: unknown): boolean => {
+    const parsed = z
+      .object({ id: z.string().min(1).max(64), allowed: z.boolean() })
+      .safeParse(raw)
+    if (!parsed.success) return false
+    return deps.planApproval.respond(parsed.data)
   })
 
   // 提问回执：这里只做**形状校验 + 转交**。配对、三种形态的优先级、超时都在 `ask.ts` 的桥里（那层纯函数可单测；

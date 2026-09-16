@@ -10,7 +10,7 @@ import type {
   ToolEvent
 } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
-import { ToolGate } from './guard'
+import { ToolGate, type PathAccess } from './guard'
 import type { ExecEventRecorder } from './exec-events'
 import { composeSelfView } from './self-view'
 import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
@@ -39,7 +39,9 @@ import { createSubagentTools, type SubagentDispatcher } from './tools/subagent-t
 import type { BackgroundTaskStore } from './background-tasks'
 import { runSubagents } from './scheduler'
 import { composeAgentPrompt, loadAgentEntries, type LoaderResult } from './loader'
+import type { PlanApprovalBridge } from './plan-approval'
 import { runAgentLoop } from './loop'
+import { createLogger } from '../log'
 import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
 import type { CheckpointStore } from '../store/checkpoints'
 import { createCheckpointStore } from '../store/checkpoints'
@@ -54,6 +56,8 @@ import { SUMMARY_SYSTEM_PROMPT } from './context'
  * 高危工具：**内核默认工具集不含**（plan6 D4 —— 免得"开箱就能跑命令"）；
  * 自定义 Agent 在 `tools` 里显式声明才会下发，而可写档下每次执行前**逐次确认**（plan8 R5）。
  */
+const log = createLogger('agent-runner')
+
 const DANGEROUS_TOOLS = new Set(['run_command'])
 
 /** 「只读」权限档下模型只能拿到这些（D-032：权限是上限，不是建议）。
@@ -98,6 +102,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
   const writer =
     hooks.writer ??
     createWorkspaceWriter(workspaceRoot, {
+      ...(hooks.pathAccess ? { pathAccess: hooks.pathAccess } : {}),
       trash: async () => {
         throw new Error('未配置回收站，删除操作已被拒绝')
       }
@@ -110,9 +115,10 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
           hooks.confirmCommand,
           hooks.background,
           hooks.agentLabel,
-          hooks.resourcesPath
+          hooks.resourcesPath,
+          hooks.pathAccess
         )
-      : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel, hooks.resourcesPath)),
+      : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel, hooks.resourcesPath, hooks.pathAccess)),
     ...createWebTools(),
     ...createBrowserTools(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
@@ -164,6 +170,9 @@ function lastUserText(history: AgentMessage[]): string | null {
 export interface ToolHooks {
   writer?: WorkspaceWriter
   policy?: TokenPolicy
+  /** 路径放行策略（plan29 D-089）：**只有 Agent 线**该传 —— 传 `{ allowOutside: true }` = 完全访问档无边界。
+   *  不传 = 锁死工作区（fail-closed）。⚠️ **界面线永远不要传**（界面越权，见 `guard.ts` 的 `PathAccess`）。 */
+  pathAccess?: PathAccess
   /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
   confirmCommand?: CommandConfirm
   onTodos?: (todos: TodoItem[]) => void
@@ -221,6 +230,15 @@ export interface AgentRuntimeContext {
   /** 提问桥（`ask_user` 的落地口）。由组合根注入：它要推窗口，而 runner 不许 import electron；
    *  会话身份**不在这里补** —— 同一个上下文会被多条会话共用，`conversationId` 只能由 `runAgent` 按轮次补。 */
   ask?: AskReporter
+  /**
+   * 计划批准桥（plan27）。由组合根注入：它要推窗口，而 runner 不许 import electron。
+   *
+   * 不注入 = **闸门不生效**，退回 plan27 之前的行为：方案作为本轮最终输出返回，
+   * **不会自动接着执行**。这是刻意的口径 —— 拿不到「有人点头」的通道时，
+   * 唯一安全的做法是**停在方案上**（planner 没有写工具，把方案交回用户零风险）；
+   * 而"没桥就报错"会让单测 / CLI 这类无人值守场景彻底不可用，代价大于收益。
+   */
+  planApproval?: PlanApprovalBridge
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 `process.resourcesPath` —— runner 不许 import electron */
   resourcesPath?: string | null
   /** 记忆库（plan19 批 1）。由组合根注入：runner 不许碰 electron-store / fs，故"读写记忆"只能发生在那一层 */
@@ -346,12 +364,38 @@ export interface RunAgentArgs {
   rulesBlock?: string | null
   /** 电脑控制开关（2026-09-15 用户需求）：由组合根读好传入，进自视段；缺省 = false（权限类不许替用户默认开） */
   computerControl?: boolean
+  /**
+   * plan27：显式跳过计划批准闸。
+   * ⚠️ **内层（executor）递归调用必须传 `true`** —— 与「executor 自身不带 `approval:plan`」构成**双保险**，
+   * 防「批准完又弹一张卡」的无限套娃。
+   */
+  skipPlanApproval?: boolean
 }
 
-export async function runAgent(
-  ctx: AgentRuntimeContext,
-  args: RunAgentArgs
-): Promise<AgentLoopResult & { agent: string; runId: string; changedFiles: number; usage: TokenUsage | null }> {
+/**
+ * plan27：决定「批准之后由谁来执行」。
+ * 优先用 agent 自己声明的 `executor`；否则退回 `code-executor`；都没有则交回**内核默认工具集**
+ * （不是「不执行」—— 内核默认在可写档下本来就能写，只是少了 executor 的职责提示词）。
+ * ⚠️ 声明了但**不存在**的名字 ⇒ 继续往兜底找，而不是报错 —— 与 `tools` 的宽松口径一致
+ * （写歪一个名字不该让整条流程断掉）。
+ */
+function pickExecutor(declared: string | undefined, registry: LoaderResult): string | undefined {
+  if (declared && registry.definitions.has(declared)) return declared
+  if (registry.definitions.has('code-executor')) return 'code-executor'
+  return undefined
+}
+
+/** runAgent 的返回：loop 结果 + 本轮账目（agent / runId / 改动数 / 用量）+ plan27 批准结论 */
+export type AgentRunResult = AgentLoopResult & {
+  agent: string
+  runId: string
+  changedFiles: number
+  usage: TokenUsage | null
+  /** plan27：本轮「计划批准」结论。`undefined` = **没触发批准闸**（普通 agent / 空方案 / 显式跳过） */
+  planApproved?: boolean
+}
+
+export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Promise<AgentRunResult> {
   const workspaceRoot = ctx.getWorkspaceRoot()
   const registry = loadAgentRegistry(ctx)
 
@@ -389,10 +433,13 @@ export async function runAgent(
           const model = d.model ? { ...effective, model: d.model } : effective
           const schemas = subagentTools.map((t) => t.schema)
           return (messages: AgentMessage[]) => {
-            const signal = args.signal ?? AbortSignal.timeout(model.timeoutMs)
+            // 子代理**不再自带整轮墙钟**（plan29 D-090）：原来这里在父 signal 缺席时给一个
+            // `AbortSignal.timeout(model.timeoutMs)`，而子代理是并发跑的 —— 等于每个子代理各拿一个
+            // 与"父轮次总时长"同数量级的数字，父轮的预算被并发地重复消耗。现在的口径是：
+            // 只传父 signal（**父停子停**），每一轮自己的健壮性由 provider 的首包 / 分片间隔守卫负责。
             return model.providerType === 'anthropic'
-              ? streamWithToolsAnthropic(model, args.apiKey, messages, schemas, () => {}, signal)
-              : streamWithToolsOpenAI(model, args.apiKey, messages, schemas, () => {}, signal)
+              ? streamWithToolsAnthropic(model, args.apiKey, messages, schemas, () => {}, args.signal)
+              : streamWithToolsOpenAI(model, args.apiKey, messages, schemas, () => {}, args.signal)
           }
         },
         ...(args.onSubagentEvent ? { onJobEvent: args.onSubagentEvent } : {}),
@@ -412,8 +459,23 @@ export async function runAgent(
     }
   }
 
+  /**
+   * 路径放行策略（plan29 D-089）—— 「完全访问」档在 **Agent 线**上真的无边界。
+   *
+   * 这是把档位从「名不副实」拉回「名实相符」的那一行：在此之前 `full-access` 的实际语义
+   * 只有"免确认弹窗"，文件访问仍被无条件锁在工作区内（用户称之为「假完全」，是准确描述）。
+   *
+   * ⚠️ 两个刻意的约束：
+   * 1. **只喂 Agent 侧**（writer + 工具）—— 界面线的文件访问**绝不**受此影响，
+   *    否则把一个「权限不足」的问题换成「界面越权」这个更严重的问题（见 `guard.ts` 的 `PathAccess`）；
+   * 2. **只有 full-access 才为真**，其余档位 `undefined` = fail-closed。默认档（write）必须维持旧行为。
+   */
+  const pathAccess: PathAccess | undefined =
+    (args.permission ?? 'write') === 'full-access' ? { allowOutside: true } : undefined
+
   // 写入服务（plan7 批 A2）：**快照挂在服务层** —— 界面与 Agent 走的都是这一条路径；子代理复用同一批工具实例，故它们的写操作同样记进本轮的检查点。
   const writer = createWorkspaceWriter(workspaceRoot, {
+    ...(pathAccess ? { pathAccess } : {}),
     beforeChange: (rel, abs) => ctx.checkpoints.record(runId, workspaceRoot, rel, abs),
     trash: async (abs) => {
       if (!ctx.trash) throw new Error('未配置回收站，删除操作已被拒绝')
@@ -423,6 +485,7 @@ export async function runAgent(
 
   const allTools = createAllTools(workspaceRoot, {
     writer,
+    ...(pathAccess ? { pathAccess } : {}),
     ...(args.policy ? { policy: args.policy } : {}),
     ...(ctx.background ? { background: ctx.background, agentLabel } : {}),
     // 逐次确认（plan8 R5）：仅「可写」档需要 —— 只读档本就不下发 run_command；完全访问档是用户明确选的"别拦我"
@@ -588,7 +651,14 @@ export async function runAgent(
   let usageAcc: TokenUsage | null = null
 
   const chat = async (messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult> => {
-    const signal = args.signal ?? AbortSignal.timeout(effective.timeoutMs)
+    // plan29 D-090：**这里原来有一层整轮墙钟**（`args.signal ?? AbortSignal.timeout(settings.timeoutMs)`），
+    // 已删除，两条理由：
+    // ① 它是**死代码** —— 外层一旦给了 signal（生产必给），`??` 右侧永不执行，看着像兜底其实什么都没做；
+    // ② 就算它生效也是错的口径 —— 把"建连慢 / 首包慢 / 断流 / 工具跑得久"压成同一个数字，
+    //    于是任何一种慢都报成同一句话。现在由 provider 层的**首包 + 分片间隔**两层守卫负责
+    //    （见 providers/stream-guard.ts），它知道自己是哪一层超时，也就能说清是哪一层。
+    // `args.signal` 只剩一个语义：**用户点了停止** —— 该立刻停，且不该有第二个数字来抢这个决定权。
+    const signal = args.signal
     const res =
       effective.providerType === 'anthropic'
         ? await streamWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, onText, signal)
@@ -663,7 +733,55 @@ export async function runAgent(
   }
 
   const changedFiles = ctx.checkpoints.get(runId)?.changes.length ?? 0
-  return { ...result, agent: def?.name ?? '内核默认', runId, changedFiles, usage: usageAcc }
+  let final: AgentRunResult = { ...result, agent: def?.name ?? '内核默认', runId, changedFiles, usage: usageAcc }
+  let planApproved: boolean | undefined
+
+  // ── 计划批准闸（plan27）──────────────────────────────────────────────
+  // 位置说明（三条都已核过，别再挪）：
+  //  · 只能放这里：**子代理走 scheduler.ts 的 `runAgentLoop`，根本不进本函数** ⇒ 天然不会被卡住等批准；
+  //  · 不放 ipc.ts：那是薄层，且它那套整轮墙钟正被 plan29 删掉 —— 依赖它会跟着坏；
+  //  · 不做成工具（如 submit_plan）：工具是**模型可选调用**的，模型不调就永远停不下来，
+  //    「必须停下来等我点头」这条核心价值会当场失守。
+  if (def?.approval === 'plan' && ctx.planApproval && !args.skipPlanApproval) {
+    const plan = (result.output ?? '').trim()
+    // 空方案不弹卡：对空气等批准是荒谬交互，也免得用户白等一场
+    if (plan.length > 0) {
+      planApproved = await ctx.planApproval.request(
+        { agent: def.name, plan, conversationId: args.conversationId },
+        args.signal ? { signal: args.signal } : undefined
+      )
+
+      if (planApproved) {
+        // 二次 runAgent（D-082）：executor 有自己的 `def.model` / 工具集 / 检查点，全部复用现有 machinery。
+        // 为什么**不**在同一轮里把写工具塞回去：planner 的「只读」是靠**没有写工具**保证的硬事实——
+        // 中途换工具集等于亲手拆掉这条保证；而且自视段会先报只读后报可写，模型自己都会糊涂。
+        const execResult = await runAgent(ctx, {
+          ...args,
+          agentName: pickExecutor(def.executor, registry),
+          history: [
+            ...args.history,
+            { role: 'assistant', content: result.output },
+            { role: 'user', content: '请按上述方案执行（已获用户批准）。' }
+          ],
+          // 双保险之一（另一半是 executor 自身不带 approval:plan）：防「批准完又弹一张卡」的无限套娃
+          skipPlanApproval: true
+        })
+        final = {
+          ...execResult,
+          // 用量**求和**：两轮都花了钱，账单必须与厂商对得上（归并口径见 PLAN/plan27_计划批准.md D-082）。
+          // 其余账目（runId / changedFiles / stopReason）以 **executor 那轮**为准 —— planner 无写操作，检查点空转。
+          usage: execResult.usage ? addUsage(usageAcc ?? emptyUsage(), execResult.usage) : usageAcc,
+          // agent 仍报**用户启用的那个**：他看到的应是「我选的 agent 干了这件事」，而不是「偷偷换了个人」
+          agent: def.name
+        }
+        log.info('计划已批准，转交执行', { 方案来自: def.name, 实际执行: execResult.agent })
+      } else {
+        log.info('计划未获批准，本轮不执行', { 方案来自: def.name })
+      }
+    }
+  }
+
+  return { ...final, ...(planApproved === undefined ? {} : { planApproved }) }
 }
 
 /** 组装运行上下文。工作区用**惰性解析函数**（P2：用户可在界面切换目录，每次运行前重新解析，无需重启）。⚠️ 本模块的 electron 禁令见文件头。 */
@@ -701,6 +819,8 @@ export function createAgentContext(opts: {
   }
   trash?: (abs: string) => Promise<void>
   ask?: AskReporter
+  /** 计划批准桥（plan27）。由组合根注入 —— runner 不许 import electron，推窗口只能在那一层做 */
+  planApproval?: PlanApprovalBridge
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 —— runner 不许 import electron */
   resourcesPath?: string | null
 }): AgentRuntimeContext {
@@ -716,7 +836,8 @@ export function createAgentContext(opts: {
     ...(opts.skills ? { skills: opts.skills } : {}),
     ...(opts.mcp ? { mcp: opts.mcp } : {}),
     ...(opts.trash ? { trash: opts.trash } : {}),
-    ...(opts.ask ? { ask: opts.ask } : {})
+    ...(opts.ask ? { ask: opts.ask } : {}),
+    ...(opts.planApproval ? { planApproval: opts.planApproval } : {})
   }
   ensureAgentRuntime(ctx)
   return ctx

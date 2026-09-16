@@ -4,6 +4,7 @@ import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
 import Workbench from './components/Workbench'
 import ConfirmDialog from './components/ConfirmDialog'
+import PlanApprovalDialog from './components/PlanApprovalDialog'
 import Splitter from './components/Splitter'
 import {
   DOCK_MAX,
@@ -175,6 +176,8 @@ export default function App() {
       </div>
       {/* 危险操作确认（plan8 R5）：全局只挂一个 —— 主进程推请求即弹出 */}
       <ConfirmDialog />
+      {/* 计划批准（plan27）：同确认框，全局挂一个；planner 出完方案时推请求 */}
+      <PlanApprovalDialog />
     </div>
   )
 }

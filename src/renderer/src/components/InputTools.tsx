@@ -228,9 +228,11 @@ export const PERM_LABEL: Record<PermissionPreset, string> = {
 }
 
 export const PERM_HINT: Record<PermissionPreset, string> = {
-  'read-only': '模型只能读取文件，不能修改。',
+  'read-only': '模型只能读取工作区内的文件，不能修改。',
   write: '可读写工作区内文件；执行命令仍需逐次授权。',
-  'full-access': '含命令执行，且不再逐次确认（谨慎使用）。'
+  // plan29 D-089：档位「名实相符」后，这一档的边界从"免确认"扩到了"文件系统无边界"——
+  // 文案必须**同时**把这两件事说出来。只说"不逐次确认"，用户不会知道模型现在能碰工作区外的文件。
+  'full-access': '可读写工作区**外**的任意文件（不再限制在工作区内）；含命令执行，且不再逐次确认。谨慎使用。'
 }
 
 /** 访问权限档（D-032：唯一由人决定的档位 —— 能力归模型，权限归人） */

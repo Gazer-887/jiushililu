@@ -5,19 +5,36 @@ import { statusText } from '@shared/background'
 import { buildSearchSpec, SearchQueryError } from '@shared/search-query'
 import { runSearch, renderSearchOutcome } from '../../retrieval/search'
 import type { BackgroundTaskStore } from '../background-tasks'
-import { resolveInsideWorkspace } from '../guard'
+import { resolvePathInWorkspace, type PathAccess } from '../guard'
 
 // 系统类工具（P1 工具层补全）：列目录 / 文本搜索 / 命令执行。
-// 前三者只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
+// 前三者默认只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
+// ⚠️ 这个「内」是**默认**，不是绝对约束（plan29 D-089）：「完全访问」档在 **Agent 线**上无边界，
+//    此时 `pathAccess.allowOutside` 为 true，界外路径**放行但如实回显绝对路径**（决议 2）。
+//    界面线的文件访问不受档位影响，分界见 `guard.ts` 的 `PathAccess` 注释。
 // ⚠️ run_command 是高危工具：**内核默认工具集不含它**，自定义 Agent 显式声明才下发；
-// 而可写档下每次执行前还要**逐次确认**（plan8 R5，确认钩子由组合根注入）。限时 30s、输出上限 1MB、cwd 锁工作区。
+// 而可写档下每次执行前还要**逐次确认**（plan8 R5，确认钩子由组合根注入）。
+// 限时与输出上限见 DEFAULT_COMMAND_TIMEOUT_MS / MAX_COMMAND_OUTPUT（plan28 D-086/D-088 起可调、且失败**分型**）；cwd 锁工作区。
 //
 // ⚠️ `search_files` 是 **L0 检索**（plan3/plan4）：走 `main/retrieval/` —— **优先 ripgrep**，
 //    找不到/跑不动才降级到内置扫描器，且**降级这件事会写在返回值里**（不然"搜不到"与"没搜"同形）。
 
 const MAX_LIST_ENTRIES = 500
 const MAX_SEARCH_RESULTS = 200
-const MAX_COMMAND_OUTPUT = 1024 * 1024
+/**
+ * 前台命令的输出上限（plan28 D-088）。
+ *
+ * ⚠️ 这里从 1MB 提到 8MB，是**有意的取舍**：`exec` 一旦超限就会**杀掉子进程**（命令并没有跑完），
+ * 所以"打到上限"这件事本身就该罕见 —— 上限太低，`npm install` 之类的正常输出会**频繁**撞上它，
+ * 于是"命令被我们掐了"被误读成"命令失败了"。调高上限 + 把超限如实报出来，两件事一起做才成立。
+ */
+const MAX_COMMAND_OUTPUT = 8 * 1024 * 1024
+/** 前台命令默认超时（plan28 D-086）。30s 对 `npm install` / `npm test` / `build` 必然不够 —— 这是从 Claude Code 的 `BASH_DEFAULT_TIMEOUT_MS` 借来的口径 */
+const DEFAULT_COMMAND_TIMEOUT_MS = 120_000
+/** 模型可以传的上限：再长就该走后台（`background: true`），前台干等只会把整轮对话卡住 */
+const MAX_COMMAND_TIMEOUT_MS = 600_000
+/** 下限：1000ms 以下基本是笔误（想"快速探一下"用不着 200ms，真跑不完的命令也不是靠它救） */
+const MIN_COMMAND_TIMEOUT_MS = 1_000
 
 /**
  * 危险操作确认钩子（plan8 R5）：注入式回调 —— 工具层不需要知道确认从哪来（主进程弹窗 / 测试直接给答案），
@@ -29,9 +46,10 @@ export function createSystemTools(
   workspaceRoot: string,
   background?: BackgroundTaskStore,
   agentLabel = '内核',
-  resourcesPath?: string | null
+  resourcesPath?: string | null,
+  pathAccess?: PathAccess
 ): AgentTool[] {
-  return buildSystemTools(workspaceRoot, undefined, background, agentLabel, resourcesPath)
+  return buildSystemTools(workspaceRoot, undefined, background, agentLabel, resourcesPath, pathAccess)
 }
 
 export function createSystemToolsWithConfirm(
@@ -39,9 +57,10 @@ export function createSystemToolsWithConfirm(
   confirm: CommandConfirm,
   background?: BackgroundTaskStore,
   agentLabel = '内核',
-  resourcesPath?: string | null
+  resourcesPath?: string | null,
+  pathAccess?: PathAccess
 ): AgentTool[] {
-  return buildSystemTools(workspaceRoot, confirm, background, agentLabel, resourcesPath)
+  return buildSystemTools(workspaceRoot, confirm, background, agentLabel, resourcesPath, pathAccess)
 }
 
 function buildSystemTools(
@@ -49,11 +68,29 @@ function buildSystemTools(
   confirm: CommandConfirm | undefined,
   background: BackgroundTaskStore | undefined,
   agentLabel: string,
-  resourcesPath?: string | null
+  resourcesPath?: string | null,
+  pathAccess?: PathAccess
 ): AgentTool[] {
+  /**
+   * 解析一次，拿到**绝对路径**与**越界提示**（plan29 D-089 决议 2，与 `file-tools` 同手法）。
+   * 界外被放行时用户唯一的保障就是"看得见它出了界"，故提示与解析一起算，不在各工具里各判一遍。
+   */
+  const locate = (rel: string): { abs: string; note: string; outside: boolean } | null => {
+    const r = resolvePathInWorkspace(workspaceRoot, rel, pathAccess)
+    if (!r) return null
+    return { abs: r.abs, outside: r.outside, note: r.outside ? `【工作区外：${r.abs}】\n` : '' }
+  }
+
+  /**
+   * 档位说明追加到描述里：反正是"完全访问"，就别让模型还按"我只能看工作区"来猜——
+   * 否则这套能力要靠它撞一次错误才发现，等于没做。反之（锁死档）不加，避免暗示它越界是可以试的。
+   */
+  const scopeHint =
+    pathAccess?.allowOutside === true ? '（当前为完全访问档，工作区外的路径也可指定，越界会在结果里标注绝对路径）' : ''
+
   const list_dir: AgentTool = {    schema: {
       name: 'list_dir',
-      description: '列出工作区内某个目录的内容（名称 + 类型）',
+      description: '列出工作区内某个目录的内容（名称 + 类型）' + scopeHint,
       parameters: {
         type: 'object',
         properties: {
@@ -63,17 +100,17 @@ function buildSystemTools(
     },
     async execute(args) {
       const rel = typeof args['path'] === 'string' ? args['path'] : '.'
-      const abs = resolveInsideWorkspace(workspaceRoot, rel)
-      if (!abs) return `错误：路径「${rel}」越出工作区边界，拒绝列出`
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝列出`
       try {
-        const entries = readdirSync(abs, { withFileTypes: true })
-        if (entries.length === 0) return '（空目录）'
+        const entries = readdirSync(located.abs, { withFileTypes: true })
+        if (entries.length === 0) return `${located.note}（空目录）`
         const lines = entries.slice(0, MAX_LIST_ENTRIES).map((e) => {
           const kind = e.isDirectory() ? '[目录]' : '[文件]'
           return `${kind} ${e.name}`
         })
         const more = entries.length > MAX_LIST_ENTRIES ? `\n（其余 ${entries.length - MAX_LIST_ENTRIES} 项省略）` : ''
-        return lines.join('\n') + more
+        return located.note + lines.join('\n') + more
       } catch (err) {
         return `错误：列出失败——${err instanceof Error ? err.message : String(err)}`
       }
@@ -86,7 +123,8 @@ function buildSystemTools(
       description:
         '在工作区内做文本搜索，返回"文件:行号: 行内容"（L0 检索，优先 ripgrep）。' +
         '默认按**字面量**匹配、不区分大小写。需要模式匹配时把 regex 设为 true（如 `function\\s+\\w+`）；' +
-        '需要精确大小写时把 caseSensitive 设为 true。默认尊重 .gitignore、跳过依赖与构建产物目录。',
+        '需要精确大小写时把 caseSensitive 设为 true。默认尊重 .gitignore、跳过依赖与构建产物目录。' +
+        scopeHint,
       parameters: {
         type: 'object',
         properties: {
@@ -100,8 +138,9 @@ function buildSystemTools(
     },
     async execute(args) {
       const baseRel = typeof args['path'] === 'string' ? args['path'] : '.'
-      const base = resolveInsideWorkspace(workspaceRoot, baseRel)
-      if (!base) return `错误：路径「${baseRel}」越出工作区边界，拒绝搜索`
+      const located = locate(baseRel)
+      if (!located) return `错误：路径「${baseRel}」越出工作区边界，拒绝搜索`
+      const base = located.abs
 
       let spec: ReturnType<typeof buildSearchSpec>
       try {
@@ -118,13 +157,15 @@ function buildSystemTools(
 
       try {
         const outcome = await runSearch({
-          workspaceRoot,
+          // 检索起点在界外时，把**它自己**当作展示基准：命中在界外没有"相对工作区"的合理写法
+          // （`relative()` 会渲染成一串 `../../`，既不可点也没有信息量）。界内的行为一字未改。
+          workspaceRoot: located.outside ? base : workspaceRoot,
           basePath: base,
           spec,
           maxResults: MAX_SEARCH_RESULTS,
           resourcesPath: resourcesPath ?? null
         })
-        return renderSearchOutcome(outcome, spec)
+        return located.note + renderSearchOutcome(outcome, spec)
       } catch (err) {
         return `错误：搜索失败——${err instanceof Error ? err.message : String(err)}`
       }
@@ -135,9 +176,12 @@ function buildSystemTools(
     schema: {
       name: 'run_command',
       description:
-        '在工作区根执行一条 shell 命令。前台：限时 30s、输出截断 1MB；' +
+        `在工作区根执行一条 shell 命令。前台：默认限时 ${DEFAULT_COMMAND_TIMEOUT_MS / 1000}s（可用 timeoutMs 放宽，` +
+        `上限 ${MAX_COMMAND_TIMEOUT_MS / 1000}s）、输出超 ${MAX_COMMAND_OUTPUT / 1024 / 1024}MB 会被终止；` +
         '设 background=true 则转**后台**执行（立即返回任务 id，用 check_command 查看输出与状态）——' +
-        '构建、起服务、下载这类耗时的活该用后台。高危工具：仅在明确需要时使用。',
+        '构建、起服务、下载这类耗时的活该用后台。' +
+        '装依赖 / 跑测试 / 构建这类通常超过默认限时的命令，请显式传 timeoutMs。' +
+        '高危工具：仅在明确需要时使用。',
       parameters: {
         type: 'object',
         properties: {
@@ -145,6 +189,10 @@ function buildSystemTools(
           background: {
             type: 'boolean',
             description: 'true = 后台执行（适合耗时的活）；默认 false 前台执行'
+          },
+          timeoutMs: {
+            type: 'number',
+            description: `前台执行的超时毫秒数（默认 ${DEFAULT_COMMAND_TIMEOUT_MS}，允许 ${MIN_COMMAND_TIMEOUT_MS}~${MAX_COMMAND_TIMEOUT_MS}）；超时后命令会被终止并如实回报`
           }
         },
         required: ['command']
@@ -153,6 +201,24 @@ function buildSystemTools(
     async execute(args) {
       const command = typeof args['command'] === 'string' ? args['command'] : ''
       if (command.trim().length === 0) return '错误：command 不能为空'
+
+      // 超时口径（plan28 D-086）：越界**拒绝并回报**，不静默夹取 ——
+      // 静默夹取会让模型以为"我设了 5 分钟"，实际 30 秒就断了，然后它按"命令失败了"往下推理。
+      let timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS
+      const rawTimeout = args['timeoutMs']
+      if (rawTimeout !== undefined && rawTimeout !== null) {
+        const n = typeof rawTimeout === 'number' ? rawTimeout : Number(rawTimeout)
+        if (!Number.isFinite(n)) {
+          return `错误：timeoutMs 必须是数字，收到 ${JSON.stringify(rawTimeout)}`
+        }
+        if (n < MIN_COMMAND_TIMEOUT_MS || n > MAX_COMMAND_TIMEOUT_MS) {
+          return (
+            `错误：timeoutMs=${n} 超出允许范围（${MIN_COMMAND_TIMEOUT_MS}~${MAX_COMMAND_TIMEOUT_MS} 毫秒）。` +
+            `需要更长时间请用 background=true 转后台执行。`
+          )
+        }
+        timeoutMs = Math.floor(n)
+      }
 
       // 逐次确认（plan8 R5）：命令是任意文本，静态规则判不全危险与否 —— 与其猜，不如把原文摊给用户看一眼。
       // **后台同样确认**（用户 2026-09-12 敲定的边界之一）—— 安全不因为"后台"打折。
@@ -173,16 +239,51 @@ function buildSystemTools(
         }
       }
 
+      const startedAt = Date.now()
       return new Promise((resolvePromise) => {
         exec(
           command,
-          { cwd: workspaceRoot, timeout: 30000, maxBuffer: MAX_COMMAND_OUTPUT, windowsHide: true },
+          { cwd: workspaceRoot, timeout: timeoutMs, maxBuffer: MAX_COMMAND_OUTPUT, windowsHide: true },
           (error, stdout, stderr) => {
             // plan8 R9.1：**这里不再砍尾**。以前是 `stdout.slice(0, 8000)` 保留**开头**，而错误与结论在**末尾** ——
             // "输出太长"时用户永远看不到有结论的那半截。现在原样交回（上限由 maxBuffer 兜底），形状只在 loop.ts 一处决定。
             const out = stdout.toString()
             const errText = stderr.toString()
+            const elapsed = Date.now() - startedAt
             if (error) {
+              // ── 失败必须**分型**（plan28 D-088）─────────────────────────────
+              // 三种"error"性质完全不同，混成一句"命令执行出错"会把模型引向错误结论：
+              //  · 输出超限 —— 是**我们的**上限掐的，命令本身未必有问题（以前就报成"执行出错"，是误报）
+              //  · 超时     —— 是我们等的耐心用完了，命令可能还在正常推进（只是慢）
+              //  · 真出错   —— 命令自己失败了，这才该让模型去读 stderr 改代码
+              const code = (error as NodeJS.ErrnoException).code
+              if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+                const mb = Math.round(MAX_COMMAND_OUTPUT / 1024 / 1024)
+                resolvePromise(
+                  `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
+                    `以下是终止前收到的前 ${mb}MB：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
+                    `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）`
+                )
+                return
+              }
+              // ⚠️ 超时判据**实测得来**（Node 22 本机验证，别再凭印象改）：
+              //    超时被杀 → `code: null`、`killed: true`、`signal: 'SIGTERM'`；
+              //    命令自己失败 → `code` 是数字退出码、`killed: false`。
+              //    故三条同时成立才算超时：被我们杀了 + 有终止信号 + 用时确实贴到限时。
+              //    只看 `killed` 的话，被外部信号（任务管理器 / 内存回收）杀掉的命令会被**误报成超时**。
+              const errSignal = (error as { signal?: NodeJS.Signals | null }).signal ?? null
+              const timedOut =
+                (error as { killed?: boolean }).killed === true &&
+                errSignal !== null &&
+                elapsed >= timeoutMs - 100
+              if (timedOut) {
+                resolvePromise(
+                  `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
+                    `已收到的部分输出：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
+                    `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）`
+                )
+                return
+              }
               resolvePromise(`命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}`)
               return
             }

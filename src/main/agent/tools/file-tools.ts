@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import type { AgentTool } from '@shared/agent'
 import { estimateTokens } from '@shared/tokens'
-import { resolveInsideWorkspace } from '../guard'
+import { resolvePathInWorkspace } from '../guard'
 import type { WorkspaceWriter } from '../../workspace-write'
 import type { TokenPolicy } from '@shared/token-tier'
 
@@ -27,6 +27,165 @@ const MAX_LINE_CHARS = 2000
  */
 const MAX_WINDOW_TOKENS = 12_000
 
+/** edit 单次能改的最大文件（与 read_file 同口径 —— 改一个读不动的文件没有意义） */
+const MAX_EDIT_BYTES = 8 * 1024 * 1024
+
+/** 一处替换：`oldText` 必须与文件内容逐字符一致；`newText` 为空串 = 删除这一段 */
+export interface EditSpec {
+  oldText: string
+  newText: string
+}
+
+export interface EditApplied {
+  index: number
+  /** 命中原样的第几行（1 起，给人看的定位提示） */
+  line: number
+  /** exact = 逐字符命中；normalized = 只差换行符口径（见 `applyExactEdits` 的说明） */
+  matchedBy: 'exact' | 'normalized'
+  /** 这一处替换的字节增量（可正可负） */
+  deltaBytes: number
+}
+
+export type EditOutcome =
+  | { ok: true; text: string; applied: EditApplied[] }
+  | { ok: false; reason: string; /** 第几处出的问题（0 起）；非"某一处"的问题（如 edits 为空）为 -1 */ index: number }
+
+/** 把字符串按 `\r\n` → `\n` 归一，同时记下「归一后的每个下标来自原文哪个下标」，供命中原位回溯 */
+function normalizeWithMap(src: string): { text: string; map: number[] } {
+  let text = ''
+  const map: number[] = []
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!
+    if (ch === '\r' && src[i + 1] === '\n') continue // 丢掉 \r，保留后面的 \n
+    text += ch
+    map.push(i)
+  }
+  return { text, map }
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  let n = 0
+  let from = 0
+  for (;;) {
+    const at = haystack.indexOf(needle, from)
+    if (at < 0) return n
+    n++
+    from = at + needle.length
+  }
+}
+
+const lineOf = (text: string, index: number): number => countOccurrences(text.slice(0, index), '\n') + 1
+
+const preview = (s: string, max = 72): string => {
+  const flat = s.replace(/\r?\n/g, '↵')
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat
+}
+
+/**
+ * 文件 EOL 口径：文件里出现过 CRLF 就按 CRLF 写回，否则 LF。
+ * **为什么必须管这件事**：Windows 上文件普遍是 CRLF，而模型产出的 `newText` 多半是 LF；
+ * 原样写进去就会在同一文件里**混两种换行**，此后每次 diff 都飘、每次保存都改一整片 —— 这是
+ * 混久了才发现、又极难回退的一类脏。文件里没有任何换行时不做转换（无从判断，也不该猜）。
+ */
+function eolOf(text: string): '\r\n' | '\n' | null {
+  if (text.includes('\r\n')) return '\r\n'
+  if (text.includes('\n')) return '\n'
+  return null
+}
+
+const toEol = (s: string, eol: '\r\n' | '\n'): string =>
+  eol === '\r\n' ? s.replace(/\r?\n/g, '\r\n') : s.replace(/\r\n/g, '\n')
+
+/**
+ * 逐处应用精确替换，**任一处失配则整次不做**（原子性）。
+ *
+ * 三条判据（都是"改错文件比不改更糟"推出来的）：
+ * ① **不唯一即拒绝** —— 命中的是一段没头没尾的短串（如 `}`、`return`）时，替换哪一处全凭猜；
+ *    宁可让模型补上下文重来，也不要它悄悄改错地方；
+ * ② **一处都不命中就一处都不改** —— 否则"改了一半"的文件既不是旧的也不是新的，比全失败更难收拾；
+ * ③ **为空即拒绝** —— 空串在哪儿都能匹配上，是纯粹的破坏性输入。
+ *
+ * 关于"失败重试"（plan28 D-084 原话「匹配不到 → 先读刷新 → 再试」）：
+ * 本函数在**执行时**才读盘，拿到的**已经是最新内容**，"再读一次"不会改变匹配结果 ——
+ * 真正会让匹配落空的口径差是**换行符**（Windows 文件是 CRLF、模型给的是 LF）与**行尾空白**。
+ * 故把"重试"落在**归一化重匹配**上（第二步），而不是把同样的比较跑两遍装作重试过。
+ */
+export function applyExactEdits(source: string, edits: EditSpec[]): EditOutcome {
+  if (edits.length === 0) return { ok: false, reason: 'edits 为空：至少要给一处替换', index: -1 }
+
+  // 文件级 EOL 口径：命中片段本身不含换行时（改一个单词就是这种），拿它当兜底 ——
+  // 用"片段里有没有换行"当唯一判据的话，最常见的单行替换反而永远判不出该用哪种换行。
+  const fileEol = eolOf(source)
+  let text = source
+  const applied: EditApplied[] = []
+
+  for (let i = 0; i < edits.length; i++) {
+    const edit = edits[i]!
+    const oldText = edit.oldText
+    const newText = edit.newText ?? ''
+    if (typeof oldText !== 'string' || oldText.length === 0) {
+      return { ok: false, reason: `第 ${i + 1} 处：oldText 为空。空串在任何位置都能匹配，已拒绝执行`, index: i }
+    }
+
+    let at = -1
+    let spanEnd = -1
+    let matchedBy: 'exact' | 'normalized' = 'exact'
+
+    const exactHits = countOccurrences(text, oldText)
+    if (exactHits === 1) {
+      at = text.indexOf(oldText)
+      spanEnd = at + oldText.length
+    } else if (exactHits > 1) {
+      return {
+        ok: false,
+        reason: `第 ${i + 1} 处：oldText 在文件里匹配到 ${exactHits} 处，无法确定改哪一个。请把上下几行一起写进 oldText 让它唯一`,
+        index: i
+      }
+    } else {
+      // 第二步：归一化换行后重匹配（见函数头的说明）
+      const norm = normalizeWithMap(text)
+      const normOld = normalizeWithMap(oldText).text
+      const hits = countOccurrences(norm.text, normOld)
+      if (hits === 1) {
+        const j = norm.text.indexOf(normOld)
+        at = norm.map[j]! // 归一化下标 → 原文下标
+        spanEnd = norm.map[j + normOld.length - 1]! + 1
+        matchedBy = 'normalized'
+      } else if (hits > 1) {
+        return {
+          ok: false,
+          reason: `第 ${i + 1} 处：oldText（忽略换行符差异后）匹配到 ${hits} 处，无法确定改哪一个。请补上更多上下文`,
+          index: i
+        }
+      } else {
+        return {
+          ok: false,
+          reason:
+            `第 ${i + 1} 处：oldText 在文件里找不到。` +
+            `请用 read_file 重新读一遍再改（内容可能已被别的操作改动过），注意 oldText 必须与文件逐字符一致（含缩进）`,
+          index: i
+        }
+      }
+    }
+
+    // 这一段实际在文件里用的换行口径，以它为准写回 newText（防混两种换行）；
+    // 片段里没有换行就退回文件级口径（见 fileEol 的注释）。
+    const segmentEol = eolOf(text.slice(at, spanEnd)) ?? fileEol
+    const nextText = segmentEol ? toEol(newText, segmentEol) : newText
+    const line = lineOf(text, at)
+
+    text = text.slice(0, at) + nextText + text.slice(spanEnd)
+    applied.push({
+      index: i,
+      line,
+      matchedBy,
+      deltaBytes: Buffer.byteLength(nextText, 'utf8') - Buffer.byteLength(oldText, 'utf8')
+    })
+  }
+
+  return { ok: true, text, applied }
+}
+
 /** 参数是模型给的，什么形状都可能：缺、字符串、0、负数、小数 —— 一律归到一个合法正整数 */
 function toPositiveInt(v: unknown, fallback: number): number {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : Number.NaN
@@ -41,11 +200,32 @@ function toPositiveInt(v: unknown, fallback: number): number {
 export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): AgentTool[] {
   /** 默认读多少行（平衡档 = 200，与改造前一致） */
   const defaultLines = policy?.readLines ?? DEFAULT_LIMIT_LINES
+
+  /**
+   * 解析一次，同时拿到**绝对路径**与**越界提示**（plan29 D-089 决议 2）。
+   *
+   * 为什么把这两件事合在一起：界外被放行时，用户唯一的保障就是「**看得见它出了界**」——
+   * 若结果里只回显模型给的那个相对路径，界内界外长得一模一样，等于没有提示。
+   * 而"出没出界"只有在解析时才判得了，故一并算出来，不在工具里各判一遍。
+   *
+   * ⚠️ 边界策略来自 **writer**（`allowsOutside`），不是工具自己读档位：
+   * 档位 → writer 只有一条路径（`runner.ts`），少一条重复的判断就少一处漂移。
+   */
+  const locate = (rel: string): { abs: string; note: string } | null => {
+    const r = resolvePathInWorkspace(writer.root, rel, { allowOutside: writer.allowsOutside })
+    if (!r) return null
+    return { abs: r.abs, note: r.outside ? `【工作区外：${r.abs}】\n` : '' }
+  }
+
+  /** 档位说明（与 system-tools 同口径）：既然完全访问档没有边界，就别让模型还按"我只能看工作区"猜 */
+  const scopeHint =
+    writer.allowsOutside ? '（当前为完全访问档，工作区外的路径也可指定，越界会在结果里标注绝对路径）' : ''
+
   const read_file: AgentTool = {
     schema: {
       name: 'read_file',
       description:
-        `读取工作区内一个文本文件的一段内容（默认第 1 行起、最多 ${defaultLines} 行）。` +
+        `读取工作区内一个文本文件的一段内容（默认第 1 行起、最多 ${defaultLines} 行）。${scopeHint}` +
         '返回的每一行前面都有「行号|」前缀，那是**定位用的，不属于文件内容**。' +
         '要读后面的内容：把 offset 设成上一段末尾行号加一。文件很长时不要一次全要 —— 先看结构再按需取段。',
       parameters: {
@@ -60,8 +240,9 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
     },
     async execute(args) {
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
-      const abs = resolveInsideWorkspace(writer.root, rel)
-      if (!abs) return `错误：路径「${rel}」越出工作区边界，拒绝读取`
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝读取`
+      const { abs, note } = located
       try {
         const buf = await readFile(abs)
         if (buf.byteLength > MAX_READ_BYTES) {
@@ -114,7 +295,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         const clipNote =
           clipped.length > 0 ? `\n（其中第 ${clipped.join('、')} 行**超长已掐断**，如需完整内容请针对性读取）` : ''
 
-        return `${body}${footer}${clipNote}`
+        return `${note}${body}${footer}${clipNote}`
       } catch (err) {
         return `错误：读取失败——${err instanceof Error ? err.message : String(err)}`
       }
@@ -124,7 +305,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
   const write_file: AgentTool = {
     schema: {
       name: 'write_file',
-      description: '把文本内容写入工作区内的一个文件（覆盖式写入，路径不存在会自动创建）',
+      description: '把文本内容写入工作区内的一个文件（覆盖式写入，路径不存在会自动创建）' + scopeHint,
       parameters: {
         type: 'object',
         properties: {
@@ -138,13 +319,106 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
       const content = typeof args['content'] === 'string' ? args['content'] : null
       if (content === null) return '错误：缺少 content 参数'
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝写入`
       try {
-        return await writer.write(rel, content)
+        return `${located.note}${await writer.write(rel, content)}`
       } catch (err) {
         return `错误：${err instanceof Error ? err.message : String(err)}`
       }
     }
   }
 
-  return [read_file, write_file]
+  const edit: AgentTool = {
+    schema: {
+      name: 'edit',
+      description:
+        '在文件里做**精确字符串替换** —— 改几行就用它，不要用 write_file 重写整个文件（重写既费 token，' +
+        '还有被输出上限截断、改出残缺文件的风险）。' +
+        'oldText 必须与文件内容**逐字符一致**（含缩进与空行），且在文件里**只出现一次**；' +
+        '出现多次或一次都没有都会被拒绝（一次都不改，避免改坏一半）。' +
+        '一次可以给多处替换，按数组顺序应用；任何一处不成立则整次不做。' +
+        scopeHint,
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对工作区根的文件路径' },
+          edits: {
+            type: 'array',
+            description: '要做的替换，按顺序应用；任一处不成立则整个调用不做任何改动',
+            items: {
+              type: 'object',
+              properties: {
+                oldText: {
+                  type: 'string',
+                  description: '要被替换掉的原文，逐字符一致且在文件里唯一；建议连上下各带一两行做定位'
+                },
+                newText: { type: 'string', description: '替换成的新内容；空串表示删除这一段' }
+              },
+              required: ['oldText', 'newText']
+            }
+          }
+        },
+        required: ['path', 'edits']
+      }
+    },
+    async execute(args) {
+      const rel = typeof args['path'] === 'string' ? args['path'] : ''
+      const rawEdits = args['edits']
+      if (!Array.isArray(rawEdits)) return '错误：缺少 edits 参数（应为替换列表）'
+      const edits: EditSpec[] = rawEdits.map((e) => {
+        const o = (e ?? {}) as Record<string, unknown>
+        return {
+          oldText: typeof o['oldText'] === 'string' ? o['oldText'] : '',
+          newText: typeof o['newText'] === 'string' ? o['newText'] : ''
+        }
+      })
+
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝修改`
+      const { abs, note } = located
+      let source: string
+      try {
+        const buf = await readFile(abs)
+        if (buf.byteLength > MAX_EDIT_BYTES) {
+          return `错误：文件超过 ${Math.round(MAX_EDIT_BYTES / 1024 / 1024)}MB，edit 拒绝处理（请改用命令行工具）`
+        }
+        if (buf.subarray(0, 8192).includes(0)) {
+          return `错误：「${rel}」看起来是二进制文件（含 NUL 字节），edit 只处理文本`
+        }
+        source = buf.toString('utf8')
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        // 「文件不存在」与「读不了」要分开说：前者该改用 write_file，后者该查权限/占用
+        if (/ENOENT/.test(msg)) return `错误：「${rel}」不存在。新建文件请用 write_file`
+        return `错误：读取失败——${msg}`
+      }
+
+      const outcome = applyExactEdits(source, edits)
+      if (!outcome.ok) {
+        const which = outcome.index >= 0 ? `（第 ${outcome.index + 1} 处替换）` : ''
+        return `错误：未做任何改动${which}。${outcome.reason}`
+      }
+      // 内容没变就不写：省下一次无意义的检查点快照（回滚面板里多一条空记录只会让人困惑）
+      if (outcome.text === source) return `${note}「${rel}」内容无变化，未写入（替换文本与原文相同）`
+
+      try {
+        const wrote = await writer.write(rel, outcome.text)
+        const notes = outcome.applied.map((a) => {
+          const sign = a.deltaBytes >= 0 ? `+${a.deltaBytes}` : `${a.deltaBytes}`
+          const how = a.matchedBy === 'normalized' ? '，按换行符口径归一后命中' : ''
+          return `  ${a.index + 1}. 第 ${a.line} 行起（${sign} 字节${how}）`
+        })
+        const delta = outcome.applied.reduce((n, a) => n + a.deltaBytes, 0)
+        return (
+          `${note}${wrote}\n共 ${outcome.applied.length} 处替换，净变化 ${delta >= 0 ? '+' : ''}${delta} 字节：\n${notes.join('\n')}\n` +
+          `（首处 - ${preview(edits[0]!.oldText)}\n    + ${preview(edits[0]!.newText)}）`
+        )
+      } catch (err) {
+        return `错误：${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+  }
+
+  return [read_file, write_file, edit]
 }

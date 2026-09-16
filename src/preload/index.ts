@@ -26,6 +26,8 @@ import {
   type ConversationCreateInput,
   type McpServerConfig,
   type PermissionPreset,
+  type PlanApprovalRequest,
+  type PlanApprovalResult,
   type SettingsSaveInput,
   type ToolConfirmRequest
 } from '@shared/ipc'
@@ -185,6 +187,10 @@ const api: ApiBridge = {
   // 提问（Agent 向用户要主意）：载荷**不走信封**（本来就没有 payload 包装），会话身份在 `AskRequest` 字段里
   onAskRequest: (cb) => subscribe(IPC.askRequest, (req) => cb(req as AskRequest)),
   respondAsk: (result: AskResult) => ipcRenderer.invoke(IPC.askRespond, result),
+  // 计划批准（plan27）：写法同 ask —— 载荷**不走信封包装**，会话身份在 `PlanApprovalRequest` 自己的字段里
+  onPlanApprovalRequest: (cb) => subscribe(IPC.planApprovalRequest, (req) => cb(req as PlanApprovalRequest)),
+  respondPlanApproval: (result: PlanApprovalResult) =>
+    ipcRenderer.invoke(IPC.planApprovalRespond, result),
   getUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsGet),
   setUIPrefs: (patch) => ipcRenderer.invoke(IPC.uiPrefsSet, patch),
   resetUIPrefs: () => ipcRenderer.invoke(IPC.uiPrefsReset),

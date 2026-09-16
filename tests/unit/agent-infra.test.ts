@@ -234,4 +234,34 @@ describe('runSubagents（子代理调度器）', () => {
     expect(results.find((r) => r.name === 'bad')?.ok).toBe(false)
     expect(results.find((r) => r.name === 'bad')?.error).toContain('炸了')
   })
+
+  it('带 approval:plan 的定义当子代理跑 → **照常跑完，不会停下来等批准**（plan27 判据 4）', async () => {
+    // 这是 plan27 最关键的一条**结构属性**：批准闸挂在 `runAgent` 上，而子代理走的是
+    // `runAgentLoop` —— 调度器**根本拿不到**批准桥（`SubagentRunOptions` 里没有这个字段）。
+    // 若哪天有人"顺手"把闸挪进主循环，本用例会挂起直到超时，正是我们要的信号。
+    let rounds = 0
+    const results = await runSubagents({
+      definitions: [
+        {
+          name: 'detail-planner',
+          description: '规划员',
+          systemPrompt: '给方案',
+          approval: 'plan', // ← 就是它：主对话里会停下来等点头
+          executor: 'code-executor',
+          source: 'global' as const
+        }
+      ],
+      task: '给个方案',
+      tools: [],
+      chatFactory: () => async () => {
+        rounds++
+        return { text: '## 方案\n1. 改 A', toolCalls: [] } satisfies AgentChatResult
+      }
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]?.ok).toBe(true)
+    expect(results[0]?.output).toContain('改 A') // 方案原样回流，没有卡在等人点头
+    expect(rounds).toBe(1) // 只跑了一轮，没有被"批准后再跑一轮"放大成两轮
+  })
 })

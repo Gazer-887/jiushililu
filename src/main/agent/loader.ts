@@ -15,6 +15,13 @@ export interface AgentDefinition {
   tools?: string[]
   /** 模型偏好；缺省 = 当前会话模型 */
   model?: string
+  /**
+   * plan27 计划批准：本 agent 产出方案后**停下等用户点头**，批准后才由 executor 执行。
+   * 缺省 = 无此行为 —— 不写这个字段的 agent 完全不受影响（老定义零回归）。
+   */
+  approval?: 'plan'
+  /** plan27：批准后由哪个 agent 执行；缺省按 `code-executor` → 内核默认 兜底（声明了不存在的名字也走兜底，不报错） */
+  executor?: string
   /** 职责描述正文（frontmatter 之后的全部内容）——作为子代理的 system prompt */
   systemPrompt: string
   source: AgentSource
@@ -83,8 +90,13 @@ export function parseAgentDefinition(raw: string, source: AgentSource, file: str
   if (!check.ok) throw new Error(`${fileLabel}：${check.reason}`)
 
   const def: AgentDefinition = { name, description, systemPrompt: body.trim(), source, file }
+  // 解析口径与 tools/model 一致：**宽松解析、不验成员**。乱写的值忽略而不是报错 ——
+  // 硬规则只有 name/description/正文三条（唯一真源在 @shared/agents 的 validateAgentFields），
+  // 多出来的可选元数据不该因为写歪一个词就让整个定义加载失败。
   if (Array.isArray(fm['tools'])) def.tools = fm['tools']
   if (typeof fm['model'] === 'string' && fm['model'].length > 0) def.model = fm['model']
+  if (fm['approval'] === 'plan') def.approval = 'plan'
+  if (typeof fm['executor'] === 'string' && fm['executor'].length > 0) def.executor = fm['executor']
   return def
 }
 

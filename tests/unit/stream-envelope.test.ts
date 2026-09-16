@@ -28,7 +28,9 @@ const STREAM_CONSTS = [
   'IPC.checkpointChanged',
   'IPC.confirmRequest',
   // ask:request —— 提问也带会话身份（界面要说明这条问题出自哪条会话），故同样只许走 emitter
-  'IPC.askRequest'
+  'IPC.askRequest',
+  // plan:approve-request（plan27）—— 计划批准同样必须带会话身份：并发时用户会批了**另一条会话**的方案
+  'IPC.planApprovalRequest'
 ] as const
 
 /** 唯一允许出现流式通道常量的主进程文件 */

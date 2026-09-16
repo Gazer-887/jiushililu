@@ -21,6 +21,7 @@ export const TOOL_CATALOG: ToolCatalogItem[] = [
   { name: 'search_files', description: '在工作区内按关键词搜索文件', group: '读类' },
   { name: 'fetch_url', description: '抓取网页正文（协议白名单内）', group: '读类' },
   { name: 'write_file', description: '写入工作区文件；写入前进检查点快照，可回滚', group: '写类' },
+  { name: 'edit', description: '对文件做精确字符串替换（改几行不必重写整个文件）；同样受检查点保护', group: '写类' },
   { name: 'run_command', description: '执行系统命令；可写档下每次执行前需确认', group: '命令' },
   { name: 'check_command', description: '查询后台命令的输出与状态', group: '命令' },
   { name: 'kill_command', description: '终止后台命令及其子进程', group: '命令' },
@@ -40,6 +41,10 @@ export interface AgentListEntry {
   description: string
   tools?: string[]
   model?: string
+  /** plan27：该 Agent 产出方案后是否**停下等用户点头**（只有 `'plan'` 一个取值） */
+  approval?: 'plan'
+  /** plan27：批准后由哪个 Agent 接手执行（缺省按 code-executor → 内核默认兜底） */
+  executor?: string
   source: AgentSource
   /** 来源文件绝对路径——read/delete 都按它定位，禁止按 name 反推（文件可手改，name 与文件名可脱钩） */
   file: string
@@ -58,6 +63,16 @@ export interface AgentSaveInput {
   description: string
   tools: string[]
   model?: string
+  /**
+   * plan27：`'plan'` = 本 Agent 给出方案后**停下等用户点头**，批准后才交 `executor` 执行。
+   * 缺省 = 现有行为（跑完即返回），不受影响。
+   *
+   * ⚠️ 与**权限档位无关**：它只解决「停一下等我点头」，不解决「能不能写」——
+   * 全局档仍是硬上限，read-only 档下就算批准了 executor 也写不了。
+   */
+  approval?: 'plan'
+  /** plan27：批准后接手执行的 Agent 名。留空 = 按 `code-executor` → 内核默认兜底；写错名字也走兜底（不报错） */
+  executor?: string
   systemPrompt: string
   file?: string
 }
