@@ -8,6 +8,7 @@ import { registerIpcHandlers, getActiveConversationId } from './ipc'
 import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
+import { startWatchdog } from './watchdog'
 import { installCrashGuards } from './crash-guard'
 import { createConfirmBridge } from './confirm'
 import { createPlanApprovalBridge } from './agent/plan-approval'
@@ -91,6 +92,9 @@ if (!gotTheLock) {
       const win = getMainWindow()
       if (!win) return
       if (win.isMinimized()) win.restore()
+      // plan37 S2 连带：关窗 flush 期间主窗口被 hide()，双击图标必须 show() 回来
+      // （只 focus 对隐藏窗口无效 → 用户看着像"应用没了"）
+      if (!win.isVisible()) win.show()
       win.focus()
     })
   }
@@ -176,6 +180,9 @@ function installFlushBeforeClose(win: BrowserWindow): void {
     // 批 2：关窗前把当前会话入反思队列（队列落盘在 meta.json，下次启动补跑）
     enqueueActiveForReflection?.()
     event.preventDefault()
+    // plan37 S2：点 X 立即有反应 —— 先隐藏窗口，flush 在后台走完（最多 FLUSH_TIMEOUT_MS）。
+    // 此前死区里窗口原地不动，用户把"已受理"读成"没点上"，转而强杀进程 —— 比丢内容更糟的体验。
+    win.hide()
     try {
       win.webContents.send(IPC.flushRequest)
     } catch {
@@ -367,6 +374,9 @@ app.whenReady().then(async () => {
   initLogger(join(userDataDir, 'logs'), app.isPackaged ? 'info' : 'debug')
   // ② 异常兜底（plan8 R1）：依赖日志，故紧随其后
   installCrashGuards()
+  // ③ 事件循环看门狗（plan37 S0）：冻结只有带探针才留痕——5s 一次 tick、
+  //    停滞 >1s 才写一条 WARN，常开成本可忽略。归因靠各长任务入口的阶段标记。
+  startWatchdog()
   const log = createLogger('main')
   log.info('应用启动', { version: app.getVersion(), packaged: app.isPackaged })
 

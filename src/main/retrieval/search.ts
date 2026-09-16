@@ -5,7 +5,7 @@
 // 也让"没有 rg 会怎样"能被单测直接构造出来 —— 而那条路径正是最容易静默坏掉的。
 
 import { execFile } from 'node:child_process'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { promises as fsp, type Dirent } from 'node:fs'
 import { join, relative } from 'node:path'
 import { specToRegExp, type SearchSpec } from '@shared/search-query'
 import { resolveRipgrepPath, buildRipgrepArgs, type RipgrepLocation } from '@shared/ripgrep-locate'
@@ -56,6 +56,8 @@ export interface SearchOptions {
   runRg?: (bin: string, args: string[]) => Promise<{ stdout: string; failed: boolean; stderr: string }>
   /** 超时（默认 20s —— 大仓库首搜可能慢，但不能无限等） */
   timeoutMs?: number
+  /** 内置扫描器每处理多少个文件让出一次事件循环（测试注入；默认见常量） */
+  yieldEveryFiles?: number
 }
 
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -110,61 +112,99 @@ export function parseRipgrepJson(stdout: string, workspaceRoot: string, maxResul
   return { hits, truncated }
 }
 
-/** 内置降级扫描器（原来的实现，补上"如实报告跳过了什么"） */
-function searchBuiltin(opts: SearchOptions): SearchOutcome {
+/** 内置扫描器让出间隔：太小会把一次全树扫成毫秒级碎任务（拖慢搜索），太大失去意义 */
+const DEFAULT_YIELD_EVERY_FILES = 64
+
+/**
+ * 内置降级扫描器 —— 全程异步，每 `yieldEveryFiles` 个条目让出事件循环（plan37 S1，背景见 PLAN/plan37_卡顿治理.md）。
+ * 旧实现全同步递归，大工作区占死主进程；语义不变（跳过/如实上报/截断），readdir(withFileTypes) 一次拿齐类型。
+ */
+async function searchBuiltin(opts: SearchOptions): Promise<SearchOutcome> {
   const skipDirs = opts.skipDirs ?? DEFAULT_SKIP_DIRS
   const maxFileBytes = opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
+  const yieldEvery = opts.yieldEveryFiles ?? DEFAULT_YIELD_EVERY_FILES
   const re = specToRegExp(opts.spec)
   const hits: SearchHit[] = []
   const skippedDirs = new Set<string>()
   let tooLarge = 0
   let unreadable = 0
   let scannedFiles = 0
+  let sinceYield = 0
   let truncated = false
 
-  const walk = (dir: string): void => {
+  const yieldIfDue = async (): Promise<void> => {
+    if (++sinceYield < yieldEvery) return
+    sinceYield = 0
+    await new Promise<void>((r) => setImmediate(r))
+  }
+
+  /** 符号链接要单独 stat 定身 —— lstat 不报 directory，junction 也走这条路（不解析会静默丢） */
+  const resolveType = async (full: string, ent: Dirent): Promise<'dir' | 'file' | 'skip'> => {
+    if (ent.isDirectory()) return 'dir'
+    if (ent.isFile()) return 'file'
+    if (ent.isSymbolicLink()) {
+      try {
+        const st = await fsp.stat(full)
+        if (st.isDirectory()) return 'dir'
+        if (st.isFile()) return 'file'
+      } catch {
+        unreadable += 1
+        return 'skip'
+      }
+    }
+    // 既非文件也非目录（fifo/socket/断链）—— 旧实现会经 readFile 失败计入 unreadable，这里同口径
+    unreadable += 1
+    return 'skip'
+  }
+
+  const walk = async (dir: string): Promise<void> => {
     if (hits.length >= opts.maxResults) {
       truncated = true
       return
     }
-    let entries: string[] = []
+    let entries: Dirent[]
     try {
-      entries = readdirSync(dir)
+      entries = await fsp.readdir(dir, { withFileTypes: true })
     } catch {
       unreadable += 1
       return
     }
-    for (const name of entries) {
+    for (const ent of entries) {
       if (hits.length >= opts.maxResults) {
         truncated = true
         return
       }
-      const full = join(dir, name)
-      let st: ReturnType<typeof statSync>
+      // 让出放在循环体首 —— 放末尾会让 continue 分支（空文件/超限/跳过）永远不计入让出
+      await yieldIfDue()
+      const full = join(dir, ent.name)
+      const kind = await resolveType(full, ent)
+      if (kind === 'dir') {
+        // 跳过判定放在类型解析之后 —— 符号链接目录（lstat 不报 directory）也要能命中规则
+        if (skipDirs.has(ent.name) || ent.name.startsWith('.')) {
+          if (skipDirs.has(ent.name)) skippedDirs.add(ent.name)
+          continue
+        }
+        await walk(full)
+        continue
+      }
+      if (kind === 'skip') continue
+      let size = 0
       try {
-        st = statSync(full)
+        size = (await fsp.stat(full)).size
       } catch {
         unreadable += 1
         continue
       }
-      if (st.isDirectory()) {
-        if (skipDirs.has(name) || name.startsWith('.')) {
-          if (skipDirs.has(name)) skippedDirs.add(name)
-          continue
-        }
-        walk(full)
-        continue
-      }
-      if (st.size === 0) continue
-      if (st.size > maxFileBytes) {
-        // ⚠️ 以前是 `continue` —— **静默跳过**，用户搜大文件里的内容会得到"（无匹配）"。
+      if (size === 0) continue
+      if (size > maxFileBytes) {
+        // ⚠️ 不能静默跳过 —— 用户搜大文件里的内容会得到"（无匹配）"，必须计入 skipped。
         tooLarge += 1
         continue
       }
       scannedFiles += 1
       let text: string
       try {
-        text = readFileSync(full, 'utf8')
+        text = await fsp.readFile(full, 'utf8')
       } catch {
         unreadable += 1
         continue
@@ -184,7 +224,7 @@ function searchBuiltin(opts: SearchOptions): SearchOutcome {
     }
   }
 
-  walk(opts.basePath)
+  await walk(opts.basePath)
   return {
     hits,
     engine: 'builtin',
@@ -204,7 +244,7 @@ function searchBuiltin(opts: SearchOptions): SearchOutcome {
 export async function runSearch(opts: SearchOptions): Promise<SearchOutcome> {
   const loc = opts.location !== undefined ? opts.location : resolveRipgrepPath({ resourcesPath: opts.resourcesPath })
   if (!loc) {
-    const out = searchBuiltin(opts)
+    const out = await searchBuiltin(opts)
     return { ...out, fallbackReason: '未找到 ripgrep（随包 / 环境变量 / PATH 都没有），已用内置扫描器' }
   }
 
@@ -226,7 +266,7 @@ export async function runSearch(opts: SearchOptions): Promise<SearchOutcome> {
     // 失败（二进制不可执行、架构不符、被杀…）→ 降级，并把原因带出去。
     // ⚠️ 只有 stdout 为空才算失败：rg 命中时会以 0 退出，但被 SIGPIPE 之类打断时可能非零，
     //    这时输出是**真的**，不能因为退出码丢掉它。
-    const out = searchBuiltin(opts)
+    const out = await searchBuiltin(opts)
     return { ...out, fallbackReason: `ripgrep 执行失败（${stderr.trim().slice(0, 200) || '未知原因'}），已用内置扫描器` }
   }
 

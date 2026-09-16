@@ -2,6 +2,7 @@ import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEve
 import { toolCallDetail } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
+import { setWatchdogPhase } from '../watchdog'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { trimMessages, type TrimOptions } from './context'
 import type { ExecEventRecorder } from './exec-events'
@@ -201,42 +202,54 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       opts.execEvents?.record('tool_call', { tool: tc.name })
 
       const toolStartedAt = Date.now()
+      // 看门狗标记（plan37 S0）：save/restore 回前值 —— 单槽阶段硬写 'idle' 会抹平并发路径（见 watchdog.ts）
+      const prevPhase = setWatchdogPhase(`tool:${tc.name}`)
       let output: string
-      if (!tool) {
-        output = `错误：未知工具「${tc.name}」。可用工具：${[...toolMap.keys()].join('、') || '（无）'}`
-      } else {
-        try {
-          output = await tool.execute(parseArgs(tc.arguments))
-        } catch (err) {
-          output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
+      try {
+        if (!tool) {
+          output = `错误：未知工具「${tc.name}」。可用工具：${[...toolMap.keys()].join('、') || '（无）'}`
+        } else {
+          try {
+            output = await tool.execute(parseArgs(tc.arguments))
+          } catch (err) {
+            output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
+          }
         }
+      } finally {
+        setWatchdogPhase(prevPhase)
       }
 
       // 窗口化（plan8 R9.1）：留头尾 + 中段按行号采样 + 报错现场保护；双门控不过就原样放行
       let saved = 0
       if (windowEnabled && !SELF_MANAGED_TOOLS.has(tc.name)) {
-        // 档位（§七②）只调**三个数**：进判断的门槛、相对门、绝对预算 ——
-        // 头尾行数、采样条数不随档位变，三条红线（不静默 / 不压报错现场 / 不伪造）正挂在它们上。
-        const w = windowToolOutput(output, {
-          toolName: tc.name,
-          minBytes: policy.minBytes,
-          keepRatioMax: policy.keepRatioMax,
-          maxTokens: policy.maxTokens
-        })
-        // **静默是禁止的**：每次成形都要留痕（界面 + 主进程日志两处）。
-        // `small` = 压根没进判断，报它等于刷日志
-        if (w.reason !== 'small') {
-          opts.onToolWindowed?.({
-            name: tc.name,
-            beforeTokens: w.beforeTokens,
-            afterTokens: w.afterTokens,
-            reason: w.reason
+        // 窗口化是纯同步全量处理（大输出可达数百 KB），单独打阶段标记（plan37 S0）
+        const prevWinPhase = setWatchdogPhase(`windowing:${tc.name}`)
+        try {
+          // 档位（§七②）只调**三个数**：进判断的门槛、相对门、绝对预算 ——
+          // 头尾行数、采样条数不随档位变，三条红线（不静默 / 不压报错现场 / 不伪造）正挂在它们上。
+          const w = windowToolOutput(output, {
+            toolName: tc.name,
+            minBytes: policy.minBytes,
+            keepRatioMax: policy.keepRatioMax,
+            maxTokens: policy.maxTokens
           })
-        }
-        if (w.compressed) {
-          saved = w.beforeTokens - w.afterTokens
-          avoidedTokens += saved
-          output = w.text
+          // **静默是禁止的**：每次成形都要留痕（界面 + 主进程日志两处）。
+          // `small` = 压根没进判断，报它等于刷日志
+          if (w.reason !== 'small') {
+            opts.onToolWindowed?.({
+              name: tc.name,
+              beforeTokens: w.beforeTokens,
+              afterTokens: w.afterTokens,
+              reason: w.reason
+            })
+          }
+          if (w.compressed) {
+            saved = w.beforeTokens - w.afterTokens
+            avoidedTokens += saved
+            output = w.text
+          }
+        } finally {
+          setWatchdogPhase(prevWinPhase)
         }
       }
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -216,6 +216,30 @@ describe('runSearch（执行 + 降级）', () => {
     expect(out.engine).toBe('builtin')
     expect(out.fallbackReason).toContain('未找到 ripgrep')
     expect(out.hits.map((h) => h.file)).toContain('a.ts')
+  })
+
+  it('plan37 S1：内置扫描**让出事件循环**（旧实现全同步递归，大工作区占死主进程）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jsl-yield-'))
+    try {
+      for (let i = 0; i < 200; i++) writeFileSync(join(dir, `f${i}.txt`), `line-${i} nomatch\n`, 'utf8')
+      let heartbeats = 0
+      let stop = false
+      const beat = (): void => {
+        if (stop) return
+        heartbeats += 1
+        setImmediate(beat)
+      }
+      setImmediate(beat)
+      const out = await runSearch(
+        builtinOptions({ workspaceRoot: dir, basePath: dir, maxFileBytes: undefined, yieldEveryFiles: 1, spec: buildSearchSpec({ query: 'zzz-absent' }) })
+      )
+      stop = true
+      expect(out.scannedFiles).toBe(200)
+      // 每文件让出一次 → 心跳与扫描交替；旧同步实现里这里只会是 0~1
+      expect(heartbeats).toBeGreaterThan(50)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('**超过大小上限的文件被跳过时会计数**（以前是静默 continue）', async () => {

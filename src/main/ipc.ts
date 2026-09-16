@@ -197,6 +197,7 @@ import {
   setBrowserVisible
 } from './browser'
 import { getLogDir, listLogFiles, createLogger } from './log'
+import { setWatchdogPhase } from './watchdog'
 import {
   createConversation,
   deleteConversation,
@@ -901,7 +902,7 @@ export function registerIpcHandlers(deps: {
     })
   })
 
-  ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {
+  const convSaveCore = (raw: unknown): ConversationMeta | null => {
     // **先松收下 → 规整 → 再严格校验**：① 流式占位（`content` 为空）是**合法中间状态**，先收得下来；② 丢掉没内容的消息；③ 落盘前严格把关。
     // ⚠️ 以前是"直接严格 parse"，于是"流式没吐字就切会话/点停止/关窗口"这几条路**保存必然被拒**，而调用方 `void persistActive()` —— 静默、丢数据、无从解释。
     const input = z
@@ -952,6 +953,15 @@ export function registerIpcHandlers(deps: {
       maybeGenerateSmartTitle(input.id)
     }
     return savedMeta
+  }
+  // 看门狗标记（plan37 S0）：会话保存是同步 fs 链；回存前值而非硬写 idle（单槽坑，见 watchdog.ts）
+  ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {
+    const prevPhase = setWatchdogPhase('conversation:save')
+    try {
+      return convSaveCore(raw)
+    } finally {
+      setWatchdogPhase(prevPhase)
+    }
   })
 
   ipcMain.handle(IPC.convRename, (_e, raw: unknown): ConversationMeta | null => {
