@@ -330,6 +330,8 @@ export const IPC = {
   memoryRead: 'memory:read',
   memorySave: 'memory:save',
   memoryDelete: 'memory:delete',
+  /** 合并疑似重复对（plan33 问题四）：较旧正文并入较新条目 + 删旧 */
+  memoryMerge: 'memory:merge',
   /** save/delete 后的跨窗广播（同 agents 口径） */
   memoryChanged: 'memory:changed',
   // ── 记忆批 2：候选批准/拒绝 + 统计 ──
@@ -702,6 +704,8 @@ export interface ApiBridge {
   readMemory(file: string): Promise<import('./memory').MemoryEntry | null>
   saveMemory(input: import('./memory').MemorySaveInput): Promise<import('./memory').MemorySaveResult>
   deleteMemory(file: string): Promise<boolean>
+  /** 合并疑似重复对（plan33 问题四）：方向由主进程按 createdAt 重判，返回人话结果 */
+  mergeMemory(olderFile: string, newerFile: string): Promise<{ ok: boolean; message: string }>
   /** **记忆开关**：批 1 只管通路 A。`warnFullAccess` = 开启时正处于完全访问档（判据 14 要当场告警） */
   getMemorySwitch(): Promise<boolean>
   setMemorySwitch(enabled: boolean): Promise<import('./memory').MemorySwitchResult>

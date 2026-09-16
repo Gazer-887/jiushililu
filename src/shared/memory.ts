@@ -90,6 +90,11 @@ export interface MemoryIndex {
   /** 解析或校验失败被跳过的文件与原因（fail-soft，但绝不静默） */
   warnings: string[]
   /**
+   * 疑似重复对（plan33 问题四）：loadAll 两两检测的结构化结果。
+   * ⚠️ 与 `warnings` 分家 —— 重复不是"加载失败"，之前混在里面被显示成坏档，谁也不会去清。
+   */
+  duplicates: MemoryDuplicatePair[]
+  /**
    * 候选条目（批 2）：待批准的反思产出。⚠️ **不进注入段** ——
    * 物理隔离在 `memory/candidates/`，`listFiles()` 只列 `notes/`（审查 A P0）。
    * 巡检区用这个字段显示候选 + 批准/拒绝按钮；批准后变成正式条目进 `entries`。
@@ -108,6 +113,12 @@ export interface MemorySaveInput {
   file?: string
   /** 判定为 `confirm` 档的写入，须经确认桥点头后带 `true` 再来一次 */
   confirmed?: boolean
+  /**
+   * **强制另存**（plan33 问题四）：新条目与库内某条高度相似时，save 会拒绝并带回 `similar`；
+   * 用户在「选中即记」卡片上明确选了「仍要另存」才带 `true`。模型通路**不暴露**这个字段 ——
+   * 模型被拒后只能换更具体的 name，这是闸门的目的。
+   */
+  force?: boolean
   /**
    * 候选标记（批 2）：指向**被这条候选撞上的旧记忆 file**。
    * ⚠️ 候选 = 带 `conflictWith` 的 `MemorySaveInput`（即 `MemoryCandidate`）。没有 conflictWith = 全新候选（不撞名）。
@@ -172,10 +183,24 @@ export interface MemoryAutoSettings {
 /**
  * 保存结果。`guard` 带回判定，供调用方决定是否标记巡检区；
  * `needsConfirm` = 该写入落确认档且尚未过确认桥 —— **不是失败**，是"去问用户一句再回来"。
+ * `similar`（plan33 问题四）= 被相似度闸门拦下时的**既有相似条目**指针 ——
+ * 「选中即记」卡片据此给出「更新那条 / 仍要另存」的二选一。
  */
 export type MemorySaveResult =
   | { ok: true; file: string; guard: MemoryGuardVerdict }
-  | { ok: false; reason: string; needsConfirm?: boolean }
+  | {
+      ok: false
+      reason: string
+      needsConfirm?: boolean
+      similar?: { file: string; name: string; description: string }
+    }
+
+/** 一对疑似重复的存量条目（plan33 问题四）：面板「疑似重复」区的数据源 */
+export interface MemoryDuplicatePair {
+  files: [string, string]
+  names: [string, string]
+  descriptions: [string, string]
+}
 
 /**
  * 护栏 2 的推送载荷（D-043 的 `<MemoryNotice />` 面板数据源）。

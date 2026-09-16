@@ -6171,6 +6171,61 @@ body[data-resizing] {
   line-height: var(--lh-tight);
 }
 
+/* 疑似重复区（plan33 问题四）：结构与候选区同族，警示色用 warn 系 —— 是"要人处理"不是"坏档" */
+.mem-dups {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-soft);
+}
+
+.mem-dups-title {
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.mem-dups-note {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+}
+
+.mem-dup-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mem-dup-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mem-dup-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mem-dup-item .mem-desc {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.mem-dup-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
 .mem-row {
   display: flex;
   align-items: flex-start;

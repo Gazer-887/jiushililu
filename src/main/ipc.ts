@@ -1164,7 +1164,10 @@ export function registerIpcHandlers(deps: {
       .nullable()
       .optional(),
     file: z.string().min(1).max(1000).optional(),
-    confirmed: z.boolean().optional()
+    confirmed: z.boolean().optional(),
+    // plan33 问题四：相似度闸门被拦后，用户在「选中即记」卡片明确选「仍要另存」才带 true。
+    // 模型通路不传这个字段（memory-tools 无此参数）—— 模型被拒后只能换更具体的 name。
+    force: z.boolean().optional()
   })
 
   /** 开一轮记忆采集并组装注入段。段在这里组装 —— 组合根才知道记忆库在哪（runner 不许碰 electron-store）。 */
@@ -1209,6 +1212,22 @@ export function registerIpcHandlers(deps: {
     }
     return removed
   })
+
+  // ── 合并疑似重复（plan33 问题四）── 方向由 repo.merge 按 createdAt 重判，渲染端传的顺序不 trusted。
+  ipcMain.handle(
+    IPC.memoryMerge,
+    (_e, raw: unknown): { ok: boolean; message: string } => {
+      const pair = z
+        .object({ olderFile: z.string().min(1).max(1000), newerFile: z.string().min(1).max(1000) })
+        .parse(raw)
+      const result = deps.memory.merge(pair.olderFile, pair.newerFile)
+      if (result.ok) {
+        log.info('记忆已合并', pair)
+        sendToAll(IPC.memoryChanged)
+      }
+      return result
+    }
+  )
 
   // ── 记忆开关（plan19 批 1）── 批 1 只管**通路 A**：关掉就不下发 remember / recall（结构性，
   //    由 runAgent 每轮按 `enabled()` 判断，"有消费者才注册"的同一口径）。通路 B 是用户主动行为，不受它管。

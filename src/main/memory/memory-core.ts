@@ -21,6 +21,7 @@ import {
   type MemoryStats
 } from '@shared/memory'
 import { injectionKey, serializeEvent, type MemoryEvent, type MemoryEventPayload } from './events'
+import { findDuplicatePairs, findSimilarEntry } from './similarity'
 
 /** 存/取的唯一接缝。⚠️ read/remove 必须自行拒绝 `notes/` 与 `candidates/` 之外的路径（file 来自渲染进程） */
 export interface MemoryBackend {
@@ -238,8 +239,15 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
     bytes += lineBytes
     kept.push(entry)
   }
-  // candidates 由 list() 填真值；buildIndex 只管索引段，故给空数组占位（类型要它，语义不需要它）
-  return { entries: kept, total: entries.length, omitted: entries.length - kept.length, warnings: [], candidates: [] }
+  // candidates / duplicates 由 list() 填真值；buildIndex 只管索引段，故给空数组占位（类型要它，语义不需要它）
+  return {
+    entries: kept,
+    total: entries.length,
+    omitted: entries.length - kept.length,
+    warnings: [],
+    duplicates: [],
+    candidates: []
+  }
 }
 
 export interface MemoryRepoOptions {
@@ -265,6 +273,11 @@ export interface MemoryRepo {
   listFiles(): string[]
   save(input: MemorySaveInput): MemorySaveResult
   remove(file: string, by?: 'user' | 'model'): boolean
+  /**
+   * **合并疑似重复**（plan33 问题四）：把 `olderFile` 的正文并入 `newerFile`（方向按 createdAt
+   * 在方法内重判 —— 调用方传的顺序不 trusted），删除较旧那条。合并留痕（write + delete 事件）。
+   */
+  merge(olderFile: string, newerFile: string): { ok: boolean; message: string }
   /**
    * 落一条事件。`write` / `delete` 已由 `save` / `remove` 自动落，这里给 `recall` / `flag` / `inject` 用。
    * ⚠️ `inject` **仅在注入集合变化时才写**（§7.1：它是唯一可能每轮多次的事件，全写会让它主导日志增长）。
@@ -299,7 +312,11 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
   const warn = opts.onWarn ?? (() => {})
   const now = opts.now ?? (() => new Date())
 
-  function loadAll(): { entries: MemoryEntry[]; warnings: string[] } {
+  function loadAll(): {
+    entries: MemoryEntry[]
+    warnings: string[]
+    duplicates: MemoryIndex['duplicates']
+  } {
     const entries: MemoryEntry[] = []
     const warnings: string[] = []
     /** 两条留痕通道都走：界面看 `MemoryIndex.warnings`，排查看日志 —— 少一条就不叫"绝不静默" */
@@ -353,17 +370,15 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       }
     }
 
-    // 批 4：描述相似度检测（不自动合并，只标记让用户决定）
-    for (let i = 0; i < entries.length; i++) {
-      for (let j = i + 1; j < entries.length; j++) {
-        const a = entries[i]!.description
-        const b = entries[j]!.description
-        if (a === b || a.includes(b) || b.includes(a)) {
-          warnings.push(`「${entries[i]!.name}」与「${entries[j]!.name}」的描述高度相似，可能重复`)
-        }
-      }
-    }
-    return { entries, warnings }
+    // 批 4 → plan33 问题四升级：相似检测从 includes 字符串判定升级为 bigram Jaccard + 包含
+    // （`similarity.ts` 唯一口径），且从 warnings（会被面板显示成"未能加载"）**分家**为结构化
+    // `duplicates` —— 重复不是坏档，堆在坏档区等于没人去清。
+    const duplicates = findDuplicatePairs(entries).map((p) => ({
+      files: [p.a.file, p.b.file] as [string, string],
+      names: [p.a.name, p.b.name] as [string, string],
+      descriptions: [p.a.description, p.b.description] as [string, string]
+    }))
+    return { entries, warnings, duplicates }
   }
 
   /** 候选条目（批 2）：从 candidates/ 读，**不进注入索引段**（buildIndex 不见它们） */
@@ -406,9 +421,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     listFiles: () => backend.listFiles(),
 
     list() {
-      const { entries, warnings } = loadAll()
+      const { entries, warnings, duplicates } = loadAll()
       const candidates = loadCandidates()
-      return { ...buildIndex(entries), warnings, candidates }
+      return { ...buildIndex(entries), warnings, duplicates, candidates }
     },
 
     get(file) {
@@ -458,6 +473,34 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         const key = memoryNameKey(input.name)
         if (existing.some((e) => memoryNameKey(e.name) === key)) {
           return refuse(input.name, '已存在同名条目。请换一个 name，或先编辑那一条')
+        }
+        // plan33 问题四（写入闸门）：撞名拦不住"同义" —— 「用户喜欢深色主题」和「用户偏好深色模式」
+        // 是两条，而模型/反复记录就是同义堆积的源头。相似度闸门在这里收口：
+        // 拒绝并带回 `similar` 指针（UI 据此给"更新那条/仍要另存"二选一）；模型通路没有 force，
+        // 被拒后只能换更具体的 name —— 这正是闸门的目的。存量堆积走面板的「疑似重复」区清理。
+        if (input.force !== true) {
+          const similar = findSimilarEntry(
+            { name: input.name, description: input.description },
+            existing
+          )
+          if (similar) {
+            const reason =
+              `已存在高度相似的记忆「${similar.name}」（摘要：${similar.description}）。` +
+              '若要更新它，请编辑那一条而不是新建；若内容确实不同，请换一个更具体的 name 再存。'
+            record({
+              kind: 'write',
+              conversationId: currentConversation(),
+              name: input.name,
+              rejected: true,
+              reason
+            })
+            notify({ name: input.name, ok: false, reason })
+            return {
+              ok: false,
+              reason,
+              similar: { file: similar.file, name: similar.name, description: similar.description }
+            }
+          }
         }
         if (existing.length >= MEMORY_LIMITS.maxEntries) {
           // 批 4：LRU 遗忘 —— 按 updatedAt 找最旧的非豁免条目删除（style/profile 豁免，plan25 D-071）
@@ -514,6 +557,41 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         record({ kind: 'delete', conversationId: currentConversation(), name: before.name, by })
       }
       return removed
+    },
+
+    // plan33 问题四：合并疑似重复对。方向**在方法内重判**（按 createdAt 取新旧）——
+    // 调用方传的顺序不 trusted；正文把较旧那条以引用块并入较新那条，信息不丢（不静默合并）。
+    merge(olderFile, newerFile) {
+      const a = this.get(olderFile)
+      const b = this.get(newerFile)
+      if (!a || !b) return { ok: false, message: '要合并的条目有一边已不存在（可能已被删除）' }
+      if (a.file === b.file) return { ok: false, message: '同一条目不需要合并' }
+      const older = a.createdAt <= b.createdAt ? a : b
+      const newer = a.createdAt <= b.createdAt ? b : a
+      backend.write(
+        newer.file,
+        serializeMemory({
+          name: newer.name,
+          description: newer.description,
+          class: newer.class,
+          origin: newer.origin,
+          evidence: newer.evidence,
+          createdAt: newer.createdAt,
+          updatedAt: now().toISOString(),
+          body: `${newer.body}\n\n## 合并自「${older.name}」\n\n${older.body}`
+        })
+      )
+      backend.remove(older.file)
+      record({
+        kind: 'write',
+        conversationId: currentConversation(),
+        name: newer.name,
+        origin: newer.origin,
+        cls: newer.class
+      })
+      record({ kind: 'delete', conversationId: currentConversation(), name: older.name, by: 'user' })
+      notify({ name: newer.name, ok: true })
+      return { ok: true, message: `已把「${older.name}」并入「${newer.name}」并删除旧条` }
     },
 
     record,

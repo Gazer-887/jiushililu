@@ -536,33 +536,36 @@ describe('computeStats 扩展（批 4 判据 3/4）', () => {
   })
 })
 
-// ── 批 4：描述相似度警告 ─────────────────────────────────────────────────
+// ── 描述相似度（plan33 升级：从 warnings 文本分家为结构化 duplicates）──────
 
-describe('描述相似度警告（批 4 判据 5）', () => {
-  it('描述完全相同 → warnings 含"可能重复"', () => {
+describe('疑似重复检测（plan33，原批 4 判据 5）', () => {
+  it('描述完全相同（不同 name）→ duplicates 收进配对', () => {
     const repo = makeRepo({
       [`${ROOT}/a.md`]: fileText({ name: 'a', description: '编辑 React 组件' }),
       [`${ROOT}/b.md`]: fileText({ name: 'b', description: '编辑 React 组件' })
     })
     const idx = repo.list()
-    expect(idx.warnings.some((w) => w.includes('可能重复'))).toBe(true)
+    expect(idx.duplicates).toHaveLength(1)
+    expect(idx.duplicates[0]!.names.sort()).toEqual(['a', 'b'])
+    // 不再混进 warnings —— 重复不是"加载失败"
+    expect(idx.warnings.some((w) => w.includes('可能重复'))).toBe(false)
   })
 
-  it('描述包含关系 → warnings 含"可能重复"', () => {
+  it('描述包含关系 → duplicates 收进配对', () => {
     const repo = makeRepo({
       [`${ROOT}/a.md`]: fileText({ name: 'a', description: '编辑 React 组件' }),
       [`${ROOT}/b.md`]: fileText({ name: 'b', description: '编辑 React 组件的步骤' })
     })
     const idx = repo.list()
-    expect(idx.warnings.some((w) => w.includes('可能重复'))).toBe(true)
+    expect(idx.duplicates).toHaveLength(1)
   })
 
-  it('描述完全不同 → 无相似度警告', () => {
+  it('描述完全不同 → 无配对', () => {
     const repo = makeRepo({
       [`${ROOT}/a.md`]: fileText({ name: 'a', description: '编辑 React 组件' }),
       [`${ROOT}/b.md`]: fileText({ name: 'b', description: '部署到生产环境' })
     })
     const idx = repo.list()
-    expect(idx.warnings.some((w) => w.includes('可能重复'))).toBe(false)
+    expect(idx.duplicates).toHaveLength(0)
   })
 })

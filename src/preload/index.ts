@@ -118,6 +118,9 @@ const api: ApiBridge = {
   readMemory: (file: string) => ipcRenderer.invoke(IPC.memoryRead, file),
   saveMemory: (input: MemorySaveInput) => ipcRenderer.invoke(IPC.memorySave, input),
   deleteMemory: (file: string) => ipcRenderer.invoke(IPC.memoryDelete, file),
+  // plan33 问题四：合并疑似重复对（方向主进程重判）
+  mergeMemory: (olderFile: string, newerFile: string) =>
+    ipcRenderer.invoke(IPC.memoryMerge, { olderFile, newerFile }),
   onMemoryChanged: (cb) => subscribe(IPC.memoryChanged, () => cb()),
   /** 护栏 2（D-043）：本轮写入痕迹 —— 只推"刚发生的事实"，全量巡检在右抽屉 */
   onMemoryNotice: (cb) => subscribe(IPC.memoryNotice, (payload) => cb(payload as MemoryNoticeEvent)),

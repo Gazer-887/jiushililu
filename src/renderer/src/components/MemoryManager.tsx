@@ -32,6 +32,8 @@ export default function MemoryManager(): JSX.Element {
   const flagMemory = useAppStore((s) => s.flagMemory)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  /** 用户点「忽略」的重复对（本次会话内不再显示；不持久化 —— 下次进来还会提醒，清理要用户亲手做） */
+  const [dismissedDups, setDismissedDups] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     void refresh()
@@ -41,6 +43,19 @@ export default function MemoryManager(): JSX.Element {
   const entries = view?.entries ?? []
   const candidates = view?.candidates ?? []
   const inspected = entries.filter((e) => e.origin === 'model')
+  // 疑似重复（plan33 问题四）：结构化数据来自主进程 loadAll；忽略掉的本地过滤
+  const dupKey = (p: { files: [string, string] }): string => `${p.files[0]}|${p.files[1]}`
+  const duplicates = (view?.duplicates ?? []).filter((p) => !dismissedDups.has(dupKey(p)))
+
+  const mergePair = async (p: { files: [string, string]; names: [string, string] }): Promise<void> => {
+    const res = await window.api.mergeMemory(p.files[0], p.files[1])
+    setNotice(
+      res.ok
+        ? { ok: true, text: res.message }
+        : { ok: false, text: res.message }
+    )
+    void refresh()
+  }
 
   const openEdit = useCallback(async (entry: MemoryEntry): Promise<void> => {
     const full = await window.api.readMemory(entry.file)
@@ -172,6 +187,42 @@ export default function MemoryManager(): JSX.Element {
               <span className="mem-badge mem-badge-model">{CLASS_LABEL[e.class]}</span>
               <span className="mem-name">{e.name}</span>
               <span className="mem-desc">{e.description}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* ── 疑似重复（plan33 问题四）：同义堆积的直接危害是挤占注入索引预算，这里摆到台面
+          上让用户一键合并；合并方向（谁并谁）由主进程按创建时间重判 —— ── */}
+      {duplicates.length > 0 ? (
+        <div className="mem-dups">
+          <div className="mem-dups-title">疑似重复 {duplicates.length} 组</div>
+          <div className="mem-dups-note">
+            两边的名字或摘要高度相似，会在每轮对话里各占一份注入预算。合并 = 较旧那条的正文并入较新的并删除旧条；也可分别编辑/删除后点「忽略」。
+          </div>
+          {duplicates.map((p) => (
+            <div key={dupKey(p)} className="mem-dup-row">
+              <div className="mem-dup-pair">
+                <div className="mem-dup-item">
+                  <span className="mem-name">{p.names[0]}</span>
+                  <span className="mem-desc">{p.descriptions[0]}</span>
+                </div>
+                <div className="mem-dup-item">
+                  <span className="mem-name">{p.names[1]}</span>
+                  <span className="mem-desc">{p.descriptions[1]}</span>
+                </div>
+              </div>
+              <div className="mem-dup-actions">
+                <button type="button" onClick={() => void mergePair(p)}>
+                  合并到较新
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDismissedDups((s) => new Set(s).add(dupKey(p)))}
+                >
+                  忽略
+                </button>
+              </div>
             </div>
           ))}
         </div>

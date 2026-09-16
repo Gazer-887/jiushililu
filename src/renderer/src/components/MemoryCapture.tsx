@@ -8,6 +8,8 @@ import { MODEL_MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass } from '@shared/m
 // ⚠️ 它**只调 `window.api.saveMemory`**，⛔ 不许 import 任何 provider / agent 模块 ——
 //    "不经过模型"这条由 `architecture.test.ts` 的守卫丙钉着（人写的规矩会漂，机器钉的不会）。
 // ⚠️ 与通路 A 共用**同一个校验口径与同一个事件流**（都在主进程那一条 `saveMemory` 上）。
+// plan33 问题四：被相似度闸门拦下（`res.similar`）→ 就地给「更新那条 / 仍要另存」二选一，
+// 不让用户原样重试（那只会再次被拦），也不静默吞掉。
 
 export interface MemoryCaptureProps {
   /** 用户选中的原文 —— 就是记忆的正文，一字不改 */
@@ -37,8 +39,10 @@ export default function MemoryCapture(props: MemoryCaptureProps): JSX.Element {
   const [busy, setBusy] = useState(false)
   /** 失败原因就地显示（⛔ 不用 window.alert —— 阻塞渲染进程，自动化探针会被它挂住） */
   const [err, setErr] = useState<string | null>(null)
+  /** 相似度闸门拦下的既有条目（plan33）：非空 = 显示「更新那条/仍要另存」二选一 */
+  const [dup, setDup] = useState<{ file: string; name: string; description: string } | null>(null)
 
-  const save = async (): Promise<void> => {
+  const save = async (opts?: { force?: boolean; editFile?: string }): Promise<void> => {
     setBusy(true)
     setErr(null)
     const res = await window.api.saveMemory({
@@ -48,10 +52,17 @@ export default function MemoryCapture(props: MemoryCaptureProps): JSX.Element {
       body: props.text,
       origin: 'user',
       // 证据指针在这里**天然精确**：会话与消息序号都是渲染端知道的事实
-      evidence: { conversationId: props.conversationId, turnIndex: props.turnIndex }
+      evidence: { conversationId: props.conversationId, turnIndex: props.turnIndex },
+      // force = 用户明确选了「仍要另存」；editFile = 用户选了「更新那条」（按 file 编辑既有条目）
+      ...(opts?.force ? { force: true } : {}),
+      ...(opts?.editFile ? { file: opts.editFile } : {})
     })
     setBusy(false)
     if (!res.ok) {
+      if (res.similar) {
+        setDup(res.similar)
+        return
+      }
       // 失败不关卡片：用户改一改（换名字/缩短摘要）就能原地重试
       setErr(res.needsConfirm ? `${res.reason}（请确认后重试）` : res.reason)
       return
@@ -83,15 +94,36 @@ export default function MemoryCapture(props: MemoryCaptureProps): JSX.Element {
           ))}
         </select>
       </label>
-      {err ? <div className="mem-notice-err">{err}</div> : null}
-      <div className="mem-capture-actions">
-        <button type="button" disabled={busy} onClick={() => void save()}>
-          保存
-        </button>
-        <button type="button" disabled={busy} onClick={() => props.onDone({ ok: false, message: '' })}>
-          取消
-        </button>
-      </div>
+      {dup ? (
+        <div className="mem-capture-dup">
+          <div className="mem-notice-err">已有相似记忆「{dup.name}」：{dup.description}</div>
+          <div className="mem-capture-actions">
+            <button type="button" disabled={busy} onClick={() => void save({ editFile: dup.file })}>
+              更新那条记忆
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void save({ force: true })}
+              title="内容确实不同时才选这个 —— 否则记忆库里会堆起同义重复"
+            >
+              仍要另存为新条
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {err ? <div className="mem-notice-err">{err}</div> : null}
+          <div className="mem-capture-actions">
+            <button type="button" disabled={busy} onClick={() => void save()}>
+              保存
+            </button>
+            <button type="button" disabled={busy} onClick={() => props.onDone({ ok: false, message: '' })}>
+              取消
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
