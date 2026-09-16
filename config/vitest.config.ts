@@ -13,6 +13,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['tests/unit/**/*.test.ts']
+    // plan25 S2：tests/evals/ 是**场景级回归**（故事化、跨模块、断言端态），
+    // 与 tests/unit 的函数级单测分层 —— 目录分开，扫描一起进
+    include: ['tests/unit/**/*.test.ts', 'tests/evals/**/*.test.ts']
   }
 })
