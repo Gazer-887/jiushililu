@@ -6,7 +6,9 @@ import { getBrowserAdapter } from '../browser-bridge'
 // browser_* 走真实浏览器（拿得到渲染结果、能点击输入、能带上登录态）。
 // 依赖倒置：本模块**不 import electron**，适配器经 browser-bridge 注入（实现在 src/main/browser.ts）。
 
-const MAX_READ = 20000
+// 与 fetch_url 的 MAX_BODY_BYTES（512KB）同口径（2026-09-16 用户实测 2 万字不够读网页）：
+// 工具层不再自设小阈值，正文交给内核窗口化统一兜底（省 token 档位决定压多少，报错现场有保护）。
+const MAX_READ = 512 * 1024
 
 function noBrowser(): string {
   return '错误：内置浏览器尚未就绪（应用启动时初始化）。请稍后重试，或改用 fetch_url 抓取静态页面。'
