@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, rename as renameFs, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative } from 'node:path'
-import { resolveInsideWorkspace } from './agent/guard'
+import { isInside, resolvePathInWorkspace, type PathAccess } from './agent/guard'
 
 // 工作区统一写入服务（plan7 批 A2 的前置 —— 全功能资源管理器的地基）。
 //
@@ -18,11 +18,24 @@ export interface WorkspaceWriteHooks {
   beforeChange?: (rel: string, abs: string) => void
   /** 删除到回收站（生产注入 `shell.trashItem`，测试注入假实现） */
   trash: (abs: string) => Promise<void>
+  /**
+   * 路径放行策略（plan29 D-089）。**只有 Agent 线该传它**：
+   * 界面线（`ipc` / `workspace-fs` / 预览协议 / git-info）各自直接调 `resolveInsideWorkspace`，
+   * 不经本服务，也就天然拿不到这个策略 —— 这正是我们要的分界。
+   * 不传 = 锁死（fail-closed）。
+   */
+  pathAccess?: PathAccess
 }
 
 export interface WorkspaceWriter {
   /** 工作区根（工具层也要用，一并带上，省得两处各传一份） */
   root: string
+  /**
+   * 是否允许越过工作区边界（plan29 D-089）。
+   * 暴露出来的唯一用途：工具层据此在结果里**提示"这是界外路径"并给出绝对路径** ——
+   * 既然选择不拦，就必须让人**看得见它出了界**。工具层不该自己去重算一遍策略。
+   */
+  allowsOutside: boolean
   write(rel: string, content: string): Promise<string>
   mkdir(rel: string): Promise<string>
   rename(rel: string, nextRel: string): Promise<string>
@@ -38,13 +51,30 @@ export function createWorkspaceWriter(
 ): WorkspaceWriter {
   /** 解析并**校验边界**：越界一律抛错（调用方各自决定怎么把它变人话） */
   const absOf = (rel: string): string => {
-    const abs = resolveInsideWorkspace(workspaceRoot, rel)
-    if (!abs) throw new Error(`路径「${rel}」越出工作区边界，已拒绝`)
-    return abs
+    const resolved = resolvePathInWorkspace(workspaceRoot, rel, hooks.pathAccess)
+    if (!resolved) throw new Error(`路径「${rel}」越出工作区边界，已拒绝`)
+    return resolved.abs
   }
+
+  /**
+   * 界外改动的**免责说明**，追加到写入结果里（plan29 D-089 决议 2 的延伸）。
+   *
+   * 为什么非要说这一句：检查点（`store/checkpoints.ts`）**自己保留着工作区边界** ——
+   * 界外的目标它一条都不记（这是有意的：回滚由界面触发，让界面能写工作区外就等于界面越权）。
+   * 于是 full-access 下出现一个**不对称**：能改，但**退不回来**。
+   *
+   * 不对称本身可以接受（"无边界"是用户选的），**但沉默不行** ——
+   * 用户看到"已写入"却以为这本回滚里躺得回来，等真改坏了才发现没有那条记录，那才是真坑。
+   * 所以：能改就如实说能改，退不回来也如实说退不回来。
+   */
+  const outsideNote = (abs: string): string =>
+    hooks.pathAccess?.allowOutside === true && !isInside(workspaceRoot, abs)
+      ? ' ※ 该文件在工作区外，**不在本轮回滚覆盖范围内**'
+      : ''
 
   return {
     root: workspaceRoot,
+    allowsOutside: hooks.pathAccess?.allowOutside === true,
 
     async write(rel, content) {
       const abs = absOf(rel)
@@ -52,14 +82,14 @@ export function createWorkspaceWriter(
       // 父目录不存在则自动创建（调用方不该为 mkdir 单独跑一趟）
       await mkdir(dirname(abs), { recursive: true })
       await writeFile(abs, content, 'utf8')
-      return `已写入 ${rel}（${Buffer.byteLength(content, 'utf8')} 字节）`
+      return `已写入 ${rel}（${Buffer.byteLength(content, 'utf8')} 字节）${outsideNote(abs)}`
     },
 
     async mkdir(rel) {
       const abs = absOf(rel)
       hooks.beforeChange?.(rel, abs)
       await mkdir(abs, { recursive: true })
-      return `已创建目录 ${rel}`
+      return `已创建目录 ${rel}${outsideNote(abs)}`
     },
 
     async rename(rel, nextRel) {
@@ -76,14 +106,14 @@ export function createWorkspaceWriter(
       hooks.beforeChange?.(nextRel, to)
       await mkdir(dirname(to), { recursive: true })
       await renameFs(from, to)
-      return `已重命名 ${rel} → ${nextRel}`
+      return `已重命名 ${rel} → ${nextRel}${outsideNote(from) || outsideNote(to)}`
     },
 
     async remove(rel) {
       const abs = absOf(rel)
       hooks.beforeChange?.(rel, abs)
       await hooks.trash(abs)
-      return `已删除 ${rel}（已移入回收站）`
+      return `已删除 ${rel}（已移入回收站）${outsideNote(abs)}`
     },
 
     async copyIn(sourceAbs, rel) {
@@ -97,7 +127,7 @@ export function createWorkspaceWriter(
       await mkdir(dirname(to), { recursive: true })
       await copyFile(sourceAbs, to)
       const renamed = to === wanted ? '' : `（同名文件已存在，另存为 ${finalRel}）`
-      return `已导入 ${finalRel}（${info.size} 字节）${renamed}`
+      return `已导入 ${finalRel}（${info.size} 字节）${renamed}${outsideNote(to)}`
     }
   }
 }

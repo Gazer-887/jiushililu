@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import type { AgentTool } from '@shared/agent'
 import { estimateTokens } from '@shared/tokens'
-import { resolveInsideWorkspace } from '../guard'
+import { resolvePathInWorkspace } from '../guard'
 import type { WorkspaceWriter } from '../../workspace-write'
 import type { TokenPolicy } from '@shared/token-tier'
 
@@ -200,11 +200,32 @@ function toPositiveInt(v: unknown, fallback: number): number {
 export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): AgentTool[] {
   /** 默认读多少行（平衡档 = 200，与改造前一致） */
   const defaultLines = policy?.readLines ?? DEFAULT_LIMIT_LINES
+
+  /**
+   * 解析一次，同时拿到**绝对路径**与**越界提示**（plan29 D-089 决议 2）。
+   *
+   * 为什么把这两件事合在一起：界外被放行时，用户唯一的保障就是「**看得见它出了界**」——
+   * 若结果里只回显模型给的那个相对路径，界内界外长得一模一样，等于没有提示。
+   * 而"出没出界"只有在解析时才判得了，故一并算出来，不在工具里各判一遍。
+   *
+   * ⚠️ 边界策略来自 **writer**（`allowsOutside`），不是工具自己读档位：
+   * 档位 → writer 只有一条路径（`runner.ts`），少一条重复的判断就少一处漂移。
+   */
+  const locate = (rel: string): { abs: string; note: string } | null => {
+    const r = resolvePathInWorkspace(writer.root, rel, { allowOutside: writer.allowsOutside })
+    if (!r) return null
+    return { abs: r.abs, note: r.outside ? `【工作区外：${r.abs}】\n` : '' }
+  }
+
+  /** 档位说明（与 system-tools 同口径）：既然完全访问档没有边界，就别让模型还按"我只能看工作区"猜 */
+  const scopeHint =
+    writer.allowsOutside ? '（当前为完全访问档，工作区外的路径也可指定，越界会在结果里标注绝对路径）' : ''
+
   const read_file: AgentTool = {
     schema: {
       name: 'read_file',
       description:
-        `读取工作区内一个文本文件的一段内容（默认第 1 行起、最多 ${defaultLines} 行）。` +
+        `读取工作区内一个文本文件的一段内容（默认第 1 行起、最多 ${defaultLines} 行）。${scopeHint}` +
         '返回的每一行前面都有「行号|」前缀，那是**定位用的，不属于文件内容**。' +
         '要读后面的内容：把 offset 设成上一段末尾行号加一。文件很长时不要一次全要 —— 先看结构再按需取段。',
       parameters: {
@@ -219,8 +240,9 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
     },
     async execute(args) {
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
-      const abs = resolveInsideWorkspace(writer.root, rel)
-      if (!abs) return `错误：路径「${rel}」越出工作区边界，拒绝读取`
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝读取`
+      const { abs, note } = located
       try {
         const buf = await readFile(abs)
         if (buf.byteLength > MAX_READ_BYTES) {
@@ -273,7 +295,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         const clipNote =
           clipped.length > 0 ? `\n（其中第 ${clipped.join('、')} 行**超长已掐断**，如需完整内容请针对性读取）` : ''
 
-        return `${body}${footer}${clipNote}`
+        return `${note}${body}${footer}${clipNote}`
       } catch (err) {
         return `错误：读取失败——${err instanceof Error ? err.message : String(err)}`
       }
@@ -283,7 +305,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
   const write_file: AgentTool = {
     schema: {
       name: 'write_file',
-      description: '把文本内容写入工作区内的一个文件（覆盖式写入，路径不存在会自动创建）',
+      description: '把文本内容写入工作区内的一个文件（覆盖式写入，路径不存在会自动创建）' + scopeHint,
       parameters: {
         type: 'object',
         properties: {
@@ -297,8 +319,10 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
       const content = typeof args['content'] === 'string' ? args['content'] : null
       if (content === null) return '错误：缺少 content 参数'
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝写入`
       try {
-        return await writer.write(rel, content)
+        return `${located.note}${await writer.write(rel, content)}`
       } catch (err) {
         return `错误：${err instanceof Error ? err.message : String(err)}`
       }
@@ -313,7 +337,8 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         '还有被输出上限截断、改出残缺文件的风险）。' +
         'oldText 必须与文件内容**逐字符一致**（含缩进与空行），且在文件里**只出现一次**；' +
         '出现多次或一次都没有都会被拒绝（一次都不改，避免改坏一半）。' +
-        '一次可以给多处替换，按数组顺序应用；任何一处不成立则整次不做。',
+        '一次可以给多处替换，按数组顺序应用；任何一处不成立则整次不做。' +
+        scopeHint,
       parameters: {
         type: 'object',
         properties: {
@@ -349,8 +374,9 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         }
       })
 
-      const abs = resolveInsideWorkspace(writer.root, rel)
-      if (!abs) return `错误：路径「${rel}」越出工作区边界，拒绝修改`
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝修改`
+      const { abs, note } = located
       let source: string
       try {
         const buf = await readFile(abs)
@@ -374,7 +400,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         return `错误：未做任何改动${which}。${outcome.reason}`
       }
       // 内容没变就不写：省下一次无意义的检查点快照（回滚面板里多一条空记录只会让人困惑）
-      if (outcome.text === source) return `「${rel}」内容无变化，未写入（替换文本与原文相同）`
+      if (outcome.text === source) return `${note}「${rel}」内容无变化，未写入（替换文本与原文相同）`
 
       try {
         const wrote = await writer.write(rel, outcome.text)
@@ -385,7 +411,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         })
         const delta = outcome.applied.reduce((n, a) => n + a.deltaBytes, 0)
         return (
-          `${wrote}\n共 ${outcome.applied.length} 处替换，净变化 ${delta >= 0 ? '+' : ''}${delta} 字节：\n${notes.join('\n')}\n` +
+          `${note}${wrote}\n共 ${outcome.applied.length} 处替换，净变化 ${delta >= 0 ? '+' : ''}${delta} 字节：\n${notes.join('\n')}\n` +
           `（首处 - ${preview(edits[0]!.oldText)}\n    + ${preview(edits[0]!.newText)}）`
         )
       } catch (err) {

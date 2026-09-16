@@ -10,7 +10,7 @@ import type {
   ToolEvent
 } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
-import { ToolGate } from './guard'
+import { ToolGate, type PathAccess } from './guard'
 import type { ExecEventRecorder } from './exec-events'
 import { composeSelfView } from './self-view'
 import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
@@ -102,6 +102,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
   const writer =
     hooks.writer ??
     createWorkspaceWriter(workspaceRoot, {
+      ...(hooks.pathAccess ? { pathAccess: hooks.pathAccess } : {}),
       trash: async () => {
         throw new Error('未配置回收站，删除操作已被拒绝')
       }
@@ -114,9 +115,10 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
           hooks.confirmCommand,
           hooks.background,
           hooks.agentLabel,
-          hooks.resourcesPath
+          hooks.resourcesPath,
+          hooks.pathAccess
         )
-      : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel, hooks.resourcesPath)),
+      : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel, hooks.resourcesPath, hooks.pathAccess)),
     ...createWebTools(),
     ...createBrowserTools(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
@@ -168,6 +170,9 @@ function lastUserText(history: AgentMessage[]): string | null {
 export interface ToolHooks {
   writer?: WorkspaceWriter
   policy?: TokenPolicy
+  /** 路径放行策略（plan29 D-089）：**只有 Agent 线**该传 —— 传 `{ allowOutside: true }` = 完全访问档无边界。
+   *  不传 = 锁死工作区（fail-closed）。⚠️ **界面线永远不要传**（界面越权，见 `guard.ts` 的 `PathAccess`）。 */
+  pathAccess?: PathAccess
   /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
   confirmCommand?: CommandConfirm
   onTodos?: (todos: TodoItem[]) => void
@@ -454,8 +459,23 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     }
   }
 
+  /**
+   * 路径放行策略（plan29 D-089）—— 「完全访问」档在 **Agent 线**上真的无边界。
+   *
+   * 这是把档位从「名不副实」拉回「名实相符」的那一行：在此之前 `full-access` 的实际语义
+   * 只有"免确认弹窗"，文件访问仍被无条件锁在工作区内（用户称之为「假完全」，是准确描述）。
+   *
+   * ⚠️ 两个刻意的约束：
+   * 1. **只喂 Agent 侧**（writer + 工具）—— 界面线的文件访问**绝不**受此影响，
+   *    否则把一个「权限不足」的问题换成「界面越权」这个更严重的问题（见 `guard.ts` 的 `PathAccess`）；
+   * 2. **只有 full-access 才为真**，其余档位 `undefined` = fail-closed。默认档（write）必须维持旧行为。
+   */
+  const pathAccess: PathAccess | undefined =
+    (args.permission ?? 'write') === 'full-access' ? { allowOutside: true } : undefined
+
   // 写入服务（plan7 批 A2）：**快照挂在服务层** —— 界面与 Agent 走的都是这一条路径；子代理复用同一批工具实例，故它们的写操作同样记进本轮的检查点。
   const writer = createWorkspaceWriter(workspaceRoot, {
+    ...(pathAccess ? { pathAccess } : {}),
     beforeChange: (rel, abs) => ctx.checkpoints.record(runId, workspaceRoot, rel, abs),
     trash: async (abs) => {
       if (!ctx.trash) throw new Error('未配置回收站，删除操作已被拒绝')
@@ -465,6 +485,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
 
   const allTools = createAllTools(workspaceRoot, {
     writer,
+    ...(pathAccess ? { pathAccess } : {}),
     ...(args.policy ? { policy: args.policy } : {}),
     ...(ctx.background ? { background: ctx.background, agentLabel } : {}),
     // 逐次确认（plan8 R5）：仅「可写」档需要 —— 只读档本就不下发 run_command；完全访问档是用户明确选的"别拦我"

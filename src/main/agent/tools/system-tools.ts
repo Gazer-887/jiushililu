@@ -5,10 +5,13 @@ import { statusText } from '@shared/background'
 import { buildSearchSpec, SearchQueryError } from '@shared/search-query'
 import { runSearch, renderSearchOutcome } from '../../retrieval/search'
 import type { BackgroundTaskStore } from '../background-tasks'
-import { resolveInsideWorkspace } from '../guard'
+import { resolvePathInWorkspace, type PathAccess } from '../guard'
 
 // 系统类工具（P1 工具层补全）：列目录 / 文本搜索 / 命令执行。
-// 前三者只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
+// 前三者默认只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
+// ⚠️ 这个「内」是**默认**，不是绝对约束（plan29 D-089）：「完全访问」档在 **Agent 线**上无边界，
+//    此时 `pathAccess.allowOutside` 为 true，界外路径**放行但如实回显绝对路径**（决议 2）。
+//    界面线的文件访问不受档位影响，分界见 `guard.ts` 的 `PathAccess` 注释。
 // ⚠️ run_command 是高危工具：**内核默认工具集不含它**，自定义 Agent 显式声明才下发；
 // 而可写档下每次执行前还要**逐次确认**（plan8 R5，确认钩子由组合根注入）。
 // 限时与输出上限见 DEFAULT_COMMAND_TIMEOUT_MS / MAX_COMMAND_OUTPUT（plan28 D-086/D-088 起可调、且失败**分型**）；cwd 锁工作区。
@@ -43,9 +46,10 @@ export function createSystemTools(
   workspaceRoot: string,
   background?: BackgroundTaskStore,
   agentLabel = '内核',
-  resourcesPath?: string | null
+  resourcesPath?: string | null,
+  pathAccess?: PathAccess
 ): AgentTool[] {
-  return buildSystemTools(workspaceRoot, undefined, background, agentLabel, resourcesPath)
+  return buildSystemTools(workspaceRoot, undefined, background, agentLabel, resourcesPath, pathAccess)
 }
 
 export function createSystemToolsWithConfirm(
@@ -53,9 +57,10 @@ export function createSystemToolsWithConfirm(
   confirm: CommandConfirm,
   background?: BackgroundTaskStore,
   agentLabel = '内核',
-  resourcesPath?: string | null
+  resourcesPath?: string | null,
+  pathAccess?: PathAccess
 ): AgentTool[] {
-  return buildSystemTools(workspaceRoot, confirm, background, agentLabel, resourcesPath)
+  return buildSystemTools(workspaceRoot, confirm, background, agentLabel, resourcesPath, pathAccess)
 }
 
 function buildSystemTools(
@@ -63,11 +68,29 @@ function buildSystemTools(
   confirm: CommandConfirm | undefined,
   background: BackgroundTaskStore | undefined,
   agentLabel: string,
-  resourcesPath?: string | null
+  resourcesPath?: string | null,
+  pathAccess?: PathAccess
 ): AgentTool[] {
+  /**
+   * 解析一次，拿到**绝对路径**与**越界提示**（plan29 D-089 决议 2，与 `file-tools` 同手法）。
+   * 界外被放行时用户唯一的保障就是"看得见它出了界"，故提示与解析一起算，不在各工具里各判一遍。
+   */
+  const locate = (rel: string): { abs: string; note: string; outside: boolean } | null => {
+    const r = resolvePathInWorkspace(workspaceRoot, rel, pathAccess)
+    if (!r) return null
+    return { abs: r.abs, outside: r.outside, note: r.outside ? `【工作区外：${r.abs}】\n` : '' }
+  }
+
+  /**
+   * 档位说明追加到描述里：反正是"完全访问"，就别让模型还按"我只能看工作区"来猜——
+   * 否则这套能力要靠它撞一次错误才发现，等于没做。反之（锁死档）不加，避免暗示它越界是可以试的。
+   */
+  const scopeHint =
+    pathAccess?.allowOutside === true ? '（当前为完全访问档，工作区外的路径也可指定，越界会在结果里标注绝对路径）' : ''
+
   const list_dir: AgentTool = {    schema: {
       name: 'list_dir',
-      description: '列出工作区内某个目录的内容（名称 + 类型）',
+      description: '列出工作区内某个目录的内容（名称 + 类型）' + scopeHint,
       parameters: {
         type: 'object',
         properties: {
@@ -77,17 +100,17 @@ function buildSystemTools(
     },
     async execute(args) {
       const rel = typeof args['path'] === 'string' ? args['path'] : '.'
-      const abs = resolveInsideWorkspace(workspaceRoot, rel)
-      if (!abs) return `错误：路径「${rel}」越出工作区边界，拒绝列出`
+      const located = locate(rel)
+      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝列出`
       try {
-        const entries = readdirSync(abs, { withFileTypes: true })
-        if (entries.length === 0) return '（空目录）'
+        const entries = readdirSync(located.abs, { withFileTypes: true })
+        if (entries.length === 0) return `${located.note}（空目录）`
         const lines = entries.slice(0, MAX_LIST_ENTRIES).map((e) => {
           const kind = e.isDirectory() ? '[目录]' : '[文件]'
           return `${kind} ${e.name}`
         })
         const more = entries.length > MAX_LIST_ENTRIES ? `\n（其余 ${entries.length - MAX_LIST_ENTRIES} 项省略）` : ''
-        return lines.join('\n') + more
+        return located.note + lines.join('\n') + more
       } catch (err) {
         return `错误：列出失败——${err instanceof Error ? err.message : String(err)}`
       }
@@ -100,7 +123,8 @@ function buildSystemTools(
       description:
         '在工作区内做文本搜索，返回"文件:行号: 行内容"（L0 检索，优先 ripgrep）。' +
         '默认按**字面量**匹配、不区分大小写。需要模式匹配时把 regex 设为 true（如 `function\\s+\\w+`）；' +
-        '需要精确大小写时把 caseSensitive 设为 true。默认尊重 .gitignore、跳过依赖与构建产物目录。',
+        '需要精确大小写时把 caseSensitive 设为 true。默认尊重 .gitignore、跳过依赖与构建产物目录。' +
+        scopeHint,
       parameters: {
         type: 'object',
         properties: {
@@ -114,8 +138,9 @@ function buildSystemTools(
     },
     async execute(args) {
       const baseRel = typeof args['path'] === 'string' ? args['path'] : '.'
-      const base = resolveInsideWorkspace(workspaceRoot, baseRel)
-      if (!base) return `错误：路径「${baseRel}」越出工作区边界，拒绝搜索`
+      const located = locate(baseRel)
+      if (!located) return `错误：路径「${baseRel}」越出工作区边界，拒绝搜索`
+      const base = located.abs
 
       let spec: ReturnType<typeof buildSearchSpec>
       try {
@@ -132,13 +157,15 @@ function buildSystemTools(
 
       try {
         const outcome = await runSearch({
-          workspaceRoot,
+          // 检索起点在界外时，把**它自己**当作展示基准：命中在界外没有"相对工作区"的合理写法
+          // （`relative()` 会渲染成一串 `../../`，既不可点也没有信息量）。界内的行为一字未改。
+          workspaceRoot: located.outside ? base : workspaceRoot,
           basePath: base,
           spec,
           maxResults: MAX_SEARCH_RESULTS,
           resourcesPath: resourcesPath ?? null
         })
-        return renderSearchOutcome(outcome, spec)
+        return located.note + renderSearchOutcome(outcome, spec)
       } catch (err) {
         return `错误：搜索失败——${err instanceof Error ? err.message : String(err)}`
       }

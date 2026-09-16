@@ -102,6 +102,7 @@ const TEST_ENTRIES = [
   'tests/unit/memory-queue.test.ts',
   'tests/unit/usage-kind.test.ts',
   'tests/unit/plan-approval.test.ts',
+  'tests/unit/path-access.test.ts',
   'tests/unit/playbook-core.test.ts',
   'tests/unit/playbook-inject.test.ts',
   'tests/unit/playbook-tools.test.ts',

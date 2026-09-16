@@ -93,7 +93,18 @@ export type StorageWriteResult =
   | { ok: false; reason: string }
   | { canceled: true }
 
-/** 访问权限档（D-032：能力归模型、**权限归人**）—— 唯一由用户定的档位，接 P1 白名单门控 */
+/**
+ * 访问权限档（D-032：能力归模型、**权限归人**）—— 唯一由用户定的档位，接 P1 白名单门控。
+ *
+ * 三档语义（plan29 D-089 起**名实相符**）：
+ * - `read-only` → 只读，且只读**工作区内**；
+ * - `write`     → 可读写**工作区内**文件；跑命令仍需逐次确认；
+ * - `full-access` → **没有边界**：可读写工作区**外**的文件，跑命令不再逐次确认。
+ *
+ * ⚠️ 「没有边界」**只对 Agent 线成立**（`file-tools` / `system-tools` / `workspace-write`）。
+ * **界面线**（文件树 / 预览 / git 面板 / 附件）的文件访问**与档位无关，永远锁在工作区内** ——
+ * 那是防界面越权，与本档位不是一回事（见 `main/agent/guard.ts` 的 `PathAccess`）。
+ */
 export type PermissionPreset = 'read-only' | 'write' | 'full-access'
 
 export interface Attachment {
