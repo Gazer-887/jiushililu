@@ -7,7 +7,6 @@ import {
   canDeleteEntry,
   canDeleteProfile,
   createProfile,
-  entryLabel,
   findModelEntry,
   legacyKeyOwnerId,
   makeEntry,
