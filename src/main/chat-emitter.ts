@@ -11,7 +11,7 @@
  * 盯着"**每个豁免项旁边都写了理由**"。
  */
 import type { WebContents } from 'electron'
-import { IPC, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
+import { IPC, type PlanApprovalRequest, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
 import type { AskRequest } from '@shared/ask'
 import type { ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
@@ -54,6 +54,8 @@ export interface ChatEmitter {
   confirm(req: ToolConfirmRequest): void
   /** Agent 提问（同确认：带会话身份 —— 用户要知道自己在答**哪条会话**的问题） */
   ask(req: AskRequest): void
+  /** 计划批准（plan27）：planner 出完方案后问「要不要执行」。同确认/提问 —— 必须带会话身份，否则并发时用户会批了另一条会话的方案 */
+  planApproval(req: PlanApprovalRequest): void
   /** 预览用：这条 emitter 属于哪条会话 */
   readonly conversationId: string
 }
@@ -95,6 +97,11 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
       if (win.isDestroyed()) return
       // `conversationId` 通常已由 Agent 那一侧补上；缺了就补 emitter 的 —— 两种都留空是**查不出**这条问题出自哪条会话的
       win.send(IPC.askRequest, { ...req, conversationId: req.conversationId || conversationId })
+    },
+    planApproval: (req) => {
+      if (win.isDestroyed()) return
+      // 同 ask：`conversationId` 走载荷（不只在信封里），缺了补 emitter 的
+      win.send(IPC.planApprovalRequest, { ...req, conversationId: req.conversationId || conversationId })
     }
   }
 }

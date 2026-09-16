@@ -100,6 +100,7 @@ const TEST_ENTRIES = [
   'tests/unit/memory-reflection.test.ts',
   'tests/unit/memory-queue.test.ts',
   'tests/unit/usage-kind.test.ts',
+  'tests/unit/plan-approval.test.ts',
   'tests/unit/playbook-core.test.ts',
   'tests/unit/playbook-inject.test.ts',
   'tests/unit/playbook-tools.test.ts',
@@ -240,5 +241,39 @@ describe('守卫丙：通路 B 不得经过模型', () => {
 
   it('守卫丙的对象确实存在（防改名后静默变空）', () => {
     expect(readFileSync(join(ROOT, CAPTURE_ENTRY), 'utf8').length).toBeGreaterThan(0)
+  })
+})
+
+// ── 守卫丁：计划批准闸不得下沉进主循环（plan27）───────────────────────────
+// 为什么单独立一条：闸现在是挂在 `runAgent` 上的 —— 这条位置的**全部价值**在于
+// 「子代理走 `scheduler.ts` 的 `runAgentLoop`，根本不进 `runAgent`」，所以子代理天然不会被卡住等批准。
+//
+// 而「把闸挪到 `runAgentLoop`」看起来是个**很合理**的重构（"循环结束的地方不正是收尾的地方吗"），
+// 一旦挪下去：**每个子代理跑完都会被弹一张批准卡**，父轮次集体挂起等人点头 ——
+// 而现有测试一条都不会变红（单测里不注入桥，闸静默失效）。这种"看着对、代价大、无声"的改动
+// 正是架构守卫该拦的东西，故用结构断言钉死：**主循环不得认识批准桥**。
+
+describe('守卫丁：批准闸不得下沉进主循环', () => {
+  const LOOP = 'src/main/agent/loop.ts'
+
+  it(`${LOOP} 不得引用批准桥（否则子代理会被卡住等批准）`, () => {
+    const source = readFileSync(join(ROOT, LOOP), 'utf8')
+    expect(source).not.toContain('plan-approval')
+    expect(source).not.toContain('planApproval')
+    expect(source).not.toContain('PlanApproval')
+  })
+
+  it('守卫丁**不是空转**：闸确实活在 runner 里（否则这条守的是个不存在的东西）', () => {
+    // 反面验证：若哪天闸被整个删掉，上面那条会**永久绿灯**。所以必须同时断言它还在。
+    const runner = readFileSync(join(ROOT, 'src/main/agent/runner.ts'), 'utf8')
+    expect(runner).toContain("from './plan-approval'") // 真的引了桥
+    expect(runner).toContain('planApproval') // 真的有这个通路
+    expect(runner).toContain('skipPlanApproval') // 真的有防套娃开关
+  })
+
+  it('子代理入口（scheduler）不得自己实现批准等待（那等于绕过 runner 的单一闸位）', () => {
+    const scheduler = readFileSync(join(ROOT, 'src/main/agent/scheduler.ts'), 'utf8')
+    expect(scheduler).not.toContain('planApproval')
+    expect(scheduler).not.toContain('PlanApproval')
   })
 })

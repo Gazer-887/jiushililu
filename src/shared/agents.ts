@@ -40,6 +40,10 @@ export interface AgentListEntry {
   description: string
   tools?: string[]
   model?: string
+  /** plan27：该 Agent 产出方案后是否**停下等用户点头**（只有 `'plan'` 一个取值） */
+  approval?: 'plan'
+  /** plan27：批准后由哪个 Agent 接手执行（缺省按 code-executor → 内核默认兜底） */
+  executor?: string
   source: AgentSource
   /** 来源文件绝对路径——read/delete 都按它定位，禁止按 name 反推（文件可手改，name 与文件名可脱钩） */
   file: string
@@ -58,6 +62,16 @@ export interface AgentSaveInput {
   description: string
   tools: string[]
   model?: string
+  /**
+   * plan27：`'plan'` = 本 Agent 给出方案后**停下等用户点头**，批准后才交 `executor` 执行。
+   * 缺省 = 现有行为（跑完即返回），不受影响。
+   *
+   * ⚠️ 与**权限档位无关**：它只解决「停一下等我点头」，不解决「能不能写」——
+   * 全局档仍是硬上限，read-only 档下就算批准了 executor 也写不了。
+   */
+  approval?: 'plan'
+  /** plan27：批准后接手执行的 Agent 名。留空 = 按 `code-executor` → 内核默认兜底；写错名字也走兜底（不报错） */
+  executor?: string
   systemPrompt: string
   file?: string
 }

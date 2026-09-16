@@ -160,6 +160,33 @@ export default function AgentManager(): JSX.Element {
           />
         </label>
 
+        <div className="ag-field">
+          <span className="ag-label">计划批准（可选）</span>
+          <label className="ag-tool" title="勾选后，本 Agent 给出方案就停下来等你点头，批准了才接着执行">
+            <input
+              type="checkbox"
+              checked={editing.approval === 'plan'}
+              onChange={(e) => setEditing({ ...editing, approval: e.target.checked ? 'plan' : undefined })}
+            />
+            <span>给出方案后停下等批准，批准了再交下面这个 Agent 执行</span>
+          </label>
+          {editing.approval === 'plan' && (
+            <label className="ag-field ag-subfield">
+              <span className="ag-label">执行者（executor，可选）</span>
+              <input
+                className="ag-input"
+                value={editing.executor ?? ''}
+                placeholder="留空 = 代码执行员（code-executor）"
+                onChange={(e) => setEditing({ ...editing, executor: e.target.value.trim() || undefined })}
+              />
+            </label>
+          )}
+          <span className="ag-note">
+            批准只决定「要不要接着做」，不改变「能不能写」——全局权限档仍是硬上限；
+            只读档下就算批准了，执行者也写不了文件。
+          </span>
+        </div>
+
         <label className="ag-field">
           <span className="ag-label">职责描述（作为该 Agent 的系统提示）</span>
           <textarea
@@ -229,6 +256,7 @@ export default function AgentManager(): JSX.Element {
                   <div className="ag-meta">
                     工具 {e.tools ? `${e.tools.length} 项（声明）` : '继承全量'}
                     {e.model ? ` · 模型 ${e.model}` : ' · 沿用会话模型'}
+                    {e.approval === 'plan' ? ` · 方案需批准（执行：${e.executor ?? 'code-executor'}）` : ''}
                   </div>
                   {e.source === 'user' && (
                     <div className="ag-row-actions">

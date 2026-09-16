@@ -10,6 +10,7 @@ import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
 import { installCrashGuards } from './crash-guard'
 import { createConfirmBridge } from './confirm'
+import { createPlanApprovalBridge } from './agent/plan-approval'
 import { createExecEventRecorder, createFsExecEventSink } from './agent/exec-events'
 import { createAskBridge } from './ask'
 import { IPC } from '@shared/ipc'
@@ -400,6 +401,30 @@ app.whenReady().then(async () => {
     }
   })
 
+  // 计划批准桥（plan27）：planner agent 出完方案后**阻塞等用户点头**，点头才由 executor 接续执行。
+  // 手法与确认桥完全一致（惰性取主窗口 / 走同一发送口 / 结论进执行事件流），但**另开一条通道** ——
+  // 它摆的是一整篇方案（长文本），塞进「即将执行一条命令」那个框会撑爆那条安全关键路径。
+  const planApproval = createPlanApprovalBridge({
+    send: (req) => {
+      // 同确认桥：必须取**主窗口** —— 批准卡问的是「要不要执行这份方案」，那是主窗口那条会话的事
+      const win = getMainWindow()
+      if (!win) return false
+      createChatEmitter(win.webContents, req.conversationId).planApproval(req)
+      return true
+    },
+    log: (message, extra) => log.info(message, extra),
+    onDecide: (info) => {
+      // 复用 `approve` kind：语义同为「一次审批的结论」，payload 三字段完全吻合。
+      // **不新开第 7 种 kind** —— 那要同时动 @shared/exec-events 的联合类型、EXEC_PAYLOAD_WHITELIST、
+      // 时间线渲染与它的测试四处，而这里没有新语义需要它承载（用 `tool` 名区分足矣）。
+      createExecEventRecorder({
+        sink: execEventSink,
+        conversationId: info.conversationId,
+        agentScope: 'main'
+      }).record('approve', { tool: 'plan_approval', allowed: info.allowed, reason: info.reason })
+    }
+  })
+
   // 后台任务注册表（plan7 批 D）：**进程级单例** —— 窗口关闭时统一终止，留一堆没人管的进程是隐患
   const background = createBackgroundTaskStore()
 
@@ -519,6 +544,8 @@ app.whenReady().then(async () => {
     confirmCommand: (req) => confirm.ask(req),
     // 提问口（ask_user）：注入的是**桥本体**（只用到 ask 一个方法）—— runner 不许 import electron，故由组合根注入
     ask,
+    // 计划批准（plan27）：planner 出完方案后阻塞等用户点头；不注入 = 闸门不生效（安全默认）
+    planApproval,
     background,
     // 记忆（plan19 批 1）：repo 给工具用，确认桥给「确认档」写入问一句。
     // ⚠️ `conversationId` 不在这里补 —— 同一个上下文会被多条会话共用，由 runner 按轮次补。
@@ -627,6 +654,8 @@ app.whenReady().then(async () => {
     playbook,
     confirm,
     ask,
+    // 计划批准桥（plan27）：ipc 层只做回执转交，桥本体在组合根
+    planApproval,
     terminal,
     system,
     network,

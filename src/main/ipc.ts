@@ -77,6 +77,7 @@ import { createWorkspaceWriter, type WorkspaceWriter } from './workspace-write'
 import type { TerminalSessionStore } from './terminal-session'
 import type { TerminalSessionSnapshot, TerminalStartResult } from '@shared/terminal'
 import type { ConfirmBridge } from './confirm'
+import type { PlanApprovalBridge } from './agent/plan-approval'
 import type { AskBridge } from './ask'
 import { ASK_MAX_OPTIONS, type AskResult } from '@shared/ask'
 import {
@@ -307,6 +308,8 @@ export function registerIpcHandlers(deps: {
   confirm: ConfirmBridge
   /** Agent 提问桥。⚠️ 传进来而不是在这里 new：与 confirm 同理 —— **组合根负责"建"，这里只做转交**（本文件一个裸 `.send(` 都不许有） */
   ask: AskBridge
+  /** 计划批准桥（plan27）。同 confirm / ask：**组合根负责建，这里只把渲染端的答复转交回去** */
+  planApproval: PlanApprovalBridge
   /** 内置终端会话（plan7 批 C）。⚠️ 传进来而不是在这里 new：**广播代码必须放 `main/index.ts`**（本文件里一个裸 `.send(` 都不许有，见 `tests/unit/stream-envelope.test.ts`），而会话的 `onData` 要往所有窗口推 —— 故"建会话"在组合根，这里只做转交。 */
   terminal: TerminalSessionStore
   /** 系统集成（plan7 批 F1）：同样是组合根建、这里转交 —— 它持有 blocker id 与自启状态，**每个进程只能有一份** */
@@ -1087,6 +1090,9 @@ export function registerIpcHandlers(deps: {
     // ⚠️ 只验形状不验成员（plan17 D3）：声明了不存在的工具由 allowedToolsFor 运行时过滤，这里枚举会造成"表单与 loader 两套口径"
     tools: z.array(z.string().max(64)).max(64),
     model: z.string().max(200).optional(),
+    // plan27：只认 'plan' 这一个字面量（与 loader 同口径 —— 乱写忽略，不报错，免得一个笔误卡住整条保存）
+    approval: z.literal('plan').optional(),
+    executor: z.string().max(64).optional(),
     systemPrompt: z.string().min(1).max(100000),
     file: z.string().min(1).max(1000).optional()
   })
@@ -1100,6 +1106,9 @@ export function registerIpcHandlers(deps: {
       description: def.description,
       tools: def.tools ?? [],
       ...(def.model ? { model: def.model } : {}),
+      // plan27：不回填的话，用户一打开表单再保存就把批准配置丢了（表单管理的字段必须完整往返）
+      ...(def.approval === 'plan' ? { approval: 'plan' as const } : {}),
+      ...(def.executor ? { executor: def.executor } : {}),
       systemPrompt: def.systemPrompt,
       file: def.file
     }
@@ -1714,6 +1723,17 @@ export function registerIpcHandlers(deps: {
       .safeParse(raw)
     if (!parsed.success) return
     deps.confirm.respond(parsed.data)
+  })
+
+  // 计划批准回执（plan27）：同样只做**形状校验 + 转交** —— 配对、超时、按拒绝的语义都在
+  // `agent/plan-approval.ts` 那层（它是纯函数、可单测；本文件 import 了 electron，CI 上跑不了）。
+  // 返回 `false` = 主进程**没认领**（已超时 / 已中断）：界面据此如实说明，不许当成送达。
+  ipcMain.handle(IPC.planApprovalRespond, (_e, raw: unknown): boolean => {
+    const parsed = z
+      .object({ id: z.string().min(1).max(64), allowed: z.boolean() })
+      .safeParse(raw)
+    if (!parsed.success) return false
+    return deps.planApproval.respond(parsed.data)
   })
 
   // 提问回执：这里只做**形状校验 + 转交**。配对、三种形态的优先级、超时都在 `ask.ts` 的桥里（那层纯函数可单测；

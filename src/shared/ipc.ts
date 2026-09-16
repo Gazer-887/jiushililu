@@ -454,6 +454,10 @@ export const IPC = {
   // ── Agent 向用户提问（带选项）：与确认桥**分开两条通道**（安全语义 vs 信息语义，理由见 `@shared/ask` 文件头）──
   askRequest: 'ask:request',
   askRespond: 'ask:respond',
+  // ── 计划批准（plan27）：与上面两条**再分开** —— 它们问「这一次要不要」，它问「这份方案要不要执行」；
+  //    而且载荷是一整篇方案（长文本），塞进 `confirm.detail` 会撑爆那条安全关键路径的固定文案 ──
+  planApprovalRequest: 'plan:approve-request',
+  planApprovalRespond: 'plan:approve-respond',
   // ── 会话回滚（plan10 B 批 · ④）──
   /** 回到某条消息之前：**只移游标、不删数据**，所以天然可撤销 */
   convRollback: 'conv:rollback',
@@ -575,6 +579,28 @@ export interface ConversationRollbackResult {
 }
 
 export interface ToolConfirmResult {
+  id: string
+  allowed: boolean
+}
+
+/**
+ * 计划批准请求（plan27）。与 `ToolConfirmRequest` **分开一条通道**，理由有两条：
+ * ① 那个的 `detail` 是给「一条命令」用的短字段，界面按命令确认的**固定文案**渲染；
+ *    这里要摆**一整篇方案**（需可滚动长文本），语义上也不是「危险操作」。
+ * ② 混用会污染那条**安全关键路径**的可读性与断言（代码多处靠 `kind` 区分措辞）。
+ * 但三条原则照借：**排队不覆盖 / 按 id 配对 / 不答 ≠ 默许**。
+ */
+export interface PlanApprovalRequest {
+  id: string
+  /** 产出方案的 agent 名（界面据此说清「谁提的方案」） */
+  agent: string
+  /** 方案正文（长文本，界面**必须**给滚动容器） */
+  plan: string
+  /** 哪条会话在等批准（与确认/提问同口径：不标出来，界面会把 A 的方案显示成 B 的） */
+  conversationId: string
+}
+
+export interface PlanApprovalResult {
   id: string
   allowed: boolean
 }
@@ -762,6 +788,12 @@ export interface ApiBridge {
   /** 回传作答。⚠️ 返回 `false` = 主进程**没认领**（已超时 / 已被中断 / 值不在选项里）：界面据此如实说明，
    *  不许当成送达 —— 那正是把"没人回答"翻译成"用户选了"的那类假账。 */
   respondAsk(result: AskResult): Promise<boolean>
+  // ── 计划批准（plan27）：planner 出完方案后**阻塞等待**用户点头 ──
+  /** 收到计划批准请求（界面弹批准卡；方案是长文本，必须给滚动容器） */
+  onPlanApprovalRequest(cb: (req: PlanApprovalRequest) => void): () => void
+  /** 回传批准决定。⚠️ 与 `respondAsk` 同口径：返回 `false` = 主进程**没认领**（已超时 / 已中断），
+   *  界面不许把它当成送达 —— 「没人回答」绝不能被翻译成「用户批准了」。 */
+  respondPlanApproval(result: PlanApprovalResult): Promise<boolean>
   getUIPrefs(): Promise<UIPrefs>
   setUIPrefs(patch: Partial<UIPrefs>): Promise<UIPrefs>
   resetUIPrefs(): Promise<UIPrefs>
