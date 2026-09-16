@@ -41,7 +41,7 @@ import {
   type McpServerConfig,
   type McpServerStatus
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
 import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
@@ -609,6 +609,8 @@ export function registerIpcHandlers(deps: {
         // 主 Agent（plan17 G2）：渲染端按会话带上；定义不存在 → runAgent 抛人话错误走下方 catch → emit.error
         agentName: input.agentName,
         permission: getPermissionPreset(),
+        // Firecrawl（plan32）：配了 Key 就用密钥源，没配回落默认搜索源（runner/web-tools 决定）
+        firecrawlApiKey: getFirecrawlKey() || null,
         // 自视段（2026-09-15）：电脑控制开关由组合根读好传入（runner 不碰 electron-store）
         computerControl: getComputerControlEnabled(),
         conversationId,
@@ -773,6 +775,8 @@ export function registerIpcHandlers(deps: {
         conversationId: req.conversationId ?? AGENT_TASK_OWNER,
         // 自视段：一次性任务同样报告配置（模型名/工具/子代理）
         computerControl: getComputerControlEnabled(),
+        // Firecrawl（plan32）：与对话线同一口径 —— 配了就用，没配回落默认源
+        firecrawlApiKey: getFirecrawlKey() || null,
         // 一次性任务也注入记忆并采集痕迹（少了它，模型在这里 remember 就没人上报 —— 静默缺口）
         memoryBlock: beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER),
         // 一次性任务同样走条件召回（任务描述即"用户原话"，活跃标签从它推断）
@@ -1463,6 +1467,18 @@ export function registerIpcHandlers(deps: {
     // 代理改了要广播：设置窗口与主窗口是两个渲染进程，不推就只有一半界面知道
     deps.onSettingsChanged?.('settings')
     return view
+  })
+
+  // ── Firecrawl（plan32）：web_search 的密钥型源 ──
+  //
+  // Key 只进不出：读回只有 `hasKey`（与代理凭据同口径 —— 明文不回显，改就重新填）。
+  // 保存失败（加密服务不可用）把人话错误原样抛给渲染端显示，不静默吞。
+  ipcMain.handle(IPC.firecrawlGet, () => ({ hasKey: getFirecrawlKey().length > 0 }))
+
+  ipcMain.handle(IPC.firecrawlSet, (_e, raw: unknown): { hasKey: boolean } => {
+    const key = raw === null ? null : z.string().max(500).parse(raw)
+    setFirecrawlKey(key !== null && key.length > 0 ? key : null)
+    return { hasKey: getFirecrawlKey().length > 0 }
   })
 
   ipcMain.handle(IPC.gitInfo, (): Promise<GitInfo | null> =>

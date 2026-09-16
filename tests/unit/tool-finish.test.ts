@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createSystemTools } from '@main/agent/tools/system-tools'
-import { parseDuckResults, unwrapDuckHref } from '@main/agent/tools/web-tools'
+import { parseDuckResults, parseFirecrawlResults, unwrapDuckHref } from '@main/agent/tools/web-tools'
 import type { AgentTool } from '@shared/agent'
 
 // plan31 D-095/D-096：run_command 机器可判尾标（exit_code / error_class / elapsed_ms）
@@ -70,5 +70,39 @@ describe('web_search · DDG 结果解析（D-096，离线纯函数）', () => {
   it('unwrapDuckHref：非包装链接原样返回', () => {
     expect(unwrapDuckHref('https://a.io/b')).toBe('https://a.io/b')
     expect(unwrapDuckHref('not a url at all')).toBe('not a url at all')
+  })
+})
+
+// ── web_search · Firecrawl 结果解析（plan32，离线纯函数）──
+// v1/search 响应形状：{ data: [{ title?, url, description? }] }。字段可缺，只信 url。
+
+const fakeFirecrawlJson = {
+  data: [
+    { title: 'Firecrawl Docs', url: 'https://docs.firecrawl.dev/intro', description: 'How to use the API.' },
+    { url: 'https://example.org/no-title' },
+    { title: 'No URL —— 应被跳过' },
+    { title: 'Fourth', url: 'https://fourth.io/', description: 'keep' }
+  ]
+}
+
+describe('web_search · Firecrawl 结果解析（plan32，离线纯函数）', () => {
+  it('抽 title/url/description；缺 title 回落 url，缺 description 给空串', () => {
+    const r = parseFirecrawlResults(fakeFirecrawlJson)
+    expect(r).toHaveLength(3) // 无 url 的那条被跳过
+    expect(r[0]).toMatchObject({ title: 'Firecrawl Docs', url: 'https://docs.firecrawl.dev/intro' })
+    expect(r[0].snippet).toBe('How to use the API.')
+    expect(r[1]).toMatchObject({ title: 'https://example.org/no-title', url: 'https://example.org/no-title' })
+    expect(r[1].snippet).toBe('')
+    expect(r[2]).toMatchObject({ title: 'Fourth', url: 'https://fourth.io/' })
+  })
+
+  it('max 截断', () => {
+    expect(parseFirecrawlResults(fakeFirecrawlJson, 2)).toHaveLength(2)
+  })
+
+  it('data 缺失 / 非数组 → 空数组（由工具层渲染成"无搜索结果"）', () => {
+    expect(parseFirecrawlResults({})).toEqual([])
+    expect(parseFirecrawlResults({ data: 'nope' })).toEqual([])
+    expect(parseFirecrawlResults(null)).toEqual([])
   })
 })

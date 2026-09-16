@@ -151,6 +151,9 @@ const api: ApiBridge = {
   getNetwork: () => ipcRenderer.invoke(IPC.netProxyGet),
   listFonts: () => ipcRenderer.invoke(IPC.fontsList),
   setNetwork: (patch: NetworkPatch) => ipcRenderer.invoke(IPC.netProxySet, patch),
+  // Firecrawl（plan32）：Key 只进不出，读回只有 hasKey
+  getFirecrawl: () => ipcRenderer.invoke(IPC.firecrawlGet),
+  setFirecrawl: (key: string | null) => ipcRenderer.invoke(IPC.firecrawlSet, key),
   getGitInfo: () => ipcRenderer.invoke(IPC.gitInfo),
   // ── 源代码管理（plan16）──
   getGitStatus: () => ipcRenderer.invoke(IPC.gitStatus),

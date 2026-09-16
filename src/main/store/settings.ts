@@ -62,6 +62,8 @@ interface StoredSettings extends ModelSettings {
   proxyRules?: string
   /** 代理账号密码的**密文**（明文只存在于内存；JSON 序列化，避免密码里的冒号把格式搞坏） */
   proxyCredentialsEncrypted?: string
+  /** Firecrawl API Key 的**密文**（plan32：web_search 密钥型源，与代理凭据同一套加密纪律） */
+  firecrawlApiKeyEncrypted?: string
 }
 
 const store = new Store<StoredSettings>({ name: 'settings' })
@@ -235,6 +237,33 @@ export function encryptionAvailable(): boolean {
   } catch {
     return false
   }
+}
+
+// ── Firecrawl（plan32）：web_search 的密钥型搜索源 ─────────────────────────
+// 与代理凭据同一套纪律：**明文只存在于内存**，落盘一律 safeStorage 密文；
+// 读不到（未配置 / 加密服务不可用 / 密文损坏）一律返回空串 = "没配"，调用方回落默认源 —— 不报错。
+
+export function getFirecrawlKey(): string {
+  const enc = store.store.firecrawlApiKeyEncrypted
+  if (!enc || !encryptionAvailable()) return ''
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+  } catch {
+    return ''
+  }
+}
+
+export function setFirecrawlKey(key: string | null): void {
+  if (key === null || key.length === 0) {
+    store.delete('firecrawlApiKeyEncrypted' as keyof StoredSettings)
+    return
+  }
+  if (!encryptionAvailable()) {
+    throw new Error(
+      '系统加密服务不可用。为遵守「凭据不明文落盘」的约束，已拒绝保存 Firecrawl API Key —— 请检查运行环境。'
+    )
+  }
+  store.set('firecrawlApiKeyEncrypted', safeStorage.encryptString(key).toString('base64'))
 }
 
 function decryptKey(stored: StoredSettings): string {

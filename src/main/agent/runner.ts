@@ -119,7 +119,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
           hooks.pathAccess
         )
       : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel, hooks.resourcesPath, hooks.pathAccess)),
-    ...createWebTools(),
+    ...createWebTools(hooks.webSearchDeps),
     ...createBrowserTools(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
     ...(hooks.onTodos ? createTodoTools({ update: hooks.onTodos }) : []),
@@ -173,6 +173,8 @@ export interface ToolHooks {
   /** 路径放行策略（plan29 D-089）：**只有 Agent 线**该传 —— 传 `{ allowOutside: true }` = 完全访问档无边界。
    *  不传 = 锁死工作区（fail-closed）。⚠️ **界面线永远不要传**（界面越权，见 `guard.ts` 的 `PathAccess`）。 */
   pathAccess?: PathAccess
+  /** 网页搜索源（plan31 D-096 扩展）：Firecrawl 密钥由组合根解密传入；null/不传 = 用零密钥默认源（DDG） */
+  webSearchDeps?: { firecrawlApiKey: string | null }
   /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
   confirmCommand?: CommandConfirm
   onTodos?: (todos: TodoItem[]) => void
@@ -313,6 +315,8 @@ export interface RunAgentArgs {
   conversationId: string
   agentName?: string
   permission?: PermissionPreset
+  /** Firecrawl 密钥（plan31）：由组合根从设置解密后传入；不传 = web_search 走零密钥默认源 */
+  firecrawlApiKey?: string | null
   onText?: (delta: string) => void
   /** 思考增量回调（DeepSeek 系 `reasoning_content`），界面上显示"思考过程"。⚠️ Anthropic 的 thinking 与 tools 互斥，故工具循环里只对 OpenAI 兼容协议生效。 */
   onReasoning?: (delta: string) => void
@@ -486,6 +490,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   const allTools = createAllTools(workspaceRoot, {
     writer,
     ...(pathAccess ? { pathAccess } : {}),
+    webSearchDeps: { firecrawlApiKey: args.firecrawlApiKey ?? null },
     ...(args.policy ? { policy: args.policy } : {}),
     ...(ctx.background ? { background: ctx.background, agentLabel } : {}),
     // 逐次确认（plan8 R5）：仅「可写」档需要 —— 只读档本就不下发 run_command；完全访问档是用户明确选的"别拦我"

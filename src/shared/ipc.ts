@@ -426,6 +426,9 @@ export const IPC = {
   // ── 网络代理（plan7 批 F2）：三档 + 手动地址 + 凭据（凭据只进不出）──
   netProxyGet: 'net-proxy:get',
   netProxySet: 'net-proxy:set',
+  // ── Firecrawl（plan32）：web_search 密钥型源（Key 只进不出，读回只有"配没配"）──
+  firecrawlGet: 'firecrawl:get',
+  firecrawlSet: 'firecrawl:set',
   // ── 界面字体（plan7 批 F3）：系统字体枚举（主进程读注册表，document.fonts 只有已加载的）──
   fontsList: 'fonts:list',
   gitInfo: 'git:info',
@@ -749,6 +752,9 @@ export interface ApiBridge {
   /** 网络代理（plan7 批 F2）：**当前生效的代理**由主进程探测后给，界面不猜 */
   getNetwork(): Promise<NetworkView>
   setNetwork(patch: NetworkPatch): Promise<NetworkView>
+  /** Firecrawl（plan32）：Key **不回显明文** —— 读回只有"配没配"，与代理凭据同一口径 */
+  getFirecrawl(): Promise<{ hasKey: boolean }>
+  setFirecrawl(key: string | null): Promise<{ hasKey: boolean }>
   /** 系统字体枚举（plan7 批 F3）：**列不出就明说**，不做假下拉框 */
   listFonts(): Promise<SystemFontsResult>
   getGitInfo(): Promise<GitInfo | null>

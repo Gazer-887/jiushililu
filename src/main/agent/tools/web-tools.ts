@@ -103,7 +103,7 @@ function renderSearchResults(results: WebSearchResult[]): string {
   return `共 ${results.length} 条结果（provider=duckduckgo，零密钥默认源）：\n${lines.join('\n')}`
 }
 
-function webSearchTool(): AgentTool {
+function webSearchTool(firecrawlKey: string | null): AgentTool {
   return {
     schema: {
       name: 'web_search',
@@ -129,19 +129,27 @@ function webSearchTool(): AgentTool {
         if (!Number.isFinite(n) || n < 1 || n > 10) return '错误：max_results 允许 1~10'
         max = Math.floor(n)
       }
-      try {
-        const res = await httpFetch(SEARCH_ENDPOINT + encodeURIComponent(query), {
-          signal: AbortSignal.timeout(30000),
-          headers: { 'User-Agent': 'jiushililu-agent/0.1' }
-        })
-        if (!res.ok) return `错误：搜索源返回 HTTP ${res.status}`
-        const buf = await res.arrayBuffer()
-        const html = new TextDecoder('utf-8').decode(buf)
-        // 反爬兜底：DDG 偶发返回人机验证页 —— 如实告知而不是当空结果
-        if (/anomaly|captcha|verify/i.test(html) && parseDuckResults(html, 1).length === 0) {
-          return '错误：搜索源触发了人机验证（反爬）。稍后重试，或改用 fetch_url 直接访问已知来源。'
+      if (firecrawlKey) {
+        // Firecrawl 源（用户配置了密钥时优先）：POST v1/search，失败**回落**零密钥默认源并如实注明
+        try {
+          const res = await httpFetch('https://api.firecrawl.dev/v1/search', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${firecrawlKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, limit: max }),
+            signal: AbortSignal.timeout(30000)
+          })
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          const json = await res.json()
+          return renderSearchResults(parseFirecrawlResults(json, max)).replace('provider=duckduckgo', 'provider=firecrawl')
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err)
+          const fb = await searchDuck(query, max).catch((e2: unknown) => `错误：两个源都失败——Firecrawl：${reason}；默认源：${e2 instanceof Error ? e2.message : String(e2)}`)
+          return typeof fb === 'string' && fb.startsWith('错误') ? fb : `（Firecrawl 失败已回落默认源：${reason}）
+${fb}`
         }
-        return renderSearchResults(parseDuckResults(html, max))
+      }
+      try {
+        return await searchDuck(query, max)
       } catch (err) {
         return `错误：搜索失败——${err instanceof Error ? err.message : String(err)}`
       }
@@ -149,7 +157,51 @@ function webSearchTool(): AgentTool {
   }
 }
 
-export function createWebTools(): AgentTool[] {
+/** DDG 零密钥默认源（Firecrawl 未配置或失败时的回落）。 */
+async function searchDuck(query: string, max: number): Promise<string> {
+  try {
+    const res = await httpFetch(SEARCH_ENDPOINT + encodeURIComponent(query), {
+      signal: AbortSignal.timeout(30000),
+      headers: { 'User-Agent': 'jiushililu-agent/0.1' }
+    })
+    if (!res.ok) return `错误：搜索源返回 HTTP ${res.status}`
+    const buf = await res.arrayBuffer()
+    const html = new TextDecoder('utf-8').decode(buf)
+    // 反爬兜底：DDG 偶发返回人机验证页 —— 如实告知而不是当空结果
+    if (/anomaly|captcha|verify/i.test(html) && parseDuckResults(html, 1).length === 0) {
+      return '错误：搜索源触发了人机验证（反爬）。稍后重试，或改用 fetch_url 直接访问已知来源。'
+    }
+    return renderSearchResults(parseDuckResults(html, max))
+  } catch (err) {
+    return `错误：搜索失败——${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
+/** Firecrawl v1/search 响应解析（纯函数，离线可测）。data[] 里 title/description 可缺。 */
+export function parseFirecrawlResults(json: unknown, max = 6): WebSearchResult[] {
+  const data = (json as { data?: Array<{ title?: string; url?: string; description?: string; title_?: string }> })?.data
+  if (!Array.isArray(data)) return []
+  const out: WebSearchResult[] = []
+  for (const d of data) {
+    if (out.length >= max) break
+    const url = typeof d.url === 'string' ? d.url : ''
+    if (!url) continue
+    out.push({
+      title: (d.title ?? url).slice(0, 200),
+      url,
+      snippet: (d.description ?? '').slice(0, 300)
+    })
+  }
+  return out
+}
+
+export interface WebSearchDeps {
+  /** Firecrawl 密钥（safeStorage 解密后由组合根传入）；有 = 用 Firecrawl，无 = 零密钥默认源 DDG */
+  firecrawlApiKey?: string | null
+}
+
+export function createWebTools(deps?: WebSearchDeps): AgentTool[] {
+  const firecrawlKey = typeof deps?.firecrawlApiKey === 'string' && deps.firecrawlApiKey.length > 0 ? deps.firecrawlApiKey : null
   const fetch_url: AgentTool = {
     schema: {
       name: 'fetch_url',
@@ -200,5 +252,5 @@ export function createWebTools(): AgentTool[] {
     }
   }
 
-  return [fetch_url, webSearchTool()]
+  return [fetch_url, webSearchTool(firecrawlKey)]
 }

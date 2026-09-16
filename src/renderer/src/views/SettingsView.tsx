@@ -234,6 +234,10 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const [netRules, setNetRules] = useState('')
   const [netUser, setNetUser] = useState('')
   const [netPass, setNetPass] = useState('')
+  /** Firecrawl（plan32）：web_search 密钥型源。Key **不回显**（与代理凭据同口径）：读回只有"已配置/未配置" */
+  const [fcHas, setFcHas] = useState(false)
+  const [fcInput, setFcInput] = useState('')
+  const [fcError, setFcError] = useState<string | null>(null)
   /** 系统字体列表（plan7 批 F3）：进「外观」分区时向主进程要，列不出就显示原因 */
   const [fonts, setFonts] = useState<SystemFontsResult | null>(null)
   /** 故障排查区：日志目录与最近文件，用于"出问题能查" */
@@ -309,6 +313,10 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         setNetRules(v.proxyRules)
       })
       .catch(() => setNet(null))
+    void window.api
+      .getFirecrawl()
+      .then((r) => setFcHas(r.hasKey))
+      .catch(() => setFcHas(false))
   }, [section])
   useEffect(() => {
     if (section !== 'appearance') return
@@ -343,6 +351,18 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         .getNetwork()
         .then(setNet)
         .catch(() => setNet(null))
+    }
+  }
+
+  /** Firecrawl（plan32）：保存/清除后用主进程返回值回显，输入框清空（不回显明文）。报错原样展示 */
+  const applyFirecrawl = async (key: string | null): Promise<void> => {
+    setFcError(null)
+    try {
+      const r = await window.api.setFirecrawl(key)
+      setFcHas(r.hasKey)
+      setFcInput('')
+    } catch (err) {
+      setFcError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -939,6 +959,43 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             </p>
             {net && !net.applied && net.error && <p className="hint">{net.error}</p>}
             {net?.effectiveError && <p className="hint">探测失败：{net.effectiveError}</p>}
+
+            {/* ── Firecrawl（plan32）：web_search 的密钥型搜索源；没配回落内置默认源 ── */}
+            <div className="field-label">网页搜索（可选）</div>
+            <label>
+              Firecrawl API Key
+              <input
+                type="password"
+                value={fcInput}
+                placeholder={fcHas ? '已保存，留空表示不修改' : 'fc-…（在 firecrawl.dev 获取）'}
+                onChange={(e) => setFcInput(e.target.value)}
+              />
+            </label>
+            <div className="actions">
+              <button
+                className="btn-secondary"
+                type="button"
+                disabled={fcInput.length === 0}
+                onClick={() => void applyFirecrawl(fcInput)}
+              >
+                保存
+              </button>
+              {fcHas && (
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  onClick={() => void applyFirecrawl(null)}
+                >
+                  清除已保存的 Key
+                </button>
+              )}
+            </div>
+            <p className="hint">
+              {fcHas
+                ? '已配置：web_search 优先走 Firecrawl，失败自动回落默认搜索源。'
+                : '未配置：web_search 使用内置默认搜索源（无需密钥）。'}
+            </p>
+            {fcError && <p className="hint">{fcError}</p>}
           </div>
         )}
 
