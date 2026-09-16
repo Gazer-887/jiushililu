@@ -49,6 +49,106 @@ export function htmlToText(html: string): string {
     .trim()
 }
 
+// ── web_search（plan31 D-096，规格缺口 4）────────────────────────────
+// 检索能力补齐：此前只有 fetch_url（给 URL 能读、没法搜）。
+// 源选型受硬约束（不打包模型、不内置任何 API Key）⇒ 用 DuckDuckGo 的 HTML 端点（零密钥）。
+// 解析做成**纯函数**（正则抽结果锚点），单测可离线打；端点将来可扩展成可配置 provider。
+
+export interface WebSearchResult {
+  title: string
+  url: string
+  snippet: string
+}
+
+/** 解码 DDG 的跳转包装：结果 href 形如 `/l/?uddg=<encodeURIComponent(真实url)>&rut=...` */
+export function unwrapDuckHref(href: string): string {
+  try {
+    const u = new URL(href, 'https://duckduckgo.com')
+    const target = u.searchParams.get('uddg')
+    // 只有带 uddg 包装的才算跳转链接；其余（直链/垃圾输入）一律**原样返回**，不做相对解析
+    return target ? decodeURIComponent(target) : href
+  } catch {
+    return href
+  }
+}
+
+/** 从 DDG HTML 端点响应里抽结果（纯函数，离线可测） */
+export function parseDuckResults(html: string, max = 6): WebSearchResult[] {
+  const out: WebSearchResult[] = []
+  // 结果锚点：<a class="result__a" href="...">标题</a>；摘要在其后的 result__snippet 锚点
+  const anchor = /<a[^>]+class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi
+  const snippet = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi
+  const snippets: string[] = []
+  let sm: RegExpExecArray | null
+  while ((sm = snippet.exec(html)) !== null) snippets.push(htmlToText(sm[1] ?? ''))
+  let am: RegExpExecArray | null
+  while ((am = anchor.exec(html)) !== null && out.length < max) {
+    const title = htmlToText(am[2] ?? '')
+    const url = unwrapDuckHref(am[1] ?? '')
+    if (!title || !url) continue
+    // 结果锚点与摘要按下标配对（DDG 两条一一对应；缺就给空串）
+    out.push({ title, url, snippet: snippets[out.length] ?? '' })
+  }
+  return out
+}
+
+const SEARCH_ENDPOINT = 'https://html.duckduckgo.com/html/?q='
+
+function renderSearchResults(results: WebSearchResult[]): string {
+  if (results.length === 0) return '（无搜索结果——试试换关键词或更通用的表述）'
+  const lines = results.map((r, i) => {
+    const snip = r.snippet ? `\n   ${r.snippet.slice(0, 300)}` : ''
+    return `${i + 1}. ${r.title}\n   ${r.url}${snip}`
+  })
+  return `共 ${results.length} 条结果（provider=duckduckgo，零密钥默认源）：\n${lines.join('\n')}`
+}
+
+function webSearchTool(): AgentTool {
+  return {
+    schema: {
+      name: 'web_search',
+      description:
+        '搜索网页并返回结果列表（标题 + 链接 + 摘要）。适合查资料/文档/报错信息；' +
+        '拿到具体网址后用 fetch_url 读全文。默认源零密钥，无需配置。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索关键词' },
+          max_results: { type: 'number', description: '返回条数上限（1~10，默认 6）' }
+        },
+        required: ['query']
+      }
+    },
+    async execute(args) {
+      const query = typeof args['query'] === 'string' ? args['query'].trim() : ''
+      if (query.length === 0) return '错误：query 不能为空'
+      const rawMax = args['max_results']
+      let max = 6
+      if (rawMax !== undefined && rawMax !== null) {
+        const n = typeof rawMax === 'number' ? rawMax : Number(rawMax)
+        if (!Number.isFinite(n) || n < 1 || n > 10) return '错误：max_results 允许 1~10'
+        max = Math.floor(n)
+      }
+      try {
+        const res = await httpFetch(SEARCH_ENDPOINT + encodeURIComponent(query), {
+          signal: AbortSignal.timeout(30000),
+          headers: { 'User-Agent': 'jiushililu-agent/0.1' }
+        })
+        if (!res.ok) return `错误：搜索源返回 HTTP ${res.status}`
+        const buf = await res.arrayBuffer()
+        const html = new TextDecoder('utf-8').decode(buf)
+        // 反爬兜底：DDG 偶发返回人机验证页 —— 如实告知而不是当空结果
+        if (/anomaly|captcha|verify/i.test(html) && parseDuckResults(html, 1).length === 0) {
+          return '错误：搜索源触发了人机验证（反爬）。稍后重试，或改用 fetch_url 直接访问已知来源。'
+        }
+        return renderSearchResults(parseDuckResults(html, max))
+      } catch (err) {
+        return `错误：搜索失败——${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+  }
+}
+
 export function createWebTools(): AgentTool[] {
   const fetch_url: AgentTool = {
     schema: {
@@ -100,5 +200,5 @@ export function createWebTools(): AgentTool[] {
     }
   }
 
-  return [fetch_url]
+  return [fetch_url, webSearchTool()]
 }
