@@ -18,6 +18,7 @@
     "test:watch": "vitest --config config/vitest.config.ts",
     "bench": "vitest run --config config/vitest.bench.config.ts",
     "bench:window": "node scripts/bench-tool-window.cjs",
+    "evals": "node scripts/run-evals.cjs",
     "probe:system": "electron scripts/probe-main-system.cjs"
   },
   "dependencies": {
