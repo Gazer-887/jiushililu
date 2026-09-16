@@ -7,6 +7,8 @@ import {
   canDeleteEntry,
   canDeleteProfile,
   createProfile,
+  entryLabel,
+  findModelEntry,
   legacyKeyOwnerId,
   makeEntry,
   normalizeProfiles,
@@ -18,7 +20,8 @@ import {
   type ModelProfile,
   type ModelSaveInput,
   type ModelsView,
-  type ModelProfileView
+  type ModelProfileView,
+  type ModelSwitchResult
 } from '@shared/models'
 import { createLogger } from '../log'
 import {
@@ -253,29 +256,22 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
   return getSettingsView()
 }
 
-/** 输入框那个"快速切模型"：名字能对上目录里已有的模型就切过去，对不上就**改当前模型条目的模型 ID**（同一连接换个名字） */
-export function setModel(model: string): SettingsView {
-  const active = getActiveEntry()
-  if (!active) return getSettingsView()
-  const hit = active.profile.models.find((m) => m.model === model)
-  if (hit) {
-    setActiveEntry(active.profile.id, hit.id)
-    return getSettingsView()
+/**
+ * 输入框"快速切模型"（plan39 D-101 重写）：全端点**精确匹配** → 切端点 + 切条目。
+ * ⚠️ 旧版在名字对不上时会"把当前条目改名"——那是把"选择"曲解成"重命名"，静默改用户配置
+ * （实案：切 deepseek-flash 反把 agnes 端点改名 → 503）。改名只属于设置页的显式编辑，这里永不发生。
+ */
+export function setModel(model: string): ModelSwitchResult {
+  const name = model.trim()
+  if (!name) return { ok: false, message: '模型名为空' }
+  const { profiles, activeId } = listProfiles()
+  const hit = findModelEntry(profiles, activeId, name)
+  if (!hit) {
+    return { ok: false, message: `目录里没有名为「${name}」的模型（快速切换只切已有条目）。可在设置页添加该模型或编辑既有端点。` }
   }
-  saveEndpoint({
-    id: active.profile.id,
-    name: active.profile.name,
-    providerType: active.profile.providerType,
-    baseURL: active.profile.baseURL,
-    timeoutMs: active.profile.timeoutMs,
-    stream: active.profile.stream,
-    models: active.profile.models.map((m) =>
-      m.id === active.entry.id ? { ...m, model: model.trim() } : m
-    ),
-    activeModelId: active.entry.id,
-    apiKey: ''
-  })
-  return getSettingsView()
+  setActiveProfile(hit.profileId)
+  setActiveEntry(hit.profileId, hit.entryId)
+  return { ok: true }
 }
 
 // ── 端点与模型目录的增删改（供设置页调用）────────────────────────────────

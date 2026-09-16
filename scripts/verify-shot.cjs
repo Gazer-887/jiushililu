@@ -1880,13 +1880,18 @@ app.whenReady().then(async () => {
 
   const processVisible = await win.webContents.executeJavaScript(`
     (() => {
-      const tool = document.querySelector('.tool-item');
-      const rb = document.querySelector('.reasoning-block');
+      // plan36 S3 判据重定：旧的「全局过程块 + 直接子元素排序」已随架构退役 ——
+      // 现在验的是**最后一条助手消息内**的分段：类名沿用（.reasoning-block/.tool-log/.msg-content），
+      // 位置从"消息之前"变成"消息之内"，顺序必须等于事件到达顺序（本桩序列：既有正文 → tool → thinking）
+      const assts = Array.from(document.querySelectorAll('.chat-messages .msg-assistant'));
+      const last = assts[assts.length - 1];
+      if (!last) return { toolName: null, toolDesc: null, hasReasoning: false, reasoningLabel: null, reasoningText: null, reasoningVisible: false, reasoningHeight: 0, segmentOrder: [], segmentsInsideMsg: false };
+      const segs = Array.from(last.children)
+        .filter((el) => el.matches('.msg-content, .tool-log, .reasoning-block'))
+        .map((el) => el.className.split(' ')[0]);
+      const tool = last.querySelector('.tool-item');
+      const rb = last.querySelector('.reasoning-block');
       const pr = rb ? rb.getBoundingClientRect() : null;
-      const host = document.querySelector('.chat-messages');
-      const order = host ? Array.from(host.children).map((el) => el.className.split(' ')[0]) : [];
-      const lastMsgIdx = order.lastIndexOf('msg');
-      const procIdx = Math.max(order.lastIndexOf('tool-log'), order.lastIndexOf('reasoning-block'));
       return {
         toolName: tool ? (tool.querySelector('.tool-name')?.textContent?.trim() ?? null) : null,
         // 关键：显示的是"在干什么"（入参摘要），**不是**干巴巴的「执行中…」
@@ -1897,9 +1902,8 @@ app.whenReady().then(async () => {
         // **高度合理**才算看得见：被 flex 压成一条线（实测只有 4px）等于没显示
         reasoningVisible: pr ? pr.height > 20 && pr.top < window.innerHeight : false,
         reasoningHeight: pr ? Math.round(pr.height) : 0,
-        // 位置：过程块必须在最后一条消息之前 —— 堆到末尾会把报告挤出视野
-        domOrder: order,
-        processBeforeLastMsg: lastMsgIdx >= 0 && procIdx >= 0 ? procIdx < lastMsgIdx : null
+        segmentOrder: segs,
+        segmentsInsideMsg: segs.includes('tool-log') && segs.includes('reasoning-block')
       };
     })()
   `)
@@ -5467,12 +5471,17 @@ app.whenReady().then(async () => {
   const afterOrder = await win.webContents.executeJavaScript(orderOf)
   console.log('WB_REORDER=' + JSON.stringify({ before: beforeOrder, after: afterOrder }))
 
+  checkTrue('思考块高度可见（此前被 flex 压成 4px 的回归）', processVisible.reasoningHeight > 20, processVisible.reasoningHeight)
   checkTrue(
-    '思考块可见（此前被 flex 压成 4px 的回归）',
-    processVisible.reasoningHeight > 20,
-    processVisible.reasoningHeight
+    'plan36：过程块长在助手消息内（全局过程块已退役）',
+    processVisible.segmentsInsideMsg === true,
+    processVisible.segmentOrder
   )
-  checkTrue('思考块排在报告之前（阅读顺序 = 过程 → 结论）', processVisible.processBeforeLastMsg === true)
+  checkTrue(
+    'plan36：消息内分段顺序 = 到达顺序（正文 → tool → thinking）',
+    JSON.stringify(processVisible.segmentOrder) === JSON.stringify(['msg-content', 'tool-log', 'reasoning-block']),
+    processVisible.segmentOrder
+  )
   checkTrue(
     '思考块有实际内容（不是空壳）',
     typeof processVisible.reasoningText === 'string' && processVisible.reasoningText.length > 0

@@ -119,6 +119,25 @@ describe('布局：meta 与正文分开落盘', () => {
     expect(back?.messages).toEqual([{ role: 'user', content: '你好' }])
     expect(reopened.listConversations()[0]!.messageCount).toBe(1)
   })
+
+  it('plan36：带 segments 的消息（含空正文轮次）往返不丢', () => {
+    const root = tmpRoot()
+    const repo = createConversationsRepo(createFsConversationsBackend(root))
+    const c = repo.createConversation({ workspace: 'D:/ws', model: 'm', skills: [], firstMessage: '查一下' })
+    const segs = [
+      { kind: 'thinking' as const, text: '先看看目录' },
+      { kind: 'tool' as const, event: { id: 't1', name: 'list_dir', phase: 'end' as const, summary: '8 个文件' } },
+      { kind: 'text' as const, text: '看完了' }
+    ]
+    repo.saveConversation(c.id, [
+      { role: 'user', content: '查一下' },
+      { role: 'assistant', content: '', segments: segs.slice(0, 2) },
+      { role: 'assistant', content: '看完了', segments: segs }
+    ])
+    const back = createConversationsRepo(createFsConversationsBackend(root)).getConversation(c.id)
+    expect(back?.messages[1]).toEqual({ role: 'assistant', content: '', segments: segs.slice(0, 2) })
+    expect(back?.messages[2]!.segments).toEqual(segs)
+  })
 })
 
 describe('原子写：换掉 electron-store 之后必须守住的性质', () => {

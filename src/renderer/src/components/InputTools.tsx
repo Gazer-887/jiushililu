@@ -110,7 +110,7 @@ export function UsageChip(): JSX.Element | null {
 /**
  * 模型快速切换（plan7 F5 之后）：**切的是档案，不是名字**（数据与设置页同一份 `models:list`）。
  * 不靠手输模型名 —— 多模型下光改名字 = 拿新名字去撞**当前那条连接**，多半 400；
- * 换模型去设置页「添加模型」，这里的手输只留给"同一条连接上换个模型名"。
+ * 换模型去设置页「添加模型」，这里的手输按名字在全目录精确切换（plan39：不再改名）。
  *
  * 分组显示（2026-09-15 用户需求）：端点为组、组名做标题，组下逐条列模型目录，
  * 点模型 = 切到它（端点没激活时一并切）；当前正在用的那条打勾。
@@ -150,11 +150,12 @@ export function ModelSwitcher(): JSX.Element {
     setOpen(false)
   }
 
-  /** 同一条连接上换模型名（厂商改名、临时试新模型等少数情况） */
+  /** 按名字精确切到目录里任一模型（可跨端点）；对不上**不改名**，只报错指路（plan39 D-101） */
   const apply = async (model: string): Promise<void> => {
     const name = model.trim()
     if (!name) return
-    await window.api.setModel(name)
+    const res = await window.api.setModel(name)
+    if (!res.ok) useAppStore.setState({ streamError: res.message ?? '模型切换失败' })
     await loadSettings()
     setDraft('')
     setOpen(false)
@@ -207,7 +208,7 @@ export function ModelSwitcher(): JSX.Element {
           <div className="model-new">
             <input
               value={draft}
-              placeholder="在同一条连接上切换模型名，回车确认"
+              placeholder="输入目录中的模型名切换，回车确认"
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void apply(draft)

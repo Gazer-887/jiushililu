@@ -84,6 +84,7 @@ import {
   chatSendInputSchema,
   conversationIdSchema,
   incomingMessagesSchema,
+  MAX_STORED_CHARS,
   modelEntryPickSchema,
   goalActionSchema,
   goalCreateSchema,
@@ -213,6 +214,7 @@ import {
 import {
   buildTitlePrompt,
   deriveTitle,
+  fitStoredBudget,
   normalizeHistory,
   sanitizeGeneratedTitle
 } from './store/conversations-core'
@@ -923,7 +925,12 @@ export function registerIpcHandlers(deps: {
         agentName: z.string().max(64).optional()
       })
       .parse(raw)
-    const messages = normalizeHistory(input.messages as ChatMessage[])
+    const normalized = normalizeHistory(input.messages as ChatMessage[])
+    // 超预算先丢分段保正文（plan36）；丢完仍超（正文本身超）才让 strict 审整条拒
+    const { messages, stripped } = fitStoredBudget(normalized, MAX_STORED_CHARS)
+    if (stripped > 0) {
+      log.warn('会话分段超预算，已丢分段保正文', { id: input.id, stripped })
+    }
     const parsed = storedMessagesSchema.safeParse(messages)
     if (!parsed.success) {
       // 这条通道以前**静默**拒（不写日志、界面上也没有），失败理由必须留痕

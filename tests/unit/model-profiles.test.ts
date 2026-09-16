@@ -8,6 +8,7 @@ import {
   canDeleteProfile,
   createProfile,
   entryLabel,
+  findModelEntry,
   legacyKeyOwnerId,
   makeEntry,
   normalizeProfiles,
@@ -325,5 +326,23 @@ describe('读盘容错：坏条目丢掉并计数，绝不整表崩', () => {
 
   it('空数组 → 什么都不丢（别把"还没配模型"报成"数据坏了"）', () => {
     expect(normalizeProfiles([])).toEqual({ profiles: [], dropped: 0 })
+  })
+})
+
+describe('findModelEntry（plan39 D-101：快速切换的精确匹配）', () => {
+  it('命中当前端点优先（同名条目分布在两端时）', () => {
+    const a = profile('a', ['shared', 'only-a'])
+    const b = profile('b', ['shared'])
+    expect(findModelEntry([b, a], 'a', 'shared')).toEqual({ profileId: 'a', entryId: 'a-m1' })
+  })
+  it('当前端点没有 → 跨端点命中（切端点，**绝不改名**）', () => {
+    const a = profile('a', ['mine'])
+    const b = profile('b', ['theirs-1', 'theirs-2'])
+    expect(findModelEntry([a, b], 'a', 'theirs-2')).toEqual({ profileId: 'b', entryId: 'b-m2' })
+  })
+  it('哪端都没有 → null（调用方只能报错指路，没有第三条路）', () => {
+    const a = profile('a', ['mine'])
+    expect(findModelEntry([a], 'a', 'MINE')).toBeNull()
+    expect(findModelEntry([], null, 'x')).toBeNull()
   })
 })

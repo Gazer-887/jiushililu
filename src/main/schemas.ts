@@ -36,7 +36,7 @@ export const settingsSchema = z.object({
   apiKey: z.string().max(400).optional()
 })
 
-/** 单条消息（两条通道共用同一形状） */
+/** 单条消息（发给模型的通道）：刻意**不含** segments —— 执行分段是本地渲染资产，不随请求出境（plan36 审查坑 2） */
 const messageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant']),
   content: z.string().min(1).max(200000)
@@ -132,23 +132,77 @@ export const MAX_STORED_CHARS = 2_000_000
 
 /**
  * **从渲染进程进来的**消息数组（还没规整）—— 比落盘要求**松一档**：`content` 允许为空
- * （流式占位是合法中间状态）；先松收下 → 规整 → 再审 `storedMessagesSchema`。
+ * （流式占位是合法中间状态）；`segments` 只按松结构收下、**不逐字段审**（审是 storedMessagesSchema 的事）。
+ * 先松收下 → 规整 → 再审 `storedMessagesSchema`。
  */
 export const incomingMessagesSchema = z.array(
-  z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string().max(200000) })
+  z.object({
+    role: z.enum(['system', 'user', 'assistant']),
+    content: z.string().max(200000),
+    segments: z.array(z.record(z.string(), z.unknown())).max(1000).optional()
+  })
 )
+
+/** 落盘的分段（plan36）：kind 与载荷配对校验——text/thinking 必带 text，tool 必带 event */
+const segmentSchema = z
+  .object({
+    kind: z.enum(['text', 'thinking', 'tool']),
+    text: z.string().max(200000).optional(),
+    event: z
+      .object({
+        id: z.string().min(1).max(160),
+        name: z.string().min(1).max(120),
+        phase: z.enum(['start', 'error', 'end']),
+        detail: z.string().max(4000).optional(),
+        summary: z.string().max(8000).optional(),
+        savedTokens: z.number().int().nonnegative().optional()
+      })
+      .optional()
+  })
+  .superRefine((s, ctx) => {
+    if ((s.kind === 'text' || s.kind === 'thinking') && !s.text) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${s.kind} 段必须带 text` })
+    }
+    if (s.kind === 'tool' && !s.event) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'tool 段必须带 event' })
+    }
+  })
+
+/**
+ * **落盘**的单条消息（`conv:save`）：与发给模型的 `messageSchema` **刻意分两份**（plan36 审查坑 2）——
+ * 落盘侧收 `segments?`，模型侧永远不含。空 `content` 仅当"assistant 且带分段"时合法
+ * （中间轮次可能只有思考/工具没有正文；丢了它会让回滚的索引错位，坑 3）。
+ */
+export const storedMessageSchema = z
+  .object({
+    role: z.enum(['system', 'user', 'assistant']),
+    content: z.string().max(200000),
+    segments: z.array(segmentSchema).max(1000).optional()
+  })
+  .superRefine((m, ctx) => {
+    if (m.segments && m.role !== 'assistant') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'segments 只允许挂在 assistant 上' })
+    }
+    if (m.content.trim().length === 0 && !(m.role === 'assistant' && (m.segments?.length ?? 0) > 0)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '空 content 且无分段的消息不落盘' })
+    }
+  })
 
 /**
  * **落盘**的消息数组（`conv:save`）—— 与 `chatMessagesSchema` **刻意不共用上限**：
  * 前者管"一次请求发多少"（200 条），后者管"一条会话能有多长"（2000 条）。
  * ⚠️ 共用 200 会让**超过 200 条之后保存永久静默失败** —— 等于给用户设了道看不见的会话寿命上限。
- * 允许空数组（还没说过话的会话合法）；空 `content` 仍拒绝 —— 规整该在前面挡掉，走到这里还有空的是程序错了。
+ * 预算口径（plan36 坑 4）：**content + segments 序列化长度都计入**——segments 会带工具摘要，
+ * 只算 content 的门是盲的；超预算的降级在 conversations-core `fitStoredBudget` 做（丢分段保正文）。
  */
 export const storedMessagesSchema = z
-  .array(messageSchema)
+  .array(storedMessageSchema)
   .max(2000)
   .superRefine((list, ctx) => {
-    const total = list.reduce((n, m) => n + m.content.length, 0)
+    const total = list.reduce(
+      (n, m) => n + m.content.length + (m.segments ? JSON.stringify(m.segments).length : 0),
+      0
+    )
     if (total > MAX_STORED_CHARS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

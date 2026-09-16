@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   deriveTitle,
+  fitStoredBudget,
   groupByWorkspace,
   normalizeHistory,
   workspaceLabel
 } from '@main/store/conversations-core'
+import { chatMessagesSchema, storedMessagesSchema } from '@main/schemas'
 import type { ChatMessage, ConversationMeta } from '@shared/ipc'
 
 function meta(over: Partial<ConversationMeta> & { id: string }): ConversationMeta {
@@ -103,5 +105,80 @@ describe('normalizeHistory（存盘前的消息规整）', () => {
   it('正常消息**原样保留、顺序不变**（规整不许动有效数据）', () => {
     const list = [u('一'), a('二'), u('三'), a('四')]
     expect(normalizeHistory(list)).toEqual(list)
+  })
+
+  // ── plan36 S1：分段让"空正文的中间轮次"成为合法状态 ──
+  const segTool = { kind: 'tool' as const, event: { id: 't1', name: 'fetch_url', phase: 'end' as const } }
+
+  it('空 content 但带分段的 assistant **保留**（丢了回滚索引就错位）', () => {
+    const withSeg: ChatMessage = { role: 'assistant', content: '', segments: [segTool] }
+    const out = normalizeHistory([u('一'), withSeg, a('收尾')])
+    expect(out).toHaveLength(3)
+    expect(out[1]!.segments).toHaveLength(1)
+  })
+
+  it('空 content 且**无**分段仍被丢（旧语义不变）', () => {
+    expect(normalizeHistory([u('一'), a('')])).toHaveLength(1)
+  })
+})
+
+describe('fitStoredBudget（plan36 坑 4：超预算丢分段保正文）', () => {
+  const big = (n: number): string => 'x'.repeat(n)
+  const withSeg = (content: string): ChatMessage => ({
+    role: 'assistant',
+    content,
+    segments: [{ kind: 'thinking', text: big(1000) }]
+  })
+
+  it('预算内 → 原样返回 stripped=0', () => {
+    const list = [withSeg('a'), withSeg('b')]
+    const out = fitStoredBudget(list, 100_000)
+    expect(out.stripped).toBe(0)
+    expect(out.messages[0]!.segments).toBeDefined()
+  })
+
+  it('超预算 → 从最老开始丢分段，正文一条不丢', () => {
+    const list = [withSeg(big(500)), withSeg(big(500)), withSeg(big(500))]
+    const out = fitStoredBudget(list, 1600)
+    expect(out.stripped).toBeGreaterThan(0)
+    expect(out.messages.every((m) => m.content.length === 500)).toBe(true)
+    expect(out.messages.filter((m) => m.segments).length).toBeLessThan(3)
+  })
+
+  it('正文本身就超 → 丢光分段仍原样返回（交给 strict 审整条拒，不静默裁正文）', () => {
+    const list: ChatMessage[] = [
+      { role: 'assistant', content: big(5000), segments: [{ kind: 'text', text: 'seg' }] }
+    ]
+    const out = fitStoredBudget(list, 1000)
+    expect(out.stripped).toBe(1)
+    expect(out.messages[0]!.content.length).toBe(5000)
+  })
+})
+
+describe('storedMessagesSchema · 分段校验（plan36 双 schema）', () => {
+  it('assistant 空 content + 合法分段 → 过审', () => {
+    const ok = storedMessagesSchema.safeParse([
+      { role: 'assistant', content: '', segments: [{ kind: 'tool', event: { id: 't1', name: 'list_dir', phase: 'end' } }] }
+    ])
+    expect(ok.success).toBe(true)
+  })
+
+  it('user 带分段 → 拒（分段只属于 assistant）', () => {
+    const bad = storedMessagesSchema.safeParse([
+      { role: 'user', content: 'hi', segments: [{ kind: 'text', text: 'x' }] }
+    ])
+    expect(bad.success).toBe(false)
+  })
+
+  it('tool 段缺 event / text 段缺 text → 拒', () => {
+    expect(storedMessagesSchema.safeParse([{ role: 'assistant', content: '', segments: [{ kind: 'tool' }] }]).success).toBe(false)
+    expect(storedMessagesSchema.safeParse([{ role: 'assistant', content: '', segments: [{ kind: 'text' }] }]).success).toBe(false)
+  })
+
+  it('★ 模型侧 chatMessagesSchema **必须剥掉 segments**（分段不出境，审查坑 2）', () => {
+    const parsed = chatMessagesSchema.parse([
+      { role: 'assistant', content: 'hi', segments: [{ kind: 'text', text: 'hi' }] }
+    ])
+    expect('segments' in (parsed[0] as object)).toBe(false)
   })
 })

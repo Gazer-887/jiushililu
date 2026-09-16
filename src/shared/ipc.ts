@@ -5,7 +5,7 @@ import type { TodoItem } from './todo'
 import type { Goal } from './goal'
 import type { TokenUsage } from './usage'
 import type { TokenSaverTier } from './token-tier'
-import type { SubagentJobEvent } from './agent'
+import type { SubagentJobEvent, MessageSegment } from './agent'
 import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult, FsOpenResult } from './fs-tree'
 import type { FsOfficeResult } from './office-preview'
@@ -53,6 +53,8 @@ export interface SettingsSaveInput extends ModelSettings {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+  /** 仅 assistant 可带（plan36）：执行过程按真实顺序的分段，本地渲染与回看用，**不发给模型** */
+  segments?: MessageSegment[]
 }
 
 export interface TestResult {
@@ -626,7 +628,7 @@ export interface ApiBridge {
   getSettings(): Promise<SettingsView>
   saveSettings(input: SettingsSaveInput): Promise<SettingsView>
   testConnection(input: SettingsSaveInput): Promise<TestResult>
-  setModel(model: string): Promise<SettingsView>
+  setModel(model: string): Promise<import('./models').ModelSwitchResult>
   listModels(): Promise<import('./models').ModelsView>
   saveModel(input: import('./models').ModelSaveInput): Promise<import('./models').ModelProfileView>
   deleteModel(id: string): Promise<void>

@@ -49,6 +49,15 @@ export interface ToolEvent {
   savedTokens?: number
 }
 
+/**
+ * 助手消息的时间线分段（plan36 D-100 候选）：thinking / 工具 / 正文按**真实发生顺序**排列，
+ * 渲染与回顾按序交错。`content` 恒等于全部 text 段拼接（模型侧合同不变）。
+ */
+export type MessageSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'thinking'; text: string }
+  | { kind: 'tool'; event: ToolEvent }
+
 export type AgentStopReason = 'completed' | 'max-rounds'
 
 /** 子代理运行事件（plan7 批 D 右栏「任务」页签）：光有最终结果不够——开始/结束各报一次，界面才有"进行中"可言 */

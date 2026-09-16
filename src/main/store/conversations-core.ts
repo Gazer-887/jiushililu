@@ -102,9 +102,33 @@ export interface RollbackOutcome {
  * 存盘前规整消息：**把"没有内容"的消息丢掉**。这不是防御性编程，而是一条**真实的数据丢失渠道**：渲染端一按发送就塞空
  * `assistant` 占位（流式往它身上长），而落盘校验要求 `content` 至少 1 个字符 —— 于是「没吐字就切会话 / 点停止 / 关窗口」
  * 这几条路**保存必然被拒**；调用方又是 `void persistActive()`，界面无提示、用户只觉得"这段没存上"。空内容消息在契约里本就非法。
+ * plan36 例外：**带分段的 assistant 即使空正文也保留**——中间轮次可能只有思考/工具没有正文，
+ * 丢掉会让渲染索引与磁盘索引错位，`rollbackTo`（按索引移游标）就会切错位置。
  */
 export function normalizeHistory(messages: ChatMessage[]): ChatMessage[] {
-  return messages.filter((m) => m.content.trim().length > 0)
+  return messages.filter(
+    (m) => m.content.trim().length > 0 || (m.role === 'assistant' && (m.segments?.length ?? 0) > 0)
+  )
+}
+
+/**
+ * 落盘预算降级（plan36 坑 4）：`content + segments` 总长超 `MAX_STORED_CHARS` 时，
+ * 从**最老**的消息开始丢分段、保正文——分段是回看增强，正文是合同，永远保正文。
+ * ⚠️ 必须在 `storedMessagesSchema` 审之前跑：那道门是整条拒存（兜底），这里是能救则救。
+ */
+export function fitStoredBudget<T extends ChatMessage>(messages: T[], maxChars: number): { messages: T[]; stripped: number } {
+  const size = (list: T[]): number =>
+    list.reduce((n, m) => n + m.content.length + (m.segments ? JSON.stringify(m.segments).length : 0), 0)
+  if (size(messages) <= maxChars) return { messages, stripped: 0 }
+  let stripped = 0
+  const out = messages.map((m) => ({ ...m }))
+  for (let i = 0; i < out.length && size(out) > maxChars; i++) {
+    if (out[i].segments) {
+      delete out[i].segments
+      stripped++
+    }
+  }
+  return { messages: out, stripped }
 }
 
 /** 从首条消息推导会话标题：取首个非空行、去 Markdown 标记、截断 */

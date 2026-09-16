@@ -1,7 +1,9 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
 import MessageMarkdown from '../components/MessageMarkdown'
+import MessageSegments from '../components/MessageSegments'
+import { textFromSegments } from '@shared/message-segments'
 import InputConsole from '../components/InputConsole'
 import TodoPanel from '../components/TodoPanel'
 import GoalPanel from '../components/GoalPanel'
@@ -99,8 +101,6 @@ export default function ChatView() {
       document.removeEventListener('keydown', onKey)
     }
   }, [menu])
-  const toolEvents = useAppStore((s) => s.toolEvents)
-  const reasoning = useAppStore((s) => s.reasoning)
   const sendMessage = useAppStore((s) => s.sendMessage)
   const stopStreaming = useAppStore((s) => s.stopStreaming)
   const conversations = useAppStore((s) => s.conversations)
@@ -109,8 +109,6 @@ export default function ChatView() {
   const agentsView = useAppStore((s) => s.agentsView)
   const selectAgent = useAppStore((s) => s.selectAgent)
   const [input, setInput] = useState('')
-  /** 思考块展开态；默认展开 —— 流式期看得见它在想什么才叫"过程可见" */
-  const [showReasoning, setShowReasoning] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
   // 拖拽落点 = 整块会话区，不只是输入框那一小块
   const viewRef = useRef<HTMLDivElement>(null)
@@ -121,57 +119,9 @@ export default function ChatView() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamError, saveError, toolEvents])
+  }, [messages, streamError, saveError])
 
   const tokens = useMemo(() => usedTokens(messages), [messages])
-
-  /** 过程块插在最后一条助手消息之前（过程 → 结论，阅读顺序才对）；没有助手消息时退到最后一条之前 */
-  const insertAt = (() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]!.role === 'assistant') return i
-    }
-    return Math.max(0, messages.length - 1)
-  })()
-
-  /** 过程块（思考 + 工具活动）。**不许堆在最下面** —— 它发生在报告之前，堆末尾会把结论挤出视野（工具一多界面全是卡片） */
-  const processBlock = (
-    <>
-      {reasoning && (
-        <div className="reasoning-block">
-          <button
-            className="reasoning-head"
-            onClick={() => setShowReasoning((v) => !v)}
-            aria-expanded={showReasoning}
-          >
-            <span className="reasoning-mark" aria-hidden="true">
-              ✻
-            </span>
-            思考过程
-            <span className="reasoning-caret" aria-hidden="true">
-              {showReasoning ? '▾' : '▸'}
-            </span>
-          </button>
-          {showReasoning && <pre className="reasoning-body">{reasoning}</pre>}
-        </div>
-      )}
-
-      {toolEvents.length > 0 && (
-        <div className="tool-log">
-          {toolEvents.map((e) => (
-            <div key={e.id} className={`tool-item tool-${e.phase}`}>
-              <span className="tool-icon">
-                {e.phase === 'start' ? '◌' : e.phase === 'end' ? '✓' : '✗'}
-              </span>
-              <span className="tool-name">{e.name}</span>
-              <span className="tool-desc">
-                {e.phase === 'start' ? (e.detail || '执行中…') : (e.summary ?? e.detail ?? '')}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  )
 
   const submit = async (attachments: Attachment[]): Promise<void> => {
     const raw = input
@@ -208,26 +158,34 @@ export default function ChatView() {
       <div className="chat-messages">
         {/* 空对话不显示任何文案（用户 2026-09-12）；首屏是门面、进入对话后是工作面，留白专注内容 */}
         {messages.map((m, i) => (
-          <Fragment key={i}>
-            {i === insertAt && processBlock}
-            <div
-              className={`msg msg-${m.role}`}
-              data-msg-index={i}
-              // 右键 = 回到这条之前（plan10 B 批 ④）。对用户与助手消息都成立：滚到某条助手消息
-              // 之前，正好是"删掉这个回答、只留我的问题"，可以直接重问。
-              onContextMenu={(e) => {
-                e.preventDefault()
-                // 选中的原文 → 通路 B 的入口条件（没选中就不给那个按钮，免得点进来是空的）
-                const sel = window.getSelection()?.toString().trim() ?? ''
-                setMenu({
-                  x: Math.min(e.clientX, window.innerWidth - 220),
-                  y: Math.min(e.clientY, window.innerHeight - 90),
-                  index: i,
-                  sel
-                })
-              }}
-            >
-              <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>
+          <div
+            key={i}
+            className={`msg msg-${m.role}`}
+            data-msg-index={i}
+            // 右键 = 回到这条之前（plan10 B 批 ④）。对用户与助手消息都成立：滚到某条助手消息
+            // 之前，正好是"删掉这个回答、只留我的问题"，可以直接重问。
+            onContextMenu={(e) => {
+              e.preventDefault()
+              // 选中的原文 → 通路 B 的入口条件（没选中就不给那个按钮，免得点进来是空的）
+              const sel = window.getSelection()?.toString().trim() ?? ''
+              setMenu({
+                x: Math.min(e.clientX, window.innerWidth - 220),
+                y: Math.min(e.clientY, window.innerHeight - 90),
+                index: i,
+                sel
+              })
+            }}
+          >
+            <div className="msg-role">{m.role === 'user' ? '你' : '助手'}</div>
+            {m.role === 'assistant' && m.segments && m.segments.length > 0 ? (
+              <>
+                {/* plan36：分段长在消息里，按真实到达顺序交错（正文段独占 .msg-content，见 MessageSegments 头注） */}
+                <MessageSegments segments={m.segments} />
+                {streaming && i === messages.length - 1 && textFromSegments(m.segments) === '' && (
+                  <div className="msg-content">…</div>
+                )}
+              </>
+            ) : (
               <div className="msg-content">
                 {m.role === 'assistant' && m.content ? (
                   <MessageMarkdown content={m.content} />
@@ -235,12 +193,9 @@ export default function ChatView() {
                   m.content || (streaming && i === messages.length - 1 ? '…' : '')
                 )}
               </div>
-            </div>
-          </Fragment>
+            )}
+          </div>
         ))}
-
-        {/* 没有消息时（刚进会话）过程块自己挂在末尾 —— 否则它会凭空消失 */}
-        {messages.length === 0 && processBlock}
 
         {/* 回滚之后的提示条：必须再声明一次作用域（用户会担心"文件是不是也退了"）并给撤销入口 —— 回滚只移游标不删数据，撤销零成本 */}
         {rollbackNotice && (

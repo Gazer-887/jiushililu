@@ -175,6 +175,29 @@ export function activeProfile(profiles: ModelProfile[], activeId: string | null)
   return hit ?? profiles[0]
 }
 
+/** 快速切换器的精确匹配结果（plan39 D-101）：命中给端点+条目；未命中**不产生任何写操作** */
+export interface ModelSwitchResult {
+  ok: boolean
+  message?: string
+}
+
+/**
+ * 按模型名在**全部端点**里精确找条目（plan39）：同名多条优先当前端点。
+ * 纯函数进 shared 的理由：store/models.ts 挂 electron-store 进不了单测图，匹配逻辑必须可测。
+ */
+export function findModelEntry(
+  profiles: ModelProfile[],
+  activeId: string | null,
+  name: string
+): { profileId: string; entryId: string } | null {
+  const ordered = [...profiles].sort((a, b) => (a.id === activeId ? -1 : 0) - (b.id === activeId ? -1 : 0))
+  for (const p of ordered) {
+    const entry = p.models.find((m) => m.model === name)
+    if (entry) return { profileId: p.id, entryId: entry.id }
+  }
+  return null
+}
+
 /** 能不能删端点：至少要留一个（删空了就发不出任何请求） */
 export function canDeleteProfile(profiles: ModelProfile[], id: string): { ok: boolean; reason?: string } {
   if (!profiles.some((p) => p.id === id)) return { ok: false, reason: '该模型端点不存在（可能已被删除）' }

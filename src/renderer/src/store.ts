@@ -9,6 +9,7 @@ import type {
   StreamEnvelope
 } from '@shared/ipc'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
+import { applyAssistantChunk, applyAssistantThinking, applyAssistantTool } from '@shared/message-segments'
 import type { AskRequest } from '@shared/ask'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
@@ -332,7 +333,8 @@ function snapshotOf(s: {
   subagents: SubagentJobEvent[]
 }): RuntimeSnapshot {
   return {
-    messages: s.messages.map((m) => ({ ...m })),
+    // plan36 坑 1：segments 是数组，浅拷贝会让快照与活体互为别名（切走/切回重复追加）——一并 slice
+    messages: s.messages.map((m) => (m.segments ? { ...m, segments: m.segments.slice() } : { ...m })),
     streaming: s.streaming,
     streamError: s.streamError,
     reasoning: s.reasoning,
@@ -340,13 +342,6 @@ function snapshotOf(s: {
     todos: s.todos.slice(),
     subagents: s.subagents.slice()
   }
-}
-
-function appendToTail(messages: ChatMessage[], text: string): ChatMessage[] {
-  const next = messages.slice()
-  const last = next[next.length - 1]
-  if (last && last.role === 'assistant') next[next.length - 1] = { ...last, content: last.content + text }
-  return next
 }
 
 function viewOf(s: {
@@ -772,7 +767,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   appendReasoning: (e) =>
     set((s) =>
-      applyToConversation(s, e.conversationId, (v) => ({ reasoning: v.reasoning + e.payload }))
+      // 全局 reasoning 保留到 S3 换渲染；segments 同步长（thinking 段只进消息，无全局等价物）
+      applyToConversation(s, e.conversationId, (v) => ({
+        reasoning: v.reasoning + e.payload,
+        messages: applyAssistantThinking(v.messages, e.payload)
+      }))
     ),
 
   setTodos: (e) => set((s) => applyToConversation(s, e.conversationId, () => ({ todos: e.payload }))),
@@ -787,12 +786,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       applyToConversation(s, e.conversationId, (v) => {
         // 同一调用（id）的 start→end 就地更新，避免堆两条
         const idx = v.toolEvents.findIndex((x) => x.id === e.payload.id)
-        if (idx >= 0) {
-          const next = v.toolEvents.slice()
-          next[idx] = e.payload
-          return { toolEvents: next }
-        }
-        return { toolEvents: [...v.toolEvents, e.payload] }
+        const toolEvents = idx >= 0
+          ? v.toolEvents.map((x, i) => (i === idx ? e.payload : x))
+          : [...v.toolEvents, e.payload]
+        return { toolEvents, messages: applyAssistantTool(v.messages, e.payload) }
       })
     ),
 
@@ -805,8 +802,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   appendChunk: (e) => {
     set((s) =>
       // ⚠️ 只返回改动的那一个字段（不是整份现场）—— 这个回调**每来一个字就调一次**
+      // plan36：content 与 text 段同步增长（合同：content = text 段拼接）
       applyToConversation(s, e.conversationId, (v) => ({
-        messages: appendToTail(v.messages, e.payload)
+        messages: applyAssistantChunk(v.messages, e.payload)
       }))
     )
     // 后台会话加一道**防抖落盘**兜底：万一应用被强杀，最多丢几百毫秒的字
@@ -871,7 +869,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const history = get().messages.filter((m) => m.content.trim().length > 0)
     const payload = skipAppend ? [...history] : [...history, { role: 'user' as const, content }]
     set({
-      messages: [...payload, { role: 'assistant', content: '' }],
+      messages: [...payload, { role: 'assistant', content: '', segments: [] }],
       streaming: true,
       streamError: null,
       toolEvents: [], // 新一轮，清掉上一轮的工具活动
