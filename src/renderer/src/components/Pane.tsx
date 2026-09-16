@@ -15,9 +15,12 @@ import TimelinePanel from './TimelinePanel'
 
 // 工作台的一栏（plan9 W3）：标题栏 + 栏内页签条 + 内容。
 //
-// ⚠️ ① **切换页签 = 卸载**，不许用 display:none 保活：`BrowserPanel` 只在**卸载时**才调
-//    `setBrowserVisible(false)` 摘掉主进程的原生视图；保活会让 getBoundingClientRect() 归零
-//    却不摘视图 → 原生 WebContentsView 留在窗口上遮挡界面。草稿存在 tab 模型的 `content` 里，不靠组件保活。
+// ⚠️ ① **页签保活（plan30）**：失活页签**隐藏不卸载**（xterm/Monaco 重建一次几十上百 ms，
+//    plan29 S4 量测定案渲染层占切换卡顿 97%）。**唯一例外是 browser 页签**：`BrowserPanel`
+//    只在**卸载时**才调 `setBrowserVisible(false)` 摘掉主进程的原生视图；保活会让
+//    getBoundingClientRect() 归零却不摘视图 → 原生 WebContentsView 留在窗口上遮挡界面
+//    （plan9 的血泪，见 git 历史）。故 browser 页签失活即卸载，其余页签常驻。
+//    隐藏期 ResizeObserver 报 0 尺寸、重新显示时再触发 → xterm fit / monaco layout 自愈。
 // ② **折叠 = 隐藏标题栏与页签条、内容占满，宽度不变**（照抄参照实现的语义），不是"收成一条窄条"。
 
 function builtinBody(type: BuiltinType): JSX.Element {
@@ -246,9 +249,22 @@ export default function Pane({
 
       <div className={`dock-body ${isFlush(active) ? 'dock-body-flush' : ''}`}>
         {active ? (
-          tabBody(active, {
-            onModeChange: (m) => wbSetFileMode(pane.id, active.id, m),
-            onDirtyChange: (d) => wbSetFileDirty(pane.id, active.id, d)
+          // 保活渲染（plan30，注释①）：每个页签常驻，失活只隐藏；browser 页签例外（失活即卸载）
+          pane.tabs.map((t) => {
+            const isActive = t === active
+            // fileProps 按**各自页签**闭包 —— 保活后失活页签如果共用 active.id 的闭包，会拿到错的回调
+            const props = {
+              onModeChange: (m: FileMode) => wbSetFileMode(pane.id, t.id, m),
+              onDirtyChange: (d: string | undefined) => wbSetFileDirty(pane.id, t.id, d)
+            }
+            if (t.content.kind === 'builtin' && t.content.type === 'browser') {
+              return isActive ? <div key={t.id}>{tabBody(t, props)}</div> : null
+            }
+            return (
+              <div key={t.id} hidden={!isActive} aria-hidden={!isActive}>
+                {tabBody(t, props)}
+              </div>
+            )
           })
         ) : (
           // 关掉最后一个页签 → 就地给选择器，不把栏一起收掉
