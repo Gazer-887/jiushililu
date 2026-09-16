@@ -11,7 +11,7 @@ import { getBrowserAdapter } from '../browser-bridge'
 const MAX_READ = 512 * 1024
 
 function noBrowser(): string {
-  return '错误：内置浏览器尚未就绪（应用启动时初始化）。请稍后重试，或改用 fetch_url 抓取静态页面。'
+  return '错误：内置浏览器未初始化（适配器随主窗口创建注入；主窗口不存在时不会自动就绪，重试无效）。可改用 fetch_url 抓取静态页面，或重启应用恢复主窗口'
 }
 
 export function createBrowserTools(): AgentTool[] {

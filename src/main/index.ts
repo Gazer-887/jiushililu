@@ -711,6 +711,10 @@ app.whenReady().then(async () => {
       click: browserClick,
       type: browserType
     })
+    log.info('浏览器适配器已注入 agent 接缝')
+  } else {
+    // plan38 S3：不就绪是**状态**不是"稍后重试能好"的事 —— 留一条硬痕，browser_* 报错时能对上现场
+    log.error('浏览器未初始化：主窗口不存在，browser_* 工具将不可用')
   }
 
   // ── 启动补跑反思队列（批 2 plan19）─────────────────────────────────────
