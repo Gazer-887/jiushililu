@@ -115,10 +115,14 @@ async function main() {
       const t0 = performance.now()
       els[${idx}].click()
       await new Promise((ok) => {
+        let lastN = window.__lt.length
         let lastChange = performance.now()
         const iv = setInterval(() => {
+          // ⚠️ 静默判定：250ms 内无 longtask 新增即认为切换结束。
+          //   （初版 bug：每 tick 无条件刷新 lastChange → 条件永不成立 → 全部撞 2.5s 兜底墙钟，
+          //    wall 恒为 2500 失真。现只在有新 longtask 时续期。）
+          if (window.__lt.length !== lastN) { lastN = window.__lt.length; lastChange = performance.now() }
           if (performance.now() - lastChange > 250) { clearInterval(iv); ok() }
-          lastChange = performance.now() - 0 // 有 longtask 也算变化 —— 由下面兜底超时控制
         }, 40)
         setTimeout(() => { clearInterval(iv); ok() }, 2500)
       })
