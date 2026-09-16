@@ -428,10 +428,13 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
           const model = d.model ? { ...effective, model: d.model } : effective
           const schemas = subagentTools.map((t) => t.schema)
           return (messages: AgentMessage[]) => {
-            const signal = args.signal ?? AbortSignal.timeout(model.timeoutMs)
+            // 子代理**不再自带整轮墙钟**（plan29 D-090）：原来这里在父 signal 缺席时给一个
+            // `AbortSignal.timeout(model.timeoutMs)`，而子代理是并发跑的 —— 等于每个子代理各拿一个
+            // 与"父轮次总时长"同数量级的数字，父轮的预算被并发地重复消耗。现在的口径是：
+            // 只传父 signal（**父停子停**），每一轮自己的健壮性由 provider 的首包 / 分片间隔守卫负责。
             return model.providerType === 'anthropic'
-              ? streamWithToolsAnthropic(model, args.apiKey, messages, schemas, () => {}, signal)
-              : streamWithToolsOpenAI(model, args.apiKey, messages, schemas, () => {}, signal)
+              ? streamWithToolsAnthropic(model, args.apiKey, messages, schemas, () => {}, args.signal)
+              : streamWithToolsOpenAI(model, args.apiKey, messages, schemas, () => {}, args.signal)
           }
         },
         ...(args.onSubagentEvent ? { onJobEvent: args.onSubagentEvent } : {}),
@@ -627,7 +630,14 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   let usageAcc: TokenUsage | null = null
 
   const chat = async (messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult> => {
-    const signal = args.signal ?? AbortSignal.timeout(effective.timeoutMs)
+    // plan29 D-090：**这里原来有一层整轮墙钟**（`args.signal ?? AbortSignal.timeout(settings.timeoutMs)`），
+    // 已删除，两条理由：
+    // ① 它是**死代码** —— 外层一旦给了 signal（生产必给），`??` 右侧永不执行，看着像兜底其实什么都没做；
+    // ② 就算它生效也是错的口径 —— 把"建连慢 / 首包慢 / 断流 / 工具跑得久"压成同一个数字，
+    //    于是任何一种慢都报成同一句话。现在由 provider 层的**首包 + 分片间隔**两层守卫负责
+    //    （见 providers/stream-guard.ts），它知道自己是哪一层超时，也就能说清是哪一层。
+    // `args.signal` 只剩一个语义：**用户点了停止** —— 该立刻停，且不该有第二个数字来抢这个决定权。
+    const signal = args.signal
     const res =
       effective.providerType === 'anthropic'
         ? await streamWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, onText, signal)

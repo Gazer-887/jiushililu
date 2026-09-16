@@ -9,6 +9,7 @@ import type { TokenUsage } from '@shared/usage'
 import { mergeUsageHalves } from '@shared/usage'
 import { ToolCallAccumulator } from './tool-accumulator'
 import { httpFetch } from './http-client'
+import { createStreamGuard, type StreamGuard, type StreamGuardOptions } from './stream-guard'
 
 // Anthropic tool_use 适配（plan6 → P1）：把 OpenAI 风格的 Agent 消息翻译成 Anthropic 块结构。
 // 三个纯函数（toAnthropicAgentMessages / fromAnthropicResponse / buildTools）可独立单测。
@@ -181,7 +182,33 @@ export async function streamWithToolsAnthropic(
   messages: AgentMessage[],
   tools: ToolSchema[],
   onText: (delta: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 两层守卫的时长（plan29 D-090）。不传 = 用默认口径；**单测传短值** */
+  guardOpts?: StreamGuardOptions
+): Promise<AgentChatResult> {
+  // 与 OpenAI 侧同款（见 stream-guard.ts）：首包 + 分片间隔两层，取代原来的整轮墙钟。
+  // 结构上把"守卫的收尾"与"流本身"拆成两个函数：超时的**分型文案**只在包装层出现一次，
+  // 免得日后有人往内层再加一条 return 路径时忘了报出真实原因。
+  const guard = createStreamGuard(signal, guardOpts)
+  try {
+    return await anthropicStreamBody(settings, apiKey, messages, tools, onText, guard)
+  } catch (err) {
+    const timedOut = guard.timeoutMessage()
+    if (timedOut) throw new ProviderError(timedOut, 0)
+    throw err
+  } finally {
+    guard.dispose()
+  }
+}
+
+/** 真正干活的：`guard.signal` 同时承载「用户停止」与「守卫超时」两个语义 */
+async function anthropicStreamBody(
+  settings: ModelSettings,
+  apiKey: string,
+  messages: AgentMessage[],
+  tools: ToolSchema[],
+  onText: (delta: string) => void,
+  guard: StreamGuard
 ): Promise<AgentChatResult> {
   const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
     method: 'POST',
@@ -191,13 +218,13 @@ export async function streamWithToolsAnthropic(
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify(buildAnthropicToolsBody(settings, messages, tools, true)),
-    signal
+    signal: guard.signal
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     throw new ProviderError(mapHttpError(res.status, detail), res.status)
   }
-  if (!res.body) return chatWithToolsAnthropic(settings, apiKey, messages, tools, signal)
+  if (!res.body) return await chatWithToolsAnthropic(settings, apiKey, messages, tools, guard.signal)
 
   const acc = new ToolCallAccumulator()
   let text = ''
@@ -246,6 +273,8 @@ export async function streamWithToolsAnthropic(
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
+    // 分片到齐 → 重置分片间隔计时（"还在来数据"与"卡死了"就是靠这一下分开的）
+    guard.onChunk()
     parser.push(decoder.decode(value, { stream: true }))
   }
   parser.push(decoder.decode())

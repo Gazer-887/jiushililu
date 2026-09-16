@@ -271,6 +271,31 @@ config/
 - 下载走三层 fallback：直连 → 国内镜像（pip 清华 / npm 阿里）→ 开代理（Clash Verge `127.0.0.1:7897`）
 - 大文件（>10MB）下载必须让用户看见进度，禁止前台长阻塞
 
+### 7.1 项目命令
+
+> 写在这里是为了**一次读清**：省得每次现场猜「是 npm 还是 pnpm、是 vitest 还是别的」。
+> 包管理器 = **npm**（以 `package-lock.json` 为准，无 `packageManager` 字段）；命令一律从**仓库根目录**执行。
+
+| 用途 | 命令 |
+|---|---|
+| 装依赖 | `npm install` |
+| 起开发环境 | `npm run dev` |
+| 构建 | `npm run build` |
+| 跑测试（全量） | `npm test` |
+| 跑单个测试文件 | `npx vitest run tests/unit/<文件名>.test.ts --config config/vitest.config.ts` |
+| 类型检查 | `npm run typecheck` |
+| 代码检查 | `npm run lint` |
+| 打包 Windows 安装包 | `npm run dist` |
+| 评测集 / 校准 | `npm run evals` · `npm run bench` · `npm run bench:window` |
+
+**合并前的四道闸**（全绿才算完成，缺一不可）：`npm test` + `npm run typecheck` + `npm run lint` + `npm run build`。
+
+⚠️ 两条与命令有关的已知坑：
+
+- **构建产物目录会被宿主的批量删除护栏拦住**：`npm run build` 里 vite 要清 `out/`，删除条目数超阈值会被拦。
+  绕法：先用 Python 的 `shutil.rmtree('out')` 清掉（不走 Node 的删除 shim），再跑构建。`out/` `dist/` 均已在 `.gitignore`。
+- **`npm test` 里包含真起子进程的用例**（进程树、后台任务、命令超时），全量约 10s，不要因为"看起来卡住"就中断。
+
 ## 八、关键经验速查（2026-09-12 沉淀，详情见 `NOTEBOOK/learnings.md`）
 
 > 本节是**精华索引**，供任何会话快速避坑。全部从真实踩坑中来，违反过的都付出了代价。

@@ -286,8 +286,10 @@ function friendlyParse<T>(schema: z.ZodType<T>, raw: unknown): T {
   throw new Error(`参数不合法：${label} —— ${detail}`)
 }
 
-function friendlyChatError(err: unknown, timedOut: boolean, timeoutMs: number): string {
-  if (timedOut) return `请求超时（${timeoutMs}ms）：可在设置页调大超时时间，或检查网络 / 代理`
+function friendlyChatError(err: unknown): string {
+  // ⚠️ 这里**不再有**「请求超时（Xms）：可在设置页调大超时时间」那一档（plan29 D-091）：
+  // 它指向的是一个从不存在的实体 —— 超的从来不是「请求」，而且那个数字已被删除。
+  // 现在超时由 provider 层分型上报（首包 / 流中断），带具体层级的原话，直接透传即可。
   if (err instanceof Error && err.name === 'AbortError') return '已停止生成'
   return err instanceof Error ? err.message : String(err)
 }
@@ -561,16 +563,23 @@ export function registerIpcHandlers(deps: {
     }
 
     const apiKey = getDecryptedApiKey()
+    // ⚠️ plan29 D-090：这里原来有一层**整轮墙钟**（`setTimeout(() => controller.abort(), settings.timeoutMs)`），
+    // 已按用户决议**彻底删除** —— 不保留为「默认关闭的设置项」（保留会多一层误用风险 + 误用后的处理成本）。
+    //
+    // 为什么删掉它不留下"毫无兜底"的窗口：它本来就是个**错口径**的选择 —— 把五种性质完全不同的情况
+    // （建连慢 / 首包迟迟不来 / 吐了一半断流 / 工具跑得久 / 子代理在并行）压成同一个数字，
+    // 于是任何一种慢都被报成同一句话「请求超时」，用户按那句话去调大，只会把正常的情况也一起等更久。
+    // 现在三层各有归属，且各自都能说清自己是哪一层：
+    //   · 首包慢   → providers/stream-guard.ts 的首包守卫（60s）
+    //   · 流中断   → 同上的分片间隔守卫（90s，**唯一能识别真卡死**的指标）
+    //   · 工具卡住 → run_command 自己的超时（可调、上限 600s）
+    // 而「整轮总时长」这件事**本来就该由人决定** —— 随时可点停止。这与项目原则同源：
+    // **该不该停是人判断的，不该由代码替他猜一个数字**。
     const controller = gate.controller
-    let timedOut = false
     // 诊断三件套（0.13.42 反馈：出现过"长时间无回复"却无从查起）。开始 / 首包 / 完成三个时刻都落日志，
     // 下次再卡，日志能直接区分"请求没发出去 / 发了没首包 / 首包后断流"三种卡法
     const startedAt = Date.now()
     let firstSignalAt = 0
-    const timer = setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, settings.timeoutMs)
 
     // 记忆注入段（plan19 批 1）：组装 + 开采集。放在 `try` **之前** —— 出错时也要能 drain 到已发生的写入。
     const memoryBlock = beginMemoryTurn(conversationId)
@@ -692,13 +701,11 @@ export function registerIpcHandlers(deps: {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {
         conversationId,
-        timedOut,
         model: settings.model,
         error: err instanceof Error ? err.message : String(err)
       })
-      emit.error(friendlyChatError(err, timedOut, settings.timeoutMs))
+      emit.error(friendlyChatError(err))
     } finally {
-      clearTimeout(timer)
       chatGate.end(conversationId)
       // 护栏 2（D-043）：本轮写了什么 —— 取走上报载荷。空手而归则不推（免界面反复闪"没有写入"）
       endMemoryTurn(conversationId)
