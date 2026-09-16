@@ -94,6 +94,11 @@ export function parseDuckResults(html: string, max = 6): WebSearchResult[] {
 
 const SEARCH_ENDPOINT = 'https://html.duckduckgo.com/html/?q='
 
+// Firecrawl 熔断（plan32）：密钥源失败（含额度耗尽 402/429）后冷却 10 分钟直接走默认源，
+// 避免额度耗尽后每次搜索都要先等一次失败。成功即复位。模块级状态 —— 进程内共享，重启即清。
+const FIRECRAWL_COOLDOWN_MS = 10 * 60_000
+let firecrawlCooldownUntil = 0
+
 function renderSearchResults(results: WebSearchResult[]): string {
   if (results.length === 0) return '（无搜索结果——试试换关键词或更通用的表述）'
   const lines = results.map((r, i) => {
@@ -129,8 +134,10 @@ function webSearchTool(firecrawlKey: string | null): AgentTool {
         if (!Number.isFinite(n) || n < 1 || n > 10) return '错误：max_results 允许 1~10'
         max = Math.floor(n)
       }
-      if (firecrawlKey) {
-        // Firecrawl 源（用户配置了密钥时优先）：POST v1/search，失败**回落**零密钥默认源并如实注明
+      if (firecrawlKey && Date.now() >= firecrawlCooldownUntil) {
+        // Firecrawl 源（用户配置了密钥时优先）：POST v1/search，失败**回落**零密钥默认源并如实注明。
+        // 免费版额度是真实约束（2026-09-16 用户点破"不能作为唯一依赖"）：
+        // 失败后熔断 10 分钟走 DDG —— 额度耗尽（402/429）时不必每次都先等它失败再回落。
         try {
           const res = await httpFetch('https://api.firecrawl.dev/v1/search', {
             method: 'POST',
@@ -140,13 +147,19 @@ function webSearchTool(firecrawlKey: string | null): AgentTool {
           })
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const json = await res.json()
+          firecrawlCooldownUntil = 0
           return renderSearchResults(parseFirecrawlResults(json, max)).replace('provider=duckduckgo', 'provider=firecrawl')
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err)
+          firecrawlCooldownUntil = Date.now() + FIRECRAWL_COOLDOWN_MS
           const fb = await searchDuck(query, max).catch((e2: unknown) => `错误：两个源都失败——Firecrawl：${reason}；默认源：${e2 instanceof Error ? e2.message : String(e2)}`)
-          return typeof fb === 'string' && fb.startsWith('错误') ? fb : `（Firecrawl 失败已回落默认源：${reason}）
+          return typeof fb === 'string' && fb.startsWith('错误') ? fb : `（Firecrawl 失败已回落默认源：${reason}；接下来 10 分钟直接用默认源）
 ${fb}`
         }
+      } else if (firecrawlKey && Date.now() < firecrawlCooldownUntil) {
+        // 熔断期内：不碰 Firecrawl，直接 DDG（首行注明，让模型知道此刻结果来自默认源）
+        const fb = await searchDuck(query, max)
+        return fb.startsWith('错误') ? fb : `（Firecrawl 冷却中，本次走默认源）\n${fb}`
       }
       try {
         return await searchDuck(query, max)
