@@ -6,6 +6,7 @@ import { buildSearchSpec, SearchQueryError } from '@shared/search-query'
 import { runSearch, renderSearchOutcome } from '../../retrieval/search'
 import type { BackgroundTaskStore } from '../background-tasks'
 import { resolvePathInWorkspace, type PathAccess } from '../guard'
+import { createShellSession, type AgentShellSession } from './shell-session'
 
 // 系统类工具（P1 工具层补全）：列目录 / 文本搜索 / 命令执行。
 // 前三者默认只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
@@ -71,6 +72,13 @@ function buildSystemTools(
   resourcesPath?: string | null,
   pathAccess?: PathAccess
 ): AgentTool[] {
+  /**
+   * 前台命令的**持久 shell 会话**（plan28 D-085 S2）：工具集实例 = 一个 agent run，
+   * 轮与轮之间 `cd` / `set` / 环境激活**跨步存活**；新 run 从工作区根重新开始（可预测性优先）。
+   * 空闲 10 分钟自动回收（含进程树清理）、同活上限 4 个（LRU）—— 长驻泄漏由这两道闸兜住。
+   */
+  let shell: AgentShellSession | null = null
+  const getShell = (): AgentShellSession => (shell ??= createShellSession(workspaceRoot))
   /**
    * 解析一次，拿到**绝对路径**与**越界提示**（plan29 D-089 决议 2，与 `file-tools` 同手法）。
    * 界外被放行时用户唯一的保障就是"看得见它出了界"，故提示与解析一起算，不在各工具里各判一遍。
@@ -176,8 +184,9 @@ function buildSystemTools(
     schema: {
       name: 'run_command',
       description:
-        `在工作区根执行一条 shell 命令。前台：默认限时 ${DEFAULT_COMMAND_TIMEOUT_MS / 1000}s（可用 timeoutMs 放宽，` +
-        `上限 ${MAX_COMMAND_TIMEOUT_MS / 1000}s）、输出超 ${MAX_COMMAND_OUTPUT / 1024 / 1024}MB 会被终止；` +
+        `在工作区根执行一条 shell 命令。命令跑在**持久会话**里：本轮任务内 cd / 环境变量 / 环境激活（如 activate）跨调用保留，` +
+        `要回到工作区根请显式 cd 回去。前台：默认限时 ${DEFAULT_COMMAND_TIMEOUT_MS / 1000}s（可用 timeoutMs 放宽，` +
+        `上限 ${MAX_COMMAND_TIMEOUT_MS / 1000}s）、输出超 ${MAX_COMMAND_OUTPUT / 1024 / 1024}MB 会被终止（会话作废重开）；` +
         '设 background=true 则转**后台**执行（立即返回任务 id，用 check_command 查看输出与状态）——' +
         '构建、起服务、下载这类耗时的活该用后台。' +
         '装依赖 / 跑测试 / 构建这类通常超过默认限时的命令，请显式传 timeoutMs。' +
@@ -240,68 +249,88 @@ function buildSystemTools(
       }
 
       const startedAt = Date.now()
-      return new Promise((resolvePromise) => {
-        exec(
-          command,
-          { cwd: workspaceRoot, timeout: timeoutMs, maxBuffer: MAX_COMMAND_OUTPUT, windowsHide: true },
-          (error, stdout, stderr) => {
-            // plan8 R9.1：**这里不再砍尾**。以前是 `stdout.slice(0, 8000)` 保留**开头**，而错误与结论在**末尾** ——
-            // "输出太长"时用户永远看不到有结论的那半截。现在原样交回（上限由 maxBuffer 兜底），形状只在 loop.ts 一处决定。
-            const out = stdout.toString()
-            const errText = stderr.toString()
-            const elapsed = Date.now() - startedAt
-            if (error) {
-              // ── 失败必须**分型**（plan28 D-088）─────────────────────────────
-              // 三种"error"性质完全不同，混成一句"命令执行出错"会把模型引向错误结论：
-              //  · 输出超限 —— 是**我们的**上限掐的，命令本身未必有问题（以前就报成"执行出错"，是误报）
-              //  · 超时     —— 是我们等的耐心用完了，命令可能还在正常推进（只是慢）
-              //  · 真出错   —— 命令自己失败了，这才该让模型去读 stderr 改代码
-              const code = (error as NodeJS.ErrnoException).code
-              if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-                const mb = Math.round(MAX_COMMAND_OUTPUT / 1024 / 1024)
+      const r = await getShell().run(command, timeoutMs)
+      // 会话起不来（spawn 失败的怪环境）→ 回落一次性 exec，能力不打折
+      if (r.spawnError !== null) {
+        return await new Promise<string>((resolvePromise) => {
+          exec(
+            command,
+            { cwd: workspaceRoot, timeout: timeoutMs, maxBuffer: MAX_COMMAND_OUTPUT, windowsHide: true },
+            (error, stdout, stderr) => {
+              const out = stdout.toString()
+              const errText = stderr.toString()
+              const elapsed = Date.now() - startedAt
+              if (error) {
+                const code = (error as NodeJS.ErrnoException).code
+                if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+                  const mb = Math.round(MAX_COMMAND_OUTPUT / 1024 / 1024)
+                  resolvePromise(
+                    `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
+                      `以下是终止前收到的前 ${mb}MB：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
+                      `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）\n` +
+                      `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`
+                  )
+                  return
+                }
+                const errSignal = (error as { signal?: NodeJS.Signals | null }).signal ?? null
+                const timedOut =
+                  (error as { killed?: boolean }).killed === true &&
+                  errSignal !== null &&
+                  elapsed >= timeoutMs - 100
+                if (timedOut) {
+                  resolvePromise(
+                    `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
+                      `已收到的部分输出：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
+                      `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）\n` +
+                      `exit_code=null error_class=timeout elapsed_ms=${elapsed}`
+                  )
+                  return
+                }
+                const exitCode = typeof error.code === 'number' ? error.code : null
                 resolvePromise(
-                  `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
-                    `以下是终止前收到的前 ${mb}MB：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
-                    `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）\n` +
-                    // plan31 D-095：机器可判尾标 —— 模型不必从自然语言里猜成败（规格 §3.2 输出契约）
-                    `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`
+                  `命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}\n` +
+                    `exit_code=${exitCode ?? 'null'} error_class=error elapsed_ms=${elapsed}`
                 )
                 return
               }
-              // ⚠️ 超时判据**实测得来**（Node 22 本机验证，别再凭印象改）：
-              //    超时被杀 → `code: null`、`killed: true`、`signal: 'SIGTERM'`；
-              //    命令自己失败 → `code` 是数字退出码、`killed: false`。
-              //    故三条同时成立才算超时：被我们杀了 + 有终止信号 + 用时确实贴到限时。
-              //    只看 `killed` 的话，被外部信号（任务管理器 / 内存回收）杀掉的命令会被**误报成超时**。
-              const errSignal = (error as { signal?: NodeJS.Signals | null }).signal ?? null
-              const timedOut =
-                (error as { killed?: boolean }).killed === true &&
-                errSignal !== null &&
-                elapsed >= timeoutMs - 100
-              if (timedOut) {
-                resolvePromise(
-                  `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
-                    `已收到的部分输出：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
-                    `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）\n` +
-                    `exit_code=null error_class=timeout elapsed_ms=${elapsed}`
-                )
-                return
-              }
-              // plan31 D-095：退出码只在数字时给出（被信号杀掉的场景 code 是字符串如 'SIGTERM'，如实给 null）
-              const exitCode = typeof error.code === 'number' ? error.code : null
               resolvePromise(
-                `命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}\n` +
-                  `exit_code=${exitCode ?? 'null'} error_class=error elapsed_ms=${elapsed}`
+                `[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
+                  `exit_code=0 error_class=ok elapsed_ms=${elapsed}`
               )
-              return
             }
-            resolvePromise(
-              `[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
-                `exit_code=0 error_class=ok elapsed_ms=${elapsed}`
-            )
-          }
+          )
+        })
+      }
+
+      const elapsed = r.elapsedMs
+      if (r.exceeded) {
+        // plan28 D-088：超限不是命令失败，如实分型。会话已被掐掉重开（与旧行为"超限即杀"同语义）
+        const mb = Math.round(MAX_COMMAND_OUTPUT / 1024 / 1024)
+        return (
+          `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
+            `以下是终止前收到的前 ${mb}MB：\n[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
+            `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）\n` +
+            `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`
         )
-      })
+      }
+      if (r.timedOut) {
+        return (
+          `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
+            `已收到的部分输出：\n[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
+            `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）\n` +
+            `exit_code=null error_class=timeout elapsed_ms=${elapsed}`
+        )
+      }
+      if (r.exitCode !== 0 && r.exitCode !== null) {
+        return (
+          `命令执行出错（exit=${r.exitCode}）\n[stdout]\n${r.stdout}\n[stderr]\n${r.stderr}\n` +
+            `exit_code=${r.exitCode} error_class=error elapsed_ms=${elapsed}`
+        )
+      }
+      return (
+        `[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
+          `exit_code=${r.exitCode ?? 0} error_class=ok elapsed_ms=${elapsed}`
+      )
     }
   }
 

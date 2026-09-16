@@ -1,9 +1,10 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { createSystemTools } from '@main/agent/tools/system-tools'
 import { parseDuckResults, parseFirecrawlResults, unwrapDuckHref } from '@main/agent/tools/web-tools'
+import { disposeAllShellSessions } from '@main/agent/tools/shell-session'
 import type { AgentTool } from '@shared/agent'
 
 // plan31 D-095/D-096：run_command 机器可判尾标（exit_code / error_class / elapsed_ms）
@@ -11,6 +12,12 @@ import type { AgentTool } from '@shared/agent'
 
 const cmd = (root: string): AgentTool => createSystemTools(root).find((t) => t.schema.name === 'run_command')!
 const root = mkdtempSync(join(tmpdir(), 'jsl-p31-'))
+
+// run_command 现在走持久 shell 会话（plan28 S2）：不清的话，父进程持有的
+// 子进程管道是活动句柄，vitest 收不了尾（全量跑时实测挂死 13 分钟的根因）
+afterAll(() => {
+  disposeAllShellSessions()
+})
 
 describe('run_command · 机器可判尾标（D-095）', () => {
   it('成功 → 末行 exit_code=0 error_class=ok（机器可正则）', async () => {
