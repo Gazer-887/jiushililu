@@ -263,6 +263,11 @@ export default function Pane({
       <div className={`dock-body ${isFlush(active) ? 'dock-body-flush' : ''}`}>
         {active ? (
           // 保活渲染（plan30，注释①）：每个页签常驻，失活只隐藏；browser 页签例外（失活即卸载）
+          // ⚠️ 激活页签的包装层必须 `display: contents`（plan30 第二批返工）：包装 div 若参与布局，
+          //    会把 .dock-body（高度 definite）和 .fp（height:100%）之间的高度链打断 ——
+          //    docx 预览"卡在旧窗口大小"就是这么来的（0.13.50 用户实测，与 2026-09-15 的塌高同型）。
+          //    contents = 包装层不生成盒子，子元素布局与"直接是 .dock-body 子级"完全等价；
+          //    失活页签照常 display:none（hidden 属性）。
           pane.tabs.map((t) => {
             const isActive = t === active
             // fileProps 按**各自页签**闭包 —— 保活后失活页签如果共用 active.id 的闭包，会拿到错的回调
@@ -271,10 +276,19 @@ export default function Pane({
               onDirtyChange: (d: string | undefined) => wbSetFileDirty(pane.id, t.id, d)
             }
             if (t.content.kind === 'builtin' && t.content.type === 'browser') {
-              return isActive ? <div key={t.id}>{tabBody(t, props)}</div> : null
+              return isActive ? (
+                <div key={t.id} style={{ display: 'contents' }}>
+                  {tabBody(t, props)}
+                </div>
+              ) : null
             }
             return (
-              <div key={t.id} hidden={!isActive} aria-hidden={!isActive}>
+              <div
+                key={t.id}
+                hidden={!isActive}
+                aria-hidden={!isActive}
+                style={isActive ? { display: 'contents' } : undefined}
+              >
                 {tabBody(t, props)}
               </div>
             )
