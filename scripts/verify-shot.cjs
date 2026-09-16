@@ -3378,6 +3378,9 @@ app.whenReady().then(async () => {
   writeFileSync(join(SHOTS, 'verify-ex-preview.png'), shotMd.toPNG())
 
   // —— 二进制预览（三档各走一遍）—— ⚠️ 探针必须放在这一段：放到脚本末尾会全红（前台已切成「任务管理」→ clickFile 静默失败）——
+  // plan40：页签保活后失活页签只是隐藏不卸载 —— 预览类探针一律限定在**激活页签**内
+  // （Pane 的 data-active 是稳定契约，见 Pane.tsx 注释；不限定就会命中别页签的同类节点，假绿假红都出过）
+  const activeTabRoot = `const root = Array.from(document.querySelectorAll('[data-active="1"]')).find((r) => r.querySelector('.fp'))`
   const clickFile = async (name) => {
     return win.webContents.executeJavaScript(`
       (() => {
@@ -3394,7 +3397,8 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 900))
   const imagePreview = await win.webContents.executeJavaScript(`
     (() => {
-      const img = document.querySelector('.fp-img');
+      ${activeTabRoot}
+      const img = root ? root.querySelector('.fp-img') : null;
       if (!img) return { hasImg: false };
       const r = img.getBoundingClientRect();
       const pane = img.closest('.pane');
@@ -3418,10 +3422,13 @@ app.whenReady().then(async () => {
   await clickFile('超大图.png')
   await new Promise((r) => setTimeout(r, 800))
   const tooLarge = await win.webContents.executeJavaScript(`
-    (() => ({
-      hasImg: !!document.querySelector('.fp-img'),
-      notice: (document.querySelector('.fp .ex-msg')?.textContent ?? '').trim()
-    }))()
+    (() => {
+      ${activeTabRoot}
+      return {
+        hasImg: !!root && !!root.querySelector('.fp-img'),
+        notice: root ? (root.querySelector('.fp .ex-msg')?.textContent ?? '').trim() : ''
+      }
+    })()
   `)
   console.log('BIN_TOO_LARGE=' + JSON.stringify(tooLarge))
 
@@ -3430,7 +3437,8 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 800))
   const hexPreview = await win.webContents.executeJavaScript(`
     (() => {
-      const pre = document.querySelector('.fp-hex');
+      ${activeTabRoot}
+      const pre = root ? root.querySelector('.fp-hex') : null;
       const text = pre ? pre.textContent : '';
       return {
         hasHex: !!pre,
@@ -3451,8 +3459,9 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 800))
   const docxPreview = await win.webContents.executeJavaScript(`
     (() => {
-      const f = document.querySelector('.fp-office');
-      const btns = Array.from(document.querySelectorAll('.fp-head button')).map(b => b.textContent.trim());
+      ${activeTabRoot}
+      const f = root ? root.querySelector('.fp-office') : null;
+      const btns = root ? Array.from(root.querySelectorAll('.fp-head button')).map(b => b.textContent.trim()) : [];
       // 几何判据（2026-09-15 用户报「预览不向下铺满」= 高度链断裂）：iframe 必须吃满
       // 栏（.dock-body）里除「文件名行 + gap + 栏 padding」之外的高度 —— 实测这部分
       // 固定开销约占 22%（门禁小窗），修复前 iframe 只有内容高、比率远低于此。
@@ -3479,8 +3488,9 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 800))
   const sheetPreview = await win.webContents.executeJavaScript(`
     (() => {
-      const tabs = Array.from(document.querySelectorAll('.fp-sheet-tab'));
-      const f = document.querySelector('.fp-office');
+      ${activeTabRoot}
+      const tabs = root ? Array.from(root.querySelectorAll('.fp-sheet-tab')) : [];
+      const f = root ? root.querySelector('.fp-office') : null;
       const before = f ? f.getAttribute('src') : '';
       const names = tabs.map(t => t.textContent.trim());
       if (tabs[1]) tabs[1].click();
@@ -3490,7 +3500,8 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 300))
   const sheetAfter = await win.webContents.executeJavaScript(`
     (() => {
-      const f = document.querySelector('.fp-office');
+      ${activeTabRoot}
+      const f = root ? root.querySelector('.fp-office') : null;
       return { srcAfter: f ? f.getAttribute('src') : '' };
     })()
   `)
@@ -3500,8 +3511,9 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 800))
   const pptxPreview = await win.webContents.executeJavaScript(`
     (() => {
-      const pre = document.querySelector('.fp-hex');
-      const btns = Array.from(document.querySelectorAll('.fp-head button')).map(b => b.textContent.trim());
+      ${activeTabRoot}
+      const pre = root ? root.querySelector('.fp-hex') : null;
+      const btns = root ? Array.from(root.querySelectorAll('.fp-head button')).map(b => b.textContent.trim()) : [];
       return {
         clicked: ${clickPptx},
         hasHex: !!pre,
@@ -3509,7 +3521,7 @@ app.whenReady().then(async () => {
         hasPkmagic: !!pre && pre.textContent.includes('50 4b 03 04'),
         hasOpenSys: btns.some(t => t.includes('用系统程序打开')),
         // 内嵌 iframe 不该出现（pptx 不支持内嵌，别给一个白框装样子）
-        noOfficeFrame: !document.querySelector('.fp-office')
+        noOfficeFrame: !!root && !root.querySelector('.fp-office')
       };
     })()
   `)
@@ -3524,10 +3536,11 @@ app.whenReady().then(async () => {
   const readHtmlFrame = () =>
     win.webContents.executeJavaScript(`
       (() => {
-        const f = document.querySelector('.fp-html');
-        const t = document.querySelector('.fp-html-toggle');
+        ${activeTabRoot}
+        const f = root ? root.querySelector('.fp-html') : null;
+        const t = root ? root.querySelector('.fp-html-toggle') : null;
         /* 源码视图现在也是 Monaco（plan13 批 B）—— 同样读"可见行"（它虚拟化，全文不在 DOM 里） */
-        const editor = document.querySelector('.ce-host');
+        const editor = root ? root.querySelector('.ce-host') : null;
         const visibleText = editor
           ? Array.from(editor.querySelectorAll('.view-line')).map((el) => el.textContent).join('\\n')
           : '';
@@ -4135,14 +4148,26 @@ app.whenReady().then(async () => {
     })()
   `)
 
-  // 切走再切回：会话与输出都该还在（本项目「切页签 = 卸载」，靠主进程缓冲 + 序号重放）
+  // 切走再切回（plan40 注释更新）：页签保活后失活不卸载，屏幕原地保留 —— 这条判据的语义从"重放不重复"
+  // 变为**保活合同**：内容还在、不重写。真正的"重挂重放"窗口在下面用**关页签→重开**制造。
   await openBuiltin('任务管理')
   await new Promise((r) => setTimeout(r, 600))
   await openBuiltin('终端')
 
-  // ⚠️ **就在这一刻推一帧实时输出**（不再额外等待）：面板刚挂载、`boot()` 正卡在 stub 的 400ms
-  //    快照上（`replaying = true`）—— 这一帧**必然落进"订阅↔重放"那个缝**。不制造这个缝，
-  //    这条断言在老实现（先订阅落屏 → 再重放全量，会写两遍且排在历史**前面**）下也会绿 = 名不副实。
+  // ⚠️ **就在这一刻推一帧实时输出**（不再额外等待）：先关掉终端页签再重开，强制真重挂 ——
+  //    面板刚挂载、`boot()` 正卡在 stub 的 400ms 快照上（`replaying = true`）—— 这一帧**必然落进"订阅↔重放"那个缝**。
+  //    保活让"切页签"不再产生这个缝（plan40 前这里是空转：boot 根本没跑，判据名不副实），必须关而复合。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const tab = Array.from(document.querySelectorAll('.pane-tab'))
+        .find((t) => (t.textContent || '').includes('终端'));
+      const x = tab ? tab.querySelector('.pane-tab-x') : null;
+      if (x) x.click();
+      return !!x;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  await openBuiltin('终端')
   const LIVE_MARK = 'JSL_TERM_LIVE_7Q'
   const liveSeq = termSeq
   const liveData = LIVE_MARK + '\r\n'
@@ -4259,8 +4284,11 @@ app.whenReady().then(async () => {
   checkTrue('边界如实写在界面上（终端里改/删的文件不进检查点与回收站）',
     (termState.note || '').includes('回收站'), termState.note)
 
-  // ── 只读档：拒绝执行 + 说清原因（判据：界面明说原因、且真的没有起会话）。这一段放在最后做，它会把会话置成“没有”。——
+  // ── 只读档：拒绝执行 + 说清原因（判据：界面明说原因、且真的没有起会话）。这一段放在最后做，它会把会话置成”没有”。——
   termPermission = 'read-only'
+  // plan40 S3 同口径：真实主进程改权限档后会广播 settings:changed，面板据此重 boot；
+  // 隔离验证进程里这一步由桩补发（不广播的话保活面板永远不会重取权限 = 测的是旧前提）
+  win.webContents.send('settings:changed', 'permission')
   termHasSession = false
   const termStartCallsBefore = termStartCalls
   await openBuiltin('任务管理')
@@ -4283,6 +4311,7 @@ app.whenReady().then(async () => {
     termStartCalls > termStartCallsBefore && termHasSession === false,
     { termStartCalls, termStartCallsBefore, termHasSession })
   termPermission = 'write' // 收尾：把门禁的存根状态还原，免得影响后面段落
+  win.webContents.send('settings:changed', 'permission') // 与 plan40 S3 同口径：还原也要广播，保活面板才会恢复会话
 
   // ⚠️ 必须先切回「通用设置」：上面分区循环最后一站停在「故障排查」，不切回来
   //    下面找 `.settings-body label.checkbox` 必然全 null（会红成"开关不存在"，其实只是没翻到那一页）

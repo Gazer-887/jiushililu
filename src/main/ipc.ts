@@ -340,7 +340,7 @@ export function registerIpcHandlers(deps: {
    * store 不共享 —— 一处改了必须让另一处知道，否则"同一份数据实时联动"就是空话。
    * 故这里只**上报变更事实**，真正的遍历发送交给 `main/index.ts`。
    */
-  onSettingsChanged?: (kind: 'settings' | 'ui-prefs' | 'models') => void
+  onSettingsChanged?: (kind: 'settings' | 'ui-prefs' | 'models' | 'permission') => void
   /**
    * 开设置窗口（幂等）。由侧栏齿轮触发 —— 渲染端不 import electron，建窗口只能在主进程。
    */
@@ -1467,6 +1467,8 @@ export function registerIpcHandlers(deps: {
     const applied = setPermissionPreset(preset)
     // ⚠️ 降到只读时**必须把正在跑的终端会话收掉**：权限档的语义是"这台机器只读，人和模型同一把尺"，一个还在跑的 shell 会让"只读"变成空话 —— 界面横幅写着"不执行命令"，屏幕上却在执行。
     if (applied === 'read-only') deps.terminal.killAll()
+    // plan40 S3：广播给各窗口，终端面板据此重取权限并重 boot —— 界面不许停在旧档的"运行中"
+    deps.onSettingsChanged?.('permission')
     return applied
   })
 

@@ -231,7 +231,14 @@ export default function TerminalPanel(): JSX.Element {
             }
           })
         })
-        disposers = [offData, offState, () => themeObserver.disconnect()]
+        // plan40 S3：权限档变更（如降到只读）必须即时反映到界面 —— 重取快照并重 boot，
+        // 让拒绝横幅按新的 terminal:start 返回说话；不许出现"横幅写只读、屏上还在跑"（主进程 killAll 之后界面是最后一环）
+        const offPerm = window.api.onSettingsChanged((kind) => {
+          if (kind !== 'permission') return
+          void window.api.terminalSnapshot().then((s) => setSnap(s))
+          void boot({ reset: true })
+        })
+        disposers = [offData, offState, offPerm, () => themeObserver.disconnect()]
 
         setPhase('ready')
         await boot()

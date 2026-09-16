@@ -826,7 +826,7 @@ export interface ApiBridge {
   /** 关设置窗口（设置窗口自己点 × 时调；渲染端拿不到 BrowserWindow） */
   closeSettingsWindow(): Promise<void>
   /** 设置变更广播（进程级，不带会话信封）。`kind` 说明变的是哪一类，界面据此决定重读什么。 */
-  onSettingsChanged(cb: (kind: 'settings' | 'ui-prefs' | 'models') => void): () => void
+  onSettingsChanged(cb: (kind: 'settings' | 'ui-prefs' | 'models' | 'permission') => void): () => void
   listWorkspaceDir(rel: string): Promise<FsListResult>
   readWorkspaceFile(rel: string): Promise<FsReadResult>
   /** 读二进制文件用于预览：图片给 `dataUrl`、其余给 `hexHead`，超上限则 `tooLarge` 且**不给数据**。

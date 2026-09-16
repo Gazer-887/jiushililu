@@ -277,7 +277,7 @@ export default function Pane({
             }
             if (t.content.kind === 'builtin' && t.content.type === 'browser') {
               return isActive ? (
-                <div key={t.id} style={{ display: 'contents' }}>
+                <div key={t.id} data-active="1" style={{ display: 'contents' }}>
                   {tabBody(t, props)}
                 </div>
               ) : null
@@ -287,6 +287,9 @@ export default function Pane({
                 key={t.id}
                 hidden={!isActive}
                 aria-hidden={!isActive}
+                // 保活后失活页签只是隐藏不卸载 —— 门禁探针必须限定在激活页签内查
+                // （data-active 是探针的稳定契约，verify-shot activeTabRoot 依赖它，改名要同步）
+                data-active={isActive ? '1' : undefined}
                 style={isActive ? { display: 'contents' } : undefined}
               >
                 {tabBody(t, props)}
