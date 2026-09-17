@@ -9,10 +9,21 @@ export interface McpToolDeps {
   manager: McpManager
   /** 执行前确认（D-064）。缺省 = 不确认（仅测试场景；生产装配必传 confirmCommand 的包装） */
   confirm?: (req: { tool: string; detail: string }) => Promise<boolean>
+  /**
+   * 被禁用的 server 名单（plan34 S1）。**getter 注入** —— 每次构造工具时读一次，
+   * 改开关下一轮即生效（与记忆开关 `enabled: () => getMemoryEnabled()` 同构）。
+   * **「真禁用」的落点**：被禁 server 的工具**不下发**给模型（用户拍板 Q2：真断开语义；
+   * 进程本身的连断由 manager/UI 侧另行处理，这里管的是「模型看不看得到」）。
+   */
+  disabledServers?: () => string[]
 }
 
 export function createMcpTools(deps: McpToolDeps): AgentTool[] {
-  return deps.manager.activeTools().map((ref: McpToolRef): AgentTool => {
+  // plan34 S1：被禁用 server 的工具**不下发**（「真禁用」的落点）。
+  // getter 每次构造时读 → 改开关下一轮即生效（与记忆开关同构，index.ts 注入 getter）。
+  const disabled = new Set(deps.disabledServers?.() ?? [])
+  const refs = deps.manager.activeTools().filter((ref: McpToolRef) => !disabled.has(ref.server))
+  return refs.map((ref: McpToolRef): AgentTool => {
     const label = `${ref.server}/${ref.name}`
     return {
       schema: {

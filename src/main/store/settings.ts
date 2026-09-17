@@ -42,6 +42,16 @@ interface StoredSettings extends ModelSettings {
    */
   computerControlEnabled?: boolean
   /**
+   * **技能 / MCP 禁用名单**（plan34 S1，2026-09-17）。存**名字**不存层 ——
+   * skill 是两层（内置 < 用户）会重名，而 UI 上只显示一个名字，
+   * 用户的心智是"把这个东西关掉" → 禁掉的就是**实际生效那层**（用户 09-17 拍板「按名字」）。
+   * 缺字段 = 老配置 → 空数组 = **全开**（用户拍板「新加项默认开启」）。
+   * ⚠️ **配置本体一字不动**（skill 文件 / MCP 配置）：开关是**应用层的覆盖视图**，
+   * 用户手改文件不受它影响，反过来它也不碰用户文件。
+   */
+  skillsDisabled?: string[]
+  mcpDisabled?: string[]
+  /**
    * 省 token 档位（plan8 R9.1 §七②）。放**全局设置**而非模型档案：用户定调"**档位是全局的**，不做会话级覆盖"
    * —— 它是"你更在乎能力还是在乎钱"的偏好，跟用哪条连接无关。缺字段 = 老配置 → 按 `DEFAULT_TOKEN_TIER`（平衡）
    * 回落，**不写回盘**（写回会让"默认"变成"显式选择"）。
@@ -153,6 +163,35 @@ export function getComputerControlEnabled(): boolean {
 export function setComputerControlEnabled(enabled: boolean): boolean {
   store.set('computerControlEnabled', enabled)
   return getComputerControlEnabled()
+}
+
+/**
+ * **被禁用的技能名**（plan34 S1）。缺字段 / 手改坏 = 空数组 = 全开 ——
+ * 与权限类开关相反：**这里手改坏时宁可"静默全开"**，因为技能是"能力"不是"权限"，
+ * 用户装技能就是为了用；坏配置把技能全关掉会让人莫名"AI 变笨了"。
+ */
+export function getSkillsDisabled(): string[] {
+  const v = store.store.skillsDisabled
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : []
+}
+
+export function setSkillsDisabled(names: string[]): string[] {
+  // 去重 + 只留非空字符串：名单是开关状态，脏数据会让"到底关没关"变成玄学
+  const clean = [...new Set(names.filter((n) => typeof n === 'string' && n.trim().length > 0))]
+  store.set('skillsDisabled', clean)
+  return getSkillsDisabled()
+}
+
+/** **被禁用的 MCP server 名**（plan34 S1）。语义同 `getSkillsDisabled` */
+export function getMcpDisabled(): string[] {
+  const v = store.store.mcpDisabled
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : []
+}
+
+export function setMcpDisabled(names: string[]): string[] {
+  const clean = [...new Set(names.filter((n) => typeof n === 'string' && n.trim().length > 0))]
+  store.set('mcpDisabled', clean)
+  return getMcpDisabled()
 }
 
 /**

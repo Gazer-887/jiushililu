@@ -31,6 +31,17 @@ export interface SkillListItem {
   source: SkillSource
 }
 
+/**
+ * plan34 S1：过滤掉被禁用的技能条目 —— **「真禁用」的纯函数落点**（单测直接钉它）。
+ * ⚠️ 只用于**注入前**；设置页的全量视图**不走这里** —— 那里必须看到被禁的项，用户才能重新开启。
+ * 按名字过滤（用户拍板）：同名覆盖时禁掉的就是实际生效那层。
+ */
+export function filterDisabledEntries<T extends { name: string }>(entries: T[], disabled: string[]): T[] {
+  if (disabled.length === 0) return entries
+  const set = new Set(disabled)
+  return entries.filter((e) => !set.has(e.name))
+}
+
 /** skillBlock 组装结果：block 为 null = 没有可注入技能（调用方据此跳过注入与工具注册；D-059） */
 export interface SkillBlockResult {
   block: string | null

@@ -41,7 +41,7 @@ import {
   type McpServerConfig,
   type McpServerStatus
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getMcpDisabled, setMcpDisabled } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
 import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
@@ -170,7 +170,7 @@ import type { MemoryStore } from './store/memory-store'
 import type { PlaybookStore } from './store/playbook-store'
 import { composeMemoryBlock, estimateMemoryTokens } from './memory/inject'
 import { composePlaybookBlock } from './memory/playbook-inject'
-import { composeSkillBlock } from '@shared/skills'
+import { composeSkillBlock, filterDisabledEntries } from '@shared/skills'
 import { composeRulesBlock } from './rules/rules'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
 import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
@@ -1380,10 +1380,14 @@ export function registerIpcHandlers(deps: {
   function assembleSkillBlock(): string | null {
     const store = deps.agent.skills?.store
     if (!store) return null
-    const { block, droppedByBytes, droppedByCount } = composeSkillBlock(store.view().entries)
+    // plan34 S1：**注入前**过滤掉被禁用的技能 —— 这里是「真禁用」的落点（模型侧确实看不到），
+    // **不是**靠设置页藏 UI。⚠️ 只过滤注入，不过滤 `store.view()`：设置页必须看到被禁用的项才能重新开启。
+    // 立即生效（用户拍板）：工具/技能每轮装配，下一轮请求自然按新开关走。
+    const enabledEntries = filterDisabledEntries(store.view().entries, getSkillsDisabled())
+    const { block, droppedByBytes, droppedByCount } = composeSkillBlock(enabledEntries)
     if (droppedByBytes + droppedByCount > 0) {
       log.warn(
-        `技能清单超出注入预算：字节上限丢弃 ${droppedByBytes} 条、条数上限丢弃 ${droppedByCount} 条（共 ${store.view().entries.length} 条）`,
+        `技能清单超出注入预算：字节上限丢弃 ${droppedByBytes} 条、条数上限丢弃 ${droppedByCount} 条（共 ${enabledEntries.length} 条）`,
         {}
       )
     }
@@ -1460,6 +1464,23 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.computerControlSet, (_e, raw: unknown): boolean => {
     const enabled = z.boolean().parse(raw)
     return setComputerControlEnabled(enabled)
+  })
+
+  // ── 技能 / MCP 禁用名单（plan34 S1，2026-09-17）──「真禁用」的读写口：
+  //    技能侧在 assembleSkillBlock 过滤、MCP 侧在 createMcpTools 过滤（模型侧确实看不到）。
+  //    广播走既有 skillsChanged / mcpChanged 通道（UI 刷新列表用），此处不再另发。
+  ipcMain.handle(IPC.skillsDisabledGet, (): string[] => getSkillsDisabled())
+
+  ipcMain.handle(IPC.skillsDisabledSet, (_e, raw: unknown): string[] => {
+    const names = z.array(z.string().min(1).max(120)).max(500).parse(raw)
+    return setSkillsDisabled(names)
+  })
+
+  ipcMain.handle(IPC.mcpDisabledGet, (): string[] => getMcpDisabled())
+
+  ipcMain.handle(IPC.mcpDisabledSet, (_e, raw: unknown): string[] => {
+    const names = z.array(z.string().min(1).max(120)).max(500).parse(raw)
+    return setMcpDisabled(names)
   })
 
 

@@ -362,6 +362,11 @@ export const IPC = {
    */
   computerControlGet: 'computer-control:get',
   computerControlSet: 'computer-control:set',
+  /** plan34 S1：技能 / MCP 禁用名单（读写） */
+  skillsDisabledGet: 'skills-disabled:get',
+  skillsDisabledSet: 'skills-disabled:set',
+  mcpDisabledGet: 'mcp-disabled:get',
+  mcpDisabledSet: 'mcp-disabled:set',
   /** 护栏 2 的落点（D-043）：**本轮**写入痕迹 —— 只推"刚发生的事实"，全量归巡检区 */
   memoryNotice: 'memory:notice',
   // ── Playbook（plan19 批 3，会做线）──
@@ -719,6 +724,11 @@ export interface ApiBridge {
   /** **电脑控制开关**（2026-09-15）：当前无对应工具，先落门控（状态进自视段） */
   getComputerControl(): Promise<boolean>
   setComputerControl(enabled: boolean): Promise<boolean>
+  /** plan34 S1：技能 / MCP 禁用名单（设置页开关用；「真禁用」= 模型侧确实看不到） */
+  getSkillsDisabled(): Promise<string[]>
+  setSkillsDisabled(names: string[]): Promise<string[]>
+  getMcpDisabled(): Promise<string[]>
+  setMcpDisabled(names: string[]): Promise<string[]>
   /** save/delete 后各窗重读的信号（不搬变更内容） */
   onMemoryChanged(cb: () => void): () => void
   /** 护栏 2：本轮写入痕迹（`<MemoryNotice />` 的数据源，D-043） */
