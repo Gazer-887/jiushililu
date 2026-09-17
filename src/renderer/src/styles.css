@@ -1999,6 +1999,17 @@ label.radio {
   align-items: center;
   gap: var(--sp-2);
   overflow-x: auto;
+  /* 隐藏原生滑条（用户 2026-09-17 裁决：不留滑条）—— 滚轮横滚由 Pane.tsx 的 wheel 监听接管。
+     Electron = Chromium，真正生效的是 ::-webkit-scrollbar；scrollbar-width 两条都写是跨版本保险。
+     ⚠️ overflow-x 必须保留 auto —— 改 hidden 会连"触控板原生横划"一起夺走（plan42 §3.2 风险 6）。
+     ⚠️ 滑条没了 + 滚轮也失效 = 双重失效（比改动前更糟）→ 验收必须三条件同时成立：
+        滑条不可见 + 滚轮有效 + 触控板横划有效。 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.pane-tabs-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .pane-tab {

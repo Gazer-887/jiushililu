@@ -5392,6 +5392,34 @@ app.whenReady().then(async () => {
   `)
   console.log('WB_OVERFLOW=' + JSON.stringify(wbOverflow))
 
+  // —— 页签栏滚轮横滚（plan42）：三栏最小宽下页签条必然溢出，正好做真渲染验证 ——
+  // 三条件（plan42 §3.2 风险 6）：① 滑条不可见 ② 滚轮有效（scrollLeft 真的变）③ 触控板横划路径未被夺走。
+  // ② 是本条的主角：只改 scrollLeft、零 React 渲染 —— 加监听却绑不上时（如 effect 空依赖踩条件渲染）
+  //    滑条又已隐藏，就会出现"双重失效"，比不改还糟；故必须有断言看着。
+  const wbWheel = await win.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector('.pane-tabs-scroll');
+      if (!el) return { found: false };
+      if (el.scrollWidth <= el.clientWidth) return { found: true, overflowed: false };
+      const fire = (dx, dy) => {
+        el.scrollLeft = 0;
+        const ev = new WheelEvent('wheel', {
+          deltaX: dx, deltaY: dy, bubbles: true, cancelable: true
+        });
+        el.dispatchEvent(ev);
+        return { left: Math.round(el.scrollLeft), prevented: ev.defaultPrevented };
+      };
+      const vertical = fire(0, 120);
+      const horizontal = fire(120, 0);
+      const zeroDelta = fire(0, 0);
+      // 横向滑条若占位，offsetHeight 会比 clientHeight 大（本元素无 border，故差值即滑条高度）
+      const scrollbarH = el.offsetHeight - el.clientHeight;
+      el.scrollLeft = 0;
+      return { found: true, overflowed: true, vertical, horizontal, zeroDelta, scrollbarH };
+    })()
+  `)
+  console.log('WB_WHEEL=' + JSON.stringify(wbWheel))
+
   // 关掉最后一栏回到 2 栏（顺便真走一遍关栏）—— 之后才做拖拽：2 栏在 359px 下拖得动，3 栏本来就拖不动
   await win.webContents.executeJavaScript(`
     (() => {
@@ -5607,6 +5635,38 @@ app.whenReady().then(async () => {
     '三栏塞不进窄工作台时**退到绝对下限并允许横向滚动**（设计好的降级，不是被裁）',
     wbOverflow.allAtAbsMin === true && wbOverflow.scrollable === 'auto',
     wbOverflow
+  )
+
+  // —— plan42：页签栏滚轮横滚（三条件，见 §3.2 风险 6）——
+  checkTrue(
+    '页签栏滚轮 · 前置：页签条确实溢出（否则本组测不出东西）',
+    wbWheel.found === true && wbWheel.overflowed === true,
+    wbWheel
+  )
+  checkTrue(
+    '页签栏滚轮 · **纵向滚轮转为横滚**（deltaY → scrollLeft 真的变）',
+    wbWheel.vertical.left > 0,
+    wbWheel.vertical
+  )
+  checkTrue(
+    '页签栏滚轮 · 事件被 preventDefault（不冒泡给父容器造成双重滚动）',
+    wbWheel.vertical.prevented === true,
+    wbWheel.vertical
+  )
+  checkTrue(
+    '页签栏滚轮 · **触控板横划路径生效**（deltaX 生效，未被夺走）',
+    wbWheel.horizontal.left > 0,
+    wbWheel.horizontal
+  )
+  checkTrue(
+    '页签栏滚轮 · 零 delta 不动（未溢出/空手势不误吞）',
+    wbWheel.zeroDelta.left === 0,
+    wbWheel.zeroDelta
+  )
+  checkTrue(
+    '页签栏滚轮 · **原生滑条已隐藏**（不占高度，否则 0 会露馅）',
+    wbWheel.scrollbarH === 0,
+    wbWheel.scrollbarH
   )
   check('关掉一栏后回到 2 栏', afterClosePane.paneCount, 2)
   checkTrue('2 栏重新放得下 → 几何恢复精确', afterClosePane.exact === true)

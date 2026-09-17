@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
+import { memo, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import type { BuiltinType, FileMode, Pane as PaneModel, PaneTab } from '@shared/workbench'
 import { useAppStore } from '../store'
 import BrowserPanel from './BrowserPanel'
@@ -142,6 +142,36 @@ export default function Pane({
     wbCloseTab(pane.id, tabId)
   }
 
+  /**
+   * 页签栏滚轮横滚（plan42）：`overflow-x: auto` **原生不响应纯滚轮**（浏览器默认行为，
+   * 横滚需 Shift+滚轮或拖滑条）→ 用户要求「直接滚动快速切换，而不是用滑条」，故手动接管 wheel。
+   *
+   * ⚠️ 不能用 React 的 `onWheel` —— 它注册为 passive，`preventDefault()` 会静默失效；
+   *    必须走 `addEventListener(..., { passive: false })`。
+   * ⚠️ 依赖 `pane.collapsed` 而非 `[]` —— 折叠时本元素**不渲染**（见下方 `pane.collapsed ?` 分支），
+   *    空依赖会在「折叠启动 → 展开」后漏绑定，滚轮失效。
+   * ⚠️ 只改 `scrollLeft`，**零 React 渲染** —— 这是它比「滚一下切页签」更优的根本原因
+   *    （后者会连开 N 个面板再卸载，正是卡顿源；plan42 §〇 归因已记录）。
+   */
+  const tabsScrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = tabsScrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent): void => {
+      // 未溢出时不劫持 —— 让事件照常冒泡，免得"页签没满却吃掉父容器的滚动"
+      if (el.scrollWidth <= el.clientWidth) return
+      // deltaX 优先（触控板横向手势不该被二次转换）；纯纵向滚轮用 deltaY 兜底
+      const raw = e.deltaX !== 0 ? e.deltaX : e.deltaY
+      if (raw === 0) return
+      // deltaMode 跨平台差异：0=像素 / 1=行 / 2=页（Chromium 多为 0，Firefox 用 1）
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientWidth : 1
+      el.scrollLeft += raw * unit
+      e.preventDefault()
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [pane.collapsed])
+
   // 点空白 / Esc 关菜单（与资源管理器右键菜单同一套习惯）
   useEffect(() => {
     if (!tabMenu) return
@@ -204,7 +234,7 @@ export default function Pane({
           </div>
           <div className="pane-tabs">
             {/* 页签在**可滚动的内层**，＋ 钉在外层 —— 否则窄栏滚动会把 ＋ 一起滚走，点不到"在本栏开面板" */}
-            <div className="pane-tabs-scroll">
+            <div className="pane-tabs-scroll" ref={tabsScrollRef}>
               {pane.tabs.map((t, i) => (
                 <span
                   key={t.id}
