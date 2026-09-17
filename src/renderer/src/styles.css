@@ -6779,6 +6779,76 @@ body[data-resizing] {
   font-size: var(--fs-xs);
   color: var(--warn);
 }
+/* ── plan34 S2b：写路径（新建 / 导入 / 删除）── 复用 mcp-form 的骨架，色板全走既有 token */
+.skills-actions {
+  display: flex;
+  gap: var(--sp-8);
+  margin: var(--sp-8) 0;
+}
+.skills-btn {
+  padding: var(--sp-4) var(--sp-12);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.skills-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.skills-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--sp-16);
+}
+.skills-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+.skills-field input,
+.skills-field textarea {
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+}
+.skills-field textarea {
+  font-family: var(--mono, monospace);
+  resize: vertical;
+}
+.skills-item-del {
+  padding: 0 var(--sp-4);
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.skills-item-del:hover {
+  text-decoration: underline;
+}
+.skills-notice-ok {
+  margin: 0 0 var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--ok);
+}
+.skills-notice-bad {
+  margin: 0 0 var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--danger);
+}
 .skills-group-title {
   margin: var(--sp-16) 0 var(--sp-4);
   font-size: var(--fs-sm);

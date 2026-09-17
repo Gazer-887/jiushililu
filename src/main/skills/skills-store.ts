@@ -25,6 +25,8 @@ export interface SkillsStore {
   reload(): void
   /** reload / 未来写路径变更时通知；返回退订函数 */
   onChange(cb: () => void): () => void
+  /** 用户层目录（plan34 S2b 写路径的落点；null = 不可写）。内置层随包**永不可写** */
+  getUserDir(): string | null
 }
 
 export function createSkillsStore(deps: {
@@ -56,6 +58,7 @@ export function createSkillsStore(deps: {
     onChange: (cb) => {
       listeners.add(cb)
       return () => listeners.delete(cb)
-    }
+    },
+    getUserDir: () => deps.userDir
   }
 }

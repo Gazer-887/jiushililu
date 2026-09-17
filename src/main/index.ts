@@ -661,6 +661,8 @@ app.whenReady().then(async () => {
   registerIpcHandlers({
     agent: agentCtx,
     userDataDir,
+    // 回收站（plan34 S2b 技能删除走它）—— 与 agent 上下文里的 trash 同一份
+    trash: (abs) => shell.trashItem(abs),
     memory,
     playbook,
     confirm,

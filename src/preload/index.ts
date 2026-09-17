@@ -147,6 +147,10 @@ const api: ApiBridge = {
   // plan34 S2a：技能禁用名单（设置页开关用）。MCP 开关走 mcpSaveServer（cfg.enabled）
   getSkillsDisabled: () => ipcRenderer.invoke(IPC.skillsDisabledGet),
   setSkillsDisabled: (names: string[]) => ipcRenderer.invoke(IPC.skillsDisabledSet, names),
+  // plan34 S2b：技能写路径（创建/更新/删除，只落用户层）
+  skillSave: (input) => ipcRenderer.invoke(IPC.skillSave, input),
+  skillDelete: (name: string) => ipcRenderer.invoke(IPC.skillDelete, name),
+  onSkillsChanged: (cb: () => void) => subscribe(IPC.skillsChanged, () => cb()),
   getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getTokenTier: () => ipcRenderer.invoke(IPC.tokenTierGet),

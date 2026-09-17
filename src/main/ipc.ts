@@ -19,6 +19,7 @@ import {
   type Conversation,
   type ConversationMeta,
   type SkillInfo,
+  type SkillWriteResult,
   type LogsInfo,
   type CheckpointRun,
   type CheckpointRunMeta,
@@ -165,6 +166,7 @@ import { resolveInsideWorkspace } from './agent/guard'
 import { sendToAll } from './window-registry'
 import { loadAgentEntries } from './agent/loader'
 import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './store/agents-store'
+import { saveSkillFile, deleteSkillFile } from './skills/skills-write'
 import { nodeFsAdapter } from './store/conversations-fs'
 import type { MemoryStore } from './store/memory-store'
 import type { PlaybookStore } from './store/playbook-store'
@@ -300,6 +302,8 @@ function friendlyChatError(err: unknown): string {
 export function registerIpcHandlers(deps: {
   agent: AgentRuntimeContext
   userDataDir: string
+  /** 回收站（plan34 S2b 技能删除用）：组合根注入（shell.trashItem 的包装）—— 与 agent 上下文里的同一份 */
+  trash: (abs: string) => Promise<void>
   /**
    * 记忆库（plan19 批 1）。同样是组合根建、这里转交 —— 它要落到 userData 下，
    * 而且一轮对话期间要收集"写了什么"（护栏 2 的上报载荷）。
@@ -1104,6 +1108,8 @@ export function registerIpcHandlers(deps: {
   })
   // 连接状态变化（连接/断开/调用失败）→ 界面刷新状态徽标
   deps.agent.mcp?.manager.onChange(() => sendToAll(IPC.mcpChanged))
+  // plan34 S2b：技能库变化（写路径 reload 触发）→ 各窗口技能列表刷新
+  deps.agent.skills?.store.onChange(() => sendToAll(IPC.skillsChanged))
 
   // ── 子 Agent 管理（plan17）：MD 文件是唯一真相源；loadAgentRegistry 每轮重读盘 → 保存即生效，无失效机制 ──
   // 三层视图（项目 > 用户 > 内置）与 runner 的 loadAgentRegistry 同一份数据源，管理页看到的就是运行时生效的集合（含被覆盖条目）。
@@ -1473,6 +1479,34 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.skillsDisabledSet, (_e, raw: unknown): string[] => {
     const names = z.array(z.string().min(1).max(120)).max(500).parse(raw)
     return setSkillsDisabled(names)
+  })
+
+  // ── 技能写路径（plan34 S2b）── 只落**用户层**（内置随包不可写）；删除走回收站（非硬删）。
+  //    写后 store.reload()（装配层重扫）→ onChange 接线统一广播 skillsChanged（见下方接线），不在 handler 里各发各的。
+  ipcMain.handle(IPC.skillSave, (_e, raw: unknown): SkillWriteResult => {
+    const input = z
+      .object({
+        name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+        description: z.string().min(1).max(1024),
+        descriptionZh: z.string().max(1024).optional(),
+        descriptionEn: z.string().max(1024).optional(),
+        version: z.string().max(40).optional(),
+        body: z.string().min(1).max(200000)
+      })
+      .parse(raw)
+    const r = saveSkillFile({ userDir: deps.agent.skills?.store.getUserDir() ?? null }, input)
+    if (r.ok) deps.agent.skills?.store.reload()
+    return r
+  })
+
+  ipcMain.handle(IPC.skillDelete, async (_e, raw: unknown): Promise<SkillWriteResult> => {
+    const name = z.string().min(1).max(64).parse(raw)
+    const r = await deleteSkillFile(
+      { userDir: deps.agent.skills?.store.getUserDir() ?? null, trash: deps.trash },
+      name
+    )
+    if (r.ok) deps.agent.skills?.store.reload()
+    return r
   })
 
 

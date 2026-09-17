@@ -277,6 +277,18 @@ export interface SkillInfo {
   descriptionEn?: string
 }
 
+/** plan34 S2b：技能保存入参（创建 / 更新，同名覆盖）。只落**用户层**（内置随包不可写） */
+export interface SkillSaveInput {
+  name: string
+  description: string
+  descriptionZh?: string
+  descriptionEn?: string
+  version?: string
+  body: string
+}
+
+export type SkillWriteResult = { ok: true } | { ok: false; reason: string }
+
 // ── MCP 客户端（plan23）──────────────────────────────
 
 export type McpTransportKind = 'stdio' | 'sse'
@@ -370,6 +382,11 @@ export const IPC = {
   /** plan34 S2a：技能禁用名单（读写）。**MCP 无名单** —— 开关走配置 `cfg.enabled`（单一真相源，见 mcpSaveServer） */
   skillsDisabledGet: 'skills-disabled:get',
   skillsDisabledSet: 'skills-disabled:set',
+  /** plan34 S2b：技能写路径（创建 / 更新 / 删除，只落用户层；删除走回收站） */
+  skillSave: 'skill:save',
+  skillDelete: 'skill:delete',
+  /** 技能库变化（写路径 reload 后广播，各窗口技能列表据此刷新） */
+  skillsChanged: 'skills:changed',
   /** 护栏 2 的落点（D-043）：**本轮**写入痕迹 —— 只推"刚发生的事实"，全量归巡检区 */
   memoryNotice: 'memory:notice',
   // ── Playbook（plan19 批 3，会做线）──
@@ -731,6 +748,11 @@ export interface ApiBridge {
    *  MCP 开关不走名单 —— 走配置 `cfg.enabled`（mcpSaveServer），单一真相源 */
   getSkillsDisabled(): Promise<string[]>
   setSkillsDisabled(names: string[]): Promise<string[]>
+  /** plan34 S2b：技能写路径（只落用户层；写后主进程 reload 并广播 skillsChanged） */
+  skillSave(input: SkillSaveInput): Promise<SkillWriteResult>
+  skillDelete(name: string): Promise<SkillWriteResult>
+  /** 技能库变化（设置窗保存后，主窗的「+」技能列表据此刷新） */
+  onSkillsChanged(cb: () => void): () => void
   /** save/delete 后各窗重读的信号（不搬变更内容） */
   onMemoryChanged(cb: () => void): () => void
   /** 护栏 2：本轮写入痕迹（`<MemoryNotice />` 的数据源，D-043） */
