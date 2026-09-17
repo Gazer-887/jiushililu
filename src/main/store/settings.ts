@@ -72,6 +72,14 @@ interface StoredSettings extends ModelSettings {
   proxyCredentialsEncrypted?: string
   /** Firecrawl API Key 的**密文**（plan32：web_search 密钥型源，与代理凭据同一套加密纪律） */
   firecrawlApiKeyEncrypted?: string
+  /** 语音输入端点 base（plan45）。空/缺 = 未配置 → 麦克风按钮置灰。**不预置任何地址**（§〇 推论 2） */
+  voiceEndpoint?: string
+  voiceModel?: string
+  voiceLanguage?: 'auto' | 'zh' | 'en'
+  /** 一次性隐私披露已确认（决策 4）。缺 = 未确认 → 首次点麦克风必弹 */
+  voiceDisclosureAccepted?: boolean
+  /** 转写端点 API Key 的**密文**（与代理凭据/Firecrawl 同一套纪律） */
+  voiceApiKeyEncrypted?: string
 }
 
 const store = new Store<StoredSettings>({ name: 'settings' })
@@ -254,6 +262,54 @@ export function setNetworkCredentials(credentials: NetworkCredentials | null): v
     'proxyCredentialsEncrypted',
     safeStorage.encryptString(JSON.stringify(credentials)).toString('base64')
   )
+}
+
+// ── 语音输入（plan45）：端点明文（不是秘密），Key 密文，披露位落盘 ──────────
+
+export function getVoiceConfig(): { endpoint: string; model: string; language: 'auto' | 'zh' | 'en'; disclosureAccepted: boolean; hasApiKey: boolean } {
+  const s = store.store
+  const lang = s.voiceLanguage
+  return {
+    endpoint: s.voiceEndpoint ?? '',
+    model: s.voiceModel ?? '',
+    language: lang === 'zh' || lang === 'en' ? lang : 'auto',
+    disclosureAccepted: s.voiceDisclosureAccepted === true,
+    hasApiKey: typeof s.voiceApiKeyEncrypted === 'string' && s.voiceApiKeyEncrypted.length > 0
+  }
+}
+
+export function setVoiceConfig(patch: {
+  endpoint?: string
+  model?: string
+  language?: 'auto' | 'zh' | 'en'
+  disclosureAccepted?: boolean
+  apiKey?: string | null
+}): void {
+  if (patch.endpoint !== undefined) store.set('voiceEndpoint', patch.endpoint.trim())
+  if (patch.model !== undefined) store.set('voiceModel', patch.model.trim())
+  if (patch.language !== undefined) store.set('voiceLanguage', patch.language)
+  if (patch.disclosureAccepted !== undefined) store.set('voiceDisclosureAccepted', patch.disclosureAccepted === true)
+  if (patch.apiKey !== undefined) {
+    if (patch.apiKey === null || patch.apiKey.trim() === '') {
+      store.delete('voiceApiKeyEncrypted' as keyof StoredSettings)
+    } else {
+      if (!encryptionAvailable()) {
+        throw new Error('系统加密服务不可用，已拒绝保存转写 Key（明文不落盘是红线）—— 本地端点可留空 Key。')
+      }
+      store.set('voiceApiKeyEncrypted', safeStorage.encryptString(patch.apiKey.trim()).toString('base64'))
+    }
+  }
+}
+
+/** 只在转写调用瞬间取明文 Key，不出主进程 */
+export function getVoiceApiKey(): string | null {
+  const enc = store.store.voiceApiKeyEncrypted
+  if (!enc || !encryptionAvailable()) return null
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+  } catch {
+    return null
+  }
 }
 
 export function encryptionAvailable(): boolean {

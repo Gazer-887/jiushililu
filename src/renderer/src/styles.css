@@ -7166,3 +7166,145 @@ body[data-resizing] {
   font-size: var(--fs-xs);
   color: var(--muted);
 }
+
+/* —— 语音输入（plan45）：麦克风按钮 / 录音态 / 一次性隐私披露 / 设置区 —— */
+.voice-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.voice-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 录音态：朱砂 + 呼吸闪烁（水墨体系里唯一的强调色） */
+.voice-btn.recording {
+  color: var(--accent);
+  border-color: var(--accent);
+  animation: voice-breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes voice-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.voice-hint {
+  margin-left: 6px;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.voice-disclosure-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 42%);
+}
+
+.voice-disclosure {
+  width: min(460px, calc(100vw - 48px));
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
+}
+
+.voice-disclosure h3 {
+  margin: 0 0 10px;
+  font-size: var(--fs-md);
+}
+
+.voice-disclosure p {
+  margin: 6px 0;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.voice-disclosure code {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg);
+  font-size: var(--fs-xs);
+  word-break: break-all;
+}
+
+.voice-disclosure-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.voice-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.voice-field input,
+.voice-field select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+}
+
+.voice-field small {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.voice-note.err {
+  color: var(--accent);
+}
+
+.voice-tag {
+  align-self: center;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.voice-guide {
+  margin-top: 14px;
+  font-size: var(--fs-sm);
+}
+
+.voice-guide summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.voice-guide ul {
+  margin: 8px 0;
+  padding-left: 20px;
+  line-height: 1.7;
+}

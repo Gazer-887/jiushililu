@@ -370,6 +370,19 @@ app.whenReady().then(async () => {
 
   const userDataDir = app.getPath('userData')
 
+  // 麦克风权限（plan45 R1）：Electron 默认**拒绝**一切权限请求 —— 不放行则 getUserMedia 静默失败。
+  // 只放行"纯音频"的 media 请求（摄像头与其他权限一律维持默认拒绝）。
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    const types = 'mediaTypes' in (details ?? {}) ? (details as { mediaTypes?: string[] }).mediaTypes : undefined
+    const audioOnly =
+      permission === 'media' && Array.isArray(types) && types.includes('audio') && !types.includes('video')
+    callback(audioOnly)
+  })
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, _origin, details) => {
+    const media = permission === 'media' && !String(details?.mediaType ?? 'audio').includes('video')
+    return media
+  })
+
   // ① 日志系统（plan8 R2）：先于一切初始化，让后续所有环节都能留痕
   initLogger(join(userDataDir, 'logs'), app.isPackaged ? 'info' : 'debug')
   // ② 异常兜底（plan8 R1）：依赖日志，故紧随其后

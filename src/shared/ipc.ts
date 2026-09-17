@@ -330,6 +330,11 @@ export const IPC = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
   settingsTest: 'settings:test',
+  /** 语音输入（plan45）：配置读写 + 转写 + 测试连接 */
+  voiceGetConfig: 'voice:get-config',
+  voiceSetConfig: 'voice:set-config',
+  voiceTranscribe: 'voice:transcribe',
+  voiceTest: 'voice:test',
   settingsSetModel: 'settings:set-model',
   modelsList: 'models:list',
   /** `apiKey` 空串 = 不动已存的 Key */
@@ -658,6 +663,11 @@ export interface ApiBridge {
   getSettings(): Promise<SettingsView>
   saveSettings(input: SettingsSaveInput): Promise<SettingsView>
   testConnection(input: SettingsSaveInput): Promise<TestResult>
+  /** 语音输入（plan45）：Key 只进不出（视图仅回 hasApiKey）；转写收二进制音频回文本 */
+  getVoiceConfig(): Promise<import('./voice').VoiceConfig>
+  setVoiceConfig(patch: import('./voice').VoicePatch): Promise<import('./voice').VoiceConfig>
+  transcribeVoice(audio: ArrayBuffer, mime: string): Promise<import('./voice').VoiceTranscribeResult>
+  testVoiceEndpoint(): Promise<import('./voice').VoiceTranscribeResult>
   setModel(model: string): Promise<import('./models').ModelSwitchResult>
   listModels(): Promise<import('./models').ModelsView>
   saveModel(input: import('./models').ModelSaveInput): Promise<import('./models').ModelProfileView>

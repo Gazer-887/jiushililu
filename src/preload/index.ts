@@ -48,6 +48,10 @@ const api: ApiBridge = {
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
   saveSettings: (input: SettingsSaveInput) => ipcRenderer.invoke(IPC.settingsSave, input),
   testConnection: (input: SettingsSaveInput) => ipcRenderer.invoke(IPC.settingsTest, input),
+  getVoiceConfig: () => ipcRenderer.invoke(IPC.voiceGetConfig),
+  setVoiceConfig: (patch: unknown) => ipcRenderer.invoke(IPC.voiceSetConfig, patch),
+  transcribeVoice: (audio: ArrayBuffer, mime: string) => ipcRenderer.invoke(IPC.voiceTranscribe, audio, mime),
+  testVoiceEndpoint: () => ipcRenderer.invoke(IPC.voiceTest),
   chatSend: (input: { conversationId: string; messages: ChatMessage[]; agentName?: string }) =>
     ipcRenderer.invoke(IPC.chatSend, input),
   chatAbort: (conversationId: string) => ipcRenderer.invoke(IPC.chatAbort, conversationId),

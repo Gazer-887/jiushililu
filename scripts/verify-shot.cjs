@@ -518,6 +518,14 @@ const FAKE_BG_TASKS = [
 let openSettingsWinStub = () => Promise.resolve({ ok: true })
 let closeSettingsWinStub = () => true
 
+// —— 语音输入（plan45）的桩状态与假音频设备 ——
+// ⚠️ 契约副本：真源是 `src/main/voice/transcribe.ts` + store/settings 的 VoiceConfig 形状。
+const voiceStubCfg = { endpoint: 'http://127.0.0.1:7101/v1', model: '', language: 'auto', disclosureAccepted: false, hasApiKey: false }
+// R8（Electron 麦克风链路）在 headless 门禁里没法用真麦 —— 用 Chromium 假设备：
+// getUserMedia 拿到的是一段可持续产帧的静音音轨，权限弹窗自动放行。
+app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+app.commandLine.appendSwitch('use-fake-device-for-media-stream')
+
 // ── 源代码管理（plan16）的桩：必须是**有状态的** ──
 // 返回固定值的桩验不了这条链路：要验的是「勾选 → 这条进『已暂存』组 → 提交 → 列表清空」，
 // 也就是**第二次拉到的和第一次不一样**。固定值桩会让每一步都"看起来对"，却一条也没真验到。
@@ -716,6 +724,18 @@ const STUBS = {
   'bg:list': () => FAKE_BG_TASKS,
   'bg:kill': () => true,
   'settings:get': () => settingsView,
+  'voice:get-config': () => voiceStubCfg,
+  'voice:set-config': (patch) => {
+    if (typeof patch?.endpoint === 'string') voiceStubCfg.endpoint = patch.endpoint
+    if (typeof patch?.model === 'string') voiceStubCfg.model = patch.model
+    if (patch?.language === 'auto' || patch?.language === 'zh' || patch?.language === 'en') voiceStubCfg.language = patch.language
+    if (typeof patch?.disclosureAccepted === 'boolean') voiceStubCfg.disclosureAccepted = patch.disclosureAccepted
+    if (typeof patch?.apiKey === 'string') voiceStubCfg.hasApiKey = patch.apiKey.length > 0
+    else if (patch?.apiKey === null) voiceStubCfg.hasApiKey = false
+    return voiceStubCfg
+  },
+  'voice:transcribe': () => ({ ok: true, text: '语音转写测试文本' }),
+  'voice:test': () => ({ ok: true, text: '端点可达，返回格式正确' }),
   'settings:save': () => settingsView,
   'settings:test': () => ({ ok: true, message: 'ok' }),
   'settings:set-model': () => settingsView,
@@ -2195,6 +2215,48 @@ app.whenReady().then(async () => {
     })()
   `)
   console.log('SETTINGS_NAV=' + JSON.stringify(navInfo))
+
+  // —— 设置页「语音输入」分区（plan45 决策 1/5）：端点/Key/模型/语言 + 测试连接 + 推荐服务清单 ——
+  await sevalRaw(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item'))
+        .find((x) => x.textContent.trim() === '语音输入');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const voiceSection = await sevalRaw(`
+    (() => {
+      const body = document.querySelector('.settings-body');
+      if (!body) return null;
+      const inputs = Array.from(body.querySelectorAll('input'));
+      const testBtn = Array.from(body.querySelectorAll('button')).find((x) => x.textContent.trim() === '测试连接');
+      return {
+        h2: body.querySelector('h2')?.textContent?.trim() ?? null,
+        hasEndpoint: inputs.some((i) => (i.placeholder || '').includes('127.0.0.1')),
+        endpointFilled: inputs.some((i) => (i.value || '').includes('7101')),
+        hasKeyField: inputs.some((i) => i.type === 'password'),
+        hasSelect: !!body.querySelector('select'),
+        testEnabled: testBtn ? !testBtn.disabled : null,
+        guide: !!body.querySelector('details.voice-guide'),
+        noPostProcessNote: (body.textContent || '').includes('不做任何后处理')
+      };
+    })()
+  `)
+  checkTrue(
+    '设置页「语音输入」：端点/Key/语言字段齐、已存端点回显、测试连接可用、推荐清单与零后处理声明在位',
+    voiceSection !== null &&
+      voiceSection.h2 === '语音输入' &&
+      voiceSection.hasEndpoint &&
+      voiceSection.endpointFilled &&
+      voiceSection.hasKeyField &&
+      voiceSection.hasSelect &&
+      voiceSection.testEnabled === true &&
+      voiceSection.guide &&
+      voiceSection.noPostProcessNote,
+    voiceSection
+  )
 
   // ── 设置页「记忆」分区（plan19 批 1）· 判据 14 的 UI 契约 ──────────────────
   // ⚠️ 判据 14 的**判定逻辑**在真主进程（关→开 且 完全访问档）；门禁不加载它，
@@ -8047,6 +8109,65 @@ app.whenReady().then(async () => {
     scrollSpy
   )
   checkTrue('激活刻度浮出预览卡（向左）', scrollSpy !== null && scrollSpy.peekShown === true, scrollSpy)
+
+  // —— 语音输入（plan45）：按钮 → 一次性披露 → 录音（假音频设备）→ 停止 → 转写插光标处 ——
+  const voiceFlow = await win.webContents.executeJavaScript(`
+    (async () => {
+      const ta = document.querySelector('.console-input');
+      if (!ta) return { fail: 'no-textarea' };
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(ta, '前置文字');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.focus();
+      ta.setSelectionRange(4, 4);
+      const btn = document.querySelector('.voice-btn');
+      if (!btn) return { fail: 'no-voice-btn' };
+      const r = btn.getBoundingClientRect();
+      btn.click();
+      await new Promise((x) => setTimeout(x, 400));
+      const modal = document.querySelector('.voice-disclosure');
+      const modalText = modal ? modal.textContent : '';
+      const confirmBtn = modal
+        ? Array.from(modal.querySelectorAll('button')).find((b) => b.textContent.includes('开始录音'))
+        : null;
+      if (confirmBtn) confirmBtn.click();
+      await new Promise((x) => setTimeout(x, 1400));
+      const recOn = !!document.querySelector('.voice-btn.recording');
+      document.querySelector('.voice-btn')?.click();
+      await new Promise((x) => setTimeout(x, 1200));
+      return {
+        btnVisible: r.width > 0 && r.height > 0,
+        modalShown: !!modal,
+        modalHasEndpoint: modalText.includes('127.0.0.1:7101'),
+        recOn,
+        value: document.querySelector('.console-input').value
+      };
+    })()
+  `)
+  checkTrue(
+    '语音：麦克风按钮可见，首次点击弹一次性披露（含端点地址）',
+    voiceFlow.btnVisible === true && voiceFlow.modalShown === true && voiceFlow.modalHasEndpoint === true,
+    voiceFlow
+  )
+  checkTrue(
+    '语音：确认后进入录音态；停止后转写文本插入光标处（前置文字之后）',
+    voiceFlow.recOn === true && voiceFlow.value === '前置文字 语音转写测试文本',
+    voiceFlow
+  )
+  // 披露已记住：第二次点不再弹，直接录音（决策 4 的"一次性"语义）
+  const voiceFlow2 = await win.webContents.executeJavaScript(`
+    (async () => {
+      const btn = document.querySelector('.voice-btn');
+      btn.click();
+      await new Promise((x) => setTimeout(x, 500));
+      const modal2 = !!document.querySelector('.voice-disclosure');
+      const recOn2 = !!document.querySelector('.voice-btn.recording');
+      if (recOn2) btn.click();
+      await new Promise((x) => setTimeout(x, 1200));
+      return { modal2, recOn2 }
+    })()
+  `)
+  checkTrue('语音：披露已确认后不再弹（一次性），可直接复录', voiceFlow2.modal2 === false && voiceFlow2.recOn2 === true, voiceFlow2)
 
   // —— 新会话首条不重复（0.13.42 反馈）────────────────────────────────
   // conv:create 桩已按真实主进程行为把 firstMessage 播种成第一条用户消息；

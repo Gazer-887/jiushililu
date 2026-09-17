@@ -42,7 +42,9 @@ import {
   type McpServerConfig,
   type McpServerStatus
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
+import { transcribe, testVoiceEndpoint } from './voice/transcribe'
+import type { VoicePatch } from '@shared/voice'
 import type { SystemSettings, SystemView } from '@shared/system'
 import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
@@ -409,6 +411,36 @@ export function registerIpcHandlers(deps: {
   })
 
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
+
+  // —— 语音输入（plan45）：配置读写 / 转写 / 测试连接。Key 只进不出（视图仅回 hasApiKey）——
+  ipcMain.handle(IPC.voiceGetConfig, () => getVoiceConfig())
+  ipcMain.handle(IPC.voiceSetConfig, (_e, raw: unknown) => {
+    const p = (raw ?? {}) as Partial<VoicePatch>
+    const patch: VoicePatch = {}
+    if (typeof p.endpoint === 'string') patch.endpoint = p.endpoint
+    if (typeof p.model === 'string') patch.model = p.model
+    if (p.language === 'auto' || p.language === 'zh' || p.language === 'en') patch.language = p.language
+    if (typeof p.disclosureAccepted === 'boolean') patch.disclosureAccepted = p.disclosureAccepted
+    if (p.apiKey === null || typeof p.apiKey === 'string') patch.apiKey = p.apiKey
+    setVoiceConfig(patch)
+    return getVoiceConfig()
+  })
+  ipcMain.handle(IPC.voiceTranscribe, async (_e, audio: ArrayBuffer | Uint8Array, mime: unknown) => {
+    const bytes = audio instanceof Uint8Array ? audio : new Uint8Array(audio ?? new ArrayBuffer(0))
+    const cfg = getVoiceConfig()
+    return transcribe({
+      endpoint: cfg.endpoint,
+      apiKey: getVoiceApiKey(),
+      model: cfg.model,
+      language: cfg.language,
+      audio: bytes,
+      mime: typeof mime === 'string' ? mime : 'audio/webm'
+    })
+  })
+  ipcMain.handle(IPC.voiceTest, async () => {
+    const cfg = getVoiceConfig()
+    return testVoiceEndpoint({ endpoint: cfg.endpoint, apiKey: getVoiceApiKey(), model: cfg.model, language: cfg.language })
+  })
 
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
     const input = friendlyParse(settingsSchema, raw) as SettingsSaveInput
