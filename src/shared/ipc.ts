@@ -267,9 +267,14 @@ export interface ConversationCreateInput {
 export interface SkillInfo {
   name: string
   description: string
-  source: 'builtin' | 'user' | 'project'
+  /** D-103：技能只有**两层**（内置 < 用户，同名后者覆盖前者）—— 历史上宽类型里的 'project' 已收紧移除 */
+  source: 'builtin' | 'user'
   /** plan22：被高层同名技能覆盖（不在生效集合，仅列表可见） */
   overridden?: boolean
+  /** plan34 S2a：双语简介（frontmatter `description_zh` / `description_en`）—— **仅内置项**的 `›` 下拉展示；
+   *  自定义项无下拉（用户自己负责）。i18n（G3）未就绪前 UI 取 zh。 */
+  descriptionZh?: string
+  descriptionEn?: string
 }
 
 // ── MCP 客户端（plan23）──────────────────────────────

@@ -306,6 +306,9 @@ export function listSkills(ctx: AgentRuntimeContext): SkillInfo[] {
     .entries.map((e) => ({
       name: e.name,
       description: e.description,
+      // plan34 S2a：双语简介带出（内置项的 `›` 下拉展示用；自定义项 UI 不展示）
+      descriptionZh: e.descriptionZh,
+      descriptionEn: e.descriptionEn,
       source: e.source,
       overridden: e.overridden
     }))

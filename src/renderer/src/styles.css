@@ -6728,11 +6728,76 @@ body[data-resizing] {
   margin: var(--sp-2) 0 0;
   font-size: var(--fs-xs);
 }
+/* ── plan34 S2a：开关 + 内置项「›」下拉简介 ── 全走既有 token。 */
+.skills-item-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-md);
+  line-height: 1;
+  cursor: pointer;
+}
+.skills-item-fold:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.skills-item-off .skills-item-name,
+.skills-item-off .skills-item-source {
+  color: var(--muted);
+  /* 关掉 ≠ 删掉：整行降饱和但仍可读（用户要能找到它再打开） */
+  opacity: 0.7;
+}
+.skills-item-switch {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.skills-item-switch input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.skills-item-brief {
+  margin: var(--sp-2) 0 0 var(--sp-16);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  line-height: 1.6;
+}
+.skills-ghost {
+  margin: 0 0 var(--sp-8);
+  font-size: var(--fs-xs);
+  color: var(--warn);
+}
+.skills-group-title {
+  margin: var(--sp-16) 0 var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-weight: 600;
+}
 .skills-loading,
 .skills-empty {
   margin: 0;
   font-size: var(--fs-sm);
   color: var(--muted);
+}
+
+/* plan34 S2a：被禁用的 MCP server —— 名称与徽标降饱和但仍可读（用户要能找到它再打开） */
+.mcp-server-off .mcp-server-name,
+.mcp-server-off .mcp-server-state,
+.mcp-server-off .mcp-server-transport,
+.mcp-server-off .mcp-server-tools {
+  opacity: 0.65;
 }
 
 /* ── MCP 分区（plan23 S4）──────────────────────────────────────

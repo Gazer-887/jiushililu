@@ -13,6 +13,13 @@ export interface SkillDefinition {
   /** 技能名 = 文件名去掉 .md（对齐 Claude Code：目录名即命令名；frontmatter 不设 name 字段避免双名打架） */
   name: string
   description: string
+  /**
+   * 双语简介（plan34 S2a，frontmatter `description_zh` / `description_en`，均可选）——
+   * 设置页「`›` 下拉」按软件语言展示。自定义技能不要求填（无下拉，用户自己负责）。
+   * i18n（G3）未就绪前 UI 先取 zh。
+   */
+  descriptionZh?: string
+  descriptionEn?: string
   /** 可选版本号（frontmatter version），纯展示 */
   version?: string
   /** 技能指令正文（frontmatter 之后的全部内容）—— use_skill 时整体回灌进对话 */
@@ -68,6 +75,9 @@ export function parseSkillDefinition(
   }
 
   const def: SkillDefinition = { name, description, body: body.trim(), source, file }
+  // 双语简介（plan34 S2a）：可选字段，缺 = 该语言回落到 description（UI 侧处理）
+  if (typeof fm['description_zh'] === 'string' && fm['description_zh'].length > 0) def.descriptionZh = fm['description_zh']
+  if (typeof fm['description_en'] === 'string' && fm['description_en'].length > 0) def.descriptionEn = fm['description_en']
   if (typeof fm['version'] === 'string' && fm['version'].length > 0) def.version = fm['version']
   return { def, warnings }
 }
