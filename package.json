@@ -1,15 +1,16 @@
 {
   "name": "jiushililu",
-  "version": "0.13.61",
+  "version": "0.13.62",
   "description": "九十里路 —— 一个会自己长经验的全能 AI 工作台",
   "main": "out/main/index.js",
   "author": "Gazer",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "electron-vite dev --config config/electron.vite.config.ts",
-    "build": "electron-vite build --config config/electron.vite.config.ts",
-    "start": "electron-vite preview --config config/electron.vite.config.ts",
+    "clean:vite-temp": "node scripts/clean-vite-temp.cjs",
+    "dev": "npm run clean:vite-temp && electron-vite dev --config config/electron.vite.config.ts",
+    "build": "npm run clean:vite-temp && electron-vite build --config config/electron.vite.config.ts",
+    "start": "npm run clean:vite-temp && electron-vite preview --config config/electron.vite.config.ts",
     "dist": "npm run vendor:ripgrep && npm run build && electron-builder --win --config config/electron-builder.yml && node scripts/verify-dist-rg.cjs",
     "vendor:ripgrep": "node scripts/vendor-ripgrep.cjs",
     "typecheck": "tsc --noEmit -p config/tsconfig.main.json && tsc --noEmit -p config/tsconfig.renderer.json",
@@ -19,7 +20,8 @@
     "bench": "vitest run --config config/vitest.bench.config.ts",
     "bench:window": "node scripts/bench-tool-window.cjs",
     "evals": "node scripts/run-evals.cjs",
-    "probe:system": "electron scripts/probe-main-system.cjs"
+    "probe:system": "electron scripts/probe-main-system.cjs",
+    "bench:all": "node scripts/bench-all.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

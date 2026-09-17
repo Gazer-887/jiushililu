@@ -51,13 +51,16 @@ describe('记忆层读盘成本（判据 10）', () => {
       { onWarn: () => {}, conversationId: () => 'bench' }
     )
 
-    // 播种：满载 100 条（达到上限，也正是"每轮都要全量重读"的最坏情况）
+    // 播种：满载 100 条（达到上限，也正是"每轮都要全量重读"的最坏情况）。
+    // force 是必须的：plan33 相似闸门会把 entry-000..099 这类顺序命名判为"高度相似"而拒新建；
+    // 播种只是造满载环境，不在被测路径上（被测 save 走"编辑既有条目"，不经该闸门）。
     for (let i = 0; i < N; i += 1) {
       const r = repo.save({
         name: `entry-${String(i).padStart(3, '0')}`,
         description: `第 ${i} 条记忆的摘要，长度接近真实使用（约三十个字）。`,
         class: i % 3 === 0 ? 'style' : i % 3 === 1 ? 'default' : 'knowledge',
-        body: '正文。'.repeat(12)
+        body: '正文。'.repeat(12),
+        force: true
       })
       if (!r.ok) throw new Error(`播种失败：${r.reason}`)
     }
@@ -82,12 +85,13 @@ describe('记忆层读盘成本（判据 10）', () => {
 
     const saveSamples: number[] = []
     // 编辑**既有**条目而不是新建：满载 100 条时硬上限会拒新建（那正是它该干的），
-    // 而编辑才是真实热路径 —— 且照样走原子写 + fsync，量的不是空转
+    // 而编辑才是真实热路径 —— 且照样走原子写 + fsync，量的不是空转。
+    // ⚠️ name 必须与被编辑条目同名（写后校验按名字键找条目，改名编辑会被拒）
     const editTarget = repo.listFiles()[0]!
     for (let i = 0; i < SAMPLES; i += 1) {
       const t0 = performance.now()
       const r = repo.save({
-        name: `entry-000`,
+        name: 'entry-000',
         description: `第 0 条记忆的摘要（bench 编辑第 ${i} 次）。`,
         class: 'style',
         body: `bench 正文 ${i}。`.repeat(6),

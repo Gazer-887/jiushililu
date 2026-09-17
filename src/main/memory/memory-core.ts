@@ -311,6 +311,8 @@ export interface MemoryRepo {
 export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions = {}): MemoryRepo {
   const warn = opts.onWarn ?? (() => {})
   const now = opts.now ?? (() => new Date())
+  /** loadAll 的重复对缓存：签名（name+description 序）不变则不重算 O(n²) 扫描 */
+  let dupCache: { sig: string; dups: NonNullable<MemoryIndex['duplicates']> } | null = null
 
   function loadAll(): {
     entries: MemoryEntry[]
@@ -373,11 +375,20 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     // 批 4 → plan33 问题四升级：相似检测从 includes 字符串判定升级为 bigram Jaccard + 包含
     // （`similarity.ts` 唯一口径），且从 warnings（会被面板显示成"未能加载"）**分家**为结构化
     // `duplicates` —— 重复不是坏档，堆在坏档区等于没人去清。
-    const duplicates = findDuplicatePairs(entries).map((p) => ({
-      files: [p.a.file, p.b.file] as [string, string],
-      names: [p.a.name, p.b.name] as [string, string],
-      descriptions: [p.a.description, p.b.description] as [string, string]
-    }))
+    // ⚠️ 成对扫描是 O(n²)，而 list() 在每轮注入的热路径上（bench 满载实测超阈值 3 倍）——
+    // 只对 name+description 签名缓存：内容没变就不重算，面板语义不受影响。
+    const dupSig = entries.map((e) => `${e.name}\u0000${e.description}`).join('\u0001')
+    if (!dupCache || dupCache.sig !== dupSig) {
+      dupCache = {
+        sig: dupSig,
+        dups: findDuplicatePairs(entries).map((p) => ({
+          files: [p.a.file, p.b.file] as [string, string],
+          names: [p.a.name, p.b.name] as [string, string],
+          descriptions: [p.a.description, p.b.description] as [string, string]
+        }))
+      }
+    }
+    const duplicates = dupCache.dups
     return { entries, warnings, duplicates }
   }
 
