@@ -86,10 +86,11 @@ describe('composeSelfView 纯函数', () => {
     expect(block).not.toContain('子代理')
   })
 
-  it('电脑控制开着 → 如实报"尚无对应工具"（防模型空头许诺能力）', () => {
+  it('电脑控制开着 → 如实报"由用户配置的 MCP server 提供"（plan44 接上实体，来源说清）', () => {
     const block = composeSelfView({ ...baseInput, computerControl: true })
     expect(block).toContain('已开启')
-    expect(block).toContain('尚无对应工具')
+    expect(block).toContain('用户配置的 MCP server 提供')
+    expect(block).not.toContain('尚无对应工具')
   })
 })
 

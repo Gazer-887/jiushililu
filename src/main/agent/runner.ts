@@ -216,6 +216,9 @@ export interface ToolHooks {
   mcp?: {
     manager: McpManager
     confirm?: (req: { tool: string; detail: string }) => Promise<boolean>
+    /** plan44 门控：电脑控制开关（本轮值）与被拦日志回调 */
+    computerControl?: boolean
+    onGatedDrop?: (fullName: string, reason: string) => void
   }
   /** 打包态资源根（找随包的 ripgrep）。装配层注入 —— runner 不许 import electron；不传 = 只用环境变量/PATH 上的 rg */
   resourcesPath?: string | null
@@ -556,6 +559,12 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       ? {
           mcp: {
             manager: ctx.mcp.manager,
+            // plan44 决策 4：桌面派门控读**本轮**的 computerControl（ipc 每次发送现取设置）；
+            // 被拦工具记日志（决策 3b：未知工具名默认屏蔽要"看得见被拦了什么"才查得动）
+            computerControl: args.computerControl === true,
+            onGatedDrop: (fullName: string, reason: string) => {
+              console.warn(`[mcp-gate] 未下发 ${fullName}（${reason === 'drop-server-off' ? '电脑控制开关关闭' : '不在白名单'}）`)
+            },
             ...(ctx.confirmCommand
               ? {
                   confirm: (req: { tool: string; detail: string }) =>

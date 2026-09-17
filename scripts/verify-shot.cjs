@@ -545,6 +545,8 @@ const devEnvStub = {
   selected: { python: 'D:\\MiniConda3\\envs\\ai_env\\python.exe' }
 }
 const devEnvSelectCalls = []
+const mcpStubServers = []
+const mcpSaveCalls = []
 // R8（Electron 麦克风链路）在 headless 门禁里没法用真麦 —— 用 Chromium 假设备：
 // getUserMedia 拿到的是一段可持续产帧的静音音轨，权限弹窗自动放行。
 app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
@@ -770,6 +772,16 @@ const STUBS = {
     return { ...devEnvStub.selected }
   },
   'settings:save': () => settingsView,
+  // computer-use 推荐卡片（plan44 S3）：⚠️ 契约副本 —— 真源 mcp-manager listServers/mcpSaveServer
+  'mcp:list': () => mcpStubServers.map((config) => ({ config, state: 'connected', tools: [] })),
+  'mcp:save': (config) => {
+    if (!config?.name) return { ok: false, error: 'name 必填' }
+    const i = mcpStubServers.findIndex((s) => s.name === config.name)
+    if (i >= 0) mcpStubServers[i] = config
+    else mcpStubServers.push(config)
+    mcpSaveCalls.push(config)
+    return { ok: true }
+  },
   'settings:test': () => ({ ok: true, message: 'ok' }),
   'settings:set-model': () => settingsView,
   // 设置独立窗口：齿轮 -> 开新窗 / 窗口内 × -> 关自己。
@@ -2363,6 +2375,76 @@ app.whenReady().then(async () => {
     '选择走 IPC 落盘（dev-env:select 被真实调用，语言与路径都对）',
     devEnvSelectCalls.some(([lang, p]) => lang === 'python' && String(p).includes('weird')),
     devEnvSelectCalls
+  )
+
+  // —— MCP 区 computer-use 推荐卡片（plan44 S3）：uv 联动 / 风险披露逐字 / 添加只写配置 ——
+  await sevalRaw(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item'))
+        .find((x) => x.textContent.trim() === 'MCP');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const cuCard = await sevalRaw(`
+    (() => {
+      const card = document.querySelector('.cu-card');
+      if (!card) return null;
+      const addBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent.trim() === '添加');
+      return {
+        title: card.textContent.includes('电脑操作（computer-use）'),
+        uvLine: (card.querySelector('.cu-meta')?.textContent ?? '').includes('已检测到'),
+        mainOnlyNote: card.textContent.includes('仅支持主显示器'),
+        addEnabled: addBtn ? !addBtn.disabled : false
+      };
+    })()
+  `)
+  checkTrue(
+    '推荐卡片：标题在位、uv 联动"已检测到"（复用 plan43 探测）、主屏限定声明、依赖就绪时[添加]可点',
+    cuCard !== null && cuCard.title && cuCard.uvLine && cuCard.mainOnlyNote && cuCard.addEnabled,
+    cuCard
+  )
+  const cuRisk = await sevalRaw(`
+    (async () => {
+      const card = document.querySelector('.cu-card');
+      Array.from(card.querySelectorAll('button')).find((b) => b.textContent.includes('查看风险说明')).click();
+      await new Promise((r) => setTimeout(r, 250));
+      const modal = document.querySelector('.voice-disclosure');
+      return modal ? { text: modal.textContent } : null;
+    })()
+  `)
+  checkTrue(
+    '风险披露（决策 8 逐字）：三能力 + "请勿在开启状态下离开电脑" + "无法区分你本人与AI" 的天花板诚实行都在',
+    cuRisk !== null &&
+      cuRisk.text.includes('截取你的整个屏幕') &&
+      cuRisk.text.includes('请勿在开启状态下离开电脑') &&
+      cuRisk.text.includes('无法区分') &&
+      cuRisk.text.includes('屏蔽了文件系统、注册表、PowerShell'),
+    cuRisk
+  )
+  const cuAdd = await sevalRaw(`
+    (async () => {
+      const modal = document.querySelector('.voice-disclosure');
+      const btn = Array.from(modal.querySelectorAll('button')).find((b) => b.textContent.includes('我已了解，添加服务'));
+      if (!btn) return { fail: 'no-confirm-btn' };
+      btn.click();
+      await new Promise((r) => setTimeout(r, 400));
+      const card = document.querySelector('.cu-card');
+      return {
+        tagAdded: card.textContent.includes('已添加'),
+        twoGatesNote: card.textContent.includes('电脑控制')
+      };
+    })()
+  `)
+  checkTrue(
+    '添加：确认后写入 windows-mcp 配置（uvx windows-mcp serve）并回显"已添加"，提示还需第二道闸',
+    cuAdd.tagAdded === true &&
+      cuAdd.twoGatesNote === true &&
+      mcpSaveCalls.some(
+        (c) => c.name === 'windows-mcp' && c.command === 'uvx' && (c.args ?? []).includes('serve')
+      ),
+    { cuAdd, saved: mcpSaveCalls.map((c) => c.name) }
   )
 
   // ── 设置页「记忆」分区（plan19 批 1）· 判据 14 的 UI 契约 ──────────────────

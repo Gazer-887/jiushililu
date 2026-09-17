@@ -7459,3 +7459,55 @@ body[data-resizing] {
   color: var(--muted);
   font-size: var(--fs-sm);
 }
+
+/* —— computer-use 推荐卡片（plan44 S3）—— */
+.cu-card {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.cu-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cu-tag {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.cu-tag.is-added {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.cu-desc {
+  margin: 8px 0 4px;
+  font-size: var(--fs-sm);
+}
+
+.cu-meta {
+  margin: 4px 0 10px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+}
+
+.cu-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.cu-risk-list {
+  margin: 6px 0;
+  padding-left: 20px;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}

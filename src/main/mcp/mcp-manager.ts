@@ -23,6 +23,8 @@ export interface McpToolRef {
   name: string
   description?: string
   fullName: string
+  /** 启动命令+参数（桌面派 server 识别用，plan44 决策 3；SSE 无 command 时为空） */
+  launchHint?: string
   /** MCP inputSchema（JSON Schema）—— 与 AgentTool.parameters 同族，直接透传给模型 */
   inputSchema?: Record<string, unknown>
 }
@@ -191,6 +193,7 @@ export function createMcpManager(deps: {
             name: tool.name,
             ...(tool.description ? { description: tool.description } : {}),
             fullName: `mcp__${status.config.name}__${tool.name}`,
+            launchHint: [status.config.command ?? '', ...(status.config.args ?? [])].join(' '),
             ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {})
           })
         }

@@ -13,6 +13,7 @@ import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import AgentManager from '../components/AgentManager'
 import VoiceSettingsPanel from '../components/VoiceSettingsPanel'
 import DevEnvSettings from '../components/DevEnvSettings'
+import ComputerUseRecommend from '../components/ComputerUseRecommend'
 import SkillsPanel from '../components/SkillsPanel'
 import McpPanel from '../components/McpPanel'
 import MemorySettings from '../components/MemorySettings'
@@ -1215,7 +1216,12 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         {section === 'dev-env' && <DevEnvSettings />}
         {section === 'agents' && <AgentManager />}
         {section === 'skills' && <SkillsPanel />}
-        {section === 'mcp' && <McpPanel />}
+        {section === 'mcp' && (
+          <>
+            <ComputerUseRecommend />
+            <McpPanel />
+          </>
+        )}
 
         {section === 'memory' && <MemorySettings />}
 

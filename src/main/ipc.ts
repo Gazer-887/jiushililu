@@ -1511,8 +1511,9 @@ export function registerIpcHandlers(deps: {
     }
   )
 
-  // ── 电脑控制开关（2026-09-15 用户需求）── 当前版本无对应工具：开关先落门控（状态进自视段），
-  //    工具上线后此处即权限闸。纯门控没有"设了≠生效"问题，不需要 trouble 行。
+  // ── 电脑控制开关（2026-09-15 立，plan44 09-18 接上实体）── 单一真相源：
+  //    每轮发送现取此值传入 createMcpTools，桌面派（windows-mcp）server 的工具据此整体下发/拦截。
+  //    开关变更自**下一轮对话**起生效（工具表按轮重建）。
   ipcMain.handle(IPC.computerControlGet, (): boolean => getComputerControlEnabled())
 
   ipcMain.handle(IPC.computerControlSet, (_e, raw: unknown): boolean => {

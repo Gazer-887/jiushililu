@@ -37,7 +37,7 @@ export function composeSelfView(input: SelfViewInput): string {
   ]
   lines.push(`- 当前模型：${input.model}（协议：${input.providerType === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}）`)
   lines.push(`- 运行端：${platformLabel(input.platform)}`)
-  lines.push(`- 电脑控制：${input.computerControl ? '已开启（当前版本尚无对应工具）' : '未开启'}`)
+  lines.push(`- 电脑控制：${input.computerControl ? '已开启（桌面操作工具由用户配置的 MCP server 提供）' : '未开启'}`)
   if (input.toolNames.length > 0) {
     lines.push(`- 可用工具（${input.toolNames.length} 个）：${input.toolNames.join('、')}；每件的参数以工具定义为准`)
   }
