@@ -38,8 +38,6 @@ export default function ChatView() {
   const [menu, setMenu] = useState<{ x: number; y: number; index: number; sel: string } | null>(null)
   /** 通路 B 的填写卡（选中即记）；null = 关着 */
   const [capture, setCapture] = useState<{ text: string; turnIndex: number } | null>(null)
-  /** 会话大纲（plan7 批 D）：列出各轮提问、点击定位；false = 收起 */
-  const [outlineOpen, setOutlineOpen] = useState(false)
 
   /** 菜单容器：判「点在不在菜单里」全靠它 —— 用法与原因见下面 effect */
   const menuRef = useRef<HTMLDivElement>(null)
@@ -105,32 +103,13 @@ export default function ChatView() {
     const d = new Date(ms)
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   }
-  /** 大纲浮层容器：点外部关闭的判定目标 */
-  const outlineRef = useRef<HTMLDivElement>(null)
+  /** 大纲浮层容器：点外部关闭的判定目标 —— plan41 S1 改常驻刻度条后浮层取消，随之删除 */
 
   /** 问答段锚点 = 每条用户消息（跳到提问处 = 跳到该轮问答的开头） */
   const outlineItems = useMemo(
     () => messages.map((m, i) => ({ i, text: m.content })).filter((x) => messages[x.i]!.role === 'user'),
     [messages]
   )
-
-  // 大纲开着时点空白 / Esc 收起 —— 与右键菜单同一习惯（点在浮层里不关）
-  useEffect(() => {
-    if (!outlineOpen) return
-    const onDown = (e: MouseEvent): void => {
-      if (outlineRef.current?.contains(e.target as Node)) return
-      setOutlineOpen(false)
-    }
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOutlineOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [outlineOpen])
 
   /** 平滑滚到第 index 条消息并短暂高亮 —— 让"跳到了哪"看得见 */
   const jumpToMessage = (index: number): void => {
@@ -139,7 +118,6 @@ export default function ChatView() {
     el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     el.classList.add('msg-jump-hl')
     window.setTimeout(() => el.classList.remove('msg-jump-hl'), 1400)
-    setOutlineOpen(false)
   }
 
   // 点空白 / Esc 关菜单（不铺遮罩，与资源管理器、工作台页签同一习惯）
@@ -362,36 +340,20 @@ export default function ChatView() {
         </div>
       )}
 
-      {/* 会话大纲（plan7 批 D）：右缘悬浮入口，列出各轮提问、点击定位。
-          两轮起才有得跳 —— 单条提问翻一下就到了，摆按钮是噪音 */}
+      {/* 会话刻度条（plan41 S1，改版自 plan7 批 D 的大纲浮层）：右缘**常驻**等宽刻度，
+          一根 = 一轮提问，点击定位。两轮起才显示 —— 单条提问翻一下就到了，摆条是噪音。
+          激活态（横向变长 + 预览卡）与滚动联动归 S2 */}
       {outlineItems.length >= 2 && (
-        <div className="chat-outline-wrap" ref={outlineRef}>
-          {outlineOpen && (
-            <div className="chat-outline" role="navigation" aria-label="会话大纲">
-              {outlineItems.map((item, n) => (
-                <button
-                  key={item.i}
-                  className="chat-outline-item"
-                  title={item.text}
-                  onClick={() => jumpToMessage(item.i)}
-                >
-                  <span className="chat-outline-no">{n + 1}</span>
-                  <span className="chat-outline-text">
-                    {item.text.replace(/<file[^>]*>[\s\S]*?<\/file>/g, '[附件]').trim() || '（无正文）'}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          <button
-            className="chat-outline-btn"
-            aria-expanded={outlineOpen}
-            aria-label="会话大纲"
-            title={outlineOpen ? '收起大纲' : '会话大纲：列出各轮提问，点击定位'}
-            onClick={() => setOutlineOpen((v) => !v)}
-          >
-            大纲
-          </button>
+        <div className="chat-outline-rail" role="navigation" aria-label="会话刻度条">
+          {outlineItems.map((item, n) => (
+            <button
+              key={item.i}
+              className="chat-outline-tick"
+              title={`${n + 1}. ${item.text.replace(/<file[^>]*>[\s\S]*?<\/file>/g, '[附件]').trim() || '（无正文）'}`}
+              aria-label={`第 ${n + 1} 轮提问`}
+              onClick={() => jumpToMessage(item.i)}
+            />
+          ))}
         </div>
       )}
 

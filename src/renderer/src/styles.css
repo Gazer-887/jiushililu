@@ -405,6 +405,38 @@ nav {
   animation: msg-jump-flash 1.4s ease-out;
 }
 
+/* ── 会话刻度条（plan41 S1，改版自 plan7 批 D 的大纲浮层）：右缘**常驻**竖条 ──
+   等宽刻度（bar code 式）：一根 = 一轮提问，点击定位。静默态 8px；激活态（28px 变长 +
+   向左预览卡）与滚动联动归 S2。旧浮层类（.chat-outline-btn/-item/-no/-text）S2 清理 */
+.chat-outline-rail {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: var(--radius-md);
+  z-index: 5;
+}
+.chat-outline-tick {
+  width: 8px;
+  height: 2px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 1px;
+  background: var(--border);
+  cursor: pointer;
+  transition: width 140ms ease, background 140ms ease;
+}
+.chat-outline-tick:hover {
+  width: 14px;
+  background: var(--accent);
+}
+
 @keyframes msg-jump-flash {
   0% {
     background: rgb(178 58 52 / 16%);

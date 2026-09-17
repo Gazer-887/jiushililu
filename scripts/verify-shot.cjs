@@ -5978,37 +5978,29 @@ app.whenReady().then(async () => {
   `)
   console.log('RB_UNDONE=' + JSON.stringify({ calls: convUndoCalls.length, ...rbUndone }))
 
-  // —— 会话大纲（plan7 批 D，2026-09-15）：右缘「大纲」入口 → 各轮提问 → 点击定位 ——
-  // 此刻 msgs=4（两轮问答），正是"两轮起才出按钮"的验证时机。判据：
-  // ① 按钮在；② 展开后列表项数 = 用户消息数（2）；③ 点击第 1 项真的往回滚（scrollTop 变小）+
-  // 高亮 class 在（"跳到了哪"要看得见）+ 浮层自动收起；④ Esc 收起（开着时）。
-  const outlineBtn = await win.webContents.executeJavaScript(
-    `(() => {
-      const b = document.querySelector('.chat-outline-btn');
-      if (!b) return null;
-      const r = b.getBoundingClientRect();
-      return { visible: r.width > 0 && r.height > 0 };
-    })()`
-  )
+  // —— 会话刻度条（plan41 S1，改版自 plan7 批 D 大纲）：右缘**常驻**竖条 → 点击刻度定位 ——
+  // 此刻 msgs=4（两轮问答），正是"两轮起才出条"的验证时机。判据：
+  // ① 刻度条常驻可见；② 刻度数 = 用户消息数（2）；③ 点击第 1 根刻度真的往回滚（scrollTop 变小）+
+  // 高亮 class 在（"跳到了哪"要看得见）。
+  const railInfo = await win.webContents.executeJavaScript(`
+    (() => {
+      const rail = document.querySelector('.chat-outline-rail');
+      if (!rail) return null;
+      const r = rail.getBoundingClientRect();
+      return { visible: r.width > 0 && r.height > 0, ticks: rail.querySelectorAll('.chat-outline-tick').length };
+    })()
+  `)
   const outlineBefore = await win.webContents.executeJavaScript(`
     (() => {
       const box = document.querySelector('.chat-messages');
-      // msgs 一起输出：按钮不在时先看这里 —— 上游（回滚/撤销链）断了会传导成大纲判据齐挂
+      // msgs 一起输出：刻度条不在时先看这里 —— 上游（回滚/撤销链）断了会传导成刻度判据齐挂
       return {
         msgs: document.querySelectorAll('.chat-messages .msg').length,
         scrollTop: box ? Math.round(box.scrollTop) : -1
       };
     })()
   `)
-  await win.webContents.executeJavaScript(`document.querySelector('.chat-outline-btn')?.click()`)
-  await new Promise((r) => setTimeout(r, 300))
-  const outlineOpen = await win.webContents.executeJavaScript(`
-    (() => {
-      const panel = document.querySelector('.chat-outline');
-      return { open: !!panel, items: panel ? panel.querySelectorAll('.chat-outline-item').length : 0 };
-    })()
-  `)
-  await win.webContents.executeJavaScript(`document.querySelector('.chat-outline-item')?.click()`)
+  await win.webContents.executeJavaScript(`document.querySelector('.chat-outline-tick')?.click()`)
   await new Promise((r) => setTimeout(r, 900))
   const outlineAfter = await win.webContents.executeJavaScript(`
     (() => {
@@ -6017,14 +6009,13 @@ app.whenReady().then(async () => {
       return {
         scrollTop: box ? Math.round(box.scrollTop) : -1,
         firstUserTop: firstUser ? Math.round(firstUser.getBoundingClientRect().top) : null,
-        panelGone: !document.querySelector('.chat-outline'),
         highlighted: !!document.querySelector('.msg-jump-hl')
       };
     })()
   `)
   console.log(
     'OUTLINE=' +
-      JSON.stringify({ btn: outlineBtn, before: outlineBefore, ...outlineOpen, after: outlineAfter })
+      JSON.stringify({ rail: railInfo, before: outlineBefore, after: outlineAfter })
   )
 
   // 确认框文案：会话回滚 vs 文件回滚**必须分得清**（plan10 §六 第 6 条）
@@ -7070,17 +7061,16 @@ app.whenReady().then(async () => {
   checkTrue('确认框**不含**文件回滚的措辞（分得清）',
     !/文件已还原|已还原文件|回滚文件/.test(cfText.text), cfText.text.slice(0, 160))
 
-  // —— 会话大纲判据（plan7 批 D）——
-  checkTrue('多轮会话（2 轮起）右缘出「大纲」入口（单轮不摆按钮）',
-    outlineBtn !== null && outlineBtn.visible === true, outlineBtn)
-  checkTrue('点「大纲」→ 浮层展开，列表项数 = 用户消息数（2）',
-    outlineOpen.open === true && outlineOpen.items === 2, outlineOpen)
-  checkTrue('点第 1 项 → 真的往回滚（scrollTop 变小，不是摆设）',
+  // —— 会话刻度条判据（plan41 S1，改版自 plan7 批 D 大纲）——
+  checkTrue('多轮会话（2 轮起）右缘常驻刻度条（单轮不摆条）',
+    railInfo !== null && railInfo.visible === true, railInfo)
+  checkTrue('刻度数 = 用户消息数（2）—— 一根刻度就是一轮提问',
+    railInfo !== null && railInfo.ticks === 2, railInfo)
+  checkTrue('点第 1 根刻度 → 真的往回滚（scrollTop 变小，不是摆设）',
     outlineAfter.scrollTop >= 0 && outlineBefore.scrollTop >= 0 &&
       outlineAfter.scrollTop < outlineBefore.scrollTop,
     { before: outlineBefore.scrollTop, after: outlineAfter.scrollTop })
   checkTrue('跳转落点带高亮（「跳到了哪」看得见）', outlineAfter.highlighted === true, outlineAfter)
-  checkTrue('点击列表项后浮层自动收起', outlineAfter.panelGone === true)
 
   checkTrue('前置：文件开在预览栏里，且有「编辑」入口', editPre.hasPane === true && editPre.hasModeBtn === true, editPre)
   checkTrue('前置：**还没进编辑态**（不然下面"点了才出现"什么也说明不了）', editPre.hasEditBar === false, editPre)
