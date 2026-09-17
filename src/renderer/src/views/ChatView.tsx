@@ -43,6 +43,68 @@ export default function ChatView() {
 
   /** 菜单容器：判「点在不在菜单里」全靠它 —— 用法与原因见下面 effect */
   const menuRef = useRef<HTMLDivElement>(null)
+
+  // ── 消息操作条（plan46）──────────────────────────────────────────
+  /**
+   * 刚复制成功的那条消息**下标**；null = 无。
+   * ⚠️ 刻意不用「每条消息一个子组件、状态在组件里」的写法：React 复用 DOM 时状态会串台
+   * （对勾跑到别的消息上 —— 看着对、逻辑错）。用父级下标 + 消息数变化即复位来兜。
+   */
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  const copyTimerRef = useRef<number | null>(null)
+
+  /** 消息条数变化（发送 / 回退）→ 对勾立即失效，免得它"留在"已变位的消息上 */
+  useEffect(() => {
+    setCopiedIndex(null)
+  }, [messages.length])
+
+  /** 卸载时清计时器（否则 1.5s 后的 setState 会打在已卸载组件上） */
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+    },
+    []
+  )
+
+  /** 复制该条正文 —— 取 `content` 而非 DOM：plan36 保证它恒等于全部**正文段**拼接（思考/工具段不进它） */
+  const copyMessage = (index: number, text: string): void => {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        // 连点两次：先清旧计时器，否则上一次的对勾会被提前掐掉（视觉上闪一下）
+        if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+        setCopiedIndex(index)
+        copyTimerRef.current = window.setTimeout(() => {
+          setCopiedIndex(null)
+          copyTimerRef.current = null
+        }, 1500)
+      })
+      .catch(() => {
+        // 剪贴板被拒（极少见）：不打扰用户，也不假装成功（对勾不亮）
+      })
+  }
+
+  /** 重新生成 = 回退到这条之前 + 用上一条提问重发（用户裁决「等价于回退 + 重发」） */
+  const requestRegenerate = async (index: number): Promise<void> => {
+    const prev = messages[index - 1]
+    if (!prev || prev.role !== 'user') return
+    const ok = await rollbackTo(index)
+    if (!ok) return
+    // `skipAppend`：那条提问已在回退后的历史里，**不能再追加一遍**（否则历史里出现两条同样的提问）
+    await sendMessage(prev.content, { skipAppend: true })
+  }
+
+  /** 编辑 = 回退到这条之前 + 把原提问填回输入框（plan46 决策 5）—— 真回退了才填，拒了确认就什么都不做 */
+  const requestEdit = async (index: number, text: string): Promise<void> => {
+    const ok = await rollbackTo(index, { viaEdit: true })
+    if (ok) setInput(text)
+  }
+
+  /** 时间戳 HH:mm（24 小时制）。不带日期 —— 同一会话跨天罕见，不值得占操作条的位 */
+  const formatTime = (ms: number): string => {
+    const d = new Date(ms)
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
   /** 大纲浮层容器：点外部关闭的判定目标 */
   const outlineRef = useRef<HTMLDivElement>(null)
 
@@ -194,14 +256,59 @@ export default function ChatView() {
                 )}
               </div>
             )}
+            {/* 操作条（plan46）：**常驻**显示（用户裁决），平时浅灰、悬停才加深。
+                时间戳只在消息带 createdAt 时显示 —— 旧存档没有该字段，不编造 */}
+            <div className="msg-actions">
+              {m.createdAt !== undefined && (
+                <span className="msg-time" title={new Date(m.createdAt).toLocaleString()}>
+                  {formatTime(m.createdAt)}
+                </span>
+              )}
+              {/* 编辑只给用户消息 —— 改 AI 的回答等于伪造历史 */}
+              {m.role === 'user' && (
+                <button
+                  className="msg-act"
+                  title="编辑：回退到这条之前，并把原提问填回输入框"
+                  aria-label="编辑这条提问"
+                  onClick={() => void requestEdit(i, m.content)}
+                >
+                  ✎
+                </button>
+              )}
+              <button
+                className={`msg-act ${copiedIndex === i ? 'on' : ''}`}
+                title={copiedIndex === i ? '已复制' : '复制正文'}
+                aria-label="复制这条消息"
+                onClick={() => copyMessage(i, m.content)}
+              >
+                {copiedIndex === i ? '✓' : '⧉'}
+              </button>
+              {/* 重新生成只给**最后一条** AI 回复；生成中禁用（主进程本来会拒，界面不该让人白点一下） */}
+              {m.role === 'assistant' && i === messages.length - 1 && (
+                <button
+                  className="msg-act"
+                  title={streaming ? '正在生成中，稍候' : '重新生成：回退到这条之前，用同一提问再问一次'}
+                  aria-label="重新生成这条回复"
+                  disabled={streaming}
+                  onClick={() => void requestRegenerate(i)}
+                >
+                  ↻
+                </button>
+              )}
+            </div>
           </div>
         ))}
 
         {/* 回滚之后的提示条：必须再声明一次作用域（用户会担心"文件是不是也退了"）并给撤销入口 —— 回滚只移游标不删数据，撤销零成本 */}
+        {/* 回滚提示条（plan46 改重）：原句「仅回滚对话消息，工作区文件未改动」容易被读成
+            "什么都没发生过"，而实际是**对话退了、文件与提交没退** —— 两者会打架（有实机截图为证：
+            提示条写"文件未改动"，右侧工作台却躺着一批产物）。故改为明确的两段式。 */}
         {rollbackNotice && (
           <div className="rb-bar">
             <span className="rb-text">
-              已回滚该对话：其后 {rollbackNotice.hidden} 条已隐去（仅回滚对话消息，工作区文件未改动）
+              已回滚该对话：其后 {rollbackNotice.hidden} 条已隐去。
+              <strong>对话历史已退，但工作区文件与 git 提交未回退</strong> —— 若这轮改过文件，请自行处理。
+              {rollbackNotice.viaEdit && ' 原提问已填回输入框，可修改后重新发送。'}
             </span>
             <button className="rb-btn" onClick={() => void undoRollback()}>
               撤销

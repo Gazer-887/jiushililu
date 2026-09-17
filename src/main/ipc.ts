@@ -1023,7 +1023,10 @@ export function registerIpcHandlers(deps: {
       tool: '会话回滚',
       detail: `回到第 ${target + 1} 条消息之前：其后 ${hidden} 条将从对话中隐去（可撤销）`,
       agent: current.title,
-      where: `仅回滚对话消息，不影响工作区文件`,
+      // ⚠️ 措辞必须说清「什么退了、什么没退」（plan46 §2.3）：原句「不影响工作区文件」容易被读成
+      // "什么都没发生过"，而实际是**对话退了、文件与提交没退** —— 两者会打架（有实机截图为证：
+      // 提示条写"文件未改动"，右侧工作台却躺着一批产物）
+      where: '对话历史会退回，但工作区文件与 git 提交**不会**跟着回退 —— 若这轮改过文件，请自行处理',
       conversationId: id
     })
     if (!allowed) return null

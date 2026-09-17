@@ -2045,7 +2045,27 @@ app.whenReady().then(async () => {
         // 空对话必须**一个字都没有**（用户 2026-09-12：进入对话的背景干净最好）
         hasEmptyBlock: !!empty,
         messagesText: msgs ? msgs.textContent.trim() : null,
-        msgCount: document.querySelectorAll('.msg').length
+        msgCount: document.querySelectorAll('.msg').length,
+        // plan46：消息操作条 —— 常驻（每条都有）、复制每条都有、编辑**只给用户消息**
+        msgActions: (() => {
+          const list = Array.from(document.querySelectorAll('.msg'));
+          const hasAct = (m, kw) =>
+            Array.from(m.querySelectorAll('.msg-act')).some((b) =>
+              (b.getAttribute('aria-label') || '').includes(kw)
+            );
+          return {
+            withBar: list.filter((m) => m.querySelector('.msg-actions')).length,
+            withCopy: list.filter((m) => hasAct(m, '复制')).length,
+            editOnUser: list
+              .filter((m) => m.classList.contains('msg-user'))
+              .every((m) => hasAct(m, '编辑')),
+            editOnAssistant: list
+              .filter((m) => m.classList.contains('msg-assistant'))
+              .some((m) => hasAct(m, '编辑')),
+            userCount: list.filter((m) => m.classList.contains('msg-user')).length,
+            assistantCount: list.filter((m) => m.classList.contains('msg-assistant')).length
+          };
+        })()
       };
     })()
   `)
@@ -7019,10 +7039,26 @@ app.whenReady().then(async () => {
     rbAfter.msgs === 1 && rbAfter.msgs < rbPre.msgs, { before: rbPre.msgs, after: rbAfter.msgs })
   checkTrue('回滚后菜单自己收回去（不是一直挂在那儿）', rbAfter.menuClosed === true)
   // 下面两条对应 plan10 §六 第 6 条那三条可判定断言里的 ① 与 ③
-  checkTrue('提示条**再声明一次作用域**（含「仅回滚对话消息」）',
-    (rbAfter.notice || '').includes('仅回滚对话消息'), rbAfter.notice)
+  // plan46 改重：措辞由「仅回滚对话消息，工作区文件未改动」改为**两段式**（什么退了 / 什么没退）——
+  // 原句容易被读成"什么都没发生过"，与实际会打架（实机截图为证：提示条说"文件未改动"，右侧工作台却躺着一批产物）
+  checkTrue('提示条**再声明一次作用域**（说清「对话退了、文件与提交没退」）',
+    (rbAfter.notice || '').includes('对话历史已退') &&
+      (rbAfter.notice || '').includes('工作区文件与 git 提交未回退'),
+    rbAfter.notice)
   checkTrue('提示条**不许**用"文件已还原"这类措辞（那是文件回滚的说法）',
     !/文件已还原|已还原文件|回滚了文件/.test(rbAfter.notice || ''), rbAfter.notice)
+
+  // plan46：消息操作条（操作条常驻 / 复制每条都有 / 编辑只给用户消息）
+  checkTrue('消息操作条**每条消息都有**（常驻显示，不是 hover 才出）',
+    textCheck.msgActions.withBar === textCheck.msgCount && textCheck.msgCount > 0,
+    textCheck.msgActions)
+  checkTrue('复制按钮**每条消息都有**',
+    textCheck.msgActions.withCopy === textCheck.msgCount, textCheck.msgActions)
+  checkTrue('编辑按钮**只在用户消息**上（改 AI 的回答等于伪造历史）',
+    textCheck.msgActions.userCount > 0 &&
+      textCheck.msgActions.editOnUser === true &&
+      textCheck.msgActions.editOnAssistant === false,
+    textCheck.msgActions)
   checkTrue('提示条上有个**撤销**入口', rbAfter.hasUndo === true)
   checkTrue('点撤销 → 调了撤销通道，且条数**换回 4 条**（权威正文说了算）',
     convUndoCalls.length === 1 && rbUndone.msgs === 4, { calls: convUndoCalls.length, ...rbUndone })

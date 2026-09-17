@@ -194,8 +194,15 @@ interface AppState {
   /** 切换某条会话的主 Agent（plan17 D1/D9）：meta 是真相源，内存改完即落盘；空串 = 切回内核默认 */
   selectAgent: (conversationId: string, name: string) => Promise<void>
 
-  /** **回到第 `index` 条消息之前**（plan10 B 批 ④）。两条纪律，缺一条出事故：① 用主进程回传的权威正文覆盖内存（否则下一次保存会把回滚掉的内容写回去）；② 回滚后**不调用** persistActive（存储已是权威状态）。 */
-  rollbackTo: (index: number) => Promise<void>
+  /**
+   * **回到第 `index` 条消息之前**（plan10 B 批 ④）。两条纪律，缺一条出事故：
+   * ① 用主进程回传的权威正文覆盖内存（否则下一次保存会把回滚掉的内容写回去）；
+   * ② 回滚后**不调用** persistActive（存储已是权威状态）。
+   *
+   * 返回 `true` = 真的回退了；`false` = 用户拒了确认框 / 本来就没东西可回滚。
+   * （plan46 的「编辑」需要区分这两者：只有真回退了才把原提问填回输入框。）
+   */
+  rollbackTo: (index: number, opts?: { viaEdit?: boolean }) => Promise<boolean>
   undoRollback: () => Promise<void>
 
   messages: ChatMessage[]
@@ -203,7 +210,7 @@ interface AppState {
   streamError: string | null
   /** **落盘失败**提示，与 `streamError` 分开存：这类失败恰好发生在"切会话"那一刻，而切会话会清掉 `streamError`。 */
   saveError: string | null
-  rollbackNotice: { hidden: number; total: number } | null
+  rollbackNotice: { hidden: number; total: number; viaEdit: boolean } | null
   toolEvents: ToolEvent[]
   /** 思考流（DeepSeek 系 `reasoning_content`）：与正文**分开**存 —— 它是过程不是回答，别混进消息内容 */
   reasoning: string
@@ -721,18 +728,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   pushAsk: (req) => set((s) => ({ asks: [...s.asks, req] })),
   dropAsk: (id) => set((s) => ({ asks: s.asks.filter((a) => a.id !== id) })),
 
-  rollbackTo: async (index) => {
+  rollbackTo: async (index, opts) => {
     const { activeId } = get()
-    if (!activeId) return
+    if (!activeId) return false
     try {
       // `null` = 用户拒了确认框 / 本来就没东西可回滚 —— 两种都**什么都不做**
       const res = await window.api.rollbackConversation(activeId, index)
-      if (!res) return
+      if (!res) return false
       const visible = res.conversation.messages
       set((s) => ({
         // 权威正文覆盖内存 —— 整件事的关键
         messages: visible,
-        rollbackNotice: { hidden: res.total - visible.length, total: res.total },
+        rollbackNotice: {
+          hidden: res.total - visible.length,
+          total: res.total,
+          // plan46：走「编辑」回退时，提示条额外说一句"原提问已填回输入框"
+          viaEdit: opts?.viaEdit === true
+        },
         conversations: s.conversations.map((c) =>
           c.id === activeId
             ? { ...c, messageCount: res.conversation.messageCount, updatedAt: res.conversation.updatedAt }
@@ -740,9 +752,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         )
       }))
       // 刻意**不**调用 persistActive：存储里已经是权威状态
+      return true
     } catch (err) {
       // 正在生成回复时主进程会拒绝 —— 理由要原样给用户看
       set({ streamError: err instanceof Error ? err.message : String(err) })
+      return false
     }
   },
 
@@ -866,10 +880,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
     const skipAppend = opts?.skipAppend === true
-    const history = get().messages.filter((m) => m.content.trim().length > 0)
-    const payload = skipAppend ? [...history] : [...history, { role: 'user' as const, content }]
+    // ⚠️ 与 `normalizeHistory` 同规则（plan46 前置检查发现，plan36 坑 3 的另一半）：
+    // 「空正文 + 有分段」的中间轮次是**合法**的（只有思考/工具、没有正文）。
+    // 这个 filter 的结果会成为新的 `messages`（见下方 set）→ **在这里丢掉它，
+    // 内存就比磁盘少条目 → 渲染 index ≠ 磁盘 index → `rollbackTo` 切错位置**。
+    const history = get().messages.filter(
+      (m) => m.content.trim().length > 0 || (m.role === 'assistant' && (m.segments?.length ?? 0) > 0)
+    )
+    const now = Date.now()
+    const payload = skipAppend
+      ? [...history]
+      : [...history, { role: 'user' as const, content, createdAt: now }]
     set({
-      messages: [...payload, { role: 'assistant', content: '', segments: [] }],
+      messages: [...payload, { role: 'assistant', content: '', segments: [], createdAt: now }],
       streaming: true,
       streamError: null,
       toolEvents: [], // 新一轮，清掉上一轮的工具活动

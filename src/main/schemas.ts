@@ -139,7 +139,9 @@ export const incomingMessagesSchema = z.array(
   z.object({
     role: z.enum(['system', 'user', 'assistant']),
     content: z.string().max(200000),
-    segments: z.array(z.record(z.string(), z.unknown())).max(1000).optional()
+    segments: z.array(z.record(z.string(), z.unknown())).max(1000).optional(),
+    /** plan46：消息时间戳（可选 —— 旧数据无该字段，渲染层据此决定是否显示时间） */
+    createdAt: z.number().int().nonnegative().optional()
   })
 )
 
@@ -177,7 +179,9 @@ export const storedMessageSchema = z
   .object({
     role: z.enum(['system', 'user', 'assistant']),
     content: z.string().max(200000),
-    segments: z.array(segmentSchema).max(1000).optional()
+    segments: z.array(segmentSchema).max(1000).optional(),
+    /** plan46：消息时间戳（可选 —— 旧存档无此字段，渲染层无则不显示时间，不编造） */
+    createdAt: z.number().int().nonnegative().optional()
   })
   .superRefine((m, ctx) => {
     if (m.segments && m.role !== 'assistant') {

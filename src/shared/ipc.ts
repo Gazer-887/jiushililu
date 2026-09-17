@@ -55,6 +55,11 @@ export interface ChatMessage {
   content: string
   /** 仅 assistant 可带（plan36）：执行过程按真实顺序的分段，本地渲染与回看用，**不发给模型** */
   segments?: MessageSegment[]
+  /**
+   * 消息创建时间（plan46）：毫秒时间戳。**可选** —— 旧存档没有该字段，
+   * 渲染层据此决定是否显示时间戳（无则不显示，不编造）。与 segments 同理属本地渲染资产，**不发给模型**。
+   */
+  createdAt?: number
 }
 
 export interface TestResult {

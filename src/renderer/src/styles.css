@@ -460,6 +460,56 @@ nav {
   border: 1px solid var(--border);
 }
 
+/* ── 消息操作条（plan46）──────────────────────────────────────
+   常驻显示（用户裁决）→ 平时用次要色、悬停才点亮，避免整屏噪音；
+   `.msg-user` 的 align-items: flex-end 会让它自动靠右，无需额外处理。
+   用户消息靠右 / 助手消息靠左的差异，由父级 flex 对齐天然给出。 */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-height: 22px;
+  padding: 0 var(--sp-4);
+}
+
+.msg-time {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  /* 等宽数字：多条消息的时间戳竖直对齐，不逐字跳宽 */
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.msg-act:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 复制成功的对勾：用"成功"色，与文案「已复制」同一语义 */
+.msg-act.on {
+  color: var(--ok);
+}
+
+.msg-act:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .chat-error {
   background: var(--danger-soft);
   color: var(--danger);
