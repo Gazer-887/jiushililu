@@ -46,8 +46,7 @@ import {
   setNetworkCredentials,
   getMemoryEnabled,
   getAutoMemoryEnabled,
-  getReflectionDailyLimit,
-  getMcpDisabled
+  getReflectionDailyLimit
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
@@ -574,8 +573,8 @@ app.whenReady().then(async () => {
     // ⚠️ 无开关（D-058：use_skill 是读操作，只读档也可用）；"有消费者才注册"（D-059）在 runner 内判空。
     skills: { store: skillsStore },
     // MCP（plan23）：manager 给工具聚合与转发；执行走确认桥（D-064，conversationId 在 runner 内补）。
-    // disabledServers（plan34 S1）：getter 注入，每轮构造工具时读 —— 被禁 server 的工具不下发（真禁用，立即生效）
-    mcp: { manager: mcp, disabledServers: () => getMcpDisabled() },
+    // plan34 S2b：开关走配置 `cfg.enabled`（单一真相源）—— manager 的 connectAll/saveServer 天然跳过被禁者
+    mcp: { manager: mcp },
     // L0 检索（plan3/plan4）：随包的 ripgrep 放 resources/ripgrep/（extraResources）。
     // ⚠️ 开发态 `process.resourcesPath` 指向 electron 自己的 resources —— 那里没有我们的 rg，
     //    于是会自动退到环境变量 / PATH（本机 WinGet 装的 rg 15.2.0 能接上）；这不是降级事故。

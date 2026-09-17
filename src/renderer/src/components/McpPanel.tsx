@@ -37,21 +37,10 @@ export default function McpPanel(): JSX.Element {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [envText, setEnvText] = useState('')
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
-  // plan34 S2a：被禁用的 server 名单 —— 被禁者**工具不下发**（真禁用，模型侧看不到）。
-  // ⚠️ Q2 拍板的「进程级断开」需 manager 补 disconnect/connect API，归 S2b 一并做（见 plan34 §四）。
-  const [disabled, setDisabled] = useState<string[]>([])
 
   const reload = useCallback((): void => {
-    void window.api.mcpListServers().then((list) => {
-      setServers(list)
-      // 残留清理（plan34 §三-1）：名单里已不存在的 server = 死条目，静默写回
-      void window.api.getMcpDisabled().then((names) => {
-        const alive = new Set(list.map((s) => s.config.name))
-        const live = names.filter((n) => alive.has(n))
-        setDisabled(live)
-        if (live.length !== names.length) void window.api.setMcpDisabled(live)
-      })
-    })
+    // plan34 S2b：开关状态就在 `cfg.enabled` 里（配置即真相源），listServers 直接带出，无需另拉名单
+    void window.api.mcpListServers().then(setServers)
   }, [])
 
   useEffect(() => {
@@ -85,11 +74,19 @@ export default function McpPanel(): JSX.Element {
     reload()
   }
 
-  /** plan34 S2a：开关 = 真禁用（被禁 server 的工具**不下发**，下一轮即生效）。关错了再点开就行 */
-  const toggleDisabled = (name: string): void => {
-    const next = disabled.includes(name) ? disabled.filter((n) => n !== name) : [...disabled, name]
-    setDisabled(next)
-    void window.api.setMcpDisabled(next)
+  /**
+   * plan34 S2b：开关 = **写配置 `enabled` + reconnect** —— Q2 拍板的「真断开」：
+   * 关 → 存盘（connectAll 今后跳过它）+ 立即断开进程；开 → 存盘 + 立即连接。
+   * reconnect 两向都处理好了（先 disconnect，再按 enabled 决定连不连），不用新 API。
+   */
+  const toggleEnabled = async (s: McpServerStatus): Promise<void> => {
+    const next = !(s.config.enabled !== false)
+    const r = await window.api.mcpSaveServer({ ...s.config, enabled: next })
+    if (!r.ok) {
+      setNotice({ ok: false, text: r.reason ?? '开关失败' })
+      return
+    }
+    await window.api.mcpReconnect(s.config.name) // notify() 会让列表自动刷新
   }
 
   return (
@@ -110,21 +107,20 @@ export default function McpPanel(): JSX.Element {
           <p className="mcp-empty">尚未配置任何 MCP 服务器。</p>
         ) : (
           servers.map((s) => (
-            <div key={s.config.name} className={`mcp-server ${disabled.includes(s.config.name) ? 'mcp-server-off' : ''}`}>
+            <div key={s.config.name} className={`mcp-server ${s.config.enabled === false ? 'mcp-server-off' : ''}`}>
               <div className="mcp-server-head">
                 <span className="mcp-server-name">{s.config.name}</span>
                 <span className={`mcp-server-state mcp-state-${s.state}`}>{STATE_LABEL[s.state]}</span>
                 <span className="mcp-server-transport">{TRANSPORT_LABEL[s.config.transport]}</span>
                 <span className="mcp-server-tools">
-                  {s.state === 'connected' ? `${s.tools.length} 个工具` : '工具未知'}
+                  {s.state === 'connected' ? `${s.tools.length} 个工具` : s.config.enabled === false ? '已关闭' : '工具未知'}
                 </span>
-                <label className="skills-item-switch" title={disabled.includes(s.config.name) ? '已关闭：工具不下发给模型' : '开启中'}>
-                  <input
-                    type="checkbox"
-                    checked={!disabled.includes(s.config.name)}
-                    onChange={() => toggleDisabled(s.config.name)}
-                  />
-                  <span>{disabled.includes(s.config.name) ? '已关' : '开启'}</span>
+                <label
+                  className="skills-item-switch"
+                  title={s.config.enabled === false ? '已关闭：进程已断开，工具不下发给模型' : '开启中'}
+                >
+                  <input type="checkbox" checked={s.config.enabled !== false} onChange={() => void toggleEnabled(s)} />
+                  <span>{s.config.enabled === false ? '已关' : '开启'}</span>
                 </label>
               </div>
               {s.error ? <p className="mcp-server-error">{s.error}</p> : null}

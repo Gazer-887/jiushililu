@@ -41,7 +41,7 @@ import {
   type McpServerConfig,
   type McpServerStatus
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getMcpDisabled, setMcpDisabled } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled } from './store/settings'
 import type { SystemSettings, SystemView } from '@shared/system'
 import type { NetworkPatch, NetworkView } from '@shared/network'
 import { networkSetSchema } from '@shared/network'
@@ -1466,21 +1466,13 @@ export function registerIpcHandlers(deps: {
     return setComputerControlEnabled(enabled)
   })
 
-  // ── 技能 / MCP 禁用名单（plan34 S1，2026-09-17）──「真禁用」的读写口：
-  //    技能侧在 assembleSkillBlock 过滤、MCP 侧在 createMcpTools 过滤（模型侧确实看不到）。
-  //    广播走既有 skillsChanged / mcpChanged 通道（UI 刷新列表用），此处不再另发。
+  // ── 技能禁用名单（plan34 S1/S2a）──「真禁用」的读写口：assembleSkillBlock 注入前过滤（模型侧确实看不到）。
+  //    ⚠️ 只有技能走名单 —— 技能文件是用户资产不可写；**MCP 的开关走配置 `cfg.enabled`**（单一真相源，见 mcpSet）。
   ipcMain.handle(IPC.skillsDisabledGet, (): string[] => getSkillsDisabled())
 
   ipcMain.handle(IPC.skillsDisabledSet, (_e, raw: unknown): string[] => {
     const names = z.array(z.string().min(1).max(120)).max(500).parse(raw)
     return setSkillsDisabled(names)
-  })
-
-  ipcMain.handle(IPC.mcpDisabledGet, (): string[] => getMcpDisabled())
-
-  ipcMain.handle(IPC.mcpDisabledSet, (_e, raw: unknown): string[] => {
-    const names = z.array(z.string().min(1).max(120)).max(500).parse(raw)
-    return setMcpDisabled(names)
   })
 
 

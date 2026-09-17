@@ -1,10 +1,9 @@
-// plan34 S1：技能 / MCP 禁用名单 —— 「真禁用」的验收（§4.1 判据 1 / 6）。
-// 判据原话：**禁用必须"真禁用"—— loader 层确实不注入（技能）/ 工具不下发（MCP），
-// 由单测证明，不是看 UI**。只藏 UI 等于假开关。
+// plan34 S2a：技能禁用名单 —— 「真禁用」的验收（§4.1 判据 1 / 6）。
+// 判据原话：**禁用必须"真禁用"——注入清单里确实没有它，由单测证明，不是看 UI**。
+// ⚠️ MCP 侧不走名单（S2b 修正）：开关走配置 `cfg.enabled`（单一真相源），
+// `activeTools()` 只认 connected 态 → 被禁 server 的工具天然不下发，机制由 mcp-manager 自己的测试覆盖。
 import { describe, expect, it } from 'vitest'
 import { filterDisabledEntries, type SkillListItem } from '@shared/skills'
-import { createMcpTools } from '@main/agent/tools/mcp-tools'
-import type { McpManager } from '@main/mcp/mcp-manager'
 
 describe('filterDisabledEntries（plan34 S1 · 技能侧真禁用）', () => {
   const items: SkillListItem[] = [
@@ -41,47 +40,5 @@ describe('filterDisabledEntries（plan34 S1 · 技能侧真禁用）', () => {
 
   it('全禁 → 注入清单为空（调用方据此跳过注入，D-059 判空语义）', () => {
     expect(filterDisabledEntries(items, ['alpha', 'beta', 'gamma'])).toEqual([])
-  })
-})
-
-describe('createMcpTools · disabledServers（plan34 S1 · MCP 侧真禁用）', () => {
-  const mockManager = (refs: { server: string; name: string }[]): McpManager =>
-    ({
-      activeTools: () =>
-        refs.map((r) => ({
-          server: r.server,
-          name: r.name,
-          fullName: `mcp__${r.server}__${r.name}`
-        }))
-    }) as unknown as McpManager
-
-  const refs = [
-    { server: 'alpha', name: 't1' },
-    { server: 'beta', name: 't2' }
-  ]
-
-  it('★ 被禁用 server 的工具**不下发**（真禁用：模型侧看不到它的工具）', () => {
-    const tools = createMcpTools({ manager: mockManager(refs), disabledServers: () => ['alpha'] })
-    const names = tools.map((t) => t.schema.name)
-    expect(names).toEqual(['mcp__beta__t2'])
-  })
-
-  it('不传 disabledServers = 全部下发（老装配兼容，默认开启）', () => {
-    const tools = createMcpTools({ manager: mockManager(refs) })
-    expect(tools.length).toBe(2)
-  })
-
-  it('getter 返回空 = 全部下发；**getter 每次构造时读** → 改开关下一轮即生效（立即生效，Q3）', () => {
-    let disabled: string[] = []
-    const deps = { manager: mockManager(refs), disabledServers: () => disabled }
-    expect(createMcpTools(deps).length).toBe(2)
-    // 同一个 deps，名单变了 → 结果跟着变（不需要重建 hooks）
-    disabled = ['beta']
-    expect(createMcpTools(deps).map((t) => t.schema.name)).toEqual(['mcp__alpha__t1'])
-  })
-
-  it('全部禁用 → 下发 0 个工具（调用方语义：模型没有任何 MCP 工具可调）', () => {
-    const tools = createMcpTools({ manager: mockManager(refs), disabledServers: () => ['alpha', 'beta'] })
-    expect(tools).toEqual([])
   })
 })

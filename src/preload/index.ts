@@ -144,11 +144,9 @@ const api: ApiBridge = {
   // 电脑控制开关（2026-09-15）：当前无对应工具，先落门控（状态进自视段）
   getComputerControl: () => ipcRenderer.invoke(IPC.computerControlGet),
   setComputerControl: (enabled: boolean) => ipcRenderer.invoke(IPC.computerControlSet, enabled),
-  // plan34 S1：技能 / MCP 禁用名单（设置页开关用）
+  // plan34 S2a：技能禁用名单（设置页开关用）。MCP 开关走 mcpSaveServer（cfg.enabled）
   getSkillsDisabled: () => ipcRenderer.invoke(IPC.skillsDisabledGet),
   setSkillsDisabled: (names: string[]) => ipcRenderer.invoke(IPC.skillsDisabledSet, names),
-  getMcpDisabled: () => ipcRenderer.invoke(IPC.mcpDisabledGet),
-  setMcpDisabled: (names: string[]) => ipcRenderer.invoke(IPC.mcpDisabledSet, names),
   getPermission: () => ipcRenderer.invoke(IPC.permissionGet),
   setPermission: (preset: PermissionPreset) => ipcRenderer.invoke(IPC.permissionSet, preset),
   getTokenTier: () => ipcRenderer.invoke(IPC.tokenTierGet),

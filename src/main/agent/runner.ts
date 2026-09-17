@@ -151,8 +151,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     ...(hooks.mcp?.manager.hasConnected()
       ? createMcpTools({
           manager: hooks.mcp.manager,
-          ...(hooks.mcp.confirm ? { confirm: hooks.mcp.confirm } : {}),
-          ...(hooks.mcp.disabledServers ? { disabledServers: hooks.mcp.disabledServers } : {})
+          ...(hooks.mcp.confirm ? { confirm: hooks.mcp.confirm } : {})
         })
       : [])
   ]
@@ -213,12 +212,10 @@ export interface ToolHooks {
   skills?: {
     store: SkillsStore
   }
-  /** MCP 客户端（plan23）。不传或无已连接服务器 = 不下发任何 mcp__ 工具（D-065）；执行默认走确认桥（D-064）。
-   *  `disabledServers`（plan34 S1）：getter 注入，每轮构造工具时读 —— 被禁 server 的工具不下发（真禁用） */
+  /** MCP 客户端（plan23）。不传或无已连接服务器 = 不下发任何 mcp__ 工具（D-065）；执行默认走确认桥（D-064） */
   mcp?: {
     manager: McpManager
     confirm?: (req: { tool: string; detail: string }) => Promise<boolean>
-    disabledServers?: () => string[]
   }
   /** 打包态资源根（找随包的 ripgrep）。装配层注入 —— runner 不许 import electron；不传 = 只用环境变量/PATH 上的 rg */
   resourcesPath?: string | null
@@ -261,11 +258,9 @@ export interface AgentRuntimeContext {
   skills?: {
     store: SkillsStore
   }
-  /** MCP 管理器（plan23）。由组合根注入 —— runner 不碰 electron；已连接服务器的工具经此聚合与转发。
-   *  `disabledServers`（plan34 S1）：getter 注入，每轮构造工具时读 —— 被禁 server 的工具不下发（真禁用，立即生效） */
+  /** MCP 管理器（plan23）。由组合根注入 —— runner 不碰 electron；已连接服务器的工具经此聚合与转发 */
   mcp?: {
     manager: McpManager
-    disabledServers?: () => string[]
   }
   confirmCommand?: (req: {
     tool: string
@@ -826,11 +821,9 @@ export function createAgentContext(opts: {
   skills?: {
     store: SkillsStore
   }
-  /** MCP 管理器（plan23）。由组合根注入 —— runner 不碰 electron；已连接服务器的工具经此聚合与转发。
-   *  `disabledServers`（plan34 S1）：getter 注入，每轮构造工具时读 —— 被禁 server 的工具不下发（真禁用，立即生效） */
+  /** MCP 管理器（plan23）。由组合根注入 —— runner 不碰 electron；已连接服务器的工具经此聚合与转发 */
   mcp?: {
     manager: McpManager
-    disabledServers?: () => string[]
   }
   trash?: (abs: string) => Promise<void>
   ask?: AskReporter
