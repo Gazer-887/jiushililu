@@ -1,7 +1,11 @@
 // 记忆 fs 后端与装配层单测（plan19 批 1）：路径越界、原子写落盘、手改文件可见、meta 收敛、迁移幂等。
 // 用**内存 fs 适配器**（不碰真盘）—— `FsAdapter` 注入就是为这个存在的。
 
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { nodeFsAdapter } from '@main/store/conversations-fs'
 import type { FsAdapter } from '@main/store/conversations-fs'
 import {
   createFsMemoryBackend,
@@ -192,3 +196,57 @@ describe('事件流：追加、坏行容忍、轮转', () => {
     expect(warns).toHaveLength(1)
   })
 })
+
+// —— D-106 记忆读盘缓存（真盘 + nodeFsAdapter：生产适配器带 mtimeMsBytes，缓存路径在此生效）——
+describe('read() 内容缓存的新鲜度正确性（D-106）', () => {
+  function withBackend(fn: (b: ReturnType<typeof createFsMemoryBackend>) => void): void {
+    const root = mkdtempSync(join(tmpdir(), 'jsl-memcache-'))
+    try {
+      fn(createFsMemoryBackend(root, nodeFsAdapter))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+
+  it('外部手改（mtime/size 变了）→ 读到新内容，不吃缓存', () => {
+    withBackend((b) => {
+      const file = b.pathFor('cached-entry')
+      b.write(file, '---\nname: cached-entry\n---\n\n第一版')
+      expect(b.read(file)).toContain('第一版')
+      writeFileSync(file, '---\nname: cached-entry\n---\n\n第二版被外部改长了', 'utf8')
+      expect(b.read(file)).toContain('第二版被外部改长了')
+    })
+  })
+
+  it('外部删除 → 读到 null；重新出现 → 读到新档（缓存条目不残留）', () => {
+    withBackend((b) => {
+      const file = b.pathFor('revive')
+      b.write(file, '---\nname: revive\n---\n\n活着')
+      expect(b.read(file)).toContain('活着')
+      unlinkSync(file)
+      expect(b.read(file)).toBeNull()
+      writeFileSync(file, '---\nname: revive\n---\n\n复活', 'utf8')
+      expect(b.read(file)).toContain('复活')
+    })
+  })
+
+  it('backend.write 写完立读 → 新值（写后回填，本轮不再读盘）', () => {
+    withBackend((b) => {
+      const file = b.pathFor('refill')
+      b.write(file, '---\nname: refill\n---\n\n旧')
+      b.write(file, '---\nname: refill\n---\n\n新新')
+      expect(b.read(file)).toContain('新新')
+    })
+  })
+
+  it('注入式桩（无 mtimeMsBytes）→ 直读回退路径语义不变', () => {
+    const fsStub = mapFs()
+    const b = createFsMemoryBackend(ROOT, fsStub)
+    const file = b.pathFor('stubbed')
+    b.write(file, '文本')
+    expect(b.read(file)).toBe('文本')
+    fsStub.files.set(norm(file), '外部改')
+    expect(b.read(file)).toBe('外部改')
+  })
+})
+

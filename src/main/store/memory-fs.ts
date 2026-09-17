@@ -127,6 +127,8 @@ export function createFsMemoryBackend(
   const warn = opts.onWarn ?? (() => {})
   const notes = notesDir(root)
   const candidates = candidatesDir(root)
+  /** D-106：read() 的内容缓存。新鲜度键 (mtimeMs, size)，见 `read` 内注释；容量=记忆文件数，不设上限 */
+  const readCache = new Map<string, { m: number; s: number; text: string }>()
 
   /**
    * `file` 来自渲染进程 —— 必须挡在 `notes/` 之内。
@@ -172,8 +174,24 @@ export function createFsMemoryBackend(
     read(file) {
       if (!insideMemory(file)) return null
       try {
+        // D-106：满载 100 条 × 每轮注入 = 逐文件同步读是判据 10 的大头（Defender 环境实测 ~0.5ms/次）。
+        // 新鲜度键 (mtimeMs, size) 由 stat 一次给出——stat 命中即免"读盘+重复解析"。
+        // 适配器不提供 mtimeMsBytes（如注入式测试桩）时自动回退直读，语义不变。
+        if (fs.mtimeMsBytes) {
+          const key = fs.mtimeMsBytes(file)
+          if (key === null) {
+            readCache.delete(file)
+            return null
+          }
+          const hit = readCache.get(file)
+          if (hit && hit.m === key.mtimeMs && hit.s === key.size) return hit.text
+          const text = fs.readFileSync(file, 'utf8')
+          readCache.set(file, { m: key.mtimeMs, s: key.size, text })
+          return text
+        }
         return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
       } catch {
+        readCache.delete(file)
         return null
       }
     },
@@ -185,12 +203,17 @@ export function createFsMemoryBackend(
         fs.mkdirSync(candidates, { recursive: true })
       }
       atomicWrite(fs, file, text)
+      // 写后回填（stat 取真实新键）：本轮"写完即读"不再走第二次读盘
+      const key = fs.mtimeMsBytes ? fs.mtimeMsBytes(file) : null
+      if (key) readCache.set(file, { m: key.mtimeMs, s: key.size, text })
+      else readCache.delete(file)
     },
 
     remove(file) {
       if (!insideMemory(file)) return false
       if (!fs.existsSync(file)) return false
       fs.rmSync(file, { force: true })
+      readCache.delete(file)
       return true
     },
 

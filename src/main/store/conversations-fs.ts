@@ -25,6 +25,11 @@ export interface FsAdapter {
   appendFileSync(path: string, data: string, enc: 'utf8'): void
   /** 文件字节数（轮转判据）；文件不存在返回 0 */
   sizeBytes(path: string): number
+  /**
+   * (mtimeMs, size) 新鲜度键（D-106，记忆读盘缓存用）；文件不存在返回 null。
+   * **可选**：只有生产适配器实现 —— 注入式测试桩不必跟改，缓存路径随之自动关闭（无键=直读）。
+   */
+  mtimeMsBytes?(path: string): { mtimeMs: number; size: number } | null
   /** 把文件内容刷到磁盘（2026-09-13 补）。**不做的话 rename 只是"目录项换了名"** —— 断电后你可能拿到旧内容 */
   fsyncFile(path: string): void
   /** 刷目录项（POSIX 需要；Windows 上打不开目录，实现里吞掉错误） */
@@ -45,6 +50,14 @@ export const nodeFsAdapter: FsAdapter = {
       return nodeFs.statSync(p).size
     } catch {
       return 0
+    }
+  },
+  mtimeMsBytes: (p) => {
+    try {
+      const st = nodeFs.statSync(p)
+      return { mtimeMs: st.mtimeMs, size: st.size }
+    } catch {
+      return null
     }
   },
   fsyncFile: (p) => {
