@@ -1,5 +1,5 @@
-import { useEffect, useState, type RefObject } from 'react'
-import type { Attachment } from '@shared/ipc'
+import { useEffect, useRef, useState, type RefObject } from 'react'
+import type { Attachment, SkillInfo } from '@shared/ipc'
 import { DRAG_PATH_MIME } from '@shared/fs-tree'
 import PlusMenu from './PlusMenu'
 import WorkspaceChip from './WorkspaceChip'
@@ -62,6 +62,56 @@ export default function InputConsole({
   const [attachError, setAttachError] = useState<string | null>(null)
   /** 落点高亮 —— 不亮用户不知道这里能放 */
   const [dragging, setDragging] = useState(false)
+
+  // ── plan34 S4：「/」光标处技能浮层 ── 只列**开启的**技能（实时与设置页一致，skillsChanged 驱动）。
+  // 触发：光标前的 token 以 / 开头且 / 在行首或空白后（防 URL 误触）。↑↓ 选择、Enter/Tab 插入、Esc 关。
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const [slash, setSlash] = useState<{ start: number; query: string } | null>(null)
+  const [slashIdx, setSlashIdx] = useState(0)
+  const [slashSkills, setSlashSkills] = useState<SkillInfo[]>([])
+
+  useEffect(() => {
+    const pull = (): void => {
+      void window.api.listSkills().then(async (list) => {
+        const disabled = await window.api.getSkillsDisabled()
+        setSlashSkills(list.filter((s) => !disabled.includes(s.name) && !s.overridden))
+      })
+    }
+    pull()
+    return window.api.onSkillsChanged(pull)
+  }, [])
+
+  const slashMatches = slash ? slashSkills.filter((s) => s.name.startsWith(slash.query)) : []
+
+  const handleChange = (next: string): void => {
+    onChange(next)
+    const ta = taRef.current
+    if (!ta) {
+      setSlash(null)
+      return
+    }
+    const pos = ta.selectionStart
+    const lineStart = next.lastIndexOf('\n', pos - 1) + 1
+    const m = /(^|\s)(\/[\w-]*)$/.exec(next.slice(lineStart, pos))
+    setSlash(m ? { start: pos - m[2].length, query: m[2].slice(1) } : null)
+    setSlashIdx(0)
+  }
+
+  const pickSlash = (name: string): void => {
+    if (!slash) return
+    const insert = `请使用技能 ${name}：`
+    const next = value.slice(0, slash.start) + insert + value.slice(slash.start + 1 + slash.query.length)
+    onChange(next)
+    setSlash(null)
+    const caret = slash.start + insert.length
+    requestAnimationFrame(() => {
+      const ta = taRef.current
+      if (ta) {
+        ta.focus()
+        ta.setSelectionRange(caret, caret)
+      }
+    })
+  }
 
   // 附件只在成功提交时清空（busy 由真转假时保留），见 submit
   useEffect(() => {
@@ -202,13 +252,47 @@ export default function InputConsole({
         </div>
       )}
 
+      {slash && slashMatches.length > 0 && (
+        <div className="slash-menu" onMouseDown={(e) => e.preventDefault()}>
+          <div className="plus-title">技能（↑↓ 选择，Enter 插入，Esc 关闭）</div>
+          {slashMatches.map((s, i) => (
+            <button key={s.name} className={`slash-item ${i === slashIdx ? 'on' : ''}`} onClick={() => pickSlash(s.name)}>
+              <span className="plus-name">/{s.name}</span>
+              <span className="plus-desc">{s.descriptionZh ?? s.description}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <textarea
         className="console-input"
+        ref={taRef}
         autoFocus={autoFocus}
         value={value}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => handleChange(e.target.value)}
         onKeyDown={(e) => {
+          if (slash && slashMatches.length > 0) {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault()
+              setSlashIdx((i) => (i + 1) % slashMatches.length)
+              return
+            }
+            if (e.key === 'ArrowUp') {
+              e.preventDefault()
+              setSlashIdx((i) => (i - 1 + slashMatches.length) % slashMatches.length)
+              return
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+              e.preventDefault()
+              pickSlash(slashMatches[slashIdx].name)
+              return
+            }
+            if (e.key === 'Escape') {
+              setSlash(null)
+              return
+            }
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault()
             submit()

@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
+import type { McpServerStatus, SkillInfo } from '@shared/ipc'
+
+const STATE_LABEL: Record<McpServerStatus['state'], string> = {
+  connected: '已连接',
+  error: '连接失败',
+  disabled: '已关闭'
+}
 
 // 「＋」号拓展面板（P2）：新建任务页与对话页共用的能力入口。
 // plan17 D1：「技能 / 子 Agent」多选改造成「主 Agent」**单选** —— 多选没有执行语义
@@ -19,6 +26,24 @@ export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: Plu
   const agentsView = useAppStore((s) => s.agentsView)
   const refreshAgents = useAppStore((s) => s.refreshAgents)
   const boxRef = useRef<HTMLDivElement>(null)
+  // plan34 S4：「+」面板同步显示**当前开启的**技能与 MCP（两者分开列，只读 —— 管理在设置页）。
+  // 数据源即运行时真源：技能走 listSkills−禁用名单，MCP 走 listServers 的 enabled；广播驱动实时一致。
+  const [skills, setSkills] = useState<SkillInfo[] | null>(null)
+  const [mcp, setMcp] = useState<McpServerStatus[] | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const pull = (): void => {
+      void window.api.listSkills().then(async (list) => {
+        const disabled = await window.api.getSkillsDisabled()
+        setSkills(list.filter((s) => !disabled.includes(s.name) && !s.overridden))
+      })
+      void window.api.mcpListServers().then(setMcp)
+    }
+    pull()
+    return window.api.onSkillsChanged(pull)
+    // MCP 的连断/启停由 onMcpChanged 在 mcpListServers 消费方广播；此处 open 内拉一次足够
+  }, [open])
 
   useEffect(() => {
     if (!onSelectAgent) return // 不需要选择区就不拉取
@@ -105,14 +130,43 @@ export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: Plu
             </div>
           )}
 
-          <div className="plus-section plus-soon">
-            <div className="plus-title">更多</div>
-            <div className="plus-item disabled">
-              <span className="plus-check" />
-              <span className="plus-name">MCP 连接器</span>
-              <span className="plus-desc">尚未实现</span>
+          {skills !== null && (
+            <div className="plus-section">
+              <div className="plus-title">当前开启的技能</div>
+              {skills.length === 0 ? (
+                <div className="plus-empty">无开启的技能</div>
+              ) : (
+                skills.map((s) => (
+                  <div key={s.name} className="plus-item disabled" title="技能由模型按需自动调用；管理在设置页">
+                    <span className="plus-check" />
+                    <span className="plus-name">{s.name}</span>
+                    <span className="plus-desc">{s.descriptionZh ?? s.description}</span>
+                  </div>
+                ))
+              )}
             </div>
-          </div>
+          )}
+
+          {mcp !== null && (
+            <div className="plus-section">
+              <div className="plus-title">当前开启的 MCP</div>
+              {mcp.filter((s) => s.config.enabled !== false).length === 0 ? (
+                <div className="plus-empty">无开启的 MCP 服务器</div>
+              ) : (
+                mcp
+                  .filter((s) => s.config.enabled !== false)
+                  .map((s) => (
+                    <div key={s.config.name} className="plus-item disabled" title="MCP 工具每次调用前都会向你确认；管理在设置页">
+                      <span className="plus-check" />
+                      <span className="plus-name">{s.config.name}</span>
+                      <span className="plus-desc">
+                        {s.state === 'connected' ? `${s.tools.length} 个工具` : STATE_LABEL[s.state]}
+                      </span>
+                    </div>
+                  ))
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

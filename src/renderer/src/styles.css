@@ -6849,6 +6849,49 @@ body[data-resizing] {
   font-size: var(--fs-xs);
   color: var(--danger);
 }
+/* ── plan34 S4：输入框「/」技能浮层 ── 挂输入框上方；色板全走既有 token */
+.console {
+  /* 浮层的定位锚（重复声明无害；若未来根容器另有定位需求以此为准） */
+  position: relative;
+}
+.slash-menu {
+  position: absolute;
+  left: var(--sp-12);
+  right: var(--sp-12);
+  bottom: 110px;
+  z-index: 40;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.18));
+}
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  width: 100%;
+  padding: var(--sp-4) var(--sp-8);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.slash-item.on,
+.slash-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.slash-item .plus-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .skills-group-title {
   margin: var(--sp-16) 0 var(--sp-4);
   font-size: var(--fs-sm);
