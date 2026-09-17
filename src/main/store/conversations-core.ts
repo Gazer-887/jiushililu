@@ -115,6 +115,10 @@ export function normalizeHistory(messages: ChatMessage[]): ChatMessage[] {
  * 落盘预算降级（plan36 坑 4）：`content + segments` 总长超 `MAX_STORED_CHARS` 时，
  * 从**最老**的消息开始丢分段、保正文——分段是回看增强，正文是合同，永远保正文。
  * ⚠️ 必须在 `storedMessagesSchema` 审之前跑：那道门是整条拒存（兜底），这里是能救则救。
+ * ⚠️ **空正文消息的 segments 不参与丢弃**（plan36 坑 3 的延伸，2026-09-17 补）：
+ * 这类消息（中间轮只有思考/工具没有正文）**靠 segments 才合法**——把它删了就成
+ * 「空 content + 无 segments」，`storedMessagesSchema` 会**整批拒存**，比不降级更糟
+ * （不降级只是超限，降级后是用户消息全丢）。
  */
 export function fitStoredBudget<T extends ChatMessage>(messages: T[], maxChars: number): { messages: T[]; stripped: number } {
   const size = (list: T[]): number =>
@@ -123,7 +127,7 @@ export function fitStoredBudget<T extends ChatMessage>(messages: T[], maxChars: 
   let stripped = 0
   const out = messages.map((m) => ({ ...m }))
   for (let i = 0; i < out.length && size(out) > maxChars; i++) {
-    if (out[i].segments) {
+    if (out[i].segments && out[i].content.trim().length > 0) {
       delete out[i].segments
       stripped++
     }

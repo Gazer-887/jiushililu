@@ -153,6 +153,19 @@ describe('fitStoredBudget（plan36 坑 4：超预算丢分段保正文）', () =
     expect(out.stripped).toBe(1)
     expect(out.messages[0]!.content.length).toBe(5000)
   })
+
+  it('★ 预算降级的产出**必须仍然过落盘校验**（空正文 + 分段的轮次不得被降级成非法）', () => {
+    // plan36 坑 3 的延伸：中间轮"只有思考/工具没有正文"的消息，靠 segments 撑着才合法
+    // （storedMessagesSchema 允许「空 content + 非空 segments」）。若预算降级把它的 segments 删掉，
+    // 它就变成「空 content + 无 segments」= 非法 → 落盘**整批被拒**（ipc.ts:930 的调用方），用户消息全丢。
+    const list: ChatMessage[] = [
+      { role: 'assistant', content: '', segments: [{ kind: 'thinking', text: big(3000) }] },
+      { role: 'assistant', content: big(50), segments: [{ kind: 'thinking', text: big(3000) }] }
+    ]
+    const out = fitStoredBudget(list, 500)
+    const parsed = storedMessagesSchema.safeParse(out.messages)
+    expect(parsed.success).toBe(true)
+  })
 })
 
 describe('storedMessagesSchema · 分段校验（plan36 双 schema）', () => {
