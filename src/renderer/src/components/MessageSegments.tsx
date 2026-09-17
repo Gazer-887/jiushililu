@@ -27,11 +27,16 @@ function ThinkingBlock({ text }: { text: string }): JSX.Element {
 }
 
 function ToolBlock({ event }: { event: ToolEvent }): JSX.Element {
+  // MCP 来源徽标（plan44 决策 5）：mcp__<server>__<tool> 是 D-061 命名法 —— 拆出 server 挂徽标，
+  // 名字区只留工具本名；"这是外部服务器的动作"必须一眼可辨
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(event.name)
+  const displayName = mcp ? mcp[2] : event.name
   return (
     <div className="tool-log">
       <div className={`tool-item tool-${event.phase}`}>
         <span className="tool-icon">{event.phase === 'start' ? '◌' : event.phase === 'end' ? '✓' : '✗'}</span>
-        <span className="tool-name">{event.name}</span>
+        {mcp && <span className="tool-mcp-badge">MCP·{mcp[1]}</span>}
+        <span className="tool-name">{displayName}</span>
         <span className="tool-desc">
           {event.phase === 'start' ? event.detail || '执行中…' : event.summary ?? event.detail ?? ''}
         </span>

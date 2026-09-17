@@ -48,3 +48,13 @@ describe('toolCallDetail（工具调用的"一句人话"）', () => {
     expect(toolCallDetail('run_command', JSON.stringify({ command: 'a\nb' }))).toBe('a b')
   })
 })
+
+describe('标量摘要回退（plan44 决策 5 动作回显：Click (1024,768) 要明文）', () => {
+  it('无字符串参数的未知/mcp 工具 → k=v 摘要，至多三个、80 字截断', () => {
+    expect(toolCallDetail('mcp__windows-mcp__Click', '{"x":1024,"y":768}')).toBe('x=1024 y=768')
+    expect(toolCallDetail('mcp__windows-mcp__Type', '{"text":"你好"}')).toBe('你好') // 字符串优先
+    const many = toolCallDetail('mcp__windows-mcp__X', '{"a":1,"b":2,"c":3,"d":4}')
+    expect(many).toBe('a=1 b=2 c=3')
+    expect(toolCallDetail('mcp__windows-mcp__Y', '{"obj":{"k":"v"},"arr":[1,2]}')).toBe('') // 非标量不摊
+  })
+})

@@ -1914,6 +1914,16 @@ app.whenReady().then(async () => {
       detail: 'src/main/index.ts'
     }
   })
+  // plan44 S2：桌面派工具事件 —— 徽标（MCP·server）与动作回显（坐标明文）的素材
+  win.webContents.send('chat:tool', {
+    conversationId: 'c1',
+    payload: {
+      id: 'probe-mcp-tool',
+      name: 'mcp__windows-mcp__Click',
+      phase: 'start',
+      detail: 'x=1024 y=768'
+    }
+  })
   win.webContents.send('chat:reasoning', {
     conversationId: 'c1',
     payload: '先看看入口文件怎么写的…'
@@ -1950,7 +1960,7 @@ app.whenReady().then(async () => {
       // 位置从"消息之前"变成"消息之内"，顺序必须等于事件到达顺序（本桩序列：既有正文 → tool → thinking）
       const assts = Array.from(document.querySelectorAll('.chat-messages .msg-assistant'));
       const last = assts[assts.length - 1];
-      if (!last) return { toolName: null, toolDesc: null, hasReasoning: false, reasoningLabel: null, reasoningText: null, reasoningVisible: false, reasoningHeight: 0, segmentOrder: [], segmentsInsideMsg: false };
+      if (!last) return { toolName: null, toolDesc: null, mcpBadge: null, hasReasoning: false, reasoningLabel: null, reasoningText: null, reasoningVisible: false, reasoningHeight: 0, segmentOrder: [], segmentsInsideMsg: false };
       const segs = Array.from(last.children)
         .filter((el) => el.matches('.msg-content, .tool-log, .reasoning-block'))
         .map((el) => el.className.split(' ')[0]);
@@ -1961,6 +1971,18 @@ app.whenReady().then(async () => {
         toolName: tool ? (tool.querySelector('.tool-name')?.textContent?.trim() ?? null) : null,
         // 关键：显示的是"在干什么"（入参摘要），**不是**干巴巴的「执行中…」
         toolDesc: tool ? (tool.querySelector('.tool-desc')?.textContent?.trim() ?? null) : null,
+        // plan44 S2：mcp 工具卡 —— 徽标拆出 server、名字只留本名、坐标明文回显
+        mcpBadge: (() => {
+          const items = Array.from(last.querySelectorAll('.tool-item'));
+          const mcpItem = items.find((it) => !!it.querySelector('.tool-mcp-badge'));
+          return mcpItem
+            ? {
+                badge: mcpItem.querySelector('.tool-mcp-badge')?.textContent?.trim() ?? null,
+                name: mcpItem.querySelector('.tool-name')?.textContent?.trim() ?? null,
+                desc: mcpItem.querySelector('.tool-desc')?.textContent?.trim() ?? null
+              }
+            : null;
+        })(),
         hasReasoning: !!rb,
         reasoningLabel: rb ? (rb.querySelector('.reasoning-head')?.textContent?.trim() ?? null) : null,
         reasoningText: rb ? (rb.querySelector('.reasoning-body')?.textContent?.trim() ?? null) : null,
@@ -5807,8 +5829,17 @@ app.whenReady().then(async () => {
   )
   checkTrue(
     'plan36：消息内分段顺序 = 到达顺序（正文 → tool → thinking）',
-    JSON.stringify(processVisible.segmentOrder) === JSON.stringify(['msg-content', 'tool-log', 'reasoning-block']),
+    JSON.stringify(processVisible.segmentOrder) ===
+      JSON.stringify(['msg-content', 'tool-log', 'tool-log', 'reasoning-block']),
     processVisible.segmentOrder
+  )
+  checkTrue(
+    'plan44 S2：mcp 工具卡带来源徽标（MCP·windows-mcp），名字只留本名，坐标明文回显',
+    processVisible.mcpBadge !== null &&
+      processVisible.mcpBadge.badge === 'MCP·windows-mcp' &&
+      processVisible.mcpBadge.name === 'Click' &&
+      processVisible.mcpBadge.desc === 'x=1024 y=768',
+    processVisible.mcpBadge
   )
   checkTrue(
     '思考块有实际内容（不是空壳）',

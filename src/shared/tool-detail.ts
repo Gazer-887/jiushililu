@@ -32,10 +32,23 @@ export function toolCallDetail(name: string, argsJson: string): string {
     const rec = parsed as Record<string, unknown>
     const key = KEY_OF[name]
     const value = key !== undefined && key in rec ? rec[key] : firstString(rec)
-    return brief(value)
+    const briefValue = brief(value)
+    // plan44 决策 5（动作回显）：**未知工具**（含 mcp__）参数多是数字（x/y）——
+    // 字符串兜不住时拼至多三个标量 k=v；具名工具维持旧判据（拿不到就空串，界面退"执行中…"）
+    if (briefValue.length > 0) return briefValue
+    return key === undefined ? scalarSummary(rec) : ''
   } catch {
     return ''
   }
+}
+
+function scalarSummary(rec: Record<string, unknown>): string {
+  const parts: string[] = []
+  for (const [k, v] of Object.entries(rec)) {
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') parts.push(`${k}=${v}`)
+    if (parts.length >= 3) break
+  }
+  return clip(parts.join(' '))
 }
 
 /** 未知工具兜底：取第一个非空字符串值 */

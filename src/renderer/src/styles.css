@@ -7511,3 +7511,13 @@ body[data-resizing] {
   font-size: var(--fs-sm);
   line-height: 1.7;
 }
+
+/* MCP 来源徽标（plan44 S2）：外部服务器的动作一眼可辨 */
+.tool-mcp-badge {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
