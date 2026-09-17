@@ -8022,6 +8022,32 @@ app.whenReady().then(async () => {
   const shotTimeline = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-timeline.png'), shotTimeline.toPNG())
 
+  // —— 滚动联动（plan41 S2）：scroll spy 高亮当前轮 + 激活刻度浮出预览卡 ——
+  // ⚠️ 位置必须在「新会话首条」探针之前：那一步会切到 0 消息的新会话，
+  // 刻度条按设计 <2 条不渲染，放后面必然读到 0 根。
+  // peek 判据取 **.on 刻度内**的卡（每根 tick 各有一张常驻 peek，查第一根会假红）；
+  // 且必须对 computed display 判定（常驻 DOM 只靠 CSS 控显隐，只判元素存在是假绿）。
+  const scrollSpy = await win.webContents.executeJavaScript(`
+    (async () => {
+      const box = document.querySelector('.chat-messages');
+      if (!box) return null;
+      box.scrollTop = box.scrollHeight;
+      await new Promise((r) => setTimeout(r, 400));
+      const ticks = [...document.querySelectorAll('.chat-outline-tick')];
+      const onIdx = ticks.findIndex((t) => t.classList.contains('on'));
+      const peek = document.querySelector('.chat-outline-tick.on .chat-outline-peek');
+      const out = { onIdx, total: ticks.length, peekShown: !!peek && getComputedStyle(peek).display !== 'none' };
+      box.scrollTop = 0;
+      return out;
+    })()
+  `)
+  checkTrue(
+    '滚到最底 → 最后一根刻度激活（scroll spy 联动）',
+    scrollSpy !== null && scrollSpy.total >= 2 && scrollSpy.onIdx === scrollSpy.total - 1,
+    scrollSpy
+  )
+  checkTrue('激活刻度浮出预览卡（向左）', scrollSpy !== null && scrollSpy.peekShown === true, scrollSpy)
+
   // —— 新会话首条不重复（0.13.42 反馈）────────────────────────────────
   // conv:create 桩已按真实主进程行为把 firstMessage 播种成第一条用户消息；
   // 若 sendMessage 再追加一次：界面显示两条用户消息、chat:send 载荷里 user 角色两条

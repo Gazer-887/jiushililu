@@ -24,6 +24,11 @@ function composeWithAttachments(text: string, attachments: Attachment[]): string
   return text.trim().length > 0 ? `${head}\n\n---\n\n${text}` : head
 }
 
+/** 附件块剥离（plan41 §3.6）：刻度条 hover 提示与激活预览卡**共用同一份**，避免两处正则行为分叉 */
+function stripAttachmentBlocks(text: string): string {
+  return text.replace(/<file[^>]*>[\s\S]*?<\/file>/g, '[附件]')
+}
+
 export default function ChatView() {
   const messages = useAppStore((s) => s.messages)
   const streaming = useAppStore((s) => s.streaming)
@@ -111,6 +116,65 @@ export default function ChatView() {
     [messages]
   )
 
+  // ── 滚动联动（plan41 S2，§3.3）：scroll spy 高亮当前轮 —— **imperative 实现**（D-097 改判×2）──
+  // **为什么不用 React state**（两次实测教训）：activeTick 放组件 state 时，滚动 → 重渲染全树，
+  // 打坏门禁 realClick 的点击时序（ASK 段确定性失败），且是 plan30 卡顿的同一条路。
+  // 滚动是高频事件，激活态切换走**纯 DOM**（classList.toggle）：零重渲染，消息主干零打扰。
+  // peek 预渲染在每根 tick 内（CSS 控制显隐），激活切换只动 class，不插拔节点。
+  // 性能护栏照旧：offsetTop 预缓存 + rAF 合帧。
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const railRef = useRef<HTMLDivElement>(null)
+  const tickTopsRef = useRef<number[]>([])
+  const scrollRafRef = useRef(false)
+  const spyLastActiveRef = useRef(-1)
+
+  useEffect(() => {
+    const box = scrollRef.current
+    if (!box || outlineItems.length < 2) return
+    const measure = (): void => {
+      const boxTop = box.getBoundingClientRect().top
+      tickTopsRef.current = outlineItems.map(({ i }) => {
+        const el = box.querySelector<HTMLElement>(`[data-msg-index="${i}"]`)
+        return el ? el.getBoundingClientRect().top - boxTop + box.scrollTop : Number.MAX_SAFE_INTEGER
+      })
+    }
+    const raf = requestAnimationFrame(measure)
+    const ro = new ResizeObserver(measure)
+    ro.observe(box)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
+  }, [outlineItems])
+
+  useEffect(() => {
+    const box = scrollRef.current
+    const rail = railRef.current
+    if (!box || !rail || outlineItems.length < 2) return
+    const onScroll = (): void => {
+      if (scrollRafRef.current) return
+      scrollRafRef.current = true
+      requestAnimationFrame(() => {
+        scrollRafRef.current = false
+        const line = box.scrollTop + box.clientHeight * 0.25
+        let active = -1
+        const tops = tickTopsRef.current
+        for (let k = 0; k < tops.length; k++) {
+          if (tops[k] <= line) active = k
+          else break
+        }
+        if (active !== spyLastActiveRef.current) {
+          spyLastActiveRef.current = active
+          const ticks = rail.querySelectorAll('.chat-outline-tick')
+          ticks.forEach((t, k) => t.classList.toggle('on', k === active))
+        }
+      })
+    }
+    onScroll() // 挂载时先同步一次（会话可能有初始滚动位置）
+    box.addEventListener('scroll', onScroll, { passive: true })
+    return () => box.removeEventListener('scroll', onScroll)
+  }, [outlineItems])
+
   /** 平滑滚到第 index 条消息并短暂高亮 —— 让"跳到了哪"看得见 */
   const jumpToMessage = (index: number): void => {
     const el = document.querySelector<HTMLElement>(`[data-msg-index="${index}"]`)
@@ -195,7 +259,7 @@ export default function ChatView() {
         </div>
       )}
 
-      <div className="chat-messages">
+      <div className="chat-messages" ref={scrollRef}>
         {/* 空对话不显示任何文案（用户 2026-09-12）；首屏是门面、进入对话后是工作面，留白专注内容 */}
         {messages.map((m, i) => (
           <div
@@ -340,20 +404,29 @@ export default function ChatView() {
         </div>
       )}
 
-      {/* 会话刻度条（plan41 S1，改版自 plan7 批 D 的大纲浮层）：右缘**常驻**等宽刻度，
-          一根 = 一轮提问，点击定位。两轮起才显示 —— 单条提问翻一下就到了，摆条是噪音。
-          激活态（横向变长 + 预览卡）与滚动联动归 S2 */}
+      {/* 会话刻度条（plan41 S1/S2，改版自 plan7 批 D 的大纲浮层）：右缘**常驻**等宽刻度，
+          一根 = 一轮提问，点击定位；滚动联动高亮当前轮 + 激活刻度横向变长 + 向左浮出预览卡。
+          两轮起才显示 —— 单条提问翻一下就到了，摆条是噪音。
+          联动实现（activeTick/measure/listener）**内联在本组件**。⚠️ 两条已实证的坑：
+          ① activeTick 进 React state → 滚动重渲染全树，门禁 realClick 必挂（也是 plan30 卡顿同路）；
+          ② peek 显示时若不置 pointer-events:none，会拦截消息区点击（门禁 ASK 段实测挂过）。 */}
       {outlineItems.length >= 2 && (
-        <div className="chat-outline-rail" role="navigation" aria-label="会话刻度条">
-          {outlineItems.map((item, n) => (
-            <button
-              key={item.i}
-              className="chat-outline-tick"
-              title={`${n + 1}. ${item.text.replace(/<file[^>]*>[\s\S]*?<\/file>/g, '[附件]').trim() || '（无正文）'}`}
-              aria-label={`第 ${n + 1} 轮提问`}
-              onClick={() => jumpToMessage(item.i)}
-            />
-          ))}
+        <div className="chat-outline-rail" ref={railRef} role="navigation" aria-label="会话刻度条">
+          {outlineItems.map((item, n) => {
+            const preview = stripAttachmentBlocks(item.text).trim() || '（无正文）'
+            return (
+              <button
+                key={item.i}
+                className="chat-outline-tick"
+                title={`${n + 1}. ${preview}`}
+                aria-label={`第 ${n + 1} 轮提问`}
+                onClick={() => jumpToMessage(item.i)}
+              >
+                {/* 激活预览卡（§3.5）：**常驻 DOM**（滚动联动只切 class，不插拔节点），CSS 控制显隐 */}
+                <span className="chat-outline-peek">{preview.slice(0, 60)}</span>
+              </button>
+            )
+          })}
         </div>
       )}
 
