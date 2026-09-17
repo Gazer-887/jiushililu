@@ -793,15 +793,15 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
               ))}
             </div>
 
-            {/* ── 电脑控制（2026-09-15 用户需求）── 当前版本尚未搭载对应工具：开关先落门控，
-                状态进模型自视段（如实报告）；工具上线后此处即权限闸。开着时必须当场说明现状，
-                防"以为已经在被控制"的错觉。 */}
+            {/* ── 电脑控制（2026-09-15 用户需求）── plan44 起工具已由 windows-mcp 提供：
+                此开关是消费侧权限闸（关 = 桌面工具整批不下发，见 shared/computer-use 门控）。
+                开着但没配 server 时必须当场说明"还要添加 windows-mcp"，防"以为已经能控"的错觉。 */}
             <div className="field-label field-label-with-note">
               电脑控制
               <FieldNote
                 text={[
                   '允许模型操控鼠标键盘、与桌面应用程序交互。',
-                  '当前版本尚未搭载电脑控制工具；开关保存偏好，功能上线后作为权限闸生效。'
+                  '工具由外部 MCP 服务（windows-mcp）提供：先在「MCP」区添加并启用，本开关作为权限闸生效。'
                 ]}
               />
             </div>
@@ -815,7 +815,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
               启用电脑控制
             </label>
             {ccEnabled === true && (
-              <p className="hint">已开启。当前版本暂无可用的电脑控制工具；该设置将在功能上线后作为权限闸生效。</p>
+              <p className="hint">已开启。桌面工具需先在 MCP 设置页添加 windows-mcp 并正常启动后才会下发。</p>
             )}
 
             {/* 省 token 的口号不写在这里 —— 它是"能力 vs 省钱"的取舍，摆进 ⓘ 里让人自己选，

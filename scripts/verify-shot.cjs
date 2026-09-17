@@ -4776,10 +4776,10 @@ app.whenReady().then(async () => {
       return { checked: c ? c.querySelector('input').checked : null, hints };
     })()
   `)
-  checkTrue('电脑控制点一下 → 桩收到 true、界面跟随返回值勾选，且开着时**当场说明**"暂无对应工具"的现状',
+  checkTrue('电脑控制点一下 → 桩收到 true、界面跟随返回值勾选，且开着时**当场说明**"还要先添加 windows-mcp"的现状',
     ccCalls.length === 1 && ccCalls[0] === true &&
       ccAfter.checked === true &&
-      ccAfter.hints.some((h) => h.indexOf('暂无可用的电脑控制工具') >= 0),
+      ccAfter.hints.some((h) => h.indexOf('windows-mcp') >= 0 && h.indexOf('下发') >= 0),
     { ccCalls, ccAfter })
   // 恢复：关回去，别让后续探针活在"被开着"的世界里
   await sevalRaw(`

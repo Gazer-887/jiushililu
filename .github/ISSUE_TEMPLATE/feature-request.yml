@@ -1,0 +1,29 @@
+name: 功能建议 / Feature Request
+description: 提出一个能力或体验上的改进（Suggest a capability or UX improvement）
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么 / What problem
+      placeholder: 现在的体验/能力哪里不够，它挡住了你做什么
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的做法 / Expected behavior
+      placeholder: 你希望它变成什么样（一句也行）
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及面 / Area
+      options:
+        - 对话 / 会话管理
+        - 模型接入
+        - 工具 / MCP / 技能
+        - 记忆 / 自进化
+        - 编辑器 / 终端 / 文件
+        - 设置 / 外观
+        - 打包 / 安装
+        - 其他

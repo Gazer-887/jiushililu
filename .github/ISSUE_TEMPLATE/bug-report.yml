@@ -1,0 +1,38 @@
+name: 问题反馈 / Bug Report
+description: 报告一个可复现的问题（Report a reproducible problem）
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么 / What happened
+      placeholder: 现象是什么（截图/录屏可直接粘贴）
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 打开设置页 → 模型 …
+        2. 点击 …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本 / App version
+      description: 安装包文件名里的版本号（如 0.13.68）
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 系统 / OS
+      placeholder: 例 Windows 11 24H2 / Windows 10 22H2
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段（可选）/ Logs
+      description: 应用目录下 logs/app.log 的相关行。**注意先删除日志中的 API Key 等敏感内容再粘贴**
+      render: text
