@@ -62,7 +62,7 @@ import {
   listProfiles,
   modelsFilePath,
   profileForTest,
-  listAvailableModels,
+  fetchAvailableModels,
   saveEndpoint,
   setActiveEntry,
   saveSettings,
@@ -89,6 +89,7 @@ import {
   incomingMessagesSchema,
   MAX_STORED_CHARS,
   modelEntryPickSchema,
+  modelFetchAvailableSchema,
   goalActionSchema,
   goalCreateSchema,
   modelSaveSchema,
@@ -516,9 +517,11 @@ export function registerIpcHandlers(deps: {
     return view
   })
 
-  ipcMain.handle(IPC.modelsAvailable, async (_e, raw: unknown) => {
-    const id = friendlyParse(conversationIdSchema, raw)
-    return listAvailableModels(id)
+  // 免保存拉取模型列表（plan47 S1）：吃表单草稿，破「先保存才能拉」的死循环。
+  // 明文 Key 单向进主进程、绝不回传，与 `IPC.settingsTest` 同一条规矩（本项目硬约束：代码不出本机）。
+  ipcMain.handle(IPC.modelsFetchAvailable, async (_e, raw: unknown) => {
+    const input = friendlyParse(modelFetchAvailableSchema, raw)
+    return fetchAvailableModels(input)
   })
 
   ipcMain.handle(IPC.modelsSetEntry, (_e, raw: unknown): ModelsView => {

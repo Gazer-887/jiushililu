@@ -346,7 +346,7 @@ export const IPC = {
   modelsDelete: 'models:delete',
   modelsSetActive: 'models:set-active',
   modelsTest: 'models:test',
-  modelsAvailable: 'models:available',
+  modelsFetchAvailable: 'models:fetch-available',
   modelsSetEntry: 'models:set-entry',
   // ── 子 Agent 管理（plan17）──
   /** 三层全量视图（含被覆盖条目与加载警告）；工具目录走 `@shared/agents` 静态常量，不进载荷 */
@@ -681,7 +681,8 @@ export interface ApiBridge {
   setActiveModel(id: string): Promise<import('./models').ModelsView>
   /** 测试某个模型的连通性 —— 用**它自己的** Key，不是当前那把 */
   testModel(id: string): Promise<TestResult>
-  listAvailableModels(id: string): Promise<import('./models').AvailableModels>
+  /** 免保存拉取（plan47 S1）：入参是表单草稿，明文 Key 单向进主进程（同 testConnection 的规矩） */
+  fetchAvailableModels(input: import('./models').FetchAvailableInput): Promise<import('./models').AvailableModels>
   setActiveModelEntry(profileId: string, entryId: string): Promise<import('./models').ModelsView>
   listGoals(conversationId: string): Promise<import('./goal').Goal[]>
   createGoal(input: {

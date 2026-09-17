@@ -55,6 +55,43 @@ describe('resolveApiUrl（/v1 归一化，头号 404 坑）', () => {
       'https://api.anthropic.com/v1/messages'
     )
   })
+
+  it('兼容模式已带 /v1 不重复拼（既有形态回归）', () => {
+    expect(resolveApiUrl('https://dashscope.aliyuncs.com/compatible-mode/v1', 'chat/completions')).toBe(
+      'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
+    )
+  })
+
+  it('/anthropic 不是版本段，仍补 /v1（既有形态回归）', () => {
+    expect(resolveApiUrl('https://api.deepseek.com/anthropic', 'messages')).toBe(
+      'https://api.deepseek.com/anthropic/v1/messages'
+    )
+  })
+
+  // plan47 S0（D-105）：版本段判据从写死 /v1 改为通用形态 —— 智谱/火山的官方地址此前必 404
+  it('智谱 /api/paas/v4 识别为版本段，不插 /v1', () => {
+    expect(resolveApiUrl('https://open.bigmodel.cn/api/paas/v4', 'chat/completions')).toBe(
+      'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+    )
+  })
+
+  it('火山方舟 /api/v3 识别为版本段', () => {
+    expect(resolveApiUrl('https://ark.cn-beijing.volces.com/api/v3', 'chat/completions')).toBe(
+      'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
+    )
+  })
+
+  it('/v1beta 亦识别为版本段', () => {
+    expect(resolveApiUrl('https://generativelanguage.googleapis.com/v1beta', 'chat/completions')).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/chat/completions'
+    )
+  })
+
+  it('路径中段含 v1 不算版本段（openv1 类词尾不误伤）', () => {
+    expect(resolveApiUrl('https://foo.example.com/openv1', 'chat/completions')).toBe(
+      'https://foo.example.com/openv1/v1/chat/completions'
+    )
+  })
 })
 
 describe('buildOpenAIChatBody', () => {

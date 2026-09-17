@@ -5,7 +5,7 @@ import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
 import type { PlaybookSaveInput } from '@shared/playbook'
 import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
-import type { ModelSaveInput } from '@shared/models'
+import type { FetchAvailableInput, ModelSaveInput } from '@shared/models'
 import type { Goal, GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
@@ -72,7 +72,7 @@ const api: ApiBridge = {
   deleteModel: (id: string) => ipcRenderer.invoke(IPC.modelsDelete, id),
   setActiveModel: (id: string) => ipcRenderer.invoke(IPC.modelsSetActive, id),
   testModel: (id: string) => ipcRenderer.invoke(IPC.modelsTest, id),
-  listAvailableModels: (id: string) => ipcRenderer.invoke(IPC.modelsAvailable, id),
+  fetchAvailableModels: (input: FetchAvailableInput) => ipcRenderer.invoke(IPC.modelsFetchAvailable, input),
   setActiveModelEntry: (profileId: string, entryId: string) =>
     ipcRenderer.invoke(IPC.modelsSetEntry, { profileId, entryId }),
   listGoals: (conversationId: string) => ipcRenderer.invoke(IPC.goalList, conversationId),

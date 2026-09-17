@@ -649,6 +649,8 @@ let lastExecEventsQuery = null
 const chatSendCalls = []
 /** models:set-entry 的调用流水 —— 模型分组下拉「点模型即切」要断言真的发起了切换 */
 const modelEntryCalls = []
+/** models:fetch-available 的调用流水（plan47 S1）—— 免保存拉取要断言「真的发起了、入参是表单草稿」 */
+const fetchAvailableCalls = []
 /** 电脑控制开关的当前值与调用流水（2026-09-15 用户需求） */
 let ccEnabled = false
 const ccCalls = []
@@ -956,11 +958,15 @@ const STUBS = {
     activeId: 'm1',
     filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
   }),
-  'models:available': () => ({
-    ok: true,
-    message: '拉到 4 个模型',
-    models: ['agnes-image-2.5-flash', 'agnes-video-2.5-flash', 'agnes-3.0-flash', 'agnes-3.0-pro']
-  }),
+  // plan47 S1/S2：免保存拉取的契约桩。带状态（记入参）；地址含 ark.cn-beijing 时演 404 档 ——
+  // 验「失败给人话 + 指路手填」真的上屏，而不是静默空列表。
+  'models:fetch-available': (input) => {
+    fetchAvailableCalls.push(input)
+    if (String(input?.baseURL || '').includes('ark.cn-beijing')) {
+      return { ok: false, message: '此端点不提供模型列表（HTTP 404）：请手动填写模型 ID', models: [] }
+    }
+    return { ok: true, message: '获取到 2 个模型', models: ['glm-4.5-air', 'glm-4.6'] }
+  },
   'models:set-entry': (input) => {
     modelEntryCalls.push({ profileId: input?.profileId, entryId: input?.entryId })
     return {
@@ -1706,6 +1712,7 @@ app.whenReady().then(async () => {
 
   // CSP 违规捕获：必须在 loadFile 之前挂监听，否则漏掉加载期错误
   let modelCatalog = null
+  let fetchNewEndpoint = null
   let agentsMgr = null
   const cspViolations = []
   win.webContents.on('console-message', (...a) => {
@@ -2666,6 +2673,56 @@ app.whenReady().then(async () => {
       `)
       console.log('MODEL_CATALOG=' + JSON.stringify({ ...catalog, adv }))
       modelCatalog = { ...catalog, adv }
+
+      // ── plan47 S1 免保存拉取：新建端点（未入库、无 id）也应能拉，破「先保存才能拉」死循环 ──
+      // 点「添加模型」进空白表单 → 填 baseURL → 点「获取可用模型」→ 断言真的发起了 models:fetch-available
+      //   且入参含表单里的 baseURL（不是先弹「请先保存」）。
+      await sevalRaw(`
+        (() => {
+          const back = document.querySelector('.settings-subpage .back-btn');
+          if (back) back.click();
+          return !!back;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 500))
+      await sevalRaw(`
+        (() => {
+          const add = Array.from(document.querySelectorAll('button.model-add')).find((b) => (b.textContent || '').includes('添加模型'));
+          if (add) add.click();
+          return !!add;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 500))
+      fetchNewEndpoint = await sevalRaw(`
+        (() => {
+          const label = Array.from(document.querySelectorAll('.settings-subpage label'))
+            .find((l) => (l.textContent || '').includes('接口地址'));
+          const urlInput = label ? label.querySelector('input') : null;
+          if (!urlInput) return { ok: false, reason: 'no-url-input' };
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(urlInput, 'https://api.new-unsaved.test');
+          urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+          return { ok: true };
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 300))
+      const beforeFetchCalls = fetchAvailableCalls.length
+      await sevalRaw(`
+        (() => {
+          const btn = Array.from(document.querySelectorAll('.mc-link')).find((b) => (b.textContent || '').includes('获取可用模型'));
+          if (btn) btn.click();
+          return !!btn;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 600))
+      const fetchCall = fetchAvailableCalls[beforeFetchCalls] || null
+      fetchNewEndpoint = {
+        ...fetchNewEndpoint,
+        fired: fetchAvailableCalls.length > beforeFetchCalls,
+        baseURL: fetchCall ? fetchCall.baseURL : null,
+        hasId: fetchCall ? !!fetchCall.id : null
+      }
+      console.log('FETCH_NEW_ENDPOINT=' + JSON.stringify(fetchNewEndpoint))
     }
     if (slug === 'agents') {
       // ── 子 Agent 管理（plan17）：列表三节 + 警告区可见；编辑进表单；表单校验拒绝 ──
@@ -7457,6 +7514,12 @@ app.whenReady().then(async () => {
   checkTrue('**每个模型能展开自己的高级设置**（展开前没有面板 → 展开后有，且字段不止一个）',
     modelCatalog?.advBefore === false && modelCatalog?.adv?.panel === true && (modelCatalog?.adv?.fields ?? 0) >= 5,
     modelCatalog?.adv)
+
+  // —— plan47 S1：免保存拉取（破「先保存才能拉、先有模型才能保存」死循环）——
+  checkTrue('新端点（未保存、无 id）点「获取可用模型」→ **真的发起 models:fetch-available**，入参是表单草稿',
+    fetchNewEndpoint?.ok === true && fetchNewEndpoint?.fired === true &&
+      fetchNewEndpoint?.baseURL === 'https://api.new-unsaved.test' && fetchNewEndpoint?.hasId === false,
+    fetchNewEndpoint)
 
   // —— plan17 F8：子 Agent 管理（**两节列表**（D-103：项目级已取消）+ 警告区 + 表单校验 + 有状态桩的保存链）——
   checkTrue('设置页「子 Agent」分区：两节列表（自定义/内置，D-103 项目级已取消）+ 警告区可见（坏文件不静默）+ 新建入口',

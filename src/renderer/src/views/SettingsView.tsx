@@ -1157,11 +1157,16 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   models={draftModels}
                   onChange={setDraftModels}
                   onFetch={async () => {
-                    if (!editingModel?.id) {
-                      // 判定的是「端点尚未入库」（新增态没有 id），文案必须说清动作是保存，而非"没填地址/Key"
-                      return { ok: false, message: '该端点尚未保存，请先点「保存模型」，再拉取模型列表', models: [] }
-                    }
-                    return window.api.listAvailableModels(editingModel.id)
+                    // 免保存拉取（plan47 S1）：协议 + 地址 + Key 三样对即可拉，不再要求先保存。
+                    // Key 留空且是编辑已存端点 → 主进程回落那把已存密文；都没有 → 报「请先填写 API Key」。
+                    if (!draft) return { ok: false, message: '表单尚未就绪，请稍候再试', models: [] }
+                    return window.api.fetchAvailableModels({
+                      id: editingModel?.id,
+                      providerType: draft.providerType,
+                      baseURL: draft.baseURL,
+                      timeoutMs: draft.timeoutMs,
+                      apiKey: apiKey.length > 0 ? apiKey : undefined
+                    })
                   }}
                 />
 

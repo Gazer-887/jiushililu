@@ -1,6 +1,6 @@
 import type { ChatMessage, ModelSettings, TestResult } from '@shared/ipc'
 import { createSSEParser } from './sse'
-import { ProviderError, isAbortError, mapHttpError } from './errors'
+import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
 import { resolveApiUrl } from './url'
 import { usageFromOpenAIChunk } from './usage-parsers'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
@@ -137,12 +137,18 @@ export class OpenAICompatibleProvider implements IProvider {
         )
         .filter((s) => s.length > 0)
       if (models.length === 0) {
-        return { ok: false, message: '该端点未返回任何模型（可能它不提供模型列表接口）', models: [] }
+        return { ok: false, message: '此端点不提供模型列表（返回体无模型）：请手动填写模型 ID', models: [] }
       }
       return { ok: true, message: `获取到 ${models.length} 个模型`, models }
     } catch (err) {
       if (isAbortError(err)) {
         return { ok: false, message: '获取模型列表超时：请检查 baseURL 是否可达', models: [] }
+      }
+      if (err instanceof ProviderError && typeof err.status === 'number') {
+        return { ok: false, message: mapListModelsError(err.status), models: [] }
+      }
+      if (err instanceof TypeError) {
+        return { ok: false, message: LIST_MODELS_NETWORK_ERROR, models: [] }
       }
       return { ok: false, message: err instanceof Error ? err.message : String(err), models: [] }
     }

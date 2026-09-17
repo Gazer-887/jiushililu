@@ -108,6 +108,18 @@ export const modelEntryPickSchema = z.object({
   entryId: z.string().min(1).max(64)
 })
 
+/**
+ * 「拉取可用模型」入参（plan47 S1）：吃未保存的草稿——协议 + 地址 + Key 即可，`id` 可选。
+ * 复用 `settingsSchema` 的 baseURL 归一（自动补 https:// + 合法 URL 校验），与 `settingsTest` 同一条入参规矩。
+ */
+export const modelFetchAvailableSchema = z.object({
+  id: z.string().min(1).max(64).optional(),
+  providerType: z.enum(['openai-compatible', 'anthropic']),
+  baseURL: settingsSchema.shape.baseURL,
+  timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+  apiKey: z.string().max(500).optional()
+})
+
 /** 新建目标（plan12）：正文与"怎么算做到"都限长 —— 目标是"一句话意图"，不是任务书 */
 export const goalCreateSchema = z.object({
   conversationId: conversationIdSchema,

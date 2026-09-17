@@ -263,6 +263,30 @@ export interface AvailableModels {
   models: string[]
 }
 
+/**
+ * 「拉取可用模型」入参（plan47 S1）：**协议 + 地址 + Key 三样对即可拉，不要求端点已保存**。
+ * `id` 只在编辑已存端点且用户没重填 Key 时用——回落那一把已存的密文 Key。
+ * 明文 Key 经 IPC 单向送进主进程、不回渲染端，与 `IPC.settingsTest` 同一条规矩（本项目硬约束是「代码不出本机」）。
+ */
+export interface FetchAvailableInput {
+  id?: string
+  providerType: ProviderType
+  baseURL: string
+  timeoutMs?: number
+  apiKey?: string
+}
+
+/**
+ * 免保存拉取的 Key 解析链（plan47 S1）：入参明文（表单里刚填的）→ 有 `id` 时用该端点已存密文 → 空串。
+ * 抽成纯函数是为脱离 electron-store 单测四条路（有 Key / 无 Key 有 id / 无 Key 无 id / id 指向空 Key 端点）。
+ * 空串由调用方翻成人话「请先填写 API Key」，**不静默发请求**。
+ */
+export function resolveFetchApiKey(input: FetchAvailableInput, savedKey: string): string {
+  if (input.apiKey && input.apiKey.length > 0) return input.apiKey
+  if (input.id && savedKey.length > 0) return savedKey
+  return ''
+}
+
 // ── 读盘容错 ────────────────────────────────────────────────────────────────
 
 const num = (v: unknown, fallback: number): number =>

@@ -13,8 +13,11 @@ import {
   normalizeProfiles,
   profileOf,
   removeProfile,
+  resolveFetchApiKey,
   settingsOf,
   sourceOfBaseURL,
+  type AvailableModels,
+  type FetchAvailableInput,
   type ModelEntry,
   type ModelProfile,
   type ModelSaveInput,
@@ -370,23 +373,31 @@ export function profileForTest(id: string): { settings: ModelSettings; apiKey: s
   return { settings: settingsOf(profile, entry), apiKey: getProfileKey(profile.id) }
 }
 
-/**
- * 「获取可用模型」：问厂商这个端点能调哪些模型。⚠️ 失败必须**给人话**（Key 没填 / 地址不对 / 该端点不提供列表），
- * 绝不静默返回空数组 —— 那会让用户以为"这个端点没有模型"。
- */
-export async function listAvailableModels(id: string): Promise<{ ok: boolean; message: string; models: string[] }> {
-  const { profiles } = listProfiles()
-  const profile = profiles.find((p) => p.id === id)
-  if (!profile) return { ok: false, message: '该端点不存在（可能已被删除）', models: [] }
-  const apiKey = getProfileKey(profile.id)
-  if (!apiKey) return { ok: false, message: '该端点尚未填写 API Key：请先保存 Key 再拉取', models: [] }
+/** 拉模型列表的硬上限：再慢的端点也不该让用户干等（默认同 `settingsTest` 的量级） */
+const FETCH_MODELS_TIMEOUT_CAP_MS = 20000
 
-  const entry = activeEntry(profile)
-  const settings = entry ? settingsOf(profile, entry) : { ...EMPTY, baseURL: profile.baseURL, providerType: profile.providerType }
+/**
+ * 免保存拉取（plan47 S1）：**协议 + 地址 + Key 三样对即可拉**，破掉「先保存才能拉、先有模型才能保存」的死循环。
+ * ⚠️ 失败必须**给人话**（Key 没填 / 地址不对 / 该端点不提供列表），绝不静默返回空数组 ——
+ * 那会让用户以为"这个端点没有模型"。
+ * Key 取值链：入参明文（新端点表单里刚填的）→ 有 `id` 则回落该端点已存密文 → 都没有才报"请先填 Key"。
+ * `settings` 是纯数据构造（不从档案取），与 `provider.listModels(req)` 的现有签名天然契合。
+ */
+export async function fetchAvailableModels(input: FetchAvailableInput): Promise<AvailableModels> {
+  const savedKey = input.id ? getProfileKey(input.id) : ''
+  const apiKey = resolveFetchApiKey(input, savedKey)
+  if (!apiKey) return { ok: false, message: '请先填写 API Key（或先保存该端点的 Key）', models: [] }
+
+  const settings: ModelSettings = {
+    ...EMPTY,
+    providerType: input.providerType,
+    baseURL: input.baseURL,
+    timeoutMs: input.timeoutMs ?? EMPTY.timeoutMs
+  }
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), Math.min(profile.timeoutMs, 20000))
+  const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, FETCH_MODELS_TIMEOUT_CAP_MS))
   try {
-    const provider = createProvider(profile.providerType)
+    const provider = createProvider(input.providerType)
     return await provider.listModels({ settings, apiKey, messages: [], signal: controller.signal })
   } catch (err) {
     return {
