@@ -335,6 +335,9 @@ export const IPC = {
   voiceSetConfig: 'voice:set-config',
   voiceTranscribe: 'voice:transcribe',
   voiceTest: 'voice:test',
+  /** 开发环境（plan43）：探测（force=手动刷新）与选择持久化 */
+  devEnvDetect: 'dev-env:detect',
+  devEnvSelect: 'dev-env:select',
   settingsSetModel: 'settings:set-model',
   modelsList: 'models:list',
   /** `apiKey` 空串 = 不动已存的 Key */
@@ -668,6 +671,9 @@ export interface ApiBridge {
   setVoiceConfig(patch: import('./voice').VoicePatch): Promise<import('./voice').VoiceConfig>
   transcribeVoice(audio: ArrayBuffer, mime: string): Promise<import('./voice').VoiceTranscribeResult>
   testVoiceEndpoint(): Promise<import('./voice').VoiceTranscribeResult>
+  /** 开发环境（plan43）：探测只读；选择=语言 id→路径（null 清除），返回最新选择表 */
+  detectRuntimes(force?: boolean): Promise<import('./dev-env').DevEnvSnapshot>
+  selectRuntime(language: string, path: string | null): Promise<Record<string, string>>
   setModel(model: string): Promise<import('./models').ModelSwitchResult>
   listModels(): Promise<import('./models').ModelsView>
   saveModel(input: import('./models').ModelSaveInput): Promise<import('./models').ModelProfileView>

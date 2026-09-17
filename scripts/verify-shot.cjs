@@ -521,6 +521,30 @@ let closeSettingsWinStub = () => true
 // —— 语音输入（plan45）的桩状态与假音频设备 ——
 // ⚠️ 契约副本：真源是 `src/main/voice/transcribe.ts` + store/settings 的 VoiceConfig 形状。
 const voiceStubCfg = { endpoint: 'http://127.0.0.1:7101/v1', model: '', language: 'auto', disclosureAccepted: false, hasApiKey: false }
+const devEnvStub = {
+  groups: [
+    { id: 'node', label: 'Node.js', main: [], others: [] },
+    {
+      id: 'python',
+      label: 'Python',
+      main: [
+        { language: 'python', path: 'D:\\MiniConda3\\envs\\ai_env\\python.exe', version: '3.12.13', alias: 'ai_env', source: 'conda', onPath: false },
+        { language: 'python', path: 'D:\\MiniConda3\\python.exe', version: '3.13.13', alias: 'base', source: 'conda', onPath: false },
+        { language: 'python', path: 'D:\\hermes-agent\\venv\\Scripts\\python.exe', version: '3.11.15', source: 'venv', onPath: false },
+        { language: 'python', path: 'C:\\Program Files\\LibreOffice\\program\\python.exe', version: '3.12.13', source: 'system', onPath: true }
+      ],
+      others: [{ language: 'python', path: 'D:\\weird\\python.exe', version: '3.8.0', source: 'other', onPath: false }]
+    },
+    {
+      id: 'uv',
+      label: 'uv',
+      main: [{ language: 'uv', path: 'C:\\Users\\Gazer\\.local\\bin\\uv.exe', version: '0.12.3', source: 'system', onPath: true }],
+      others: []
+    }
+  ],
+  selected: { python: 'D:\\MiniConda3\\envs\\ai_env\\python.exe' }
+}
+const devEnvSelectCalls = []
 // R8（Electron 麦克风链路）在 headless 门禁里没法用真麦 —— 用 Chromium 假设备：
 // getUserMedia 拿到的是一段可持续产帧的静音音轨，权限弹窗自动放行。
 app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
@@ -736,6 +760,15 @@ const STUBS = {
   },
   'voice:transcribe': () => ({ ok: true, text: '语音转写测试文本' }),
   'voice:test': () => ({ ok: true, text: '端点可达，返回格式正确' }),
+  // 开发环境（plan43）：⚠️ 契约副本 —— 真源 `src/shared/dev-env.ts` + runtime-detect；
+  // 形态按 §2.4 本机实测基线（conda 带别名 / venv / system / other 折叠 / node 空组验「未检测到」）
+  'dev-env:detect': () => ({ ...devEnvStub, detectedAt: new Date().toISOString() }),
+  'dev-env:select': (language, path) => {
+    if (path === null) delete devEnvStub.selected[language]
+    else devEnvStub.selected[language] = path
+    devEnvSelectCalls.push([language, path])
+    return { ...devEnvStub.selected }
+  },
   'settings:save': () => settingsView,
   'settings:test': () => ({ ok: true, message: 'ok' }),
   'settings:set-model': () => settingsView,
@@ -2256,6 +2289,80 @@ app.whenReady().then(async () => {
       voiceSection.guide &&
       voiceSection.noPostProcessNote,
     voiceSection
+  )
+
+  // —— 设置页「开发环境」区（plan43 S2）：只借 Trae 结构；无＋、逐字文案、双行下拉、其他折叠 ——
+  await sevalRaw(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.settings-nav-item'))
+        .find((x) => x.textContent.trim() === '开发环境');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const deView = await sevalRaw(`
+    (() => {
+      const body = document.querySelector('.settings-body');
+      if (!body) return null;
+      const groups = Array.from(body.querySelectorAll('.de-group'));
+      const nodeGroup = groups.find((g) => g.textContent.includes('Node.js'));
+      const pyGroup = groups.find((g) => g.textContent.includes('Python'));
+      const trigger = pyGroup ? pyGroup.querySelector('.rs-trigger') : null;
+      return {
+        h2: body.querySelector('h2')?.textContent?.trim() ?? null,
+        groupCount: groups.length,
+        nodeEmptyText: nodeGroup ? nodeGroup.textContent : null,
+        triggerLabel: trigger ? trigger.textContent : null,
+        hasRefresh: Array.from(body.querySelectorAll('button')).some((x) => x.textContent.trim() === '刷新'),
+        hasPlus: Array.from(body.querySelectorAll('button')).some((x) => x.textContent.trim() === '＋')
+      };
+    })()
+  `)
+  checkTrue(
+    '开发环境区：只显 Node/Python 两组、空组逐字「未检测到，请刷新」、选中项回显别名、有刷新、**无＋按钮**',
+    deView !== null &&
+      deView.h2 === '开发环境' &&
+      deView.groupCount === 2 &&
+      deView.nodeEmptyText.includes('未检测到，请刷新') &&
+      deView.triggerLabel.includes("3.12.13 ('ai_env')") &&
+      deView.hasRefresh &&
+      !deView.hasPlus,
+    deView
+  )
+  // 下拉展开：双行（名称+路径）、当前项打勾、「其他」可展开；选中「其他」项 → 落选择并回显
+  const dePop = await sevalRaw(`
+    (async () => {
+      const pyGroup = Array.from(document.querySelectorAll('.de-group')).find((g) => g.textContent.includes('Python'));
+      pyGroup.querySelector('.rs-trigger').click();
+      await new Promise((r) => setTimeout(r, 200));
+      const pop = document.querySelector('.rs-pop');
+      if (!pop) return { fail: 'no-pop' };
+      const checked = !!pop.querySelector('.rs-item.is-on .rs-item-check');
+      const othersBtn = Array.from(pop.querySelectorAll('button')).find((b) => b.textContent.includes('其他'));
+      if (othersBtn) othersBtn.click();
+      await new Promise((r) => setTimeout(r, 150));
+      const itemPaths = Array.from(pop.querySelectorAll('.rs-item-path')).length;
+      const items = Array.from(pop.querySelectorAll('.rs-item'));
+      const target = items.find((i) => i.textContent.includes('D:/weird') || i.textContent.includes('D:\\\\weird'));
+      if (target) target.click();
+      await new Promise((r) => setTimeout(r, 250));
+      const trigger = pyGroup.querySelector('.rs-trigger');
+      return { itemPaths, checked, hasOthersToggle: !!othersBtn, newLabel: trigger.textContent };
+    })()
+  `)
+  checkTrue(
+    '运行时下拉：每项双行含路径、当前项打勾、「其他」展开后可选中，选择即时回显（探测是唯一入口，选择即持久化）',
+    dePop.itemPaths >= 5 &&
+      dePop.checked === true &&
+      dePop.hasOthersToggle === true &&
+      dePop.newLabel.includes('3.8.0'),
+    dePop
+  )
+  checkTrue(
+    '选择走 IPC 落盘（dev-env:select 被真实调用，语言与路径都对）',
+    devEnvSelectCalls.some(([lang, p]) => lang === 'python' && String(p).includes('weird')),
+    devEnvSelectCalls
   )
 
   // ── 设置页「记忆」分区（plan19 批 1）· 判据 14 的 UI 契约 ──────────────────
@@ -6052,13 +6159,17 @@ app.whenReady().then(async () => {
       return { visible: r.width > 0 && r.height > 0, ticks: rail.querySelectorAll('.chat-outline-tick').length };
     })()
   `)
+  // 案三（09-18 三现）：断言此前吃"撤销后是否恰好滚到底"的环境抖动——加硬前置：
+  // 点击前先**主动滚到底**并回报可滚动余量；短会话（内容不满一屏）改走"跳转高亮"判据（见下）
   const outlineBefore = await win.webContents.executeJavaScript(`
-    (() => {
+    (async () => {
       const box = document.querySelector('.chat-messages');
+      if (box) { box.scrollTop = box.scrollHeight; await new Promise((r) => setTimeout(r, 350)); }
       // msgs 一起输出：刻度条不在时先看这里 —— 上游（回滚/撤销链）断了会传导成刻度判据齐挂
       return {
         msgs: document.querySelectorAll('.chat-messages .msg').length,
-        scrollTop: box ? Math.round(box.scrollTop) : -1
+        scrollTop: box ? Math.round(box.scrollTop) : -1,
+        scrollable: box ? Math.round(box.scrollHeight - box.clientHeight) : -1
       };
     })()
   `)
@@ -7128,10 +7239,14 @@ app.whenReady().then(async () => {
     railInfo !== null && railInfo.visible === true, railInfo)
   checkTrue('刻度数 = 用户消息数（2）—— 一根刻度就是一轮提问',
     railInfo !== null && railInfo.ticks === 2, railInfo)
-  checkTrue('点第 1 根刻度 → 真的往回滚（scrollTop 变小，不是摆设）',
-    outlineAfter.scrollTop >= 0 && outlineBefore.scrollTop >= 0 &&
-      outlineAfter.scrollTop < outlineBefore.scrollTop,
-    { before: outlineBefore.scrollTop, after: outlineAfter.scrollTop })
+  checkTrue(
+    '点第 1 根刻度 → 真的往回滚（可滚时 scrollTop 变小；不满一屏时改验跳转高亮 —— 案三硬前置）',
+    outlineAfter.scrollTop >= 0 &&
+      (outlineBefore.scrollable > 4
+        ? outlineAfter.scrollTop < outlineBefore.scrollTop
+        : outlineAfter.highlighted === true),
+    { before: outlineBefore.scrollTop, scrollable: outlineBefore.scrollable, after: outlineAfter.scrollTop, highlighted: outlineAfter.highlighted }
+  )
   checkTrue('跳转落点带高亮（「跳到了哪」看得见）', outlineAfter.highlighted === true, outlineAfter)
 
   checkTrue('前置：文件开在预览栏里，且有「编辑」入口', editPre.hasPane === true && editPre.hasModeBtn === true, editPre)

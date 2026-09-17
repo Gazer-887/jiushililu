@@ -442,6 +442,25 @@ export function registerIpcHandlers(deps: {
     return testVoiceEndpoint({ endpoint: cfg.endpoint, apiKey: getVoiceApiKey(), model: cfg.model, language: cfg.language })
   })
 
+  // —— 开发环境（plan43）：探测只读、失败不抛；选择只存"语言→路径" ——
+  ipcMain.handle(IPC.devEnvDetect, async (_e, force: unknown) => {
+    const { detectRuntimes, filterNoise } = await import('./dev-env/runtime-detect')
+    const snap = await detectRuntimes(force === true)
+    return filterNoise(snap)
+  })
+  ipcMain.handle(IPC.devEnvSelect, async (_e, language: unknown, path: unknown) => {
+    const { setDevEnvSelected } = await import('./store/settings')
+    if (typeof language !== 'string' || !['node', 'python', 'uv'].includes(language)) {
+      return getDevEnvSelectedSnapshot()
+    }
+    const p = path === null ? null : typeof path === 'string' && path.length > 0 ? path : null
+    return setDevEnvSelected(language, p)
+  })
+  async function getDevEnvSelectedSnapshot(): Promise<Record<string, string>> {
+    const { getDevEnvSelected } = await import('./store/settings')
+    return getDevEnvSelected()
+  }
+
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
     const input = friendlyParse(settingsSchema, raw) as SettingsSaveInput
     const saved = saveSettings(input)

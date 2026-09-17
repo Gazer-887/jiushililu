@@ -12,6 +12,7 @@ import { entryLabel, sourceLabel, type ModelEntry, type ModelProfileView, type M
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import AgentManager from '../components/AgentManager'
 import VoiceSettingsPanel from '../components/VoiceSettingsPanel'
+import DevEnvSettings from '../components/DevEnvSettings'
 import SkillsPanel from '../components/SkillsPanel'
 import McpPanel from '../components/McpPanel'
 import MemorySettings from '../components/MemorySettings'
@@ -35,7 +36,7 @@ import {
  * 图标是手写内联 SVG：为几个图标引一个图标库不划算，且本项目维持零 UI 框架依赖。
  * 分区按**真实存在的能力**划分，不放空条目（P3 生态的 MCP / 技能届时再加；子 Agent 已随 plan17 落地）。
  */
-type SectionId = 'general' | 'model' | 'voice' | 'agents' | 'skills' | 'mcp' | 'memory' | 'appearance' | 'trouble'
+type SectionId = 'general' | 'model' | 'voice' | 'dev-env' | 'agents' | 'skills' | 'mcp' | 'memory' | 'appearance' | 'trouble'
 
 /** 权限档展示顺序：从最严到最松（与输入框工具栏同一口径） */
 const PERM_ORDER: PermissionPreset[] = ['read-only', 'write', 'full-access']
@@ -81,6 +82,15 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
       <svg {...ICON_PROPS} aria-hidden="true">
         <rect x="6.2" y="2" width="3.6" height="7" rx="1.8" />
         <path d="M4 8a4 4 0 0 0 8 0M8 12v2.2" />
+      </svg>
+    )
+  },
+  {
+    id: 'dev-env',
+    label: '开发环境',
+    icon: (
+      <svg {...ICON_PROPS} aria-hidden="true">
+        <path d="M6.2 4.6 3 8l3.2 3.4M9.8 4.6 13 8l-3.2 3.4" />
       </svg>
     )
   },
@@ -1202,6 +1212,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         )}
 
         {section === 'voice' && <VoiceSettingsPanel />}
+        {section === 'dev-env' && <DevEnvSettings />}
         {section === 'agents' && <AgentManager />}
         {section === 'skills' && <SkillsPanel />}
         {section === 'mcp' && <McpPanel />}

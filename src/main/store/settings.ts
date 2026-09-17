@@ -80,6 +80,12 @@ interface StoredSettings extends ModelSettings {
   voiceDisclosureAccepted?: boolean
   /** 转写端点 API Key 的**密文**（与代理凭据/Firecrawl 同一套纪律） */
   voiceApiKeyEncrypted?: string
+  /**
+   * 开发环境运行时选择（plan43）：语言 id → 可执行文件绝对路径。
+   * ⚠️ **只存选择，不存探测结果**——探测是派生数据、每次启动重算；存下来必然过期，
+   * 而"选择"稳定且卸载时可诊断（"你选的这个不见了"）。
+   */
+  devEnvSelected?: Record<string, string>
 }
 
 const store = new Store<StoredSettings>({ name: 'settings' })
@@ -310,6 +316,22 @@ export function getVoiceApiKey(): string | null {
   } catch {
     return null
   }
+}
+
+// ── 开发环境（plan43）：只有"选择"这一份持久化 ────────────────────────────
+
+export function getDevEnvSelected(): Record<string, string> {
+  const s = store.store.devEnvSelected
+  return s && typeof s === 'object' ? { ...s } : {}
+}
+
+/** path=null 清除该语言的选择 */
+export function setDevEnvSelected(language: string, path: string | null): Record<string, string> {
+  const cur = getDevEnvSelected()
+  if (path === null) delete cur[language]
+  else cur[language] = path
+  store.set('devEnvSelected', cur)
+  return cur
 }
 
 export function encryptionAvailable(): boolean {

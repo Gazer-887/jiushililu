@@ -52,6 +52,9 @@ const api: ApiBridge = {
   setVoiceConfig: (patch: unknown) => ipcRenderer.invoke(IPC.voiceSetConfig, patch),
   transcribeVoice: (audio: ArrayBuffer, mime: string) => ipcRenderer.invoke(IPC.voiceTranscribe, audio, mime),
   testVoiceEndpoint: () => ipcRenderer.invoke(IPC.voiceTest),
+  detectRuntimes: (force?: boolean) => ipcRenderer.invoke(IPC.devEnvDetect, force === true),
+  selectRuntime: (language: string, path: string | null) =>
+    ipcRenderer.invoke(IPC.devEnvSelect, language, path),
   chatSend: (input: { conversationId: string; messages: ChatMessage[]; agentName?: string }) =>
     ipcRenderer.invoke(IPC.chatSend, input),
   chatAbort: (conversationId: string) => ipcRenderer.invoke(IPC.chatAbort, conversationId),
