@@ -2,7 +2,8 @@
 // ⚠️ TOOL_CATALOG 只表达"可声明什么"，不表达"运行时装配了什么"——
 // 声明了但未注册的工具由 allowedToolsFor 过滤（安全已收口），目录无需与装配结果对齐。
 
-export type AgentSource = 'builtin' | 'user' | 'project'
+// D-103：子 Agent 只有**两层**（内置 < 用户）—— 项目级已取消（随场景而行动，不分层不做开关）
+export type AgentSource = 'builtin' | 'user'
 
 export interface ToolCatalogItem {
   name: string

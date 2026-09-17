@@ -6,7 +6,8 @@ import { validateAgentFields } from '@shared/agents'
 // frontmatter 采用"扁平键值 + 流式数组"的约定子集——零依赖，复杂 YAML 需求留待引入 yaml 库。
 // ⚠️ 表单（agents-store）与这里的校验必须同口径：字段规则只住在 @shared/agents 的 validateAgentFields 一处。
 
-export type AgentSource = 'builtin' | 'user' | 'project'
+// D-103：子 Agent 只有**两层**（内置 < 用户）—— 项目级已取消（随场景而行动，不分层不做开关）
+export type AgentSource = 'builtin' | 'user'
 
 export interface AgentDefinition {
   name: string

@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelSettings, PermissionPreset, SkillInfo } from '@shared/ipc'
 import type {
@@ -276,17 +276,24 @@ export function ensureAgentRuntime(ctx: AgentRuntimeContext): void {
   mkdirSync(ctx.userAgentsDir, { recursive: true })
 }
 
-/** 三层加载（plan17 D2）：项目 > 用户 > 内置；项目层目录跟随工作区（工作区可切，故惰性派生，不存 ctx）。
- *  返回**生效集合**（被覆盖的除外）；管理页的全量视图走 IPC 层直接调 `loadAgentEntries`。 */
+/** 两层加载（plan17 D2 → **D-103 修订**）：用户 > 内置；**项目级已取消** —— 子 Agent 随场景而行动，
+ *  不做开关也不分层（开关/分层在这里都是冗余步骤）。工作区 `.agents/*.md` 若还有旧定义 →
+ *  warnings 提示迁移（fail-soft 不静默，但也不再加载它）。 */
 export function loadAgentRegistry(ctx: AgentRuntimeContext): LoaderResult {
+  const projectDir = join(ctx.getWorkspaceRoot(), '.agents')
+  const legacy = existsSync(projectDir)
+    ? readdirSync(projectDir).filter((f) => f.toLowerCase().endsWith('.md'))
+    : []
+  const migrateHints = legacy.map(
+    (f) => `工作区 .agents/${f}：项目级子 Agent 已取消（D-103），请把定义移到用户层（设置 → 子 Agent）或删除该文件`
+  )
   const { entries, warnings } = loadAgentEntries([
     { dir: ctx.builtinAgentsDir, source: 'builtin' },
-    { dir: ctx.userAgentsDir, source: 'user' },
-    { dir: join(ctx.getWorkspaceRoot(), '.agents'), source: 'project' }
+    { dir: ctx.userAgentsDir, source: 'user' }
   ])
   return {
     definitions: new Map(entries.filter((e) => !e.overridden).map((e) => [e.name, e])),
-    warnings
+    warnings: [...migrateHints, ...warnings]
   }
 }
 

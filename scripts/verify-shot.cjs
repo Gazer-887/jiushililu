@@ -7178,9 +7178,9 @@ app.whenReady().then(async () => {
     modelCatalog?.advBefore === false && modelCatalog?.adv?.panel === true && (modelCatalog?.adv?.fields ?? 0) >= 5,
     modelCatalog?.adv)
 
-  // —— plan17 F8：子 Agent 管理（列表三节 + 警告区 + 表单校验 + 有状态桩的保存链）——
-  checkTrue('设置页「子 Agent」分区：三节列表 + 警告区可见（坏文件不静默）+ 新建入口',
-    (agentsMgr?.list?.sections ?? 0) === 3 &&
+  // —— plan17 F8：子 Agent 管理（**两节列表**（D-103：项目级已取消）+ 警告区 + 表单校验 + 有状态桩的保存链）——
+  checkTrue('设置页「子 Agent」分区：两节列表（自定义/内置，D-103 项目级已取消）+ 警告区可见（坏文件不静默）+ 新建入口',
+    (agentsMgr?.list?.sections ?? 0) === 2 &&
       agentsMgr?.list?.warnShown === true &&
       agentsMgr?.list?.warnText.includes('broken.md') === true &&
       agentsMgr?.list?.newBtn === true,

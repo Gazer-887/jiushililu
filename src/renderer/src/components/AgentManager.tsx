@@ -14,8 +14,7 @@ import {
 
 const SOURCE_LABEL: Record<AgentListEntry['source'], string> = {
   builtin: '内置',
-  user: '自定义',
-  project: '项目'
+  user: '自定义'
 }
 
 const EMPTY_FORM: AgentSaveInput = { name: '', description: '', tools: [], systemPrompt: '' }
@@ -92,8 +91,7 @@ export default function AgentManager(): JSX.Element {
   const groups = view
     ? ({
         builtin: view.entries.filter((e) => e.source === 'builtin'),
-        user: view.entries.filter((e) => e.source === 'user'),
-        project: view.entries.filter((e) => e.source === 'project')
+        user: view.entries.filter((e) => e.source === 'user')
       } satisfies Record<AgentListEntry['source'], AgentListEntry[]>)
     : null
 
@@ -235,11 +233,11 @@ export default function AgentManager(): JSX.Element {
 
       {groups &&
         view &&
-        (['user', 'project', 'builtin'] as const).map((source) => (
+        (['user', 'builtin'] as const).map((source) => (
           <div key={source} className="ag-section">
             <div className="ag-section-title">{SOURCE_LABEL[source]}</div>
             {groups[source].length === 0 ? (
-              <p className="ag-empty">{source === 'user' ? '暂无自定义Agent' : source === 'project' ? '当前工作区没有 .agents 定义' : '无'}</p>
+              <p className="ag-empty">{source === 'user' ? '暂无自定义Agent' : '无'}</p>
             ) : (
               groups[source].map((e) => (
                 <div key={e.file} className="ag-row">

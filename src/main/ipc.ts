@@ -178,7 +178,6 @@ import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shar
 import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
-import { join } from 'node:path'
 import { getWorkspaceInfo, resetWorkspaceRoot, setWorkspaceRoot } from './store/workspace'
 import { clearPendingDataDir, getStorageLocationInfo, requestRestoreToDefault, setPendingDataDir } from './store/data-location'
 import {
@@ -1112,11 +1111,10 @@ export function registerIpcHandlers(deps: {
   deps.agent.skills?.store.onChange(() => sendToAll(IPC.skillsChanged))
 
   // ── 子 Agent 管理（plan17）：MD 文件是唯一真相源；loadAgentRegistry 每轮重读盘 → 保存即生效，无失效机制 ──
-  // 三层视图（项目 > 用户 > 内置）与 runner 的 loadAgentRegistry 同一份数据源，管理页看到的就是运行时生效的集合（含被覆盖条目）。
+  // 两层视图（D-103：用户 > 内置，项目级已取消）与 runner 的 loadAgentRegistry 同一份数据源，管理页看到的就是运行时生效的集合（含被覆盖条目）。
   const agentLayers = () => [
     { dir: deps.agent.builtinAgentsDir, source: 'builtin' as const },
-    { dir: deps.agent.userAgentsDir, source: 'user' as const },
-    { dir: join(deps.agent.getWorkspaceRoot(), '.agents'), source: 'project' as const }
+    { dir: deps.agent.userAgentsDir, source: 'user' as const }
   ]
 
   ipcMain.handle(IPC.agentsList, (): AgentsView => loadAgentEntries(agentLayers()))
@@ -1155,8 +1153,7 @@ export function registerIpcHandlers(deps: {
     const input = friendlyParse(agentSaveInputSchema, raw)
     const { entries } = loadAgentEntries(agentLayers())
     const result = saveAgentDefinition(nodeFsAdapter, deps.agent.userAgentsDir, input, {
-      builtinNames: entries.filter((e) => e.source === 'builtin').map((e) => e.name),
-      projectNames: entries.filter((e) => e.source === 'project').map((e) => e.name)
+      builtinNames: entries.filter((e) => e.source === 'builtin').map((e) => e.name)
     })
     if (result.ok) {
       log.info('Agent 定义已保存', { name: input.name, file: result.file })

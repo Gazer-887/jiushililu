@@ -76,9 +76,9 @@ export function isAllowedAgentFile(file: string, allowedDirs: string[]): boolean
 }
 
 export interface SaveContext {
-  /** 内置 / 项目层已占用的 name 集合——撞名分级（D3）：撞用户层拒、撞这两层放行但提示覆盖关系 */
+  /** 内置层已占用的 name 集合 —— 撞名分级（D3）：撞用户层拒、撞内置层放行但提示覆盖关系。
+   *  ⚠️ projectNames 已随 D-103（项目级取消）移除 */
   builtinNames: string[]
-  projectNames: string[]
 }
 
 /** 保存（创建/编辑）一个用户层定义。编辑时 input.file 必须仍指向用户层内 */
@@ -109,9 +109,7 @@ export function saveAgentDefinition(
     ? undefined
     : ctx.builtinNames.includes(input.name)
       ? '已存在同名内置定义：此定义生效后将覆盖内置版本'
-      : ctx.projectNames.includes(input.name)
-        ? '当前工作区已有同名项目层定义：项目层定义将优先于本定义生效'
-        : undefined
+      : undefined
 
   const raw = serializeAgentDefinition(input, readUnmanagedFrontmatter(fs, input.file))
   try {

@@ -96,7 +96,7 @@ export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: Plu
                   <span className="plus-check">{selectedAgent === s.name ? '✓' : ''}</span>
                   <span className="plus-name">{s.name}</span>
                   <span className="plus-desc">{s.description}</span>
-                  <span className="plus-tag">{s.source === 'user' ? '自建' : s.source === 'project' ? '项目' : '内置'}</span>
+                  <span className="plus-tag">{s.source === 'user' ? '自建' : '内置'}</span>
                 </button>
               ))}
               {agentsView && agentsView.warnings.length > 0 && (

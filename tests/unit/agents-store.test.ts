@@ -77,7 +77,7 @@ describe('isAllowedAgentFile（路径安全）', () => {
 describe('saveAgentDefinition（撞名分级 + 原子写）', () => {
   it('新建落盘 → loader 能读回同字段（盘上真相）', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-save-'))
-    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] })
+    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] })
     expect(res.ok).toBe(true)
     if (!res.ok) return
     expect(existsSync(res.file)).toBe(true)
@@ -87,40 +87,32 @@ describe('saveAgentDefinition（撞名分级 + 原子写）', () => {
 
   it('新建撞用户层同名 = 拒绝（不许静默覆盖别人的自定义 Agent）', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-clash-'))
-    expect(saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] }).ok).toBe(true)
-    const again = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] })
+    expect(saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] }).ok).toBe(true)
+    const again = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] })
     expect(again.ok).toBe(false)
     if (!again.ok) expect(again.reason).toContain('已存在同名定义')
   })
 
-  it('新建撞内置名 = 放行并带覆盖提示；撞项目层名 = 放行并带优先级提示', () => {
+  it('新建撞内置名 = 放行并带覆盖提示（D-103：项目级已取消，不再有项目层撞名）', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-notice-'))
     const hitBuiltin = saveAgentDefinition(nodeFsAdapter, userDir, { ...USER_INPUT, name: 'planner' }, {
-      builtinNames: ['planner'],
-      projectNames: []
+      builtinNames: ['planner']
     })
     expect(hitBuiltin.ok && hitBuiltin.notice).toContain('覆盖内置')
-    const hitProject = saveAgentDefinition(nodeFsAdapter, userDir, { ...USER_INPUT, name: 'scout' }, {
-      builtinNames: [],
-      projectNames: ['scout']
-    })
-    expect(hitProject.ok && hitProject.notice).toContain('优先')
   })
 
   it('编辑既有文件（带 file）按路径写；越界 file 拒绝', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-edit-'))
-    const created = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] })
+    const created = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] })
     if (!created.ok) throw new Error('前置失败')
     const edited = saveAgentDefinition(nodeFsAdapter, userDir, { ...USER_INPUT, file: created.file, systemPrompt: '改过的正文' }, {
-      builtinNames: [],
-      projectNames: []
+      builtinNames: []
     })
     expect(edited.ok).toBe(true)
     expect(readAgentDefinition(nodeFsAdapter, created.file, [userDir], 'user')?.systemPrompt).toBe('改过的正文')
 
     const outside = saveAgentDefinition(nodeFsAdapter, userDir, { ...USER_INPUT, file: join(tmpdir(), 'evil.md') }, {
-      builtinNames: [],
-      projectNames: []
+      builtinNames: []
     })
     expect(outside.ok).toBe(false)
   })
@@ -129,7 +121,7 @@ describe('saveAgentDefinition（撞名分级 + 原子写）', () => {
 describe('readAgentDefinition / deleteAgentFile（按来源路径定位，判据 9）', () => {
   it('按 file 读回；越界返回 null', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-rd-'))
-    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] })
+    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] })
     if (!res.ok) throw new Error('前置失败')
     expect(readAgentDefinition(nodeFsAdapter, res.file, [userDir], 'user')?.name).toBe('code-reviewer')
     expect(readAgentDefinition(nodeFsAdapter, join(tmpdir(), 'no.md'), [userDir], 'user')).toBeNull()
@@ -137,7 +129,7 @@ describe('readAgentDefinition / deleteAgentFile（按来源路径定位，判据
 
   it('文件名与 name 脱钩（手改场景）：按 file 仍读得对、删得掉', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-rename-'))
-    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] })
+    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] })
     if (!res.ok) throw new Error('前置失败')
     // 用户手改文件名（loader 层面 name 不变、文件名变了）——按 name 反推文件名的实现在这里会删错
     const renamed = join(userDir, 'renamed-by-hand.md')
@@ -155,7 +147,7 @@ describe('readAgentDefinition / deleteAgentFile（按来源路径定位，判据
 
     const wiped = mkdtempSync(join(tmpdir(), 'jsl-agents-wipe-'))
     rmSync(wiped, { recursive: true })
-    const res = saveAgentDefinition(nodeFsAdapter, wiped, USER_INPUT, { builtinNames: [], projectNames: [] })
+    const res = saveAgentDefinition(nodeFsAdapter, wiped, USER_INPUT, { builtinNames: [] })
     expect(res.ok).toBe(true)
     expect(existsSync(join(wiped, 'code-reviewer.md'))).toBe(true)
   })
@@ -217,7 +209,7 @@ describe('saveAgentDefinition 编辑既有文件时保留未知键（plan27）',
       nodeFsAdapter,
       userDir,
       { name: 'custom', description: '新描述', tools: ['read_file'], systemPrompt: '新正文', file },
-      { builtinNames: [], projectNames: [] }
+      { builtinNames: [] }
     )
     expect(res.ok).toBe(true)
 
@@ -236,7 +228,7 @@ describe('saveAgentDefinition 编辑既有文件时保留未知键（plan27）',
       nodeFsAdapter,
       userDir,
       { name: 'x', description: '新', tools: ['read_file', 'search_files'], systemPrompt: '正文', file },
-      { builtinNames: [], projectNames: [] }
+      { builtinNames: [] }
     )
     const def = parseAgentDefinition(readFileSync(file, 'utf8'), 'user', file, 'label')
     expect(def.tools).toEqual(['read_file', 'search_files']) // 表单新加的 search_files 生效
@@ -245,7 +237,7 @@ describe('saveAgentDefinition 编辑既有文件时保留未知键（plan27）',
 
   it('新建（没有 file）时不引入任何野生字段', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-fresh-'))
-    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] })
+    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] })
     expect(res.ok).toBe(true)
     if (!res.ok) return
     const def = parseAgentDefinition(readFileSync(res.file, 'utf8'), 'user', res.file, 'label')
@@ -261,7 +253,7 @@ describe('plan27 S4：approval / executor 的表单往返', () => {
       nodeFsAdapter,
       userDir,
       { ...USER_INPUT, approval: 'plan', executor: 'code-executor' },
-      { builtinNames: [], projectNames: [] }
+      { builtinNames: [] }
     )
     expect(res.ok).toBe(true)
     if (!res.ok) return
@@ -280,7 +272,7 @@ describe('plan27 S4：approval / executor 的表单往返', () => {
       nodeFsAdapter,
       userDir,
       { name: 'my-planner', description: '旧', tools: ['read_file'], systemPrompt: '正文', file, approval: 'plan', executor: 'code-executor' },
-      { builtinNames: [], projectNames: [] }
+      { builtinNames: [] }
     )
     expect(first.ok).toBe(true)
 
@@ -297,7 +289,7 @@ describe('plan27 S4：approval / executor 的表单往返', () => {
         approval: 'plan',
         executor: 'code-executor'
       },
-      { builtinNames: [], projectNames: [] }
+      { builtinNames: [] }
     )
     expect(again.ok).toBe(true)
     const def = parseAgentDefinition(readFileSync(file, 'utf8'), 'user', file, 'label')
@@ -312,7 +304,7 @@ describe('plan27 S4：approval / executor 的表单往返', () => {
 
   it('不勾批准 → 不写 approval / executor（零影响，老定义不受干扰）', () => {
     const userDir = mkdtempSync(join(tmpdir(), 'jsl-agents-pa-off-'))
-    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [], projectNames: [] })
+    const res = saveAgentDefinition(nodeFsAdapter, userDir, USER_INPUT, { builtinNames: [] })
     expect(res.ok).toBe(true)
     if (!res.ok) return
     const raw = readFileSync(res.file, 'utf8')
@@ -327,7 +319,7 @@ describe('plan27 S4：approval / executor 的表单往返', () => {
       userDir,
       // @ts-expect-error 故意传一个非法值：模拟渲染进程被篡改 / 老版本界面
       { ...USER_INPUT, approval: 'always' },
-      { builtinNames: [], projectNames: [] }
+      { builtinNames: [] }
     )
     expect(res.ok).toBe(true)
     if (!res.ok) return
