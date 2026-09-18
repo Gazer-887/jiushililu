@@ -17,6 +17,8 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\" --config config/eslint.config.js",
     "test": "vitest run --config config/vitest.config.ts",
     "test:watch": "vitest --config config/vitest.config.ts",
+    "test:e2e": "playwright test --config config/playwright.config.ts",
+    "test:e2e:xvfb": "xvfb-run --auto-servernum playwright test --config config/playwright.config.ts",
     "bench": "vitest run --config config/vitest.bench.config.ts",
     "bench:window": "node scripts/bench-tool-window.cjs",
     "evals": "node scripts/run-evals.cjs",
@@ -36,6 +38,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.9.0",
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.5.4",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
