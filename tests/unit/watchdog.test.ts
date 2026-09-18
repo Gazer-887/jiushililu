@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { initLogger } from '@main/log'
-import { setWatchdogPhase, startWatchdog, stopWatchdog } from '@main/watchdog'
+import { breadcrumb, setWatchdogPhase, startWatchdog, stopWatchdog } from '@main/watchdog'
 
 // 看门狗（plan37 S0）：把「主进程被同步任务占死」变成带时长与阶段归属的日志证据。
 // 计时用真实定时器 + 同步忙等构造 —— 阈值给足余量，避免 CI 高负载下的边界抖动。
@@ -40,6 +40,25 @@ describe('事件循环看门狗', () => {
     expect(content).toContain('事件循环停滞')
     expect(content).toContain('"phase":"tool:blocker"')
     expect(content).toMatch(/"stallMs":\d{2,}/)
+  })
+
+  it('面包屑：停滞告警随附停滞前的通道进出（最后一条「> 进了没出」即元凶）', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'jsl-watchdog-'))
+    initLogger(dir, 'info')
+    startWatchdog({ intervalMs: 20, thresholdMs: 60 })
+    breadcrumb('> conversation:save')
+    breadcrumb('< conversation:save 5ms')
+    breadcrumb('> memory:search') // 进了没出 —— 模拟阻塞中的通道
+    const end = Date.now() + 200
+    while (Date.now() < end) {
+      // 同步忙等制造停滞
+    }
+    await sleep(150)
+    const content = readLog(dir)
+    expect(content).toContain('事件循环停滞')
+    expect(content).toContain('"crumbs":[')
+    expect(content).toContain('memory:search')
+    expect(content).toContain('conversation:save')
   })
 
   it('无停滞 → 不产生任何 WARN（看门狗不刷日志）', async () => {

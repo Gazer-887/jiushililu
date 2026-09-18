@@ -5683,6 +5683,42 @@ app.whenReady().then(async () => {
   `)
   console.log('WB_GEOM=' + JSON.stringify(wbGeom))
 
+  // ── 工作台内置项收敛（09-19 用户："右栏可选项太多、挤在一块"）──────────────
+  // 判据：＋ 菜单只给 7 项，且**不再含** Playbook / 时间线（两者分别搬进设置页 / 主对话）。
+  // 这是"太多"这一诉求最直接的验收点，锁死防止以后又往 BUILTIN_TYPES 里塞回去。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const add = document.querySelector('.pane-add');
+      if (add) add.click();
+      return !!add;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const wbPickLabels = await win.webContents.executeJavaScript(`
+    (() => Array.from(document.querySelectorAll('.pane-menu .wb-pick')).map((b) => (b.textContent || '').trim()))()
+  `)
+  const wbPick = {
+    labels: wbPickLabels,
+    count: wbPickLabels.length,
+    noPlaybook: !wbPickLabels.includes('Playbook'),
+    noTimeline: !wbPickLabels.includes('时间线')
+  }
+  console.log('WB_PICKS=' + JSON.stringify(wbPick))
+  checkTrue(
+    '工作台 ＋ 菜单收敛为 7 项、且不含 Playbook / 时间线（已搬进设置页 / 主对话）',
+    wbPick.count === 7 && wbPick.noPlaybook === true && wbPick.noTimeline === true,
+    wbPick
+  )
+  // 关掉 ＋ 菜单（Pane 里 ＋ 是 toggle，再点一次收起），别影响下面的折叠测试
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const add = document.querySelector('.pane-add');
+      if (add) add.click();
+      return !!add;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 200))
+
   // 折叠 / 展开走一遍：验证 b 语义「折叠 = 只藏标题栏，**页签条保留**、内容占满、宽度不变」
   await win.webContents.executeJavaScript(`
     (() => {
@@ -8204,40 +8240,54 @@ app.whenReady().then(async () => {
     { flagClicked, calls: memoryFlagCalls }
   )
 
-  // ── 批 3：Playbook 面板在右抽屉可见（不是"代码在、用户碰不到"）──
-  const pbOpened = await win.webContents.executeJavaScript(`
-    (() => {
-      const pick = Array.from(document.querySelectorAll('.wb-pick'))
-        .find((b) => (b.textContent || '').includes('Playbook'));
-      if (pick) pick.click();
-      return !!pick;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 700))
-  // ⚠️ 记忆与 Playbook 两块面板共用 `.mem-panel` 类，且可能**同时挂在抽屉里** ——
-  // 故按**标题**定位，而不是 `querySelector` 拿第一个（那会读到记忆面板，红得莫名其妙）
-  const pbPanel = await win.webContents.executeJavaScript(`
-    (() => {
-      const p = Array.from(document.querySelectorAll('.mem-panel'))
-        .find((n) => (n.querySelector('.mem-title')?.textContent || '').trim() === 'Playbook');
-      if (!p) return { hasPanel: false };
-      return {
-        hasPanel: true,
-        title: p.querySelector('.mem-title')?.textContent.trim() ?? null,
-        names: Array.from(p.querySelectorAll('.mem-row .mem-name')).map((n) => n.textContent.trim()),
-        badges: Array.from(p.querySelectorAll('.mem-row .mem-badge')).map((n) => n.textContent.trim())
-      };
-    })()
-  `)
+  // ── 批 3（09-19 搬迁后）：Playbook 面板在**设置页 Playbook 分区**可见 ──
+  // 此前从右抽屉 ＋ 菜单打开；现收敛进设置页（用户："右栏可选项太多"）。
+  // 记忆面板仍在抽屉（高频巡检），Playbook 移到设置 —— 两块共用 `.mem-panel`，故仍按标题定位。
+  const swinPb = getSettingsWin() || (await openSettingsWin())
+  const pbNav = swinPb
+    ? await swinPb.webContents.executeJavaScript(`
+        (() => {
+          const b = Array.from(document.querySelectorAll('.settings-nav-item'))
+            .find((x) => x.textContent.trim() === 'Playbook');
+          if (b) b.click();
+          return !!b;
+        })()
+      `)
+    : false
+  await new Promise((r) => setTimeout(r, 800))
+  const pbPanel = swinPb
+    ? await swinPb.webContents.executeJavaScript(`
+        (() => {
+          const p = Array.from(document.querySelectorAll('.mem-panel'))
+            .find((n) => (n.querySelector('.mem-title')?.textContent || '').trim() === 'Playbook');
+          if (!p) return { hasPanel: false };
+          return {
+            hasPanel: true,
+            title: p.querySelector('.mem-title')?.textContent.trim() ?? null,
+            names: Array.from(p.querySelectorAll('.mem-row .mem-name')).map((n) => n.textContent.trim()),
+            badges: Array.from(p.querySelectorAll('.mem-row .mem-badge')).map((n) => n.textContent.trim())
+          };
+        })()
+      `)
+    : { hasPanel: false }
   console.log('PLAYBOOK_PANEL=' + JSON.stringify(pbPanel))
   checkTrue(
-    '批 3：Playbook 面板可从右抽屉打开，且列出条目与标签（模型存的东西用户看得见）',
-    pbOpened === true &&
+    '批 3：Playbook 面板在设置页「Playbook」分区打开，且列出条目与标签（搬迁后仍可达）',
+    pbNav === true &&
       pbPanel.hasPanel === true &&
       pbPanel.names.includes('edit-react-component') &&
       pbPanel.badges.includes('file-edit'),
-    pbPanel
+    { pbNav, ...pbPanel }
   )
+  // 关设置窗，回到主窗口流程（下面紧接着是抽屉里的记忆面板断言）
+  // ⚠️ 必须走主进程 `destroy()`，**不能** `await executeJavaScript('window.api.closeSettingsWindow()')`：
+  //    渲染进程发起关窗 → 窗口自我销毁 → executeJavaScript 的回声 promise 永不 resolve
+  //    → 整条门禁挂到看门狗 10 分钟超时（真凶：一度表现为「全红假失败」，因超时把所有 await 判废）。
+  //    destroy() 跳过 close 事件，也就不会触发真应用的 flush-before-close 挂账，是验证进程里的干净关法。
+  if (swinPb && !swinPb.isDestroyed()) {
+    swinPb.destroy()
+    await new Promise((r) => setTimeout(r, 300))
+  }
 
   // 判据 16：外面改了（模型写入 / 另一窗口）→ **广播** → 面板自动重拉。
   // 这一条同时证明"数据走 store 订阅"，因为面板没有重新挂载、也没人点刷新。
@@ -8406,32 +8456,22 @@ app.whenReady().then(async () => {
     capturedInput
   )
 
-  // ── 时间线（plan26 S2 · D-078）：执行事件流回放 —— 页签可达 + 六 kind 渲染 + scope 切换真的走 IPC ──
+  // ── 时间线（plan26 S2 · D-078，09-19 搬进主对话）：头部开关可达 + 六 kind 渲染 + scope 切换走 IPC ──
   // 判据 4（真渲染门禁）：验的是**布局与渲染**；数据链路（IPC 往返）由本段断言入参+列表变化，
   // 但桩全部 IPC 的老局限仍在 —— 真数据链路由单测与真机冒烟兜底。
   const openTimelinePanel = async () => {
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < 6; i += 1) {
       const has = await win.webContents.executeJavaScript("(() => !!document.querySelector('.tl-root'))()")
       if (has) return true
+      // 主对话头部「时间线」开关（active 会话存在才渲染；此处对话已跑过一轮，头部在）
       await win.webContents.executeJavaScript(`
         (() => {
-          const add = document.querySelector('.pane-add');
-          if (add) { add.click(); return true; }
-          const toggle = Array.from(document.querySelectorAll('button')).find((b) => (b.title || '').includes('工作台'));
-          if (toggle) { toggle.click(); return true; }
-          return false;
+          const b = document.querySelector('.chat-tl-toggle');
+          if (b) b.click();
+          return !!b;
         })()
       `)
       await new Promise((r) => setTimeout(r, 400))
-      await win.webContents.executeJavaScript(`
-        (() => {
-          const pick = Array.from(document.querySelectorAll('.wb-pick'))
-            .find((b) => (b.textContent || '').includes('时间线'));
-          if (pick) pick.click();
-          return !!pick;
-        })()
-      `)
-      await new Promise((r) => setTimeout(r, 500))
     }
     return false
   }
@@ -8456,7 +8496,7 @@ app.whenReady().then(async () => {
   const tlFirst = await readTimelinePanel()
   console.log('TIMELINE=' + JSON.stringify(tlFirst))
   checkTrue(
-    '时间线页签：从右抽屉打开，且六种事件 kind 全部渲染（空态不算通过）',
+    '时间线：主对话头部「时间线」开关打开浮层，六种事件 kind 全部渲染（空态不算通过）',
     tlOpened === true &&
       tlFirst.hasPanel === true &&
       ['开始', '工具调用', '工具结果', '审批', '裁剪', '结束'].every((k) => tlFirst.kinds.includes(k)),

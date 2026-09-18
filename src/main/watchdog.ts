@@ -8,6 +8,23 @@ import { createLogger } from './log'
 const log = createLogger('watchdog')
 
 const HISTORY_MAX = 16
+const CRUMBS_MAX = 48
+
+/** 面包屑：IPC/耗时动作的进出记录。停滞告警时随附最近几条 —— 阻塞发生时"最后一条没出"即元凶。
+ *  由 index.ts 的 ipcMain.handle 包装器与各处手动 note() 喂数据；本模块保持零 electron 依赖（架构守卫）。 */
+let crumbs: { t: number; text: string }[] = []
+
+export function breadcrumb(text: string): void {
+  crumbs.push({ t: performance.now(), text })
+  if (crumbs.length > CRUMBS_MAX) crumbs = crumbs.slice(-CRUMBS_MAX / 2)
+}
+
+function crumbsSince(stallStart: number): string[] {
+  return crumbs
+    .filter((c) => c.t >= stallStart - 3000) // 多带 3s 前情，只看停滞窗口会丢"进门前那笔"
+    .slice(-8)
+    .map((c) => `${Math.round(c.t - stallStart)}ms ${c.text}`)
+}
 
 let phase = 'idle'
 // 哨兵条目：历史被截断后兜底为 unknown，宁可说"不知道"也不误归给残存阶段
@@ -53,9 +70,11 @@ export function startWatchdog(opts?: { intervalMs?: number; thresholdMs?: number
     const stall = now - lastTick - intervalMs
     lastTick = now
     if (stall > thresholdMs) {
+      const stallStart = now - stall
       log.warn('事件循环停滞（主进程被同步任务占死）', {
         stallMs: Math.round(stall),
-        phase: phaseAt(now - stall)
+        phase: phaseAt(stallStart),
+        crumbs: crumbsSince(stallStart)
       })
     }
   }, intervalMs)

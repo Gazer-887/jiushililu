@@ -10,6 +10,7 @@ import GoalPanel from '../components/GoalPanel'
 import AskPanel from '../components/AskPanel'
 import MemoryNotice from '../components/MemoryNotice'
 import MemoryCapture from '../components/MemoryCapture'
+import TimelinePanel from '../components/TimelinePanel'
 
 // 对话页（D-032：单一通道）——用不用工具由模型自己决定，界面只负责让过程可见（工具执行卡片）。
 // 输入框为控制台形态（InputConsole）：模型/权限/进度/拓展/发送全在框内。
@@ -43,6 +44,8 @@ export default function ChatView() {
   const [menu, setMenu] = useState<{ x: number; y: number; index: number; sel: string } | null>(null)
   /** 通路 B 的填写卡（选中即记）；null = 关着 */
   const [capture, setCapture] = useState<{ text: string; turnIndex: number } | null>(null)
+  /** 执行时间线浮层开关（09-19：时间线从右栏搬进主对话；本地态，不进全局 store） */
+  const [tlOpen, setTlOpen] = useState(false)
 
   /** 菜单容器：判「点在不在菜单里」全靠它 —— 用法与原因见下面 effect */
   const menuRef = useRef<HTMLDivElement>(null)
@@ -279,6 +282,20 @@ export default function ChatView() {
               </span>
             )
           })()}
+          <button
+            type="button"
+            className={`chat-tl-toggle${tlOpen ? ' is-on' : ''}`}
+            title="执行时间线（工具 / 审批 / 裁剪的结构化痕迹）"
+            onClick={() => setTlOpen((v) => !v)}
+          >
+            时间线
+          </button>
+        </div>
+      )}
+
+      {active && tlOpen && (
+        <div className="chat-tl-panel">
+          <TimelinePanel />
         </div>
       )}
 

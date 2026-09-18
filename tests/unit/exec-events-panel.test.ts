@@ -7,8 +7,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   BUILTIN_LABELS,
-  BUILTIN_TYPES,
-  type BuiltinType
+  BUILTIN_TYPES
 } from '@shared/workbench'
 import { IPC } from '@shared/ipc'
 import { EXEC_EVENT_LABELS } from '@shared/exec-events'
@@ -17,23 +16,24 @@ import { sanitizeExecEventQuery } from '@main/agent/exec-events'
 const ROOT = process.cwd()
 const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8')
 
-describe('时间线页签 —— 五处同步（判据 3）', () => {
-  it('BUILTIN_TYPES 含 timeline，且 BUILTIN_LABELS 有中文标签', () => {
-    expect((BUILTIN_TYPES as readonly string[]).includes('timeline')).toBe(true)
-    expect(BUILTIN_LABELS.timeline).toBe('时间线')
-    // 类型层：timeline 是 BuiltinType 的成员（编译期保证，此处做运行时哨兵）
-    const t: BuiltinType = 'timeline'
-    expect(t).toBe('timeline')
+describe('时间线面板 —— 接线同步（判据 3；09-19 从工作台内置页签搬进主对话）', () => {
+  it('timeline **不再**是工作台内置页签（已搬走；防有人往 BUILTIN_TYPES 塞回去）', () => {
+    expect((BUILTIN_TYPES as readonly string[]).includes('timeline')).toBe(false)
+    expect('timeline' in BUILTIN_LABELS).toBe(false)
   })
 
   it('IPC 通道常量 execEventsList 已登记', () => {
     expect(IPC.execEventsList).toBe('exec-events:list')
   })
 
-  it('Pane.tsx 的 builtinBody 挂了 timeline case', () => {
-    const src = read('src/renderer/src/components/Pane.tsx')
-    expect(src).toContain("case 'timeline':")
+  it('时间线挂在主对话：ChatView 引入 TimelinePanel + 头部开关 + 浮层容器', () => {
+    const src = read('src/renderer/src/views/ChatView.tsx')
     expect(src).toContain('TimelinePanel')
+    expect(src).toContain('chat-tl-toggle')
+    expect(src).toContain('chat-tl-panel')
+    // 面板自身的数据源仍指向 exec-events:list
+    const panel = read('src/renderer/src/components/TimelinePanel.tsx')
+    expect(panel).toContain('listExecEvents')
   })
 
   it('preload 暴露了 listExecEvents，且走 IPC.execEventsList', () => {

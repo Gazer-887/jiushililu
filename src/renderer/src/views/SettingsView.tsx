@@ -17,6 +17,7 @@ import ComputerUseRecommend from '../components/ComputerUseRecommend'
 import SkillsPanel from '../components/SkillsPanel'
 import McpPanel from '../components/McpPanel'
 import MemorySettings from '../components/MemorySettings'
+import PlaybookManager from '../components/PlaybookManager'
 import FieldNote from '../components/FieldNote'
 import { useAppStore } from '../store'
 import { THEMES, FONT_SCALES } from '@shared/splitter'
@@ -37,7 +38,7 @@ import {
  * 图标是手写内联 SVG：为几个图标引一个图标库不划算，且本项目维持零 UI 框架依赖。
  * 分区按**真实存在的能力**划分，不放空条目（P3 生态的 MCP / 技能届时再加；子 Agent 已随 plan17 落地）。
  */
-type SectionId = 'general' | 'model' | 'voice' | 'dev-env' | 'agents' | 'skills' | 'mcp' | 'memory' | 'appearance' | 'trouble'
+type SectionId = 'general' | 'model' | 'voice' | 'dev-env' | 'agents' | 'skills' | 'mcp' | 'memory' | 'playbook' | 'appearance' | 'trouble'
 
 /** 权限档展示顺序：从最严到最松（与输入框工具栏同一口径） */
 const PERM_ORDER: PermissionPreset[] = ['read-only', 'write', 'full-access']
@@ -134,6 +135,16 @@ const SECTIONS: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
       <svg {...ICON_PROPS} aria-hidden="true">
         <path d="M8 2.2a3.4 3.4 0 0 1 3.4 3.4v4.8a3.4 3.4 0 0 1-6.8 0V5.6A3.4 3.4 0 0 1 8 2.2z" />
         <path d="M5.5 8.6h5" />
+      </svg>
+    )
+  },
+  {
+    id: 'playbook',
+    label: 'Playbook',
+    icon: (
+      <svg {...ICON_PROPS} aria-hidden="true">
+        <path d="M3 3.2h4.2c.5 0 .8.3.8.8v8.4c0-.5-.3-.8-.8-.8H3z" />
+        <path d="M13 3.2H8.8c-.5 0-.8.3-.8.8v8.4c0-.5.3-.8.8-.8H13z" />
       </svg>
     )
   },
@@ -1260,6 +1271,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         )}
 
         {section === 'memory' && <MemorySettings />}
+
+        {section === 'playbook' && <PlaybookManager />}
 
         {section === 'appearance' && (
           /* 主题切换，切换即时生效并持久化；各主题说明收进组 ⓘ（2026-09-14 界面极简定调） */

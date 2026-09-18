@@ -6,12 +6,10 @@ import ChangesPanel from './ChangesPanel'
 import ExplorerPanel from './ExplorerPanel'
 import FilePreviewPane from './FilePreviewPane'
 import MemoryManager from './MemoryManager'
-import PlaybookManager from './PlaybookManager'
 import PaneChooser from './PaneChooser'
 import ScmPanel from './ScmPanel'
 import TasksPanel from './TasksPanel'
 import TerminalPanel from './TerminalPanel'
-import TimelinePanel from './TimelinePanel'
 
 // 内置面板全部**无 props**（数据自己订阅 store）→ memo 后父级（Pane）任意重渲染都到不了它们，
 // 各面板只在自己的订阅切片变化时才渲染（plan30：Pane 因拖拽/折叠/页签条等本地面部状态频繁重渲染）。
@@ -20,11 +18,9 @@ const MemoBrowser = memo(BrowserPanel)
 const MemoChanges = memo(ChangesPanel)
 const MemoExplorer = memo(ExplorerPanel)
 const MemoMemory = memo(MemoryManager)
-const MemoPlaybook = memo(PlaybookManager)
 const MemoScm = memo(ScmPanel)
 const MemoTasks = memo(TasksPanel)
 const MemoTerminal = memo(TerminalPanel)
-const MemoTimeline = memo(TimelinePanel)
 
 // 工作台的一栏（plan9 W3）：标题栏 + 栏内页签条 + 内容。
 //
@@ -57,13 +53,6 @@ function builtinBody(type: BuiltinType): JSX.Element {
       // 记忆（plan19 批 1）：查看 / 编辑 / 删除 + 「本次新增」巡检区。落在这里而不是设置页 ——
       // 巡检是**高频**动作，放独立窗口等于把兜底做成装饰（plan19 §十）
       return <MemoMemory />
-    case 'playbook':
-      // Playbook（plan19 批 3）：会做线 —— 同类任务的经验手册。同样落右抽屉（复用上面的理由）
-      return <MemoPlaybook />
-    case 'timeline':
-      // 时间线（plan26 S2）：执行事件流回放 —— 工具/审批/裁剪的**结构化痕迹**
-      // （比对话流里的工具卡片多一层：跨轮次、按时间排、可跨会话过滤）
-      return <MemoTimeline />
   }
 }
 

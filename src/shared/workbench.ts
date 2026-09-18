@@ -27,6 +27,8 @@ export const DIRTY_MAX_LEN = 64 * 1024
 export const KEEPALIVE_MAX = 3
 
 
+// 09-19 用户裁决（右栏可选项太多挤一块）：playbook 搬进设置页、timeline 搬进主对话，
+// 工作台内置面板收敛为 7 项。旧存档里的这两类页签由 sanitizeContent 整条丢掉（优雅降级，不崩）。
 export const BUILTIN_TYPES = [
   'explorer',
   'changes',
@@ -34,9 +36,7 @@ export const BUILTIN_TYPES = [
   'terminal',
   'browser',
   'tasks',
-  'memory',
-  'playbook',
-  'timeline'
+  'memory'
 ] as const
 
 export type BuiltinType = (typeof BUILTIN_TYPES)[number]
@@ -48,9 +48,7 @@ export const BUILTIN_LABELS: Record<BuiltinType, string> = {
   terminal: '终端',
   browser: '浏览器',
   tasks: '任务管理',
-  memory: '记忆',
-  playbook: 'Playbook',
-  timeline: '时间线'
+  memory: '记忆'
 }
 
 export type FileMode = 'preview' | 'edit'

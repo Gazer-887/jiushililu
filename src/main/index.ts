@@ -1,14 +1,14 @@
 // ⚠️ 数据目录引导必须是**第一个** import（plan10 §2.4 P0-6）：五个 electron-store 在各自模块顶层
 // 构造时就锁死 userData 路径 —— setPath 与迁移必须发生在它们之前。见 bootstrap-data-dir.ts 头注。
 import { getBootstrapOutcome, releaseBootstrapLock } from './bootstrap-data-dir'
-import { app, BrowserWindow, Menu, powerSaveBlocker, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, session, shell } from 'electron'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { registerIpcHandlers, getActiveConversationId } from './ipc'
 import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
-import { startWatchdog } from './watchdog'
+import { startWatchdog, breadcrumb } from './watchdog'
 import { installCrashGuards } from './crash-guard'
 import { createConfirmBridge } from './confirm'
 import { createPlanApprovalBridge } from './agent/plan-approval'
@@ -673,6 +673,44 @@ app.whenReady().then(async () => {
     applied: networkAtStart.applied,
     error: networkAtStart.error
   })
+
+  // 看门狗面包屑（09-19 卡顿排查）：包一层 ipcMain.handle，记每通道进出 —— 停滞告警里
+  // 最后一条「> 进了没出」的通道就是占死主进程的元凶。放组合根一处包，**所有通道自动纳入**，
+  // 不要求每个 handler 自觉打点（自觉打点必漏，等价于没有）。
+  // ⚠️ 诊断注入绝不许拖垮启动：monkeypatch 失败（Electron 内部表示变化、属性不可写）只落 ERROR、照常启动。
+  try {
+    const rawHandle = ipcMain.handle.bind(ipcMain) as typeof ipcMain.handle
+    ipcMain.handle = ((ch: string, fn: (e: Electron.IpcMainInvokeEvent, ...a: unknown[]) => unknown) =>
+      (rawHandle as (c: string, f: unknown) => void)(ch, (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => {
+        const t0 = performance.now()
+        breadcrumb(`> ${ch}`)
+        // 抛错也要落一条闭环面包屑 —— 否则「进了没出」会把出错的通道误认成元凶
+        try {
+          const r = fn(e, ...args)
+          if (r instanceof Promise) {
+            return r.then(
+              (v) => {
+                breadcrumb(`< ${ch} ${Math.round(performance.now() - t0)}ms`)
+                return v
+              },
+              (err) => {
+                breadcrumb(`× ${ch} ${Math.round(performance.now() - t0)}ms`)
+                throw err
+              }
+            )
+          }
+          breadcrumb(`< ${ch} ${Math.round(performance.now() - t0)}ms`)
+          return r
+        } catch (err) {
+          breadcrumb(`× ${ch} ${Math.round(performance.now() - t0)}ms`)
+          throw err
+        }
+      })) as typeof ipcMain.handle
+  } catch (err) {
+    log.error('IPC 面包屑包装器安装失败（诊断降级，不影响功能）', {
+      message: err instanceof Error ? err.message : String(err)
+    })
+  }
 
   registerIpcHandlers({
     agent: agentCtx,

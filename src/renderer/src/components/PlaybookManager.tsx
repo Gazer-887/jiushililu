@@ -1,6 +1,6 @@
 // Playbook 管理面板（plan19 批 3）：查看 / 新建 / 编辑 / 删除。
-// 落**右抽屉**（与 `MemoryManager` 同级）—— 理由同记忆页签：它是过程类的东西，
-// 会随使用不断长出来，需要反复巡检；放进设置页（独立窗口）等于把巡检做成装饰。
+// 落**设置页 Playbook 分区**（09-19 起，此前在右抽屉）——它不是每轮都要巡检的东西，
+// 收敛进设置让右栏只留高频工作面板。样式复用 `.mem-panel`（与记忆页同构，两处渲染一致）。
 
 import { useCallback, useEffect, useState } from 'react'
 import { PLAYBOOK_LIMITS, type PlaybookEntry } from '@shared/playbook'

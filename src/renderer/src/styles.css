@@ -1626,6 +1626,46 @@ label.radio {
   text-decoration: line-through;
 }
 
+/* ── 执行时间线（09-19 从右栏搬进主对话）─────────────────────────
+   头部右侧一个开关，打开时对话顶部浮出一条事件流面板（复用 TimelinePanel）。
+   刻意用「开关 + 顶部面板」而非再占一栏：主对话列最窄 360px，横向分栏会把两边都挤没。 */
+.chat-tl-toggle {
+  margin-left: auto; /* 顶到头部最右，与会话信息区分 */
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-6);
+  cursor: pointer;
+}
+
+.chat-tl-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent-border);
+}
+
+.chat-tl-toggle.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.chat-tl-panel {
+  flex-shrink: 0;
+  height: min(42vh, 360px);
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* TimelinePanel 原为占满一栏设计；进浮层面板后让它填满、由内部列表自己滚 */
+.chat-tl-panel .tl-root {
+  height: 100%;
+}
+
 /* ══ P2 布局重构：新建任务页 ═════════════════════════════ */
 
 /*
@@ -2159,11 +2199,22 @@ label.radio {
   box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
 }
 
-/* ＋ 开窗菜单 / 空栏选择器：六项共用一套按钮 */
+/* ＋ 开窗菜单 / 空栏选择器：共用一套按钮。
+   默认列排（给 ＋ 弹窗用，弹窗窄、竖排刚好）；空工作台 / 空栏内容区改成自适应网格（见下）。 */
 .wb-chooser {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+}
+
+/* 自适应排布（09-19 用户："可选项太多、挤在一块、不会自适应排布"）：
+   列数随栏宽自动增减，窄到一条也放得下、宽了就铺开，不靠人调断点。 */
+.wb-empty .wb-chooser,
+.dock-body .wb-chooser {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--sp-8);
+  align-content: start;
 }
 
 /* 右键页签弹出的菜单（plan9 形态修订后，「分栏」是这里长出来的扩展功能） */
@@ -2589,7 +2640,7 @@ label.radio {
 }
 
 .wb-pick {
-  text-align: left;
+  text-align: center;
   font-family: inherit;
   font-size: var(--fs-sm);
   color: var(--text);
@@ -2598,6 +2649,11 @@ label.radio {
   border-radius: var(--radius-md);
   padding: var(--sp-6) var(--sp-8);
   cursor: pointer;
+  /* 网格单元里标题过长时省略，不撑破 tile（＋ 弹窗是列排、不受影响） */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .wb-pick:hover {
@@ -2610,6 +2666,10 @@ label.radio {
   display: flex;
   flex-direction: column;
   gap: var(--sp-8);
+  /* 空工作台要占满整行宽（此前无 flex:1 → 只按内容宽渲染，是"有时铺满有时不"的成因）；
+     min-width:0 让子网格能真正收缩、随容器换列 */
+  flex: 1;
+  min-width: 0;
 }
 
 .wb-empty-title {
