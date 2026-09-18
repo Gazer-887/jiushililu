@@ -140,7 +140,12 @@ test.describe('A 类 · 需要 Key（本机 Windows 跑）', () => {
 
     try {
       const enc = await first.app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable())
-      test.skip(!enc, '该平台 safeStorage 不可用（Key 无法加密落盘）；A 类只在 Windows/macOS 本机跑')
+      // ⚠️ skip 的**原因必须打到日志里**：`list` reporter 只印一行 `- N …`，
+      //    传给 test.skip 的说明串在 CI 日志中不可见 —— 那样"带原因跳过"就只是代码里的自我安慰，
+      //    看日志的人分不清"按设计跳过"与"被静默跳过"（与静默绿同一种坏）。
+      const skipReason = '该平台 safeStorage 不可用（Key 无法加密落盘）；A 类只在 Windows/macOS 本机跑'
+      if (!enc) console.log(`A1_SKIP=${JSON.stringify({ encryptionAvailable: enc, reason: skipReason })}`)
+      test.skip(!enc, skipReason)
 
       // 假端点：OpenAI 兼容的 SSE 分帧，格式照 src/main/providers/openai.ts 的解析口径
       srv = createServer((req, res) => {
