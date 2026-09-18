@@ -169,7 +169,7 @@ describe('movePane（整栏换位）', () => {
   })
 })
 
-describe('toggleCollapse（折叠 = 隐藏标题与页签条，宽度不变）', () => {
+describe('toggleCollapse（折叠 = 只藏标题栏、页签条保留（b 语义 09-18），宽度不变）', () => {
   it('来回切两下回到原状', () => {
     const l = layoutWith(bi('explorer'))
     const id = l.panes[0].id

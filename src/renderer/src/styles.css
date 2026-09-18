@@ -2003,13 +2003,23 @@ label.radio {
   color: var(--text);
 }
 
-/* 折叠后标题栏与页签条都藏起来（内容占满、宽度不变），
-   所以必须留一个**常驻**的展开按钮，否则用户没法还原 */
+/* 折叠态栏头条（b 语义 09-18）：⌄ 展开钮 + 页签条同排 —— 栏永远看得见、永远有还原入口 */
+.pane-foldbar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pane-foldbar .pane-tabs {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+}
+
 .pane-unfold {
-  position: absolute;
-  top: var(--sp-2);
-  right: var(--sp-4);
-  z-index: 3;
+  flex-shrink: 0;
+  margin-left: var(--sp-4);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

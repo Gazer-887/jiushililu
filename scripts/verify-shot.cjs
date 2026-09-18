@@ -5612,7 +5612,7 @@ app.whenReady().then(async () => {
   `)
   console.log('WB_GEOM=' + JSON.stringify(wbGeom))
 
-  // 折叠 / 展开走一遍：验证「折叠 = 藏标题与页签条、内容占满、**宽度不变**」
+  // 折叠 / 展开走一遍：验证 b 语义「折叠 = 只藏标题栏，**页签条保留**、内容占满、宽度不变」
   await win.webContents.executeJavaScript(`
     (() => {
       const btn = document.querySelector('.pane-btn[title*="折叠"]');
@@ -5629,6 +5629,11 @@ app.whenReady().then(async () => {
         // ⚠️ 必须限定在第一栏内查：全局 querySelector('.pane-head') 会查到第二栏的头，“折叠了没”永远显示没折叠
         hasHead: !!(pane && pane.querySelector('.pane-head')),
         hasTabs: !!(pane && pane.querySelector('.pane-tabs')),
+        // b 语义判据要绑**几何可见**（页签真有宽度），不是绑"元素在不在"——元素在但宽 0 仍是"看起来消失"
+        firstTabW: (() => {
+          const t = pane && pane.querySelector('.pane-tab')
+          return t ? Math.round(t.getBoundingClientRect().width) : 0
+        })(),
         hasBody: !!body,
         bodyH: body ? Math.round(body.getBoundingClientRect().height) : 0,
         width: pane ? Math.round(pane.getBoundingClientRect().width) : 0,
@@ -5938,8 +5943,9 @@ app.whenReady().then(async () => {
     { dockHead: !!wbGeom.dockHead }
   )
   checkTrue(
-    '折叠后标题栏与页签条隐藏、内容区还在',
-    wbFolded.hasHead === false && wbFolded.hasTabs === false && wbFolded.hasBody === true,
+    '折叠后**只藏标题栏**：页签条保留且页签几何可见（b 语义 09-18：栏不许"看起来消失"）、内容区还在',
+    wbFolded.hasHead === false && wbFolded.hasTabs === true &&
+      wbFolded.firstTabW >= 20 && wbFolded.hasBody === true,
     wbFolded
   )
   checkTrue('折叠后内容区仍有高度（不是被压没）', wbFolded.bodyH > 100, wbFolded.bodyH)

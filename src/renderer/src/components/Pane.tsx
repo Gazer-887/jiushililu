@@ -34,7 +34,8 @@ const MemoTimeline = memo(TimelinePanel)
 //    getBoundingClientRect() 归零却不摘视图 → 原生 WebContentsView 留在窗口上遮挡界面
 //    （plan9 的血泪，见 git 历史）。故 browser 页签失活即卸载，其余页签常驻。
 //    隐藏期 ResizeObserver 报 0 尺寸、重新显示时再触发 → xterm fit / monaco layout 自愈。
-// ② **折叠 = 隐藏标题栏与页签条、内容占满，宽度不变**（照抄参照实现的语义），不是"收成一条窄条"。
+// ② **折叠 = 只隐藏标题栏，页签条保留、内容占满，宽度不变**（b 语义，2026-09-18 用户拍板：
+//    旧语义连页签条一起藏，栏"看起来消失了"——P0 右栏塌缩报障的观感另一半）。不是"收成一条窄条"。
 
 function builtinBody(type: BuiltinType): JSX.Element {
   switch (type) {
@@ -148,8 +149,8 @@ export default function Pane({
    *
    * ⚠️ 不能用 React 的 `onWheel` —— 它注册为 passive，`preventDefault()` 会静默失效；
    *    必须走 `addEventListener(..., { passive: false })`。
-   * ⚠️ 依赖 `pane.collapsed` 而非 `[]` —— 折叠时本元素**不渲染**（见下方 `pane.collapsed ?` 分支），
-   *    空依赖会在「折叠启动 → 展开」后漏绑定，滚轮失效。
+   * ⚠️ 依赖 `pane.collapsed` 而非 `[]` —— 折叠态页签条挂在 `.pane-foldbar` 下、展开态直挂栏上
+   *    （b 语义后仍**换父重挂载**），空依赖会在「折叠 → 展开」重挂载后漏绑定，滚轮失效。
    * ⚠️ 只改 `scrollLeft`，**零 React 渲染** —— 这是它比「滚一下切页签」更优的根本原因
    *    （后者会连开 N 个面板再卸载，正是卡顿源；plan42 §〇 归因已记录）。
    */
@@ -189,6 +190,45 @@ export default function Pane({
 
   const active = pane.tabs[Math.min(pane.active, pane.tabs.length - 1)]
 
+  // 页签条在折叠/展开两态都渲染（b 语义）—— 抽成一份，两分支共用
+  const tabsBar = (
+    <div className="pane-tabs">
+      {/* 页签在**可滚动的内层**，＋ 钉在外层 —— 否则窄栏滚动会把 ＋ 一起滚走，点不到"在本栏开面板" */}
+      <div className="pane-tabs-scroll" ref={tabsScrollRef}>
+        {pane.tabs.map((t, i) => (
+          <span
+            key={t.id}
+            className={`pane-tab ${t === active ? 'on' : ''}`}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setTabMenu({ x: e.clientX, y: e.clientY, tabId: t.id })
+            }}
+          >
+            <button
+              className="pane-tab-name"
+              title={t.title}
+              onClick={() => wbActivateTab(pane.id, i)}
+            >
+              {t.title}
+            </button>
+            {/* 脏标记要在**页签上可见** —— 否则开着好几个页签时不知道脏的是哪个 */}
+            {t.content.kind === 'file' && t.content.dirty !== undefined && (
+              <span className="pane-tab-dirty" title="有未保存的修改">
+                ●
+              </span>
+            )}
+            <button className="pane-tab-x" title="关闭标签页" onClick={() => requestClose(t.id)}>
+              ✕
+            </button>
+          </span>
+        ))}
+      </div>
+      <button className="pane-add" title="在本栏打开面板" onClick={() => setMenu((v) => !v)}>
+        ＋
+      </button>
+    </div>
+  )
+
   const pick = (t: BuiltinType): void => {
     setMenu(false)
     wbOpenTab(pane.id, { kind: 'builtin', type: t })
@@ -200,13 +240,16 @@ export default function Pane({
       style={{ width }}
     >
       {pane.collapsed ? (
-        <button
-          className="pane-unfold"
-          title="展开本栏"
-          onClick={() => wbToggleCollapse(pane.id)}
-        >
-          ⌄
-        </button>
+        <div className="pane-foldbar">
+          <button
+            className="pane-unfold"
+            title="展开本栏"
+            onClick={() => wbToggleCollapse(pane.id)}
+          >
+            ⌄
+          </button>
+          {tabsBar}
+        </div>
       ) : (
         <>
           {/* 标题栏 = 拖拽换位手柄（HTML5 DnD 落点可合成、验得了）；不拖页签条 —— 它会和栏内滚动打架 */}
@@ -232,41 +275,7 @@ export default function Pane({
               ✕
             </button>
           </div>
-          <div className="pane-tabs">
-            {/* 页签在**可滚动的内层**，＋ 钉在外层 —— 否则窄栏滚动会把 ＋ 一起滚走，点不到"在本栏开面板" */}
-            <div className="pane-tabs-scroll" ref={tabsScrollRef}>
-              {pane.tabs.map((t, i) => (
-                <span
-                  key={t.id}
-                  className={`pane-tab ${t === active ? 'on' : ''}`}
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    setTabMenu({ x: e.clientX, y: e.clientY, tabId: t.id })
-                  }}
-                >
-                  <button
-                    className="pane-tab-name"
-                    title={t.title}
-                    onClick={() => wbActivateTab(pane.id, i)}
-                  >
-                    {t.title}
-                  </button>
-                  {/* 脏标记要在**页签上可见** —— 否则开着好几个页签时不知道脏的是哪个 */}
-                  {t.content.kind === 'file' && t.content.dirty !== undefined && (
-                    <span className="pane-tab-dirty" title="有未保存的修改">
-                      ●
-                    </span>
-                  )}
-                  <button className="pane-tab-x" title="关闭标签页" onClick={() => requestClose(t.id)}>
-                    ✕
-                  </button>
-                </span>
-              ))}
-            </div>
-            <button className="pane-add" title="在本栏打开面板" onClick={() => setMenu((v) => !v)}>
-              ＋
-            </button>
-          </div>
+          {tabsBar}
         </>
       )}
 
