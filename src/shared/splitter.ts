@@ -8,13 +8,31 @@ export const SIDEBAR_DEFAULT = 248
 export const SIDEBAR_MIN = 180
 export const SIDEBAR_MAX = 420
 
-/** 右抽屉（工作台）宽度范围与默认值 */
+/** 右抽屉（工作台）宽度下限与默认值 */
 export const DOCK_DEFAULT = 360
 export const DOCK_MIN = 280
-export const DOCK_MAX = 640
+/**
+ * 右栏占比上限（09-19 用户裁决 65/35）：右栏/主列的关键是**比例**而不是绝对像素 ——
+ * 写死 640 在 1920 屏拖不开、在窄窗又可能挤主列。原 DOCK_MAX 废除，上限由 dockMaxWidth 现算；
+ * DOCK_SANITY_MAX 只作读盘/异常入参的兜底天花板，不参与日常布局语义。
+ */
+export const DOCK_RATIO_MAX = 0.65
+export const DOCK_SANITY_MAX = 1440
 
-/** 主区域保底宽度：别让对话区被拖没 */
-export const MAIN_RESERVE = 320
+/** 主区域保底宽度：别让对话区被拖没（320→360，09-19 用户圈定：输入框+气泡的最小可读宽） */
+export const MAIN_RESERVE = 360
+
+/**
+ * 右栏可用上限 —— **available 必须是扣掉左抽屉后的可分配宽**（调用方负责扣；
+ * 拿整窗宽算会让比例吃掉左栏，主列地板形同虚设）。两条约束取紧：占比 ≤65%、主列 ≥MAIN_RESERVE；
+ * 都放不下时保 DOCK_MIN 下限（宁可主列挤一点，不给用户一个拖不动的抽屉）。
+ */
+export function dockMaxWidth(available: number): number {
+  if (!Number.isFinite(available)) return DOCK_MIN
+  const byRatio = Math.floor(available * DOCK_RATIO_MAX)
+  const byMain = available - MAIN_RESERVE
+  return Math.max(DOCK_MIN, Math.min(byRatio, byMain))
+}
 
 /**
  * 六主题（2026-09-14 用户定调，R7）：
@@ -147,6 +165,8 @@ export function computeWidth(opts: {
   min: number
   max: number
   reserveMain?: number
+  /** 右栏求上限时要从容器宽里先扣掉的左栏宽（左栏可收起 → 0 是合法值） */
+  otherDrawerWidth?: number
 }): number {
   const { pointerX, containerLeft, containerRight, side, min, max } = opts
   const reserve = opts.reserveMain ?? MAIN_RESERVE
@@ -154,8 +174,13 @@ export function computeWidth(opts: {
   const raw =
     side === 'left' ? pointerX - containerLeft : containerRight - pointerX
 
-  // 容器越窄，抽屉能占的上限越小 —— 但下限优先（至少 min 可用）
   const containerWidth = containerRight - containerLeft
+  // 右栏：比例制（65/35 + 主列地板），基数是**扣掉左栏后的可分配宽**
+  if (side === 'right') {
+    const available = containerWidth - (opts.otherDrawerWidth ?? 0)
+    return clampWidth(raw, min, Math.max(min, Math.min(max, dockMaxWidth(available))))
+  }
+  // 左栏：维持绝对区间，只加"容器变窄上限缩水"的保底
   const maxByMain = containerWidth - reserve
   const effectiveMax = Math.max(min, Math.min(max, maxByMain))
 

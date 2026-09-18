@@ -46,13 +46,16 @@ export default function Splitter(props: SplitterProps): JSX.Element {
         const body = document.querySelector('.app-body') as HTMLElement | null
         if (!body) return
         const rect = body.getBoundingClientRect()
+        // 右栏比例基数 = 容器宽 − 左栏实宽（收起时 rect 自然为 0，不用特判）
+        const sideEl = document.querySelector('.sidebar') as HTMLElement | null
         const next = computeWidth({
           pointerX: ev.clientX,
           containerLeft: rect.left,
           containerRight: rect.right,
           side,
           min,
-          max
+          max,
+          otherDrawerWidth: sideEl ? sideEl.getBoundingClientRect().width : 0
         })
         if (next !== latest.current) onResize(next)
       }

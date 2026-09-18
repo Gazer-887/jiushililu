@@ -18,8 +18,8 @@ import type { TokenSaverTier } from '@shared/token-tier'
 import { estimateMessageTokens } from '@shared/tokens'
 import {
   DOCK_DEFAULT,
-  DOCK_MAX,
   DOCK_MIN,
+  dockMaxWidth,
   FONT_SCALE_DEFAULT,
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
@@ -430,7 +430,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     void useAppStore.getState().persistUIPrefs({ uiFont: font })
   },
   setSidebarWidth: (w) => set({ sidebarWidth: clampWidth(w, SIDEBAR_MIN, SIDEBAR_MAX) }),
-  setDockWidth: (w) => set({ dockWidth: clampWidth(w, DOCK_MIN, DOCK_MAX) }),
+  // 比例制（09-19 65/35）：上限现算 —— 基数是**扣掉左栏后的可分配宽**；幂等（值没变不 set，
+  // 窗口 resize 重钳走同一条口，不给 resize 洪水加一次无谓重渲染）
+  setDockWidth: (w) => {
+    const s = get()
+    const avail = window.innerWidth - (s.sidebarOpen ? s.sidebarWidth : 0)
+    const next = clampWidth(w, DOCK_MIN, dockMaxWidth(avail))
+    if (s.dockWidth !== next) set({ dockWidth: next })
+  },
   persistUIPrefs: async (patch) => {
     // 落盘失败不影响界面（宽度已经改了，只是下次重开回到默认）
     try {
@@ -482,13 +489,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const uiFont = sanitizeUiFont(prefs.uiFont)
       set({
         sidebarWidth: prefs.sidebarWidth,
-        dockWidth: prefs.dockWidth,
         theme: sanitizeTheme(prefs.theme),
         fontScale,
         uiFont,
         workbench: prefs.workbench,
         workbenchSizes: prefs.workbenchSizes
       })
+      // 右栏宽过一遍比例钳再进（存时是宽窗、开的是窄窗 —— 不钳就一进来主列被挤）
+      get().setDockWidth(prefs.dockWidth)
       // 启动即应用主题（否则刷新/重开会闪回默认主题）
       document.documentElement.dataset.theme = sanitizeTheme(prefs.theme)
       // 字号/字体同理：启动即应用，别让用户设置的档位闪回默认

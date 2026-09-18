@@ -7,7 +7,7 @@ import ConfirmDialog from './components/ConfirmDialog'
 import PlanApprovalDialog from './components/PlanApprovalDialog'
 import Splitter from './components/Splitter'
 import {
-  DOCK_MAX,
+  DOCK_SANITY_MAX,
   DOCK_MIN,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
@@ -139,6 +139,14 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [flushAll])
 
+  // 比例制布局（09-19 65/35）：窗口尺寸一变，已存的右栏宽就按新上限重钳。
+  // setDockWidth 幂等（值没变不 set），resize 洪水下每帧只多一次比较，不多一次重渲染。
+  useEffect(() => {
+    const onResize = (): void => setDockWidth(useAppStore.getState().dockWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [setDockWidth])
+
   return (
     <div className="app">
       <TopBar />
@@ -165,7 +173,7 @@ export default function App() {
             side="right"
             width={dockWidth}
             min={DOCK_MIN}
-            max={DOCK_MAX}
+            max={DOCK_SANITY_MAX}
             label="调整右侧工作台宽度"
             onResize={setDockWidth}
             onCommit={commit}

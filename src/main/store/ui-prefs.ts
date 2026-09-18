@@ -1,7 +1,7 @@
 import Store from 'electron-store'
 import {
   DOCK_DEFAULT,
-  DOCK_MAX,
+  DOCK_SANITY_MAX,
   DOCK_MIN,
   FONT_SCALE_DEFAULT,
   SIDEBAR_DEFAULT,
@@ -57,7 +57,7 @@ export function getUIPrefs(): UIPrefs {
       SIDEBAR_MIN,
       SIDEBAR_MAX
     ),
-    dockWidth: sanitizeStoredWidth(store.store.dockWidth, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX),
+    dockWidth: sanitizeStoredWidth(store.store.dockWidth, DOCK_DEFAULT, DOCK_MIN, DOCK_SANITY_MAX),
     theme: sanitizeTheme(store.store.theme),
     fontScale: sanitizeFontScale(store.store.fontScale),
     uiFont: sanitizeUiFont(store.store.uiFont),

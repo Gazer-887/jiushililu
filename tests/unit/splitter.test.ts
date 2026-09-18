@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   DOCK_DEFAULT,
-  DOCK_MAX,
   DOCK_MIN,
+  DOCK_SANITY_MAX,
+  dockMaxWidth,
   FONT_SCALE_DEFAULT,
   FONT_SCALES,
   MAIN_RESERVE,
@@ -76,16 +77,16 @@ describe('computeWidth（按鼠标位置算宽度）', () => {
 
 describe('computeWidth 的窄窗保护（重点）', () => {
   it('**窗口变窄时，抽屉上限随之缩小** —— 主区域至少留 MAIN_RESERVE', () => {
-    // 窗口 800：右抽屉自身上限 640，但主区域要留 320 → 上限只能是 480
+    // 窗口 800（左栏 0）：比例上限 520，但主区域要留 360 → 上限只能是 440
     const w = computeWidth({
       pointerX: 0, // 往最左拖（想拖到最宽）
       containerLeft: 0,
       containerRight: 800,
       side: 'right',
       min: DOCK_MIN,
-      max: DOCK_MAX
+      max: DOCK_SANITY_MAX
     })
-    expect(w).toBe(480)
+    expect(w).toBe(440)
     expect(800 - w).toBe(MAIN_RESERVE)
   })
 
@@ -93,10 +94,10 @@ describe('computeWidth 的窄窗保护（重点）', () => {
     const w = computeWidth({
       pointerX: 300,
       containerLeft: 0,
-      containerRight: 400, // 比 min(280) + reserve(320) 还小
+      containerRight: 400, // 比例与地板都放不下 —— dockMaxWidth 回落到下限 280
       side: 'right',
       min: DOCK_MIN,
-      max: DOCK_MAX
+      max: DOCK_SANITY_MAX
     })
     expect(w).toBe(DOCK_MIN) // 下限优先，绝不出现 0 或负数
     expect(w).toBeGreaterThan(0)
@@ -111,7 +112,7 @@ describe('computeWidth 的窄窗保护（重点）', () => {
       min: SIDEBAR_MIN,
       max: SIDEBAR_MAX
     })
-    // maxByMain = 900 - 320 = 580 > 自身上限 420 → 取 420
+    // maxByMain = 900 - 360 = 540 > 自身上限 420 → 取 420
     expect(w).toBe(SIDEBAR_MAX)
   })
 
@@ -124,8 +125,8 @@ describe('computeWidth 的窄窗保护（重点）', () => {
       min: SIDEBAR_MIN,
       max: SIDEBAR_MAX
     })
-    // maxByMain = 600 - 320 = 280 < 自身上限 420 → 被压到 280
-    expect(w).toBe(280)
+    // maxByMain = 600 - 360 = 240 < 自身上限 420 → 被压到 240
+    expect(w).toBe(240)
     expect(600 - w).toBe(MAIN_RESERVE)
   })
 
@@ -138,12 +139,43 @@ describe('computeWidth 的窄窗保护（重点）', () => {
           containerRight,
           side: 'right',
           min: DOCK_MIN,
-          max: DOCK_MAX
+          max: DOCK_SANITY_MAX
         })
         // 要么命中下限（窗口实在太窄），要么主区域还留得下 MAIN_RESERVE
         expect(w === DOCK_MIN || containerRight - w >= MAIN_RESERVE).toBe(true)
       }
     }
+  })
+})
+
+describe('dockMaxWidth（右栏比例上限，09-19 65/35 裁决）', () => {
+  it('宽窗走比例：1620 可分配 → 1053（65%），主列还剩 567', () => {
+    expect(dockMaxWidth(1620)).toBe(1053)
+  })
+
+  it('窄窗比例让位主列地板：980 可分配 → 620（地板 360 更紧）', () => {
+    expect(dockMaxWidth(980)).toBe(620)
+  })
+
+  it('极窄时保右栏下限不塌 0：400 → 280', () => {
+    expect(dockMaxWidth(400)).toBe(DOCK_MIN)
+  })
+
+  it('otherDrawerWidth 生效：容器 1920 + 左栏 300 → 上限按 1620 算，不是按整窗', () => {
+    const w = computeWidth({
+      pointerX: 0,
+      containerLeft: 0,
+      containerRight: 1920,
+      side: 'right',
+      min: DOCK_MIN,
+      max: DOCK_SANITY_MAX,
+      otherDrawerWidth: 300
+    })
+    expect(w).toBe(1053)
+  })
+
+  it('非有限容器宽不炸：NaN → 下限', () => {
+    expect(dockMaxWidth(Number.NaN)).toBe(DOCK_MIN)
   })
 })
 
@@ -159,9 +191,9 @@ describe('sanitizeStoredWidth（读回存档也要夹一次）', () => {
   })
 
   it('被手改成离谱值的存档会被夹回（防布局被搞坏）', () => {
-    expect(sanitizeStoredWidth(99999, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX)).toBe(DOCK_MAX)
-    expect(sanitizeStoredWidth(-5, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX)).toBe(DOCK_MIN)
-    expect(sanitizeStoredWidth(0, DOCK_DEFAULT, DOCK_MIN, DOCK_MAX)).toBe(DOCK_MIN)
+    expect(sanitizeStoredWidth(99999, DOCK_DEFAULT, DOCK_MIN, DOCK_SANITY_MAX)).toBe(DOCK_SANITY_MAX)
+    expect(sanitizeStoredWidth(-5, DOCK_DEFAULT, DOCK_MIN, DOCK_SANITY_MAX)).toBe(DOCK_MIN)
+    expect(sanitizeStoredWidth(0, DOCK_DEFAULT, DOCK_MIN, DOCK_SANITY_MAX)).toBe(DOCK_MIN)
   })
 })
 
@@ -170,7 +202,7 @@ describe('常量自身的合理性（防止以后改坏）', () => {
     expect(SIDEBAR_MIN).toBeLessThan(SIDEBAR_DEFAULT)
     expect(SIDEBAR_DEFAULT).toBeLessThan(SIDEBAR_MAX)
     expect(DOCK_MIN).toBeLessThan(DOCK_DEFAULT)
-    expect(DOCK_DEFAULT).toBeLessThan(DOCK_MAX)
+    expect(DOCK_DEFAULT).toBeLessThan(DOCK_SANITY_MAX)
   })
 
   it('默认值与当前 CSS 一致（改 CSS 忘了改常量会导致首次显示跳变）', () => {
