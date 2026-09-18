@@ -45,3 +45,38 @@ jobs:
 
       - name: 单元测试
         run: npm test
+
+  # ── plan48 S2 · e2e（R6 进 CI）──────────────────────────────────────────
+  # 独立 job，不复用 quality：它设了 `ELECTRON_SKIP_BINARY_DOWNLOAD: 1`（省 100MB），
+  # 而 e2e 必须**有** Electron 可执行文件才能起。
+  #
+  # ⚠️ 这一步的首要目的是**量事实**，不是刷绿：plan8 R6 从 09-12 起就挂着"headless 可行性待评估"，
+  #    一直没人实测。跑起来才知道 Linux runner 上 (a) Electron 能不能起 (b) `safeStorage`
+  #    到底可不可用 —— 后者决定"发消息→流式上屏"这条主干能不能进 CI（见 plan48 §二方案 A/B）。
+  #    所以这里**不加 continue-on-error**：红就是要看得见，红了日志里也有我们要的答案。
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 装 Electron 缺的系统库
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libnss3 libatk-bridge2.0-0 libdrm2 libgbm1 libasound2t64 libcups2 libxkbcommon0
+
+      - name: 安装依赖（这次**不**跳过 Electron 二进制）
+        run: npm ci
+
+      - name: 构建（e2e 驱动真入口 out/，没有 dev server 兜底）
+        run: npm run build
+
+      - name: e2e S0 可行性主干
+        # X 由 xvfb-run 自己挑空闲显示号并导出 DISPLAY，故不在 job.env 里写死 :99
+        # （写死等于赌那个号没被占，多一个没必要失败模式）。
+        run: xvfb-run --auto-servernum npx playwright test --config config/playwright.config.ts
