@@ -15,6 +15,13 @@ import {
   type UIPrefs
 } from '@shared/splitter'
 import { emptyLayout, emptySizes, sanitizeLayout, sanitizeSizes } from '@shared/workbench'
+import { createLogger } from '../log'
+
+// 工作台栏数哨兵（P0 右栏消失案，2026-09-18）：每次布局落盘对比上一版栏数，下降就记 WARN（带前后值）。
+// 下降 ≠ 出错（✕ 关栏是正常操作），但必须**每次都有痕** —— 复盘「工作台怎么少了一栏」时，
+// 才能区分「用户自己关的」与「没人动却没了」。
+const log = createLogger('ui-prefs')
+let lastWorkbenchPanes: number | null = null
 
 // 界面布局偏好持久化（plan7 批 A0）：左右抽屉的宽度；plan9 起再加**工作台分栏布局**。
 // 为什么单独一个 store：① settings 的 schema 是模型配置，掺进布局字段会让职责变模糊；② settings 有 zod 校验与
@@ -92,6 +99,13 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
   }
   if (patch.workbench !== undefined) {
     const clean = sanitizeLayout(patch.workbench)
+    if (lastWorkbenchPanes !== null && clean.panes.length < lastWorkbenchPanes) {
+      log.warn('工作台栏数下降（若非本人操作，请排查栏头 ✕ 误触或布局被覆盖）', {
+        from: lastWorkbenchPanes,
+        to: clean.panes.length
+      })
+    }
+    lastWorkbenchPanes = clean.panes.length
     store.set('workbench', clean)
     next.workbench = clean
     // 栏数变了 → 栏宽数组必须跟着重新对齐，否则下一次读盘就会因"长度不同源"整组回默认

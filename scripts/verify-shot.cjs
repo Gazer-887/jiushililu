@@ -5919,6 +5919,13 @@ app.whenReady().then(async () => {
     sprawl: wbGeom.sprawl,
     rowW: wbGeom.rowW
   })
+  // 栏数下限哨兵（P0 右栏消失案 2026-09-18）：渲染宽掉到 120px 以下只有两种可能——
+  // inline width 混进 NaN（被 Chromium 丢弃后栏宽塌成内容宽）或 allocate/CSS 回归。正常路径到不了这。
+  checkTrue(
+    '每栏渲染宽 ≥ 120px（PANE_ABS_MIN 哨兵：NaN 宽或被压没都算回归）',
+    Array.isArray(wbGeom.widths) && wbGeom.widths.length > 0 && wbGeom.widths.every((w) => w >= 120),
+    wbGeom.widths
+  )
   checkTrue(
     '至少一栏、且栏内挂着页签',
     wbGeom.paneCount >= 1 && wbGeom.tabs.length >= 1,
@@ -5983,6 +5990,11 @@ app.whenReady().then(async () => {
     { widths: wbTwo.widths, sprawl: wbTwo.sprawl, rowW: wbTwo.rowW, overflow: wbTwo.overflow }
   )
   checkTrue('原栏仍在（分栏不把源栏清空）', wbTwo.firstTabs >= 1, wbTwo.firstTabs)
+  checkTrue(
+    '分栏态每栏渲染宽 ≥ 120px（同 wbGeom 哨兵；溢出时全体落在绝对下限 120 也算达标）',
+    Array.isArray(wbTwo.widths) && wbTwo.widths.length > 0 && wbTwo.widths.every((w) => w >= 120),
+    wbTwo.widths
+  )
   checkTrue(
     '窄栏里 ＋ 仍在栏内可见（没被页签条横向滚动带走）',
     Array.isArray(wbTwo.addInsidePane) && wbTwo.addInsidePane.every((v) => v === true),
