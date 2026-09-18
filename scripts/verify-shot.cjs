@@ -789,7 +789,7 @@ const STUBS = {
   },
   'settings:test': () => ({ ok: true, message: 'ok' }),
   'settings:set-model': () => settingsView,
-  // 设置独立窗口：齿轮 -> 开新窗 / 窗口内 × -> 关自己。
+  // 设置独立窗口：「设置」入口 -> 开新窗 / 窗口内 × 或「返回」 -> 关自己。
   // ⚠️ 这里必须**真的建出第二个 BrowserWindow**（不能返回 undefined 了事）—— 下面那一整段设置探针
   //    都靠「找到除 win 之外的窗口」定位目标；桩里不建窗，整段会集体红，且红得像产品坏了。
   // ⚠️ 契约副本：真源 src/main/index.ts 的 openSettingsWindow（900x660、parent、幂等 focus、loadFile + hash）。
@@ -2199,10 +2199,10 @@ app.whenReady().then(async () => {
    *    与产品代码里的窗口登记制是两回事（那是主进程里按用途取，见 window-registry.ts）。
    */
   const openSettingsWin = async () => {
-    // 点齿轮 → 主进程建独立窗口
+    // 点「设置」入口 → 主进程建独立窗口
     await win.webContents.executeJavaScript(`
       (() => {
-        const gear = document.querySelector('.gear-btn');
+        const gear = document.querySelector('.settings-entry-btn');
         if (gear) gear.click();
         return !!gear;
       })()
@@ -2222,18 +2222,34 @@ app.whenReady().then(async () => {
   /** 在**设置窗口**里求值（主窗口一律用 win.webContents） */
   const sevalRaw = async (expr) => {
     const swinNow = BrowserWindow.getAllWindows().find((w) => w !== win && !w.isDestroyed())
-    if (!swinNow) throw new Error('设置窗口不存在 —— 齿轮没能开出独立窗口')
+    if (!swinNow) throw new Error('设置窗口不存在 —— 「设置」入口没能开出独立窗口')
     return swinNow.webContents.executeJavaScript(expr)
   }
   /** 在设置窗口里求值，并顺带返回该窗口对象的方便取法 */
   const getSettingsWin = () => BrowserWindow.getAllWindows().find((w) => w !== win && !w.isDestroyed())
 
   const swin = await openSettingsWin()
-  checkTrue('点侧栏齿轮 → **开出独立的设置窗口**（不是切主区域视图）', swin !== null && swin !== undefined, {
+  checkTrue('点侧栏「设置」文字框 → **开出独立的设置窗口**（不是切主区域视图）', swin !== null && swin !== undefined, {
     opened: !!swin,
     windowCount: BrowserWindow.getAllWindows().length
   })
-  // 主区域**不该**再出现设置内容 —— 齿轮是开窗，不是切页
+  // 09-18 入口改版：齿轮图标 → 文字框；设置窗标题旁 → 浅色「返回」（内页定位澄清）
+  const entryTxt = await win.webContents.executeJavaScript(
+    `document.querySelector('.settings-entry-btn')?.textContent?.trim() ?? ''`
+  )
+  checkTrue('侧栏设置入口是「设置」文字框（不再是无字齿轮）', entryTxt === '设置', { entryTxt })
+  const backInfo = await sevalRaw(`
+    (() => {
+      const b = document.querySelector('.settings-window-back');
+      const t = document.querySelector('.settings-window-title');
+      if (!b || !t) return null;
+      return { text: b.textContent.trim(), color: getComputedStyle(b).color, titleColor: getComputedStyle(t).color };
+    })()
+  `)
+  checkTrue('设置窗口「设置」旁有浅色「返回」（比标题低一级，出口=关本窗回主窗口）',
+    !!backInfo && backInfo.text === '返回' && backInfo.color !== backInfo.titleColor,
+    backInfo)
+  // 主区域**不该**再出现设置内容 —— 入口是开窗，不是切页
   const mainHasSettings = await win.webContents.executeJavaScript(
     "(() => !!document.querySelector('.settings-view'))()"
   )
@@ -4386,7 +4402,7 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 700))
   await win.webContents.executeJavaScript(`
     (() => {
-      const gear = document.querySelector('.gear-btn');
+      const gear = document.querySelector('.settings-entry-btn');
       if (gear) gear.click();
       return !!gear;
     })()
@@ -5585,7 +5601,7 @@ app.whenReady().then(async () => {
 
     // 幂等：再点一次齿轮，不该叠出第二个设置窗口
     await win.webContents.executeJavaScript(`
-      (() => { document.querySelector('.gear-btn')?.click(); return true; })()
+      (() => { document.querySelector('.settings-entry-btn')?.click(); return true; })()
     `)
     await new Promise((r) => setTimeout(r, 900))
     const otherWins = BrowserWindow.getAllWindows().filter((w) => w !== win && !w.isDestroyed())
@@ -6433,6 +6449,54 @@ app.whenReady().then(async () => {
     'OUTLINE=' +
       JSON.stringify({ rail: railInfo, before: outlineBefore, after: outlineAfter })
   )
+
+  // —— 09-18 用户三改的门禁（热区/hover 出卡/滚轮跳轮）——
+  // ⚠️ 量 ::before 必须挑**非激活**刻度：激活态在拉长（8→28），且 140ms transition 中途读数会落在区间任意值
+  const tickGeo = await win.webContents.executeJavaScript(`
+    (() => {
+      const t = document.querySelector('.chat-outline-tick:not(.on)') || document.querySelector('.chat-outline-tick');
+      if (!t) return null;
+      const r = t.getBoundingClientRect();
+      const bar = getComputedStyle(t, '::before').width;
+      return { w: Math.round(r.width), h: Math.round(r.height), bar };
+    })()
+  `)
+  checkTrue('刻度热区已扩（按钮 ≥20×10 透明热区，条形码本体仍 8px 细 —— 好点不显粗）',
+    !!tickGeo && tickGeo.w >= 20 && tickGeo.h >= 10 && parseFloat(tickGeo.bar) <= 9,
+    tickGeo)
+  // hover 出卡要**真指针**：CSS :hover 合成事件触发不了（与"合成 click 绕不过 mousedown 竞态"同族教训）
+  const tickCenter = await centerOf('.chat-outline-tick:nth-child(2)')
+  if (tickCenter) {
+    await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tickCenter.x, y: tickCenter.y })
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  const hoverPeek = await win.webContents.executeJavaScript(`
+    (() => {
+      // 读**当前被悬停过**的那根（nth-child(2) 激活时退到第 3 根）
+      const list = [...document.querySelectorAll('.chat-outline-tick')];
+      const t = list.find((x) => x.matches(':hover')) || list[2] || list[1];
+      const p = t ? t.querySelector('.chat-outline-peek') : null;
+      return p ? getComputedStyle(p).display : 'none';
+    })()
+  `)
+  checkTrue('真指针悬停第 2 根刻度 → 该轮预览卡立即显示（hover 即出，零延迟）',
+    hoverPeek === 'block', { hoverPeek })
+  await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 10, y: 300 })
+  // 滚轮跳轮：在刻度条上滚一下 → 发生跳转（scrollTop 动 或 高亮闪）；且 preventDefault 不吃页面滚
+  const wheelBefore = await win.webContents.executeJavaScript(`Math.round(document.querySelector('.chat-messages').scrollTop)`)
+  const railCenter = await centerOf('.chat-outline-rail')
+  if (railCenter) {
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseWheel', x: railCenter.x, y: railCenter.y, deltaX: 0, deltaY: 120
+    })
+  }
+  await new Promise((r) => setTimeout(r, 900))
+  const wheelAfter = await win.webContents.executeJavaScript(`
+    ({ top: Math.round(document.querySelector('.chat-messages').scrollTop), hl: !!document.querySelector('.msg-jump-hl') })
+  `)
+  checkTrue('刻度条上滚轮 → 真的跳轮（scrollTop 变化或跳转高亮出现）',
+    !!railCenter && (wheelAfter.top !== wheelBefore || wheelAfter.hl === true),
+    { wheelBefore, wheelAfter })
 
   // 确认框文案：会话回滚 vs 文件回滚**必须分得清**（plan10 §六 第 6 条）
   win.webContents.send('confirm:request', {
@@ -7289,7 +7353,7 @@ app.whenReady().then(async () => {
   // 点齿轮开独立设置窗口 —— ⚠️ 语义已随架构切换更新：以前"点齿轮"是主窗口**切视图**（ChatView 卸载）；
   //    现在是**开新窗口**，主窗口的 ChatView 根本不卸载。要验的东西没变：**对话流式订阅不因开设置窗口而断**
   //    （旧代码就是因为视图卸载时订阅被清掉才丢字）。
-  const gearPos = await centerOf('.gear-btn')
+  const gearPos = await centerOf('.settings-entry-btn')
   if (rbInputReady && gearPos) await realClick(gearPos.x, gearPos.y, 'left')
   await new Promise((r) => setTimeout(r, 900))
   const onSettings = await win.webContents.executeJavaScript(`

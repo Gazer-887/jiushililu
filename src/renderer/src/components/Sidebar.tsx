@@ -182,20 +182,10 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
       </div>
 
       <div className="sidebar-foot">
-        {/* 齿轮 = **开独立设置窗口**（2026-09-13 用户定案）。
-            ⚠️ 不再有 `.active` 选中态：设置现在是浮在上面的独立窗口，不是一个"当前所在页" ——
-            "已打开"由窗口自己表达，侧栏再高亮一次是重复信号。 */}
-        <button className="gear-btn" title="设置" onClick={() => void window.api.openSettingsWindow()}>
-          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
-            <path
-              d="M12 2.6v2.6M12 18.8v2.6M4.35 7.3l2.25 1.3M17.4 15.4l2.25 1.3M4.35 16.7l2.25-1.3M17.4 8.6l2.25-1.3"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-            />
-          </svg>
+        {/* 设置入口（09-18 用户：齿轮不直观，改文字框）。⚠️ 无 `.active` 选中态：
+            设置是浮在上面的独立窗口，"已打开"由窗口自己表达，侧栏再高亮一次是重复信号。 */}
+        <button className="settings-entry-btn" onClick={() => void window.api.openSettingsWindow()}>
+          设置
         </button>
         <span className="foot-text">会自己长经验的工作台</span>
       </div>

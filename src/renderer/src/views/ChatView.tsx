@@ -175,6 +175,29 @@ export default function ChatView() {
     return () => box.removeEventListener('scroll', onScroll)
   }, [outlineItems])
 
+  /** 滚轮跳轮（09-18 用户："必须对齐光标点，不能滚着切"）：光标在刻度条上滚动 → 跳上/下一轮。
+   *  ⚠️ 与工作台页签滚轮同款三原则：passive:false（否则 preventDefault 静默失效）、
+   *  节流防触控板惯性连跳、只驱动 jumpToMessage 不碰 React state（滚动联动会自己跟上）。 */
+  useEffect(() => {
+    const rail = railRef.current
+    if (!rail || outlineItems.length < 2) return
+    let lastJump = 0
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault() // 不拦的话滚动会穿透到身后的消息区，跳轮和滚读打架
+      const now = Date.now()
+      if (now - lastJump < 150) return
+      const raw = e.deltaX !== 0 ? e.deltaX : e.deltaY
+      if (raw === 0) return
+      lastJump = now
+      const dir = raw > 0 ? 1 : -1
+      const cur = spyLastActiveRef.current
+      const next = cur < 0 ? (dir > 0 ? 0 : outlineItems.length - 1) : Math.min(outlineItems.length - 1, Math.max(0, cur + dir))
+      jumpToMessage(outlineItems[next].i)
+    }
+    rail.addEventListener('wheel', onWheel, { passive: false })
+    return () => rail.removeEventListener('wheel', onWheel)
+  }, [outlineItems])
+
   /** 平滑滚到第 index 条消息并短暂高亮 —— 让"跳到了哪"看得见 */
   const jumpToMessage = (index: number): void => {
     const el = document.querySelector<HTMLElement>(`[data-msg-index="${index}"]`)

@@ -337,31 +337,45 @@ nav {
   z-index: 5;
 }
 
+/* 热区与视觉分离（09-18 用户："太细小点不中"）：按钮 24×12 透明热区，
+   条形码本体画在 ::before（8×2，右缘对齐）——加好点性，不加粗观感 */
 .chat-outline-tick {
   position: relative; /* 预览卡的定位锚 —— 垂直居中对齐**该刻度**（§3.5） */
-  width: 8px;
-  height: 2px;
+  width: 24px;
+  height: 12px;
   flex: none;
   padding: 0;
   border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  cursor: pointer;
+}
+
+.chat-outline-tick::before {
+  content: '';
+  width: 8px;
+  height: 2px;
   border-radius: 1px;
   background: var(--border);
-  cursor: pointer;
   transition: width 140ms ease, background 140ms ease;
 }
 
-.chat-outline-tick:hover {
+.chat-outline-tick:hover::before {
   width: 14px;
   background: var(--accent);
 }
 
 /* 激活态：横向变长（§〇④：8→28px）+ 主题色 —— 滚到哪根，哪根变长 */
-.chat-outline-tick.on {
+.chat-outline-tick.on::before {
   width: 28px;
   background: var(--accent);
 }
 
-.chat-outline-tick.on .chat-outline-peek {
+/* 预览卡：滚动激活常显 + **悬停即出**（09-18 用户："指上去要立刻看到当条发言"，零延迟） */
+.chat-outline-tick.on .chat-outline-peek,
+.chat-outline-tick:hover .chat-outline-peek {
   display: block;
 }
 
@@ -594,6 +608,23 @@ nav {
   font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--text);
+}
+
+/* 「返回」= 关本窗回主窗口（09-18 定位澄清：设置是软件的内页）。浅色 = 刻意比标题低一级 */
+.settings-window-back {
+  margin-left: 10px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.settings-window-back:hover {
+  color: var(--text);
+  background: var(--bg);
 }
 
 /* 设置窗口里的 `.settings-view` 要吃掉标题行剩下的高度 */
@@ -1296,7 +1327,7 @@ label.radio {
   border-top: 1px solid var(--border);
 }
 
-/* ══ P2 布局重构：侧边栏（分组历史 + 齿轮） ═══════════════ */
+/* ══ P2 布局重构：侧边栏（分组历史 + 设置入口） ═══════════ */
 
 .sidebar {
   width: 248px;
@@ -1518,29 +1549,24 @@ label.radio {
   border-top: 1px solid var(--border);
 }
 
-.gear-btn {
+/* 设置入口文字框（09-18 改版：齿轮图标 → 「设置」二字带框） */
+.settings-entry-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
   height: 30px;
+  padding: 0 12px;
   border-radius: var(--radius-md);
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   background: transparent;
-  color: var(--muted);
+  color: var(--text);
+  font-size: var(--fs-sm);
   cursor: pointer;
   flex-shrink: 0;
 }
 
-.gear-btn:hover {
+.settings-entry-btn:hover {
   background: var(--bg);
-  color: var(--text);
-}
-
-.gear-btn.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: var(--accent-border);
 }
 
 .foot-text {

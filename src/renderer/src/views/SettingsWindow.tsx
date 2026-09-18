@@ -50,6 +50,11 @@ export default function SettingsWindow(): JSX.Element {
     <div className="settings-window">
       <header className="settings-window-bar">
         <span className="settings-window-title">设置</span>
+        {/* 09-18 用户：设置页定位澄清为"软件内页"——「设置」旁给一个浅色「返回」，
+            与 Esc/× 同一路出口（关本窗回主窗口），不新增概念 */}
+        <button className="settings-window-back" onClick={close}>
+          返回
+        </button>
       </header>
       <SettingsView onClose={close} />
     </div>
