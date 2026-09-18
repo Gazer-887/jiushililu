@@ -16,6 +16,7 @@ test.describe('e2e 可行性主干', () => {
 
   test.afterEach(async () => {
     await h?.close()
+    await h?.cleanup()
   })
 
   test('真入口能起：渲染层挂载、数据与工作区都落在隔离沙箱', async () => {

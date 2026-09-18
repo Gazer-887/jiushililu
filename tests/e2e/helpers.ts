@@ -7,7 +7,7 @@
 // ⚠️ 前置：必须先 `npm run build`（渲染层由主进程 `loadFile` 指向 out/，没有 dev server 兜底）。
 
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -26,6 +26,8 @@ export interface E2EApp {
   /** 本次专用的隔离工作区：Agent 真写文件也只落这里，绝不碰用户仓库 */
   workspaceDir: string
   close: () => Promise<void>
+  /** 跨"重启"用例用：先 close（不删目录）→ 再起第二个实例 → 最后 cleanup */
+  cleanup: () => Promise<void>
 }
 
 /**
@@ -67,11 +69,20 @@ async function waitForMainWindow(app: ElectronApplication): Promise<Page> {
  * - `JSL_DATA_DIR`：数据目录引导（plan10）认这个环境变量，会话/设置/检查点全落临时目录；
  *   同时**绕开单实例锁**（锁按 userData 生效），所以能在用户自己的实例开着时并行跑。
  * - `workspace.json` 预置 `workspaceRoot`：工作区钉在临时目录（目录选择器是系统对话框，测不了）。
+ *
+ * @param opts.reuseDataDir 「重启仍可见」类用例用：传上一个实例的 dataDir 起第二次，
+ *        此时**不重播种子**（种子已在那份目录里，重播会把要验的持久化盖掉）。
  */
-export async function launchApp(): Promise<E2EApp> {
-  const dataDir = mkdtempSync(join(tmpdir(), 'jsl-e2e-data-'))
-  const workspaceDir = mkdtempSync(join(tmpdir(), 'jsl-e2e-ws-'))
-  writeFileSync(join(dataDir, 'workspace.json'), JSON.stringify({ workspaceRoot: workspaceDir }), 'utf8')
+export async function launchApp(opts?: { reuseDataDir?: string }): Promise<E2EApp> {
+  const reuse = opts?.reuseDataDir !== undefined
+  const dataDir = reuse ? (opts as { reuseDataDir: string }).reuseDataDir : mkdtempSync(join(tmpdir(), 'jsl-e2e-data-'))
+  const workspaceDir = reuse
+    ? // 复用时工作区目录沿用上一份种子里的值，别另起一个把会话的工作区锚点换掉
+      readSeededWorkspace(dataDir)
+    : mkdtempSync(join(tmpdir(), 'jsl-e2e-ws-'))
+  if (!reuse) {
+    writeFileSync(join(dataDir, 'workspace.json'), JSON.stringify({ workspaceRoot: workspaceDir }), 'utf8')
+  }
 
   const app = await electron.launch({
     executablePath: ELECTRON_BINARY,
@@ -88,16 +99,28 @@ export async function launchApp(): Promise<E2EApp> {
 
   const page = await waitForMainWindow(app)
 
+  /** 只关应用，**不动目录** —— 跨"重启"的用例要在同一个 dataDir 上再起一个实例 */
   const close = async (): Promise<void> => {
-    try {
-      await app.close()
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true })
-      rmSync(workspaceDir, { recursive: true, force: true })
-    }
+    await app.close()
+  }
+  /** 删临时目录。每条用例结束时都要调，否则 %TEMP% 会一份份堆起来 */
+  const cleanup = async (): Promise<void> => {
+    rmSync(dataDir, { recursive: true, force: true })
+    rmSync(workspaceDir, { recursive: true, force: true })
   }
 
-  return { app, page, dataDir, workspaceDir, close }
+  return { app, page, dataDir, workspaceDir, close, cleanup }
+}
+
+/** 从种子文件里读回工作区路径（复用实例时不能换工作区，否则会话锚点对不上） */
+function readSeededWorkspace(dataDir: string): string {
+  try {
+    const raw = JSON.parse(readFileSync(join(dataDir, 'workspace.json'), 'utf8')) as { workspaceRoot?: string }
+    if (typeof raw.workspaceRoot === 'string' && raw.workspaceRoot) return raw.workspaceRoot
+  } catch {
+    /* 读不到就退回临时目录，下面的断言会把它暴露出来 */
+  }
+  return mkdtempSync(join(tmpdir(), 'jsl-e2e-ws-'))
 }
 
 /**
