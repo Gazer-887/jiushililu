@@ -244,8 +244,10 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   /** 存储位置（plan10 C 批）：应用数据落点，真值在主进程（含待生效迁移与最近一次迁移结果） */
   const [storage, setStorage] = useState<StorageLocationInfo | null>(null)
   const [perm, setPerm] = useState<PermissionPreset>('write')
-  /** 电脑控制开关（2026-09-15）：真值在主进程；当前无对应工具，先落门控（状态进自视段） */
+  /** 电脑控制开关（plan44 门控）：真值在主进程；关 = 桌面工具整批不下发 */
   const [ccEnabled, setCcEnabled] = useState<boolean | null>(null)
+  /** E5：内置终端是否加载 PowerShell profile（默认关；下一次起终端生效） */
+  const [tpEnabled, setTpEnabled] = useState<boolean | null>(null)
   /** 省 token 档位：跟权限档一样是"人定的档"，真值在主进程 */
   const [tier, setTier] = useState<TokenSaverTier>('balanced')
   /** 系统集成（plan7 批 F1）：值与**真生效状态**都在主进程（blocker 起没起来只有它知道） */
@@ -307,6 +309,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
       .catch(() => setWs(null))
     void window.api.getPermission().then(setPerm)
     void window.api.getComputerControl().then(setCcEnabled)
+    void window.api.getTerminalProfile().then(setTpEnabled)
     void window.api.getTokenTier().then(setTier)
     void window.api
       .getStorageLocation()
@@ -573,6 +576,11 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     setCcEnabled(await window.api.setComputerControl(value))
   }
 
+  /** E5 终端 profile 开关：同款回显（真值在主进程，下一次起终端才换壳） */
+  const chooseTP = async (value: boolean): Promise<void> => {
+    setTpEnabled(await window.api.setTerminalProfile(value))
+  }
+
   /** 选省 token 档位：**全局一档**，不做会话级覆盖（用户定调） */
   const chooseTier = async (next: TokenSaverTier): Promise<void> => {
     setTier(await window.api.setTokenTier(next))
@@ -816,6 +824,29 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             </label>
             {ccEnabled === true && (
               <p className="hint">已开启。桌面工具需先在 MCP 设置页添加 windows-mcp 并正常启动后才会下发。</p>
+            )}
+
+            {/* E5（09-18 拍板"做，默认关"）：默认带 -NoProfile（确定性优先），开了才加载用户 profile */}
+            <div className="field-label field-label-with-note">
+              终端 profile
+              <FieldNote
+                text={[
+                  '控制内置终端是否加载你的 PowerShell profile：profile 里的别名与环境初始化（如 conda）仅在开启后生效。',
+                  '开启后将执行你的 PowerShell profile，可能引入未知延迟或报错。默认关闭（行为确定性优先）。'
+                ]}
+              />
+            </div>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={tpEnabled ?? false}
+                disabled={tpEnabled === null}
+                onChange={(e) => void chooseTP(e.target.checked)}
+              />
+              加载 PowerShell profile
+            </label>
+            {tpEnabled === true && (
+              <p className="hint">已开启。下一次起终端生效；正在运行的会话不受影响。</p>
             )}
 
             {/* 省 token 的口号不写在这里 —— 它是"能力 vs 省钱"的取舍，摆进 ⓘ 里让人自己选，

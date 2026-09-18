@@ -36,11 +36,13 @@ interface StoredSettings extends ModelSettings {
   /** 反思日上限（批 2）。缺字段 = 20。⚠️ 反思也烧 token，需要日上限挡失控 */
   reflectionDailyLimit?: number
   /**
-   * **电脑控制开关**（2026-09-15 用户需求）。当前版本**尚无对应的电脑控制工具**——开关先落门控：
-   * 状态进自视段（模型如实报告自身配置），工具上线后此处即权限闸。缺字段 = 老配置 → `false`：
+   * **电脑控制开关**（2026-09-15 用户需求；plan44 起接 windows-mcp 实体）。权限闸在消费侧：
+   * 关 = 桌面类 MCP 工具整批不下发（`shared/computer-use` 门控）。缺字段 = 老配置 → `false`：
    * 涉及鼠标键盘的权限必须由用户显式开启，不能替他默认。
    */
   computerControlEnabled?: boolean
+  /** E5（09-18 拍板"做，默认关"）：内置终端起 shell 时是否加载 PowerShell profile */
+  terminalLoadProfileEnabled?: boolean
   /**
    * **技能禁用名单**（plan34 S2a，2026-09-17）。存**名字**不存层 ——
    * skill 是两层（内置 < 用户）会重名，而 UI 上只显示一个名字，
@@ -175,6 +177,19 @@ export function getComputerControlEnabled(): boolean {
 export function setComputerControlEnabled(enabled: boolean): boolean {
   store.set('computerControlEnabled', enabled)
   return getComputerControlEnabled()
+}
+
+/**
+ * **E5：加载 PowerShell profile**（默认关 = 终端带 `-NoProfile`，确定性优先）。
+ * 与电脑控制同一条判据：`=== true`，坏值宁可静默关着。生效时机 = 下一次起终端（活会话不换壳）。
+ */
+export function getTerminalLoadProfileEnabled(): boolean {
+  return store.store.terminalLoadProfileEnabled === true
+}
+
+export function setTerminalLoadProfileEnabled(enabled: boolean): boolean {
+  store.set('terminalLoadProfileEnabled', enabled)
+  return getTerminalLoadProfileEnabled()
 }
 
 /**

@@ -70,6 +70,8 @@ function setup(opts?: {
   exists?: boolean
   platform?: NodeJS.Platform
   spawnThrows?: boolean
+  /** E5：模拟"用户在设置页翻转开关"的可变读取 */
+  loadProfile?: () => boolean
   /** 冻结时间用：验"同一毫秒内重启，id 也不许撞" */
   now?: () => number
 }) {
@@ -89,6 +91,7 @@ function setup(opts?: {
     getWorkspaceRoot: () => opts?.root ?? 'D:/ws',
     exists: () => opts?.exists ?? true,
     platform: opts?.platform ?? 'win32',
+    loadProfile: opts?.loadProfile,
     now: opts?.now,
     pty: ptyModule
   })
@@ -498,6 +501,25 @@ describe('shell 与环境变量（每一条都是"不做就会踩"的）', () =>
 
   it('非 Windows → bash', () => {
     expect(defaultShell('linux').file).toBe('bash')
+  })
+
+  // E5（09-18 拍板"做，默认关"）：开 = 去掉 -NoProfile，label 如实翻
+  it('loadProfile=true → 不带 -NoProfile，label 写「已加载 profile」', () => {
+    const s = defaultShell('win32', true)
+    expect(s.args).not.toContain('-NoProfile')
+    expect(s.args).toContain('-NoLogo')
+    expect(s.label).toContain('已加载')
+  })
+
+  it('开关翻转后**新起的终端跟随**（每次 start 现读），活会话不换壳', () => {
+    let on = false
+    const { store, calls } = setup({ loadProfile: () => on })
+    store.start()
+    expect(calls[0]!.args).toContain('-NoProfile')
+    on = true
+    store.restart()
+    expect(calls[1]!.args).not.toContain('-NoProfile')
+    expect(store.current()!.shell).toContain('已加载')
   })
 
   it('env 里给足"我像个终端"的信号（TERM / COLORTERM），但**不设 FORCE_COLOR**', () => {

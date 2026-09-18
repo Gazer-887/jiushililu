@@ -382,11 +382,14 @@ export const IPC = {
   memoryGetSwitch: 'memory:get-switch',
   memorySetSwitch: 'memory:set-switch',
   /**
-   * **电脑控制开关**（2026-09-15 用户需求）。当前版本**尚无对应的电脑控制工具** —— 开关先落门控：
-   * 状态会进自视段（模型对自身配置如实报告），工具上线后此处即权限闸。
+   * **电脑控制开关**（2026-09-15 用户需求；plan44 起接 windows-mcp）。关 = 桌面类 MCP 工具整批不下发
+   * （消费侧门控，见 `shared/computer-use`）；开关变更自下一轮对话生效。
    */
   computerControlGet: 'computer-control:get',
   computerControlSet: 'computer-control:set',
+  /** E5（09-18 拍板"做，默认关"）：内置终端是否加载 PowerShell profile；生效时机 = 下一次起终端 */
+  terminalProfileGet: 'terminal-profile:get',
+  terminalProfileSet: 'terminal-profile:set',
   /** plan34 S2a：技能禁用名单（读写）。**MCP 无名单** —— 开关走配置 `cfg.enabled`（单一真相源，见 mcpSaveServer） */
   skillsDisabledGet: 'skills-disabled:get',
   skillsDisabledSet: 'skills-disabled:set',
@@ -758,9 +761,11 @@ export interface ApiBridge {
   /** **记忆开关**：批 1 只管通路 A。`warnFullAccess` = 开启时正处于完全访问档（判据 14 要当场告警） */
   getMemorySwitch(): Promise<boolean>
   setMemorySwitch(enabled: boolean): Promise<import('./memory').MemorySwitchResult>
-  /** **电脑控制开关**（2026-09-15）：当前无对应工具，先落门控（状态进自视段） */
+  /** **电脑控制开关**（plan44 门控）与 **E5 终端 profile 开关**（默认关，下一次起终端生效） */
   getComputerControl(): Promise<boolean>
   setComputerControl(enabled: boolean): Promise<boolean>
+  getTerminalProfile(): Promise<boolean>
+  setTerminalProfile(enabled: boolean): Promise<boolean>
   /** plan34 S2a：技能禁用名单（设置页开关用；「真禁用」= 模型侧确实看不到）。
    *  MCP 开关不走名单 —— 走配置 `cfg.enabled`（mcpSaveServer），单一真相源 */
   getSkillsDisabled(): Promise<string[]>

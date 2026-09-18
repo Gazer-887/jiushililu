@@ -654,6 +654,9 @@ const fetchAvailableCalls = []
 /** 电脑控制开关的当前值与调用流水（2026-09-15 用户需求） */
 let ccEnabled = false
 const ccCalls = []
+/** E5 终端 profile 开关（09-18 拍板"做，默认关"）：值与调用流水 */
+let tpEnabled = false
+const tpCalls = []
 
 let gitBroadcast = () => 0
 let gitMode = 'repo' // 'repo' | 'not-repo'
@@ -946,6 +949,13 @@ const STUBS = {
   'computer-control:set': (enabled) => {
     ccEnabled = enabled
     ccCalls.push(enabled)
+    return enabled
+  },
+  // E5 终端 profile 开关：同款契约副本
+  'terminal-profile:get': () => tpEnabled,
+  'terminal-profile:set': (enabled) => {
+    tpEnabled = enabled
+    tpCalls.push(enabled)
     return enabled
   },
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
@@ -4735,6 +4745,8 @@ app.whenReady().then(async () => {
         labels: rows.map((r) => r.textContent.trim()),
         // 电脑控制开关（2026-09-15 新增）混在同一个 .settings-body 里，一并采下默认态
         cc: shape(pick('启用电脑控制')),
+        // E5 终端 profile 开关（09-18）
+        tp: shape(pick('加载 PowerShell profile')),
         keep: shape(pick('锁屏与熄屏后继续运行')),
         auto: shape(pick('开机自启')),
         hints: hints.map((p) => p.textContent.trim()),
@@ -4747,9 +4759,10 @@ app.whenReady().then(async () => {
   `)
   const systemBefore = await systemRead()
   const visible = (box) => box !== null && box.w >= 12 && box.h >= 12
-  checkTrue('设置页「系统」区三项：启用电脑控制 / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
-    systemBefore.labels.length === 3 &&
+  checkTrue('设置页「系统」区四项：启用电脑控制 / 加载 PowerShell profile / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
+    systemBefore.labels.length === 4 &&
       systemBefore.cc !== null && systemBefore.cc.checked === false && systemBefore.cc.disabled === false &&
+      systemBefore.tp !== null && systemBefore.tp.checked === false && systemBefore.tp.disabled === false &&
       systemBefore.keep !== null && systemBefore.keep.checked === false && systemBefore.keep.disabled === false &&
       systemBefore.auto !== null && systemBefore.auto.checked === false && systemBefore.auto.disabled === false,
     systemBefore)
@@ -4795,6 +4808,48 @@ app.whenReady().then(async () => {
   checkTrue('电脑控制再点一下 → 关回原状（载荷 false、勾选框回未勾）',
     ccCalls.length === 2 && ccCalls[1] === false && ccEnabled === false,
     { ccCalls, ccEnabled })
+  // —— E5 终端 profile 开关往返（09-18 拍板"做，默认关"）：开 → 桩收 true → 提示"下一次起终端生效" → 关回 ——
+  await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('加载 PowerShell profile'));
+      if (c) c.querySelector('input').click();
+      return !!c;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 600))
+  const tpOn = await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('加载 PowerShell profile'));
+      const hints = Array.from(document.querySelectorAll('.settings-body p.hint')).map((p) => p.textContent.trim());
+      const notes = Array.from(document.querySelectorAll('.fnote-mark')).map((n) => n.getAttribute('aria-label') ?? '');
+      return { checked: c ? c.querySelector('input').checked : null, hints, notes: notes.join('|') };
+    })()
+  `)
+  checkTrue('E5 开 → 桩收到 true、回显勾选，且当场说明生效时机（下一次起终端，活会话不换壳）',
+    tpCalls.length === 1 && tpCalls[0] === true && tpEnabled === true &&
+      tpOn.checked === true &&
+      tpOn.hints.some((h) => h.indexOf('下一次起终端生效') >= 0),
+    { tpCalls, tpEnabled, tpOn: { checked: tpOn.checked, hints: tpOn.hints } })
+  checkTrue('E5 的 ⓘ 写明代价（执行 profile 可能引入延迟或报错 · 默认关=确定性优先）',
+    tpOn.notes.indexOf('延迟或报错') >= 0 && tpOn.notes.indexOf('确定性') >= 0,
+    tpOn.notes)
+  await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('加载 PowerShell profile'));
+      if (c) c.querySelector('input').click();
+      return !!c;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  checkTrue('E5 再点一下 → 关回原状（桩不留脏状态）',
+    tpCalls.length === 2 && tpCalls[1] === false && tpEnabled === false,
+    { tpCalls, tpEnabled })
   // 初值必须是**从主进程取到的**：取数失败会回落到"未勾选+禁用"，那与"存根返回 false"在断言层分不开 → 查调用次数
   checkTrue('初值来自主进程（`system:get` 真的被调过，不是界面默认值）',
     systemGetCalls >= 1 && systemBefore.keep !== null && systemBefore.keep.disabled === false,

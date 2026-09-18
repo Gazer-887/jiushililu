@@ -42,7 +42,7 @@ import {
   type McpServerConfig,
   type McpServerStatus
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
 import { transcribe, testVoiceEndpoint } from './voice/transcribe'
 import type { VoicePatch } from '@shared/voice'
 import type { SystemSettings, SystemView } from '@shared/system'
@@ -1522,6 +1522,15 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.computerControlSet, (_e, raw: unknown): boolean => {
     const enabled = z.boolean().parse(raw)
     return setComputerControlEnabled(enabled)
+  })
+
+  // E5（09-18 拍板"做，默认关"）：内置终端是否加载 PowerShell profile。
+  // 生效时机 = **下一次起终端**（活会话不换壳 —— 与"设了不等于立刻生效"的项目惯例一致）。
+  ipcMain.handle(IPC.terminalProfileGet, (): boolean => getTerminalLoadProfileEnabled())
+
+  ipcMain.handle(IPC.terminalProfileSet, (_e, raw: unknown): boolean => {
+    const enabled = z.boolean().parse(raw)
+    return setTerminalLoadProfileEnabled(enabled)
   })
 
   // ── 技能禁用名单（plan34 S1/S2a）──「真禁用」的读写口：assembleSkillBlock 注入前过滤（模型侧确实看不到）。

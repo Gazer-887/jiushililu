@@ -39,15 +39,17 @@ export interface TerminalShell {
   label: string
 }
 
-/** 挑一个 shell。Windows 选 **PowerShell** + `-NoProfile`：本机 Windows 实测不带它裸启动 **5865ms** 且期间零输出，带它只要 307ms。
- *  ⚠️ 但 `-NoProfile` 有代价，**界面文案必须写**：用户 profile 里加载的东西（本机实测会加载 conda 并激活环境）不生效，终端里的 `python` 可能不是他自己 PowerShell 里那个。 */
-export function defaultShell(platform: NodeJS.Platform = process.platform): TerminalShell {
+/** 挑一个 shell。Windows 选 **PowerShell**，默认带 `-NoProfile`：本机 Windows 实测不带它裸启动 **5865ms** 且期间零输出，带它只要 307ms。
+ *  `-NoProfile` 的代价（用户 profile 里的 alias/conda 初始化不生效）由 E5 开关兜：
+ *  设置页「加载 PowerShell profile」开 = 去掉 `-NoProfile`，**下次起终端生效**（活会话不换壳）。 */
+export function defaultShell(
+  platform: NodeJS.Platform = process.platform,
+  loadProfile = false
+): TerminalShell {
   if (platform === 'win32') {
-    return {
-      file: 'powershell.exe',
-      args: ['-NoLogo', '-NoProfile'],
-      label: 'PowerShell（未加载 profile）'
-    }
+    return loadProfile
+      ? { file: 'powershell.exe', args: ['-NoLogo'], label: 'PowerShell（已加载 profile）' }
+      : { file: 'powershell.exe', args: ['-NoLogo', '-NoProfile'], label: 'PowerShell（未加载 profile）' }
   }
   return { file: 'bash', args: ['-l'], label: 'bash' }
 }
@@ -96,7 +98,9 @@ export interface TerminalDeps {
   pty: PtyModuleLike
   exists?: (p: string) => boolean
   platform?: NodeJS.Platform
-  shell?: TerminalShell
+  shell?: TerminalShell | (() => TerminalShell)
+  /** E5 开关的注入口：**每次起终端现读**（传函数而不是值 —— 改设置不必重启应用，下次 start 即生效） */
+  loadProfile?: () => boolean
   now?: () => number
 }
 
@@ -135,7 +139,9 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
   const exists = deps.exists ?? existsSync
   const now = deps.now ?? Date.now
   const platform = deps.platform ?? process.platform
-  const shell = deps.shell ?? defaultShell(platform)
+  // 壳在**每次 start 时**解析（不是构造时）：E5 开关翻转后，新起的终端即跟随，活会话不动
+  const resolveShell = (): TerminalShell =>
+    typeof deps.shell === 'function' ? deps.shell() : (deps.shell ?? defaultShell(platform, deps.loadProfile?.() ?? false))
 
   let session: Session | null = null
   let idSeq = 0
@@ -238,6 +244,7 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
     const id = `term-${idSeq}-${now().toString(36)}`
 
     let pty: PtyLike
+    const shell = resolveShell()
     try {
       pty = deps.pty.spawn(shell.file, shell.args, {
         name: 'xterm-256color',

@@ -46,6 +46,7 @@ import {
   setNetworkCredentials,
   getMemoryEnabled,
   getAutoMemoryEnabled,
+  getTerminalLoadProfileEnabled,
   getReflectionDailyLimit
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
@@ -624,6 +625,8 @@ app.whenReady().then(async () => {
   const terminal = createTerminalSessionStore({
     getPermission: getPermissionPreset,
     getWorkspaceRoot: () => agentCtx.getWorkspaceRoot(),
+    // E5：每次起终端现读开关（改设置不必重启应用；活会话不换壳）
+    loadProfile: getTerminalLoadProfileEnabled,
     pty: { spawn: (file, args, opts) => loadPty().spawn(file, args, opts) }
   })
 
