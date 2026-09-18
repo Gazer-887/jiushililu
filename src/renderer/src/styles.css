@@ -4149,6 +4149,30 @@ label.radio {
   color: var(--muted);
 }
 
+/* E5 就地开关（09-19）：状态栏那行 shell 名点下去就切 profile 并重启终端。
+   外观上必须比纯文字多给一点"可按"的信号 —— 一个和文字长得完全一样的按钮，
+   用户不会去点（设置页里那个开关找不到，就是这个道理）。虚下划线是最低成本的暗示。 */
+button.tm-shell-btn {
+  font: inherit;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+button.tm-shell-btn:hover {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+button.tm-shell-btn:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
 .tm-cwd {
   flex: 1;
   min-width: 0;

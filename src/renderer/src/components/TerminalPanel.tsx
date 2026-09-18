@@ -97,6 +97,20 @@ export default function TerminalPanel(): JSX.Element {
   /** 起不来的原因（只读档 / 工作区没了 / 原生模块没加载成功）—— 要**明说**，不给个黑框 */
   const [refuse, setRefuse] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** E5 开关的当前真值（null = 还没读到 / 读取失败）。状态栏就地开关要按它决定往哪边翻 */
+  const [profileOn, setProfileOn] = useState<boolean | null>(null)
+
+  // 每次换会话都重读一次：值住在主进程，设置窗口也可能改它，本地不缓存成"一份真相"
+  useEffect(() => {
+    let alive = true
+    window.api
+      .getTerminalProfile()
+      .then((v) => alive && setProfileOn(v))
+      .catch(() => alive && setProfileOn(null))
+    return () => {
+      alive = false
+    }
+  }, [snap?.id])
 
 /** 对齐屏幕：**取快照 → 整段重放 → 补上重放期间到达的帧**，三步缺一不可 —— ① 进函数就 `replaying = true`（实时帧从此只入队、不落屏）；② 快照到手整段重放；③ 关闸后把队列里 `seq >= nextSeq` 的帧按序补上（那正是"落在两次 IPC 往返之间"的帧：写过的不重、没写的不漏）。
  *  ⚠️ 不许写成"先订阅（立刻落屏）→ 再重放全量"：那段窗口里的帧会被写两遍，而它恰好是"后台进程正在吐输出"的时刻 —— 也就是终端最需要正确的时刻。 */
@@ -286,8 +300,8 @@ export default function TerminalPanel(): JSX.Element {
     }
   }
 
-/** 重启终端 = **杀掉旧会话、起一个新的**（会话卡住时用户唯一的自救手段）。
- *  ⚠️ 不许改成调 `boot()`：它走的是**幂等**的 `terminalStart`，会话还活着时只会把同一个会话原样还回来 —— 而"卡住时自救"的场景里会话**必然是活着的**，那就等于一个死按钮。 */
+  /** 重启终端 = **杀掉旧会话、起一个新的**（会话卡住时用户唯一的自救手段）。
+   *  ⚠️ 不许改成调 `boot()`：它走的是**幂等**的 `terminalStart`，会话还活着时只会把同一个会话原样还回来 —— 而"卡住时自救"的场景里会话**必然是活着的**，那就等于一个死按钮。 */
   const restart = async (): Promise<void> => {
     const proto = protoRef.current
     if (!proto) return
@@ -327,6 +341,30 @@ export default function TerminalPanel(): JSX.Element {
     return <div className="ex-msg ex-err">终端加载失败：{error}</div>
   }
 
+  /**
+   * E5 就地开关：状态栏那行 shell 名点一下就切 profile 并重启终端。
+   *
+   * 为什么做在这里而不是只留设置页：09-19 实测连项目作者都找不到设置页里那个开关
+   * （CHANGELOG 还把它写成了不存在的「系统」区）。**把状态写在终端上却不给动作**，
+   * 等于让人看见问题、找不到答案 —— 提示与入口必须在同一个位置。
+   *
+   * ⚠️ 切换前**重新读一次真值**再取反，不用闭包里的 `profileOn`：设置窗口里可能已经改过了，
+   *    两个窗口共用主进程那一份，拿旧值取反会把用户刚设的状态又翻回去。
+   */
+  const toggleProfile = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const cur = await window.api.getTerminalProfile()
+      setProfileOn(await window.api.setTerminalProfile(!cur))
+      await restart()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** profile 是 PowerShell 独有的概念：bash 走 `-l`（登录 shell），不给它挂这个开关 */
+  const isPwsh = (snap?.shell ?? '').includes('PowerShell')
+
   const statusText =
     snap === null
       ? '还没有会话'
@@ -340,9 +378,25 @@ export default function TerminalPanel(): JSX.Element {
     <div className="tm-panel">
       <div className="tm-bar">
         <span className={`tm-status tm-status-${snap?.status ?? 'none'}`}>{statusText}</span>
-        <span className="tm-shell" title={`${snap?.shell ?? ''}｜初始目录：${snap?.cwd ?? ''}`}>
-          {snap?.shell ?? ''}
-        </span>
+        {isPwsh ? (
+          <button
+            type="button"
+            className="tm-shell tm-shell-btn"
+            disabled={busy || profileOn === null}
+            onClick={() => void toggleProfile()}
+            title={
+              profileOn
+                ? '已加载 profile｜点击停用并重启终端'
+                : '点击加载 PowerShell profile 并重启终端｜profile 中的别名与环境初始化随之生效，也可能引入延迟或报错'
+            }
+          >
+            {snap?.shell ?? ''}
+          </button>
+        ) : (
+          <span className="tm-shell" title={`${snap?.shell ?? ''}｜初始目录：${snap?.cwd ?? ''}`}>
+            {snap?.shell ?? ''}
+          </span>
+        )}
         <span className="tm-cwd" title="终端当前目录">
           {snap?.cwd ?? ''}
         </span>

@@ -475,7 +475,9 @@ const makeTermSnapshot = () => ({
   id: termSessionId(),
   cwd: 'D:\\jsllworkplace_for_test',
   workspaceRoot: 'D:\\jsllworkplace_for_test',
-  shell: 'PowerShell（未加载 profile）',
+  // 桩要跟真契约一致：真主进程是按开关算 label 的（`terminal-session.ts` defaultShell），
+  // 写死成"未加载"就让"点完文字该变"这条断言永远没机会成立。
+  shell: tpEnabled ? 'PowerShell（已加载 profile）' : 'PowerShell（未加载 profile）',
   status: termStatus,
   startedAt: Date.now() - 60000,
   cols: 80,
@@ -4657,6 +4659,48 @@ app.whenReady().then(async () => {
       termAfterRestart.hasLive === false,
     { clickedRestart, termRestartCalls, termAfterRestart })
 
+  // ── E5 就地开关（09-19）：状态栏那行 shell 名点下去 = 开 profile + 真重启 ──────────
+  // 起因是真实可用性事故：设置页里那个开关**连项目作者都找不到**（CHANGELOG 还把位置写成
+  // 不存在的「系统」区）。把状态写在终端上却不给动作 = 让人看见问题、找不到答案。
+  // 判据三条缺一不可：① 开了 profile（tpCalls 收到 true）② 真走了 restart（会话号变）
+  // ③ 状态文字跟着翻成"已加载"。只验 ① 会放过"改了设置但终端没换壳"这种半截实现——
+  // 而"没换壳"恰好是用户点完立刻能看见的破。
+  const tpCallsBefore = tpCalls.length
+  const restartCallsBefore = termRestartCalls
+  const clickedShell = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.tm-shell-btn');
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 1800))
+  const shellBtnAfter = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.tm-shell-btn');
+      return {
+        isButton: !!b && b.tagName === 'BUTTON',
+        text: b ? (b.textContent || '').trim() : null,
+        hasTitle: !!b && !!b.getAttribute('title')
+      };
+    })()
+  `)
+  console.log('TM_SHELL_BTN=' + JSON.stringify({ clickedShell, shellBtnAfter, tpCalls, termRestartCalls }))
+  checkTrue(
+    '点状态栏 shell 名 → 就地开启 profile、真的重启终端、文字翻成「已加载」（不必去设置页找开关）',
+    clickedShell === true &&
+      shellBtnAfter.isButton === true &&
+      shellBtnAfter.hasTitle === true &&
+      tpCalls.length === tpCallsBefore + 1 &&
+      tpCalls[tpCalls.length - 1] === true &&
+      termRestartCalls === restartCallsBefore + 1 &&
+      shellBtnAfter.text === 'PowerShell（已加载 profile）',
+    { clickedShell, shellBtnAfter, tpCalls, termRestartCalls })
+  // 复位：下面设置页那块按 `tpCalls.length === 1` 判"用户第一次开它"，
+  // 两个用例共用同一份桩状态 —— 这里不清零，那条会假红（桩状态谁用谁扫）。
+  tpEnabled = false
+  tpCalls.length = 0
+
   checkTrue('边界如实写在界面上（终端里改/删的文件不进检查点与回收站）',
     (termState.note || '').includes('回收站'), termState.note)
 
@@ -4775,7 +4819,7 @@ app.whenReady().then(async () => {
   `)
   const systemBefore = await systemRead()
   const visible = (box) => box !== null && box.w >= 12 && box.h >= 12
-  checkTrue('设置页「系统」区四项：启用电脑控制 / 加载 PowerShell profile / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
+  checkTrue('通用设置内四组开关：启用电脑控制 / 加载 PowerShell profile / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
     systemBefore.labels.length === 4 &&
       systemBefore.cc !== null && systemBefore.cc.checked === false && systemBefore.cc.disabled === false &&
       systemBefore.tp !== null && systemBefore.tp.checked === false && systemBefore.tp.disabled === false &&

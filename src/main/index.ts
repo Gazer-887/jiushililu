@@ -337,8 +337,18 @@ function openSettingsWindow(): void {
     title: '设置',
     show: false,
     parent: getMainWindow() ?? undefined,
-    // 设置窗口是**工具窗口**：不占任务栏、不参与「下一个窗口」切换，关掉它不该像关掉一个"应用"
-    skipTaskbar: false, // 保留任务栏存在感：用户可能只想在设置里翻，找不到窗口会很困惑
+    /**
+     * 09-19 用户裁决：设置窗**不许最小化、不许最大化**，右上角只留系统 ×。
+     * 起因是真实观感问题：点「-」之后任务栏那个缩略页签会挡在屏幕左下角。
+     * 不能最小化 = 那个状态根本不会产生，比"藏掉按钮"更彻底。
+     * ⚠️ 仍**不画自绘关闭钮**（2026-09-14 的决定）：系统 × 就在标题栏上，
+     *    再画一个紧贴其下干同一件事，想关设置时极易误点成关掉整个应用。
+     */
+    minimizable: false,
+    maximizable: false,
+    // 反过来**保留**任务栏存在感（原注释写"不占任务栏"与这行相反，已按实际行为改正）：
+    // 用户可能只想在设置里翻，一翻找不到窗口会比多一个任务栏按钮更困惑。
+    skipTaskbar: false,
     icon: app.isPackaged
       ? join(process.resourcesPath, 'icon.ico')
       : join(app.getAppPath(), 'resources/icon.ico'),

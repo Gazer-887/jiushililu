@@ -65,6 +65,23 @@ test.describe('e2e 可行性主干', () => {
     await h.page.waitForTimeout(1500)
     const after = await h.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)
     expect(after, '开设置窗后窗口数应 +1').toBeGreaterThan(before)
+
+    // 设置窗不许最小化/最大化（09-19 用户裁决：点「-」后任务栏缩略页签会挡在左下角）。
+    // ⚠️ 这条**只有真入口测得到**：verify-shot 是自建窗口 + 自建桩，压根不加载这段主进程代码，
+    //    窗口标志写错它也照样绿 —— 正是 e2e 相对桩式验证的增量价值。
+    // ⚠️ 找窗口按 **URL 的 `#/settings`** 认，不按 `getTitle()`：页面 `<title>` 会覆盖
+    //    BrowserWindow 的 `title` 选项（实测设置窗标题栏显示的是「九十里路」），
+    //    拿标题找等于拿一个会被运行时改写的字段找身份。
+    const flags = await h.app.evaluate(({ BrowserWindow }) => {
+      const s = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('settings'))
+      return s
+        ? { found: true, title: s.getTitle(), minimizable: s.isMinimizable(), maximizable: s.isMaximizable() }
+        : { found: false, title: null, minimizable: null, maximizable: null }
+    })
+    expect(flags.found, '应能找到 URL 带 settings 的窗口').toBe(true)
+    expect(flags.minimizable, '设置窗不该可最小化').toBe(false)
+    expect(flags.maximizable, '设置窗不该可最大化').toBe(false)
+    console.log('SETTINGS_WIN_FLAGS=' + JSON.stringify(flags))
   })
 
   test('量出平台事实：这台机器的加密存储决定"发消息"链能不能进 CI', async () => {
