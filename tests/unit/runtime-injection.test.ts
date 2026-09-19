@@ -3,7 +3,7 @@
 // ⚠️ 这里**不接受"代码看起来对"**。计划里 S3 的验收判据是「用户的选择变成 Agent 的实际行为」，
 // 而"实际行为"只能靠**真跑 shell 读回 PATH** 来证明。故本文件起真会话、真执行命令。
 // （与 shell-session.test.ts 同手法：mock 掉就测了个寂寞。）
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
@@ -125,6 +125,9 @@ describe('端到端：选中项 → shim → PATH → 子进程真能跑（不�
     const fakeName = isWin ? 'jslfaketool.cmd' : 'jslfaketool'
     const fakeTool = join(fakeDir, fakeName)
     writeFileSync(fakeTool, isWin ? '@echo JSL-FAKE-OK\r\n' : '#!/bin/sh\necho JSL-FAKE-OK\n')
+    // POSIX 下没有 x 位就执行不了（Windows 无此概念）。产品侧由 syncRuntimeBin 写 0o755 保证，
+    // 这里手搓替身，就得自己补上 —— 否则测的是"文件权限"，不是"PATH 注入"。
+    if (!isWin) chmodSync(fakeTool, 0o755)
 
     // 只把这个目录放进 PATH 头部（模拟 shim 目录）
     const s = open({ pathOverride: injectRuntimePath(process.env.PATH, fakeDir), fingerprint: 'fp-e2e' })
