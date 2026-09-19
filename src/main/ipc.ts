@@ -40,7 +40,8 @@ import {
   type GitCommitResult,
   type McpSaveResult,
   type McpServerConfig,
-  type McpServerStatus
+  type McpServerStatus,
+  type SettingsChangedKind
 } from '@shared/ipc'
 import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
 import { transcribe, testVoiceEndpoint } from './voice/transcribe'
@@ -346,7 +347,7 @@ export function registerIpcHandlers(deps: {
    * store 不共享 —— 一处改了必须让另一处知道，否则"同一份数据实时联动"就是空话。
    * 故这里只**上报变更事实**，真正的遍历发送交给 `main/index.ts`。
    */
-  onSettingsChanged?: (kind: 'settings' | 'ui-prefs' | 'models' | 'permission') => void
+  onSettingsChanged?: (kind: SettingsChangedKind) => void
   /**
    * 开设置窗口（幂等）。由侧栏齿轮触发 —— 渲染端不 import electron，建窗口只能在主进程。
    */
@@ -455,12 +456,27 @@ export function registerIpcHandlers(deps: {
       return getDevEnvSelectedSnapshot()
     }
     const p = path === null ? null : typeof path === 'string' && path.length > 0 ? path : null
-    return setDevEnvSelected(language, p)
+    const next = setDevEnvSelected(language, p)
+    // 换了运行时 → 终端状态栏那行「当前生效」必须跟着走（plan43 S3d）。
+    // 不广播的话：用户在设置窗改完、回到主窗，状态栏还写着旧环境 —— 比不显示更糟（显示错的事实）。
+    deps.onSettingsChanged?.('devEnv')
+    return next
   })
   async function getDevEnvSelectedSnapshot(): Promise<Record<string, string>> {
     const { getDevEnvSelected } = await import('./store/settings')
     return getDevEnvSelected()
   }
+
+  // plan43 S3d：当前**生效**的运行环境（状态栏用）。
+  // ⚠️ 与 `devEnvDetect` 的分工：那条给的是**意向**（用户选了什么），这条给的是**事实**
+  //    （命令真的会跑什么 + 有没有失效）。状态栏必须读事实，否则用户还是靠猜。
+  // ⚠️ **必须用纯读版本**（`inspectActiveSnapshot`）：这条 IPC 由状态栏渲染驱动、是高频调用，
+  //    若顺带写盘（mkdir + 逐文件比对 + 全目录扫描的同步 IO）会阻塞主进程事件循环 = 所有窗口卡顿。
+  //    写盘归 `resolveRuntimeEnv`（run 开始时一次）。2026-09-19 复查修。
+  ipcMain.handle(IPC.devEnvActive, async () => {
+    const { inspectActiveSnapshot } = await import('./dev-env/runtime-bin')
+    return inspectActiveSnapshot(deps.userDataDir, await getDevEnvSelectedSnapshot())
+  })
 
   ipcMain.handle(IPC.settingsSave, (_e, raw: unknown) => {
     const input = friendlyParse(settingsSchema, raw) as SettingsSaveInput

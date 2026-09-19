@@ -20,7 +20,8 @@ export const MAX_TASKS = 8
 const EMIT_THROTTLE_MS = 150
 
 export interface BackgroundTaskStore {
-  start(opts: { command: string; cwd: string; agent: string }): BackgroundTask
+  /** plan43 S3：`env` 可选 —— 给了就整体覆盖（PATH 覆盖值由调用方算好）；不给 = 继承主进程环境（旧行为） */
+  start(opts: { command: string; cwd: string; agent: string; env?: NodeJS.ProcessEnv }): BackgroundTask
   list(): BackgroundTask[]
   get(id: string): BackgroundTask | null
   /** 终止一条；返回是否真的发过终止信号 */
@@ -75,7 +76,7 @@ export function createBackgroundTaskStore(): BackgroundTaskStore {
   }
 
   return {
-    start({ command, cwd, agent }) {
+    start({ command, cwd, agent, env }) {
       if (tasks.size >= MAX_TASKS) {
         throw new Error(`后台任务已达上限（${MAX_TASKS} 个），请先停掉一些再起`)
       }
@@ -94,7 +95,12 @@ export function createBackgroundTaskStore(): BackgroundTaskStore {
 
       // shell: true —— 与前台 run_command 同一种执行语义（管道、&& 照常）
       // ⚠️ `spawnOptsForGroupKill` **不是装饰**：POSIX 下少了 `detached: true`，孙进程就留成孤儿（见 process-tree.ts）
-      const child = spawn(command, { ...spawnOptsForGroupKill(cwd), shell: true })
+      // plan43 S3：给了 env 就整体覆盖（PATH 覆盖值由调用方算好；不给 = 继承主进程环境，旧行为不变）
+      const child = spawn(command, {
+        ...spawnOptsForGroupKill(cwd),
+        shell: true,
+        ...(env !== undefined ? { env } : {})
+      })
       children.set(id, child)
 
       const append = (buf: Buffer): void => {

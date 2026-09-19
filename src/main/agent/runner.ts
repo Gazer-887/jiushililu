@@ -21,6 +21,7 @@ import {
   createSystemToolsWithConfirm,
   type CommandConfirm
 } from './tools/system-tools'
+import type { RuntimeEnv } from './tools/shell-session'
 import { createWebTools } from './tools/web-tools'
 import { createBrowserTools } from './tools/browser-tools'
 import { createTodoTools } from './tools/todo-tools'
@@ -116,9 +117,17 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
           hooks.background,
           hooks.agentLabel,
           hooks.resourcesPath,
-          hooks.pathAccess
+          hooks.pathAccess,
+          hooks.resolveRuntimeEnv
         )
-      : createSystemTools(workspaceRoot, hooks.background, hooks.agentLabel, hooks.resourcesPath, hooks.pathAccess)),
+      : createSystemTools(
+          workspaceRoot,
+          hooks.background,
+          hooks.agentLabel,
+          hooks.resourcesPath,
+          hooks.pathAccess,
+          hooks.resolveRuntimeEnv
+        )),
     ...createWebTools(hooks.webSearchDeps),
     ...createBrowserTools(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
@@ -187,6 +196,14 @@ export interface ToolHooks {
   background?: BackgroundTaskStore
   agentLabel?: string
   /**
+   * plan43 S3：用户选中的开发环境（运行时）→ 命令执行时的 PATH 覆盖。
+   *
+   * 与 `memory.enabled` 同手法：**传函数而非值**，且**每个 agent run 现读** ——
+   * 用户在设置页换了运行时，下一个任务即生效（run 内不变，见 shell-session 的指纹机制）。
+   * 不注入 = 不覆盖 PATH（本功能未启用时行为与从前逐字一致）。
+   */
+  resolveRuntimeEnv?: () => RuntimeEnv
+  /**
    * 记忆工具口（plan19 批 1）。不传 = 不下发 `remember` / `recall`（「有消费者才注册」，同 todos / ask / subagent）；
    * `conversationId` 由 `runAgent` 在装配处补 —— 同一个 hooks 对象会被多条会话共用，它自己不知道这一轮是谁。
    */
@@ -246,6 +263,14 @@ export interface AgentRuntimeContext {
   planApproval?: PlanApprovalBridge
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 `process.resourcesPath` —— runner 不许 import electron */
   resourcesPath?: string | null
+  /**
+   * plan43 S3：用户选中的开发环境（运行时）→ 命令执行时的 PATH 覆盖。
+   *
+   * 由组合根提供（它持有 settings 与 userData 路径）：runner 不许碰 electron-store / fs。
+   * **每个 agent run 现读** —— 用户在设置页换了运行时，下一个任务即生效。
+   * 不注入 = 不覆盖 PATH（本功能未启用时行为与从前逐字一致）。
+   */
+  resolveRuntimeEnv?: () => RuntimeEnv
   /** 记忆库（plan19 批 1）。由组合根注入：runner 不许碰 electron-store / fs，故"读写记忆"只能发生在那一层 */
   memory?: {
     repo: MemoryRepo
@@ -500,12 +525,24 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     }
   })
 
+  // plan43 S3：开发环境（运行时）→ 命令执行的 PATH 覆盖。
+  // ⚠️ **在这里求值一次**（把值而非函数交给工具集）—— 这是「**run 内不漂移**」这条承诺的落地点。
+  //
+  // 曾经的做法是传函数、让 `getShell()` 每次现读，注释还写着"保证改了设置后新起的会话用新环境"。
+  // 那是**错的**：`getShell()` 每条 `run_command` 都调，于是**同一个 run 内**用户一改设置，
+  // 下一条命令就换了环境 —— `cd`/`set` 还留着、PATH 却换了，正是这条承诺要防的
+  // 「同一任务里两条命令跑在两个环境里」（2026-09-19 子代理复查抓出）。
+  //
+  // 正确语义 = 「**新任务用新环境，正在跑的任务不打断**」，与 VS Code 的
+  // 「新开终端才跟随」同构（一个 run ≈ 一个新终端）。改设置 → 下一个 run 生效。
+  const runtimeEnvForRun = ctx.resolveRuntimeEnv?.()
   const allTools = createAllTools(workspaceRoot, {
     writer,
     ...(pathAccess ? { pathAccess } : {}),
     webSearchDeps: { firecrawlApiKey: args.firecrawlApiKey ?? null },
     ...(args.policy ? { policy: args.policy } : {}),
     ...(ctx.background ? { background: ctx.background, agentLabel } : {}),
+    ...(runtimeEnvForRun ? { resolveRuntimeEnv: () => runtimeEnvForRun } : {}),
     // 逐次确认（plan8 R5）：仅「可写」档需要 —— 只读档本就不下发 run_command；完全访问档是用户明确选的"别拦我"
     ...(ctx.confirmCommand && (args.permission ?? 'write') === 'write'
       ? {
@@ -847,6 +884,8 @@ export function createAgentContext(opts: {
   planApproval?: PlanApprovalBridge
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 —— runner 不许 import electron */
   resourcesPath?: string | null
+  /** plan43 S3：用户选中的开发环境 → PATH 覆盖（组合根提供；每个 agent run 现读） */
+  resolveRuntimeEnv?: () => RuntimeEnv
 }): AgentRuntimeContext {
   const ctx: AgentRuntimeContext = {
     getWorkspaceRoot: opts.getWorkspaceRoot,
@@ -861,7 +900,8 @@ export function createAgentContext(opts: {
     ...(opts.mcp ? { mcp: opts.mcp } : {}),
     ...(opts.trash ? { trash: opts.trash } : {}),
     ...(opts.ask ? { ask: opts.ask } : {}),
-    ...(opts.planApproval ? { planApproval: opts.planApproval } : {})
+    ...(opts.planApproval ? { planApproval: opts.planApproval } : {}),
+    ...(opts.resolveRuntimeEnv ? { resolveRuntimeEnv: opts.resolveRuntimeEnv } : {})
   }
   ensureAgentRuntime(ctx)
   return ctx

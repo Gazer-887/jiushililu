@@ -56,10 +56,16 @@ export function defaultShell(
 
 /** 给终端用的环境变量：**继承本机环境 + 补几个"我是终端"的信号**（不是白名单环境）；`TERM` / `COLORTERM` 只是**描述事实**（没有它很多工具直接降级成纯文本）。
  *  ⚠️ **不设 `FORCE_COLOR`**（真 PTY 下程序自己就是 TTY，再强制会让重定向到文件的场景也混进 ANSI 转义）、**不动 `NO_COLOR`**（那是用户"我不要颜色"的显式信号）、
- *     也**不设 `PYTHONUNBUFFERED`** 之类会改变用户程序运行时行为的开关 —— 那是"善意的越权"，本项目不做。 */
-export function terminalEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+ *     也**不设 `PYTHONUNBUFFERED`** 之类会改变用户程序运行时行为的开关 —— 那是"善意的越权"，本项目不做。
+ *
+ *  ⚠️ **`pathOverride`（plan43 S3）不改变上面的立场** —— 它注入的是**用户显式选择**的运行时
+ *     （设置页「开发环境」），属"用户设定"而非"我们的善意"。且注入方式是**在 PATH 头部插入**
+ *     中转目录，**不替换** PATH：`git` / `npm` / `rg` 照旧找得到。
+ *     值由调用方算出（`injectRuntimePath`），本函数只负责放进去 —— 保持"纯"、可单测。 */
+export function terminalEnv(base: NodeJS.ProcessEnv, pathOverride?: string): NodeJS.ProcessEnv {
   return {
     ...base,
+    ...(pathOverride !== undefined ? { PATH: pathOverride } : {}),
     TERM: base.TERM ?? 'xterm-256color',
     COLORTERM: base.COLORTERM ?? 'truecolor'
   }
@@ -101,6 +107,9 @@ export interface TerminalDeps {
   shell?: TerminalShell | (() => TerminalShell)
   /** E5 开关的注入口：**每次起终端现读**（传函数而不是值 —— 改设置不必重启应用，下次 start 即生效） */
   loadProfile?: () => boolean
+  /** plan43 S3 注入口：**每次起终端现读**的 PATH 覆盖值（undefined = 不覆盖）。
+   *  同样传函数而非值 —— 用户在设置页换了运行时，下次 start 即生效。 */
+  resolvePath?: () => string | undefined
   now?: () => number
 }
 
@@ -251,7 +260,10 @@ export function createTerminalSessionStore(deps: TerminalDeps): TerminalSessionS
         cols,
         rows,
         cwd: root,
-        env: terminalEnv(process.env)
+        // plan43 S3：用户选中的运行时（若配了）插进 PATH 头部。
+        // **每次 start 现读**（与 loadProfile 同手法）—— 新开终端即跟随新选择，
+        // 已开的终端**不换壳**（与 VS Code 一致：正在跑的东西不该被抽凳子）。
+        env: terminalEnv(process.env, deps.resolvePath?.())
       })
     } catch (err) {
       return {

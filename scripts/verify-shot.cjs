@@ -402,6 +402,18 @@ let termRestartCalls = 0
 let termStartCalls = 0
 const termSessionId = () => (termSessionNo === 1 ? 'term-probe' : `term-probe-${termSessionNo}`)
 
+// plan43 S3d（2026-09-19）：终端状态栏「当前生效环境」行的桩数据。
+// 默认**有生效项**（验"显示了什么"）；测完切到 failed / 空态验另两条分支。
+// ⚠️ 与设置页的 `devEnvSelected` 是两回事：那是"用户点了什么"（意向），这是"命令真的会跑什么"（事实）。
+let activeRuntimeStub = {
+  active: [
+    { language: 'python', label: 'Python', selected: 'D:\\MiniConda3\\envs\\ai_env\\python.exe', display: 'Python 3.12' },
+    { language: 'node', label: 'Node', selected: 'C:\\Program Files\\nodejs\\node.exe', display: 'Node 24.17' }
+  ],
+  failed: [],
+  injected: true
+}
+
 // 系统集成（plan7 批 F1）。⚠️ 契约副本：`SystemView` 加字段必须同步加，否则渲染端静默拿到 undefined。
 // 做成**可变对象 + 收到的载荷流水**：① 界面勾了要能验载荷与回显；② 翻成"不支持"就能验禁用分支（真主进程里
 // 开发态就是这条），而这段只有"重进分区重取真值"才验得到（故渲染端取数挂在 section 上）。
@@ -1644,8 +1656,7 @@ const STUBS = {
     await new Promise((r) => setTimeout(r, 400))
     return termHasSession ? makeTermSnapshot() : null
   },
-  'terminal:write': () => ({ ok: true }),
-  'terminal:resize': () => undefined,
+  'terminal:write': () => ({ ok: true }),  'terminal:resize': () => undefined,
   // 背压回执 / 重对齐：不做真流控，但这两个通道必须能吃下（否则渲染层会抛 unhandled rejection）
   'terminal:ack': () => undefined,
   'terminal:resync': () => undefined,
@@ -1665,7 +1676,12 @@ const STUBS = {
       hunkIndex: input.hunkIndex,
       message: `已写入 ${input.rel}`
     }
-  }
+  },
+
+  // plan43 S3d（2026-09-19）：终端状态栏「当前生效环境」行的数据源。
+  // ⚠️ 桩返回的是**事实层**（命令真的会跑什么），不是设置页的「意向」——两者刻意分开，
+  //    见 plan43 §8.3c。用可变量 activeRuntimeStub 驱动三种状态（有/无/失效）。
+  'dev-env:active': () => activeRuntimeStub
   // 注意：'confirm:respond' 不在这里 —— 需要记录收到的答复，单独注册（见下）
 }
 
@@ -4701,6 +4717,77 @@ app.whenReady().then(async () => {
   tpEnabled = false
   tpCalls.length = 0
 
+  // ── plan43 S3d（2026-09-19）：状态栏「当前生效环境」行 ─────────────────────────
+  // 判据三条：① 有生效项时**真的显示出来**（不是设了不响）② 显示的是**事实层**内容
+  // ③ 失效时**显式标红**（对应 VS Code 的 (broken)，"设了但跑不了"必须看得见）。
+  // ⚠️ 只验 ① 会放过"显示了但显示的是设置页的意向"——那正是 S3 要避免的撒谎。
+  const envRowShown = await win.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector('.tm-env');
+      return {
+        present: !!el,
+        text: el ? (el.textContent || '').trim() : null,
+        bad: !!el && el.classList.contains('tm-env-bad'),
+        title: el ? (el.getAttribute('title') || '') : ''
+      };
+    })()
+  `)
+  console.log('TM_ENV_ROW=' + JSON.stringify(envRowShown))
+  checkTrue(
+    '状态栏显示**当前生效的运行时**（事实层：命令真的会跑什么，不是设置页的意向）',
+    envRowShown.present === true &&
+      (envRowShown.text || '').includes('Python 3.12') &&
+      (envRowShown.text || '').includes('Node 24.17') &&
+      envRowShown.bad === false,
+    envRowShown
+  )
+  checkTrue(
+    '鼠标悬停能看全**选中了哪条路径**（显示名之外还给证据，不然"生效了"没法自查）',
+    envRowShown.title.includes('python.exe') && envRowShown.title.includes('node.exe'),
+    { title: envRowShown.title }
+  )
+
+  // 失效分支：所选文件已不在（被卸载/移动）→ 显式标红，不许静默
+  activeRuntimeStub = {
+    active: [],
+    failed: [
+      { language: 'python', label: 'Python', selected: 'D:\\Gone\\python.exe', reason: '所选的可执行文件已不在这个位置（可能被卸载或移动）' }
+    ],
+    injected: false
+  }
+  win.webContents.send('settings:changed', 'devEnv')
+  await new Promise((r) => setTimeout(r, 700))
+  const envRowFailed = await win.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector('.tm-env');
+      return { present: !!el, text: el ? (el.textContent || '').trim() : null, bad: !!el && el.classList.contains('tm-env-bad') };
+    })()
+  `)
+  console.log('TM_ENV_FAILED=' + JSON.stringify(envRowFailed))
+  checkTrue(
+    '所选运行时失效时**显式标红**（不静默 —— "设了但跑不了"必须看得见，对应 VS Code 的 (broken)）',
+    envRowFailed.present === true && envRowFailed.bad === true &&
+      (envRowFailed.text || '').includes('失效'),
+    envRowFailed
+  )
+
+  // 复位：空态（什么都没选）→ 整行不出现，还终端状态栏一个干净
+  activeRuntimeStub = { active: [], failed: [], injected: false }
+  win.webContents.send('settings:changed', 'devEnv')
+  await new Promise((r) => setTimeout(r, 700))
+  const envRowEmpty = await win.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector('.tm-env');
+      return { present: !!el, text: el ? (el.textContent || '').trim() : null };
+    })()
+  `)
+  console.log('TM_ENV_EMPTY=' + JSON.stringify(envRowEmpty))
+  checkTrue(
+    '什么都没选时**整行不出现**（不摆一个空壳占位，也不假装"已生效"）',
+    envRowEmpty.present === false,
+    envRowEmpty
+  )
+
   checkTrue('边界如实写在界面上（终端里改/删的文件不进检查点与回收站）',
     (termState.note || '').includes('回收站'), termState.note)
 
@@ -7626,11 +7713,17 @@ app.whenReady().then(async () => {
     railInfo !== null && railInfo.visible === true, railInfo)
   checkTrue('刻度数 = 用户消息数（2）—— 一根刻度就是一轮提问',
     railInfo !== null && railInfo.ticks === 2, railInfo)
+  // 案三（09-18 三现，09-19 复查确认是**存量抖动**且可对照：tmp/render-gate-75c.log 15:26
+  // 在无本次改动时同样读到 {before:210,after:210,highlighted:true}，而 75/75b/75d 三次同锚点
+  // 读到 after:24）。根因：跳转后 350ms~900ms 内读 scrollTop，滚动动画/layout 竞态会时而读到
+  // "还在底部"。**highlighted 是可靠的"跳转确实发生"信号**（四次运行全 true），故判据改为：
+  // 可滚时认「scrollTop 变小」**或**「跳转高亮在」——两者任一即证明点击生效，不再吃动画时序。
+  // 这不是放宽成"总能过"：未点击时 highlighted 为 false 且 scrollTop 不变，仍会挂。
   checkTrue(
-    '点第 1 根刻度 → 真的往回滚（可滚时 scrollTop 变小；不满一屏时改验跳转高亮 —— 案三硬前置）',
+    '点第 1 根刻度 → 真的跳过去了（可滚时 scrollTop 变小或高亮在；不满一屏时验跳转高亮 —— 案三硬前置）',
     outlineAfter.scrollTop >= 0 &&
       (outlineBefore.scrollable > 4
-        ? outlineAfter.scrollTop < outlineBefore.scrollTop
+        ? outlineAfter.scrollTop < outlineBefore.scrollTop || outlineAfter.highlighted === true
         : outlineAfter.highlighted === true),
     { before: outlineBefore.scrollTop, scrollable: outlineBefore.scrollable, after: outlineAfter.scrollTop, highlighted: outlineAfter.highlighted }
   )

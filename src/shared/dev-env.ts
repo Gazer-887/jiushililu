@@ -174,3 +174,33 @@ export function isSelectionValid(selected: Record<string, string>, snapshot: Dev
     .filter(([, p]) => !all.has(pathKey(p)))
     .map(([lang]) => lang)
 }
+
+// ── S3：当前**生效**的运行环境（状态栏显示用）────────────────────────────
+
+/** 某个语言在"命令执行时"实际会命中的东西 */
+export interface ActiveRuntime {
+  language: string
+  label: string
+  /** 用户选中的原件路径；'' = 未选择 */
+  selected: string
+  /** 文件名/别名简称，给状态栏一行显示用（如 `python 3.12.13`）；未选择时为 '' */
+  display: string
+}
+
+/**
+ * 状态栏要显的「当前生效」快照。
+ *
+ * ⚠️ 为什么叫"生效"而不叫"选择"：设置页里那个是**意向**（用户点了什么），
+ * 这里要的是**事实**（命令真的会跑什么）。两者可能不一致 ——
+ * 选中的文件被删了、shim 没建起来、或者用户手改了外部 PATH。
+ * 状态栏显示意向而不显示事实，就等于让用户继续靠猜（0.13.71 的教训）。
+ */
+export interface ActiveRuntimeSnapshot {
+  /** 实际生效的语言（只列已选择成功的） */
+  active: ActiveRuntime[]
+  /** 选了但**没能生效**的：原件不存在 / shim 建不起来 —— 必须显式告知，不许静默 */
+  failed: { language: string; label: string; selected: string; reason: string }[]
+  /** 已注入的 PATH 是否真的在环境里（事实核对） */
+  injected: boolean
+}
+

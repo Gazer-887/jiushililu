@@ -38,6 +38,8 @@ export interface ShellRunResult {
 
 export interface AgentShellSession {
   run(command: string, timeoutMs: number): Promise<ShellRunResult>
+  /** plan43 S3：本会话起壳时用的环境指纹（调用方据此判"要不要换壳"） */
+  readonly envFingerprint: string
   dispose(): void
 }
 
@@ -71,13 +73,23 @@ class AgentShellSessionImpl implements AgentShellSession {
   private handshakeBuf = ''
   /** 本轮 run 的"就绪前死亡"结算回调（spawn 起不来时由 error 处理器调用）；空闲时为 null */
   private earlyDeath: (() => void) | null = null
+  /** plan43 S3：起 shell 时用的**环境指纹**。用于判断"设置变了要不要换壳"。 */
+  private fingerprint = ''
 
   constructor(
     private readonly cwd: string,
-    private readonly platform: NodeJS.Platform = process.platform
+    private readonly platform: NodeJS.Platform = process.platform,
+    /** plan43 S3：本次 run 的环境（PATH 覆盖 + 指纹）。每次 run 现读，见 `AgentShellSessionDeps` */
+    private readonly runtime: RuntimeEnv = { pathOverride: undefined, fingerprint: '' }
   ) {
     liveSessions.add(this)
+    this.fingerprint = runtime.fingerprint
     enforceCap()
+  }
+
+  /** plan43 S3：环境指纹（供调用方比对"是否与当前设置一致"） */
+  get envFingerprint(): string {
+    return this.fingerprint
   }
 
   private clearIdle(): void {
@@ -121,7 +133,12 @@ class AgentShellSessionImpl implements AgentShellSession {
     if (!this.dead && this.child && this.child.exitCode === null) return true
     this.clearIdle()
     // stdio 不传 = 三路全 pipe（默认），正好是我们要的
-    const opts = { ...spawnOptsForGroupKill(this.cwd, this.platform) }
+    // plan43 S3：PATH 覆盖（用户选中的运行时）—— 不传 env 时 spawn 继承主进程环境，
+    // 而主进程环境是**应用启动时**的快照，故必须显式给出覆盖值才能让"选中的运行时"生效。
+    const opts: Parameters<typeof spawn>[2] = { ...spawnOptsForGroupKill(this.cwd, this.platform) }
+    if (this.runtime.pathOverride !== undefined) {
+      opts.env = { ...process.env, PATH: this.runtime.pathOverride }
+    }
     try {
       this.child =
         this.platform === 'win32'
@@ -336,9 +353,27 @@ class AgentShellSessionImpl implements AgentShellSession {
   }
 }
 
+/**
+ * plan43 S3：一个 shell 会话的**运行环境**。
+ *
+ * `fingerprint` 的用途（**确定性生效**的关键）：`shell-session` 是常驻复用的，
+ * 用户改了「开发环境」设置后，若下一个 run 继续复用旧壳，就会**用上旧环境**；
+ * 若等 10 分钟空闲回收才变，那是"碰运气生效"。
+ * → 调用方在每个 run 开始时比对指纹：**不同就淘汰旧会话、起新的**。
+ *   与 VS Code 的取舍一致 —— **已开的终端不动**（正在跑的东西不该被抽凳子），
+ *   但**新的执行**一定用新环境。
+ */
+export interface RuntimeEnv {
+  /** PATH 覆盖值（`undefined` = 不改 PATH，保持原行为） */
+  pathOverride: string | undefined
+  /** 环境指纹（`runtimeFingerprint()` 产出）；空串 = 未启用开发环境 */
+  fingerprint: string
+}
+
 export function createShellSession(
   cwd: string,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  runtime: RuntimeEnv = { pathOverride: undefined, fingerprint: '' }
 ): AgentShellSession {
-  return new AgentShellSessionImpl(cwd, platform)
+  return new AgentShellSessionImpl(cwd, platform, runtime)
 }

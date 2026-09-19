@@ -32,6 +32,9 @@ import { createSkillsStore } from './skills/skills-store'
 import { createMcpManager } from './mcp/mcp-manager'
 import { nodeFsAdapter } from './store/conversations-fs'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
+import type { RuntimeEnv } from './agent/tools/shell-session'
+import { currentFingerprint, syncRuntimeBin } from './dev-env/runtime-bin'
+import { injectRuntimePath } from '@shared/runtime-path'
 import { createSystemIntegration } from './system-integration'
 import { createNetworkProxy } from './network-proxy'
 import { installElectronFetch } from './net/electron-fetch'
@@ -47,7 +50,8 @@ import {
   getMemoryEnabled,
   getAutoMemoryEnabled,
   getTerminalLoadProfileEnabled,
-  getReflectionDailyLimit
+  getReflectionDailyLimit,
+  getDevEnvSelected
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
@@ -573,6 +577,38 @@ app.whenReady().then(async () => {
     }
   }
 
+  // plan43 S3：开发环境（运行时）→ PATH 覆盖。**两条线共用同一份实现**（终端 / Agent 命令）——
+  // 分开写迟早分岔（本项目在 `killProcessTree` 上踩过同款：两套判据必然漂移）。
+  //
+  // ⚠️ 三条钉死，逐条对应设计依据：
+  //   ① **基准 = 启动快照**（`process.env.PATH` 在此时取值，显式兜底为 `''`）：不用实时值，
+  //      否则反复注入会层层叠加。**显式 `?? ''` 而非靠下游兜底** —— 类型上它是 `string | undefined`，
+  //      靠 `injectRuntimePath` 里的兜底掩盖上游不严谨，是"错误在远处被消化"。
+  //   ② **文件级 shim**（`syncRuntimeBin`）：不注入 dirname，避免 conda 那种"选 python 连带 conda.exe"。
+  //   ③ **每次 run 现读**（由 `runner.ts` 在 run 开始时求值一次，见那里注释）。
+  //      ⚠️ 注意口径：是"**每个 run** 现读"，**不是每条命令现读** —— 后者会让同一个 run 内
+  //      用户一改设置就换环境，破坏"run 内不漂移"。2026-09-19 子代理复查抓到过这个口径混乱。
+  const bootPath: string = process.env.PATH ?? ''
+  const resolveRuntimeEnv = (): RuntimeEnv => {
+    const selected = getDevEnvSelected()
+    const has = Object.values(selected).some((v) => typeof v === 'string' && v.trim().length > 0)
+    if (!has) {
+      // ★ 取消全部选择 ⇒ **必须清理旧 shim**。否则 `<userData>/runtime-bin/` 里留着上一轮的
+      //   `python.cmd`（内容仍指向已取消的可执行文件）—— "删除即撤销"的承诺不成立，且用户若
+      //   之后手把它加进自己的 PATH，会静默改回旧运行时。故这里不是空转，是**撤销动作**。
+      syncRuntimeBin(userDataDir, {})
+      return { pathOverride: undefined, fingerprint: '' }
+    }
+    const synced = syncRuntimeBin(userDataDir, selected)
+    // 原件缺失（用户卸了/移了）→ **不注入**：注入一个空的中转目录等于把 PATH 头部占住却什么也给不了，
+    // 会让用户"看起来配了、实际更糟"。如实退回原环境，缺失详情由设置页呈现。
+    if (synced.entries.length === 0) return { pathOverride: undefined, fingerprint: '' }
+    return {
+      pathOverride: injectRuntimePath(bootPath, synced.dir),
+      fingerprint: currentFingerprint(selected, userDataDir)
+    }
+  }
+
   // Agent 运行时上下文：内置定义随打包资源分发；工作区惰性解析（用户可切换，免重启）
   const agentCtx = createAgentContext({
     getWorkspaceRoot: () => resolveWorkspaceRoot(userDataDir).root,
@@ -584,6 +620,8 @@ app.whenReady().then(async () => {
     checkpointDir: join(userDataDir, 'checkpoints'),
     // 危险操作确认（plan8 R5）：run_command 执行前问用户
     confirmCommand: (req) => confirm.ask(req),
+    // plan43 S3：开发环境 → 命令执行时的 PATH 覆盖（每个 agent run 现读）
+    resolveRuntimeEnv,
     // 提问口（ask_user）：注入的是**桥本体**（只用到 ask 一个方法）—— runner 不许 import electron，故由组合根注入
     ask,
     // 计划批准（plan27）：planner 出完方案后阻塞等用户点头；不注入 = 闸门不生效（安全默认）
@@ -645,6 +683,8 @@ app.whenReady().then(async () => {
     getWorkspaceRoot: () => agentCtx.getWorkspaceRoot(),
     // E5：每次起终端现读开关（改设置不必重启应用；活会话不换壳）
     loadProfile: getTerminalLoadProfileEnabled,
+    // plan43 S3：每次起终端现读运行环境（同上口径 —— 新开终端跟随新选择，已开的不换壳）
+    resolvePath: () => resolveRuntimeEnv().pathOverride,
     pty: { spawn: (file, args, opts) => loadPty().spawn(file, args, opts) }
   })
 

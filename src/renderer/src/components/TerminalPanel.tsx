@@ -3,6 +3,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { FitAddon as XFitAddon } from '@xterm/addon-fit'
 import type { TerminalDataPayload, TerminalSessionSnapshot } from '@shared/terminal'
+import type { ActiveRuntimeSnapshot } from '@shared/dev-env'
 
 // 内置终端面板（plan7 批 C）。三条约束：① **xterm 按需加载**（单例 + `import()`，别让它进主 chunk —— 那是每次启动都要付的代价）；
 // ② **视图可丢弃，会话不可**：本项目"切页签 = 卸载"是定死的语义（plan9 §W3），故 shell 与输出缓冲在主进程，重挂时先 `terminalSnapshot()` **按序号重放**再续接增量（只收 `seq >= nextSeq` 的帧）。
@@ -99,6 +100,8 @@ export default function TerminalPanel(): JSX.Element {
   const [busy, setBusy] = useState(false)
   /** E5 开关的当前真值（null = 还没读到 / 读取失败）。状态栏就地开关要按它决定往哪边翻 */
   const [profileOn, setProfileOn] = useState<boolean | null>(null)
+  /** plan43 S3：当前**生效**的运行环境（事实，不是设置页里的意向）。null = 还没读到 */
+  const [active, setActive] = useState<ActiveRuntimeSnapshot | null>(null)
 
   // 每次换会话都重读一次：值住在主进程，设置窗口也可能改它，本地不缓存成"一份真相"
   useEffect(() => {
@@ -107,6 +110,11 @@ export default function TerminalPanel(): JSX.Element {
       .getTerminalProfile()
       .then((v) => alive && setProfileOn(v))
       .catch(() => alive && setProfileOn(null))
+    // plan43 S3：与 profile 同一口径 —— 每次换会话重读，因为**环境在起壳时定死**（活会话不换）
+    window.api
+      .getActiveRuntimes()
+      .then((v) => alive && setActive(v))
+      .catch(() => alive && setActive(null))
     return () => {
       alive = false
     }
@@ -252,7 +260,15 @@ export default function TerminalPanel(): JSX.Element {
           void window.api.terminalSnapshot().then((s) => setSnap(s))
           void boot({ reset: true })
         })
-        disposers = [offData, offState, offPerm, () => themeObserver.disconnect()]
+        // plan43 S3d：换了运行时 → 状态栏那行「当前生效」立刻跟着走。
+        // ⚠️ **不重启终端、不重 boot** —— 与 VS Code 同语义：改解释器不影响已打开的终端
+        //   （官方文档：`Changing it does not affect already-open terminal panels`），
+        //   新开的终端自然用新环境。这里只刷新"查看到的那个事实"。
+        const offDevEnv = window.api.onSettingsChanged((kind) => {
+          if (kind !== 'devEnv') return
+          void window.api.getActiveRuntimes().then((v) => setActive(v)).catch(() => setActive(null))
+        })
+        disposers = [offData, offState, offPerm, offDevEnv, () => themeObserver.disconnect()]
 
         setPhase('ready')
         await boot()
@@ -365,6 +381,20 @@ export default function TerminalPanel(): JSX.Element {
   /** profile 是 PowerShell 独有的概念：bash 走 `-l`（登录 shell），不给它挂这个开关 */
   const isPwsh = (snap?.shell ?? '').includes('PowerShell')
 
+  /**
+   * plan43 S3d：终端状态栏的「运行环境」行。
+   *
+   * 为什么终端这里要显示：**终端会话只在"新起"时读环境**（与 VS Code 同口径 ——
+   * 已开的终端不换壳，正在跑的东西不该被抽凳子）。所以用户改了设置之后，
+   * 唯一能判断"这个终端到底用的哪个环境"的办法就是**在终端上如实显示它起壳时用的值**。
+   * 不显示 = 用户只能靠猜，等于功能没做（0.13.71 的教训）。
+   */
+  const envLabel = active?.active.length
+    ? active.active.map((a) => a.display).join(' ＋ ')
+    : active?.failed.length
+      ? '所选运行时已失效'
+      : ''
+
   const statusText =
     snap === null
       ? '还没有会话'
@@ -400,6 +430,18 @@ export default function TerminalPanel(): JSX.Element {
         <span className="tm-cwd" title="终端当前目录">
           {snap?.cwd ?? ''}
         </span>
+        {envLabel.length > 0 && (
+          <span
+            className={`tm-env${active?.failed.length ? ' tm-env-bad' : ''}`}
+            title={
+              active?.failed.length
+                ? `所选运行时已失效：${active.failed.map((f) => `${f.label} ${f.selected}——${f.reason}`).join('；')}。请在设置页的开发环境里重新选择。`
+                : `本终端起壳时用的运行环境：${active?.active.map((a) => `${a.label} → ${a.selected}`).join('；')}。\n改设置后「新开的终端」才跟随（已开的终端不换壳）。`
+            }
+          >
+            {envLabel}
+          </span>
+        )}
         <button className="ck-btn" disabled={busy || snap?.status !== 'running'} onClick={cdHome}>
           回到工作区
         </button>

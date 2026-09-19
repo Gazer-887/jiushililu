@@ -37,11 +37,20 @@ export default function DevEnvSettings(): React.ReactElement {
   const staleLangs = snap ? isSelectionValid(snap.selected, snap) : []
   // UI 先只显 Node + Python（开放点 2）；uv 在快照里供其他方案联动取用，不单列分组
   const shown = (snap?.groups ?? []).filter((g) => g.id === 'node' || g.id === 'python')
+  const anySelected = snap ? Object.values(snap.selected).some((p) => p.length > 0) : false
 
   return (
     <div className="settings-section de-section">
       <h2>开发环境</h2>
       <p className="hint">Agent 运行代码时使用的本机运行时。全局一份，探测自动发现，不支持手动添加。</p>
+      {/* plan43 S3：生效时机要说清。用户改了设置却看不到立刻的反馈，会以为"没生效"——
+          而真相是**新任务/新终端才跟随**（已开的不换壳，与 VS Code 同口径）。
+          不说清 = 让用户对着旧终端怀疑功能坏了。 */}
+      {anySelected && (
+        <p className="hint de-scope">
+          已选中的运行时会在<strong>新开的终端</strong>与<strong>下一次任务执行</strong>时生效；已经打开的终端不会被改动。
+        </p>
+      )}
       <div className="de-toolbar">
         <button type="button" className="btn-secondary" disabled={busy} onClick={() => void detect(true)}>
           {busy ? '探测中…' : '刷新'}

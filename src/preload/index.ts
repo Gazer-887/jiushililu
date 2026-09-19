@@ -3,7 +3,7 @@ import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { AgentSaveInput } from '@shared/agents'
 import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
 import type { PlaybookSaveInput } from '@shared/playbook'
-import type { ChatDonePayload, StreamEnvelope } from '@shared/ipc'
+import type { ChatDonePayload, SettingsChangedKind, StreamEnvelope } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { FetchAvailableInput, ModelSaveInput } from '@shared/models'
 import type { Goal, GoalAction } from '@shared/goal'
@@ -55,6 +55,8 @@ const api: ApiBridge = {
   detectRuntimes: (force?: boolean) => ipcRenderer.invoke(IPC.devEnvDetect, force === true),
   selectRuntime: (language: string, path: string | null) =>
     ipcRenderer.invoke(IPC.devEnvSelect, language, path),
+  /** plan43 S3：当前**生效**的运行环境（事实，非意向） */
+  getActiveRuntimes: () => ipcRenderer.invoke(IPC.devEnvActive),
   chatSend: (input: { conversationId: string; messages: ChatMessage[]; agentName?: string }) =>
     ipcRenderer.invoke(IPC.chatSend, input),
   chatAbort: (conversationId: string) => ipcRenderer.invoke(IPC.chatAbort, conversationId),
@@ -223,7 +225,7 @@ const api: ApiBridge = {
   /** 设置变更广播：主窗口与设置窗口是**两个渲染进程**，store 不共享 —— 一处改了另一处据此重读。
    *  ⚠️ 不带会话信封（进程级通道，同终端/后台任务），故直接收 kind 而不是 StreamEnvelope。 */
   onSettingsChanged: (cb) =>
-    subscribe(IPC.settingsChanged, (kind) => cb(kind as 'settings' | 'ui-prefs' | 'models' | 'permission')),
+    subscribe(IPC.settingsChanged, (kind) => cb(kind as SettingsChangedKind)),
   listWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsList, rel),
   readWorkspaceFile: (rel) => ipcRenderer.invoke(IPC.fsRead, rel),
   readWorkspaceBinary: (rel) => ipcRenderer.invoke(IPC.fsReadBinary, rel),

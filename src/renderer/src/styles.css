@@ -4185,6 +4185,25 @@ button.tm-shell-btn:disabled {
   text-align: left;
 }
 
+/* plan43 S3：终端状态栏的运行环境行（**事实**显示，非意向）。
+   为什么只在终端显示：终端会话在**起壳时**定死环境（活会话不换壳，与 VS Code 同口径），
+   所以"这个终端到底用的哪个环境"只有终端自己知道 —— 值得占一格。
+   ⚠️ 不用虚下划线（那是我给"可点"的约定信号），这里是**纯信息**，不可点。 */
+.tm-env {
+  flex-shrink: 0;
+  max-width: 22rem;
+  padding: 0 var(--sp-4);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 1px solid var(--border);
+}
+
+.tm-env-bad {
+  color: var(--danger);
+}
+
 .tm-host-wrap {
   position: relative;
   flex: 1 1 auto;
@@ -7443,6 +7462,18 @@ body[data-resizing] {
 
 .de-err {
   color: var(--accent);
+}
+
+/* plan43 S3：生效时机说明。**只在已选择时出现** —— 没选的时候这句是噪音。 */
+.de-scope {
+  margin: 6px 0 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.de-scope strong {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .de-group {

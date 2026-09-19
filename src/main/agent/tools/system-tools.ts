@@ -6,7 +6,7 @@ import { buildSearchSpec, SearchQueryError } from '@shared/search-query'
 import { runSearch, renderSearchOutcome } from '../../retrieval/search'
 import type { BackgroundTaskStore } from '../background-tasks'
 import { resolvePathInWorkspace, type PathAccess } from '../guard'
-import { createShellSession, type AgentShellSession } from './shell-session'
+import { createShellSession, type AgentShellSession, type RuntimeEnv } from './shell-session'
 
 // 系统类工具（P1 工具层补全）：列目录 / 文本搜索 / 命令执行。
 // 前三者默认只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
@@ -48,9 +48,10 @@ export function createSystemTools(
   background?: BackgroundTaskStore,
   agentLabel = '内核',
   resourcesPath?: string | null,
-  pathAccess?: PathAccess
+  pathAccess?: PathAccess,
+  resolveRuntimeEnv?: () => RuntimeEnv
 ): AgentTool[] {
-  return buildSystemTools(workspaceRoot, undefined, background, agentLabel, resourcesPath, pathAccess)
+  return buildSystemTools(workspaceRoot, undefined, background, agentLabel, resourcesPath, pathAccess, resolveRuntimeEnv)
 }
 
 export function createSystemToolsWithConfirm(
@@ -59,9 +60,10 @@ export function createSystemToolsWithConfirm(
   background?: BackgroundTaskStore,
   agentLabel = '内核',
   resourcesPath?: string | null,
-  pathAccess?: PathAccess
+  pathAccess?: PathAccess,
+  resolveRuntimeEnv?: () => RuntimeEnv
 ): AgentTool[] {
-  return buildSystemTools(workspaceRoot, confirm, background, agentLabel, resourcesPath, pathAccess)
+  return buildSystemTools(workspaceRoot, confirm, background, agentLabel, resourcesPath, pathAccess, resolveRuntimeEnv)
 }
 
 function buildSystemTools(
@@ -70,15 +72,34 @@ function buildSystemTools(
   background: BackgroundTaskStore | undefined,
   agentLabel: string,
   resourcesPath?: string | null,
-  pathAccess?: PathAccess
+  pathAccess?: PathAccess,
+  resolveRuntimeEnvIn?: () => RuntimeEnv
 ): AgentTool[] {
+  /** plan43 S3：默认"无覆盖" —— 未配置开发环境时行为与从前**逐字一致**（不注入、指纹为空） */
+  const resolveRuntimeEnv: () => RuntimeEnv =
+    resolveRuntimeEnvIn ?? (() => ({ pathOverride: undefined, fingerprint: '' }))
   /**
    * 前台命令的**持久 shell 会话**（plan28 D-085 S2）：工具集实例 = 一个 agent run，
    * 轮与轮之间 `cd` / `set` / 环境激活**跨步存活**；新 run 从工作区根重新开始（可预测性优先）。
    * 空闲 10 分钟自动回收（含进程树清理）、同活上限 4 个（LRU）—— 长驻泄漏由这两道闸兜住。
+   *
+   * plan43 S3：起壳时带上**当前运行环境**（PATH 覆盖 + 指纹）。指纹的用法见下 `getShell`。
    */
   let shell: AgentShellSession | null = null
-  const getShell = (): AgentShellSession => (shell ??= createShellSession(workspaceRoot))
+  const getShell = (): AgentShellSession => {
+    const runtime = resolveRuntimeEnv()
+    // ⚠️ 这段比对在当前设计下**不会触发** —— 因为 `runner.ts` 在 **run 开始时**求值一次，
+    //    同一个工具集实例内 `runtime` 恒定（而 `shell` 是本实例的局部变量，新 run 必然是 null）。
+    //    **它保留是防御，不是功能**：万一将来有人把 `resolveRuntimeEnv` 又改回"每次现读"，
+    //    这里会立刻兜住"环境变了却不换壳"的漂移。**不要把它的存在误解成"每命令都会换壳"** ——
+    //    那正是 2026-09-19 复查抓到的口径错误（同一 run 内换环境 = 破坏可复现性）。
+    if (shell && shell.envFingerprint !== runtime.fingerprint) {
+      shell.dispose()
+      shell = null
+    }
+    shell ??= createShellSession(workspaceRoot, undefined, runtime)
+    return shell
+  }
   /**
    * 解析一次，拿到**绝对路径**与**越界提示**（plan29 D-089 决议 2，与 `file-tools` 同手法）。
    * 界外被放行时用户唯一的保障就是"看得见它出了界"，故提示与解析一起算，不在各工具里各判一遍。
@@ -241,7 +262,16 @@ function buildSystemTools(
       if (args['background'] === true) {
         if (!background) return '错误：当前环境不支持后台执行，请去掉 background 参数'
         try {
-          const task = background.start({ command, cwd: workspaceRoot, agent: agentLabel })
+          // plan43 S3：后台与前台**同源**用同一个运行环境（否则会出现"前台用 3.12、后台用系统默认"的分歧）
+          const runtime = resolveRuntimeEnv()
+          const task = background.start({
+            command,
+            cwd: workspaceRoot,
+            agent: agentLabel,
+            ...(runtime.pathOverride !== undefined
+              ? { env: { ...process.env, PATH: runtime.pathOverride } }
+              : {})
+          })
           return `已在后台启动：${task.id}\n命令：${command}\n用 check_command 查看输出与状态。`
         } catch (err) {
           return `错误：${err instanceof Error ? err.message : String(err)}`
