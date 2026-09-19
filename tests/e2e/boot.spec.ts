@@ -79,8 +79,23 @@ test.describe('e2e 可行性主干', () => {
         : { found: false, title: null, minimizable: null, maximizable: null }
     })
     expect(flags.found, '应能找到 URL 带 settings 的窗口').toBe(true)
-    expect(flags.minimizable, '设置窗不该可最小化').toBe(false)
-    expect(flags.maximizable, '设置窗不该可最大化').toBe(false)
+    // 标题必须是「设置」：index.html 的 `<title>九十里路</title>` 会覆盖 BrowserWindow 的 title，
+    // 两窗同名会让人在任务栏里认不出哪个是设置窗（09-19 e2e 实测到的，不是推测）。跨平台都成立。
+    expect(flags.title, '设置窗标题不该被文档 title 顶掉').toBe('设置')
+
+    /**
+     * ⚠️ `minimizable` / `maximizable` 是**平台限定**选项：只在 Windows 与 macOS 生效，
+     * Linux(X11) 由窗口管理器决定、Electron 直接忽略 —— CI 实测 `isMinimizable()` 在
+     * ubuntu runner 上仍返回 true。把它写成跨平台断言，就是拿一个不存在的要求去判红 CI。
+     * 本项目的 dist 目标也只有 Windows（`electron-builder --win`），所以这里按平台收窄，
+     * 且 Linux 分支**必须打日志说明跳过了什么**（静默跳过与静默绿同一种坏）。
+     */
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+      expect(flags.minimizable, '设置窗不该可最小化').toBe(false)
+      expect(flags.maximizable, '设置窗不该可最大化').toBe(false)
+    } else {
+      console.log(`SETTINGS_WIN_FLAGS_SKIPPED=${JSON.stringify({ platform: process.platform, reason: 'minimizable/maximizable 仅 Windows/macOS 生效，Linux 由 WM 决定' })}`)
+    }
     console.log('SETTINGS_WIN_FLAGS=' + JSON.stringify(flags))
   })
 

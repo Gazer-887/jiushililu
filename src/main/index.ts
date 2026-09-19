@@ -363,6 +363,14 @@ function openSettingsWindow(): void {
   applyNavigationGuards(win)
   registerWindow('settings', win)
 
+  /**
+   * 锁住窗口标题：渲染入口是**单一 index.html**，其 `<title>九十里路</title>` 会在加载时
+   * 覆盖掉上面 `title: '设置'` 的声明（e2e 实测 `getTitle()` 返回「九十里路」）。
+   * 后果不只是标题栏不对 —— 设置窗与主窗在任务栏**同名**，正是"找不到窗口"的病根之一。
+   * 主窗口不设这条：那里「九十里路」本来就是对的。
+   */
+  win.on('page-title-updated', (e) => e.preventDefault())
+
   win.on('ready-to-show', () => win.show())
 
   const devURL = process.env['ELECTRON_RENDERER_URL']
