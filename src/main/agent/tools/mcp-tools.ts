@@ -16,10 +16,23 @@ export interface McpToolDeps {
   manager: McpManager
   /** 执行前确认（D-064）。缺省 = 不确认（仅测试场景；生产装配必传 confirmCommand 的包装） */
   confirm?: (req: { tool: string; detail: string }) => Promise<boolean>
-  /** 电脑控制开关（plan44 决策 4，单一真相源 = 通用设置）。缺省 false = 桌面派工具全不下发 */
-  computerControl?: boolean
-  /** 被门控拦下的工具名（日志用；决策 3b「未知一律屏蔽并记一条」） */
-  onGatedDrop?: (fullName: string, reason: string) => void
+  /**
+   * 电脑控制开关（plan44 决策 4，单一真相源 = 通用设置）。**必填**。
+   *
+   * ⚠️ **为什么不给默认值**（2026-09-19 真机 bug 的教训，D-119 ①）：它原来是 `computerControl?: boolean`，
+   * 于是装配层「忘了传」在类型上完全合法 —— 编译通过、测试全绿、运行起来静默全拦。
+   * **权限开关的失效方向必须是"关"**，但"忘记传"不该是一种**沉默的**关法：它让排查时面对一个
+   * 没有任何痕迹的空状态（连日志都没有）。改为必填后，漏传是**编译错误**，当场就暴露。
+   *
+   * ⚠️ 调用方请传**确切的布尔值**（`x === true`），不要用 `...(cond ? {x} : {})` 的条件展开 ——
+   * 那会让 `false` 变成"字段不存在"，语义上看着等价，实则把"显式关闭"与"压根没设置"混成一回事。
+   */
+  computerControl: boolean
+  /**
+   * 被门控拦下的工具名（日志用；决策 3b「未知一律屏蔽并记一条」）。**必填**，理由同上：
+   * 漏传它 = 拦了却不说，排查时"该有的日志一条都没有"会把方向带偏（本 bug 就是这么骗过一轮排查的）。
+   */
+  onGatedDrop: (fullName: string, reason: string) => void
 }
 
 export function createMcpTools(deps: McpToolDeps): AgentTool[] {
@@ -30,11 +43,11 @@ export function createMcpTools(deps: McpToolDeps): AgentTool[] {
     const isDesktop = isWindowsMcpServer(ref.server, ref.launchHint ?? '')
     const decision = gateComputerUseTool({
       isComputerUseServer: isDesktop,
-      enabled: deps.computerControl === true,
+      enabled: deps.computerControl,
       toolName: ref.name
     })
     if (decision !== 'keep') {
-      deps.onGatedDrop?.(ref.fullName, decision)
+      deps.onGatedDrop(ref.fullName, decision)
       continue
     }
     const label = `${ref.server}/${ref.name}`

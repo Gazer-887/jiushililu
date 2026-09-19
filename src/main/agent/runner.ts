@@ -59,6 +59,20 @@ import { SUMMARY_SYSTEM_PROMPT } from './context'
  */
 const log = createLogger('agent-runner')
 
+/**
+ * 门控拦下工具时的**默认日志落点**（D-119 ① 的复查结论）。
+ *
+ * ⚠️ 用 `log.warn` 而不是 `console.warn`：run 发生在 main 进程，`console.warn` 只到 stdout ——
+ * **打包态用户看不到**，而这恰恰是排查"工具怎么没了"时最需要看到的一行。`createLogger` 会落盘
+ * （`app.log`），与同文件其余日志一致。
+ *
+ * ⚠️ 二值文案（`drop-server-off` / 其余）刻意写死在这里而不是内联：`GateDecision` 将来加第三态时，
+ * 这里会多出一个"不在白名单"的误报 —— 但默认落点必须是**有的**，所以宁可留一个显式的兜底分支。
+ */
+const defaultGatedDropLog = (fullName: string, reason: string): void => {
+  log.warn(`[mcp-gate] 未下发 ${fullName}（${reason === 'drop-server-off' ? '电脑控制开关关闭' : '不在白名单'}）`, { reason })
+}
+
 const DANGEROUS_TOOLS = new Set(['run_command'])
 
 /** 「只读」权限档下模型只能拿到这些（D-032：权限是上限，不是建议）。
@@ -157,13 +171,33 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     // ⚠️ 判定口是 hasActive()（**生效**技能非空），不是「store 存在」—— 空目录 / 全被覆盖都算没有。
     ...(hooks.skills?.store.hasActive() ? createSkillTools({ store: hooks.skills.store }) : []),
     // MCP（plan23 D-065）：同理 —— 没有已连接服务器时，外部工具不下发（下发即空头承诺）
+    //
+    // ⚠️ 2026-09-19 真机 bug：`computerControl` / `onGatedDrop` **漏传了**（只传了 manager + confirm）。
+    // 后果是**双重的**，且都验不出来：
+    // ① `mcp-tools` 里 `deps.computerControl === true` 恒为 false → 桌面派（windows-mcp）**每个**工具
+    //    都被判 `drop-server-off` 整体丢弃 —— 用户装了、连上了、开关也开了，模型手上却**一件都没有**；
+    // ② 同一句 `onGatedDrop?.()` 也是空的 → 连"被拦了什么"的日志都没有，
+    //    于是排查时翻遍运行日志干干净净，反倒像是"门控压根没跑"（真机就是这么骗过去的）。
+    // **为什么单测全绿也没抓住**：`computer-use.test.ts` 测的是纯判据、`mcp-manager.test.ts` 的
+    // 「门控与透传」段用的是**非桌面派** server（`isComputerUseServer=false` → 判据第一句就 `keep` 了），
+    // 两边都绕开了"hooks → 装配 → 门控"这条真正出事的通路。补的回归测试见
+    // `tests/unit/mcp-manager.test.ts` 的「装配层透传」段 —— 那里造的是 `windows-mcp` 派 server。
     ...(hooks.mcp?.manager.hasConnected()
       ? createMcpTools({
           manager: hooks.mcp.manager,
-          ...(hooks.mcp.confirm ? { confirm: hooks.mcp.confirm } : {})
+          ...(hooks.mcp.confirm ? { confirm: hooks.mcp.confirm } : {}),
+          // 这两个**无条件透传**（不用 `...(cond ? {x} : {})`）：
+          // `false` 被条件展开吞成"字段不存在"，看着与显式关闭等价，实则把"关"与"没设置"混成一回事 ——
+          // 权限开关上这种含糊迟早出事（D-119 ① 的 P0 复查结论）。
+          computerControl: hooks.mcp.computerControl === true,
+          onGatedDrop: hooks.mcp.onGatedDrop ?? defaultGatedDropLog
         })
       : [])
   ]
+  // ⚠️ 这段装配是**本轮的一次性快照**（D-119 ① 复查补记）：`createAllTools` 在一个 run 开始时
+  // 建一次工具表，此后本轮固定。MCP 若在 run 中途断开/重连，本轮**不换表** —— 旧表里的工具调用
+  // 会落到已不存在的连接上，由 `manager.callTool` 以人话错误返回（不崩、模型可自纠）。
+  // 与 plan43 的「run 内不漂移」同一条口径：**新任务用新环境，正在跑的任务不打断**。
 }
 
 /** 本轮用户原话（最后一条 user 消息）。⚠️ 只取 content 为字符串的那些 —— 带图片的消息取不到文字。 */
@@ -233,8 +267,16 @@ export interface ToolHooks {
   mcp?: {
     manager: McpManager
     confirm?: (req: { tool: string; detail: string }) => Promise<boolean>
-    /** plan44 门控：电脑控制开关（本轮值）与被拦日志回调 */
-    computerControl?: boolean
+    /**
+     * plan44 门控：电脑控制开关（**本轮**值）与被拦日志回调。
+     *
+     * ⚠️ 两个都必须传（`computerControl` 用必填、`onGatedDrop` 有默认落点兜底）——
+     * 2026-09-19 的真机 bug 就是这两个漏传导致的（D-119 ①）：开关恒 false ⇒ 桌面派工具整体丢弃；
+     * 回调为空 ⇒ **连一条日志都没有**，排查时看着像"门控压根没跑"。
+     * 这里把 `computerControl` 收成必填（`boolean` 而非 `boolean | undefined`）是**刻意的**：
+     * 漏传它必须在**编译期**就报错，而不是运行期静默全拦。
+     */
+    computerControl: boolean
     onGatedDrop?: (fullName: string, reason: string) => void
   }
   /** 打包态资源根（找随包的 ripgrep）。装配层注入 —— runner 不许 import electron；不传 = 只用环境变量/PATH 上的 rg */
@@ -404,7 +446,15 @@ export interface RunAgentArgs {
    * `null` / 缺省 = 没有任何规则文件。
    */
   rulesBlock?: string | null
-  /** 电脑控制开关（2026-09-15 用户需求）：由组合根读好传入，进自视段；缺省 = false（权限类不许替用户默认开） */
+  /**
+   * 电脑控制开关（2026-09-15 用户需求）：由组合根读好传入，进自视段**并**供 MCP 门控使用。
+   *
+   * ⚠️ **可选是刻意的**（D-119 ① 复查裁定，2026-09-19）：`scheduler` 等非交互调用点不传它，
+   * 语义就是"缺省 = 关"。**权限类不许替用户默认开**，而 `=== true` 正是这条语义的落地点
+   * （`undefined` / `false` / 任何非 `true` 都判关）。⚠️ 改这里之前先记住：把它改成"非 false 即真"
+   * 会让所有忘记传的调用点**静默放开电脑控制** —— 失效方向就从"关"翻成了"开"，那是安全问题。
+   * 生产侧 `ipc.ts` 每次发送都现取 `getComputerControlEnabled()`，不存在漏传。
+   */
   computerControl?: boolean
   /**
    * plan27：显式跳过计划批准闸。
@@ -599,9 +649,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
             // plan44 决策 4：桌面派门控读**本轮**的 computerControl（ipc 每次发送现取设置）；
             // 被拦工具记日志（决策 3b：未知工具名默认屏蔽要"看得见被拦了什么"才查得动）
             computerControl: args.computerControl === true,
-            onGatedDrop: (fullName: string, reason: string) => {
-              console.warn(`[mcp-gate] 未下发 ${fullName}（${reason === 'drop-server-off' ? '电脑控制开关关闭' : '不在白名单'}）`)
-            },
+            onGatedDrop: defaultGatedDropLog,
             ...(ctx.confirmCommand
               ? {
                   confirm: (req: { tool: string; detail: string }) =>
