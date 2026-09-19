@@ -9,6 +9,7 @@ import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
 import { startWatchdog, breadcrumb } from './watchdog'
+import { installFsSyncTrace } from './sync-trace'
 import { installCrashGuards } from './crash-guard'
 import { createConfirmBridge } from './confirm'
 import { createPlanApprovalBridge } from './agent/plan-approval'
@@ -413,6 +414,9 @@ app.whenReady().then(async () => {
   // ③ 事件循环看门狗（plan37 S0）：冻结只有带探针才留痕——5s 一次 tick、
   //    停滞 >1s 才写一条 WARN，常开成本可忽略。归因靠各长任务入口的阶段标记。
   startWatchdog()
+  // ③′ 同步 FS 插桩（plan49 A 档）：面包屑原先只覆盖 IPC 通道，主进程内部的同步 fs 调用
+  //     占死循环时零记录 —— 那正是真凶看不见的原因。一处包 node:fs，罩住全部调用点。
+  installFsSyncTrace()
   const log = createLogger('main')
   log.info('应用启动', { version: app.getVersion(), packaged: app.isPackaged })
 

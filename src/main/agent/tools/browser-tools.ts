@@ -1,5 +1,6 @@
 import type { AgentTool } from '@shared/agent'
 import { getBrowserAdapter } from '../browser-bridge'
+import { traceSpan } from '../../watchdog'
 
 // 浏览器工具（P2）：让 Agent **直接操控内置浏览器** —— 与用户在右抽屉里看到的是同一个页面。
 // 与 fetch_url 的分工：fetch_url 一次性抓静态 HTML（快，但拿不到 JS 渲染结果）；
@@ -112,5 +113,16 @@ export function createBrowserTools(): AgentTool[] {
     }
   }
 
-  return [browser_navigate, browser_read_page, browser_click, browser_type]
+  // plan49 A 档：给浏览器往返补进出面包屑。它们是 plan49 §9.1 列的三类嫌疑里唯一
+  // 既不走 IPC 通道、也不是同步 fs 的那类 —— 原先一条记录都不产生。
+  // 一处包四个工具，不逐个改 execute（自觉打点必漏，与 index.ts 的 IPC 包装器同理）。
+  // ⚠️ 异步跨度只进面包屑，不进停滞归属 —— 见 watchdog.ts traceSpan。
+  return [browser_navigate, browser_read_page, browser_click, browser_type].map((t) => {
+    const raw = t.execute.bind(t)
+    return {
+      ...t,
+      execute: (args: Record<string, unknown>) =>
+        traceSpan(`browser:${t.schema.name}`, () => raw(args))
+    }
+  })
 }

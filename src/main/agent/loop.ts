@@ -2,7 +2,7 @@ import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEve
 import { toolCallDetail } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
-import { setWatchdogPhase } from '../watchdog'
+import { setWatchdogPhase, traceSync } from '../watchdog'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { trimMessages, type TrimOptions } from './context'
 import type { ExecEventRecorder } from './exec-events'
@@ -222,17 +222,20 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       // 窗口化（plan8 R9.1）：留头尾 + 中段按行号采样 + 报错现场保护；双门控不过就原样放行
       let saved = 0
       if (windowEnabled && !SELF_MANAGED_TOOLS.has(tc.name)) {
-        // 窗口化是纯同步全量处理（大输出可达数百 KB），单独打阶段标记（plan37 S0）
+        // 窗口化是纯同步全量处理（大输出可达数百 KB），单独打阶段标记（plan37 S0）+ 同步块插桩
+        // （plan49 A 档：这是全仓唯一被自己注释标出来的重同步块，不给它记账就说不过去）
         const prevWinPhase = setWatchdogPhase(`windowing:${tc.name}`)
         try {
           // 档位（§七②）只调**三个数**：进判断的门槛、相对门、绝对预算 ——
           // 头尾行数、采样条数不随档位变，三条红线（不静默 / 不压报错现场 / 不伪造）正挂在它们上。
-          const w = windowToolOutput(output, {
-            toolName: tc.name,
-            minBytes: policy.minBytes,
-            keepRatioMax: policy.keepRatioMax,
-            maxTokens: policy.maxTokens
-          })
+          const w = traceSync(`windowing:${tc.name}`, () =>
+            windowToolOutput(output, {
+              toolName: tc.name,
+              minBytes: policy.minBytes,
+              keepRatioMax: policy.keepRatioMax,
+              maxTokens: policy.maxTokens
+            })
+          )
           // **静默是禁止的**：每次成形都要留痕（界面 + 主进程日志两处）。
           // `small` = 压根没进判断，报它等于刷日志
           if (w.reason !== 'small') {
