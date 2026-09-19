@@ -2942,6 +2942,177 @@ app.whenReady().then(async () => {
   checkTrue('ⓘ 气泡就位：分条内容在（≥5 条）且**展开规则真实存在于已加载样式表**（悬停/聚焦即生效）',
     (minimal?.bubbleLines ?? 0) >= 5 && minimal?.expandRuleFound === true, minimal)
 
+  // ── H4-①（0.13.43 实测，用户裁决修）：贴近滚动区下缘的 ⓘ，气泡整块必须落在容器内 ──────
+  // 0.13.41 把气泡从「向上弹」改成「向下弹」，只是把裁切从顶部搬到下缘 —— 判据量**几何**，
+  // 不看 DOM 存在（AGENTS §八同源）：把「网络」项的记号推到可视区下缘，用真鼠标指上去，
+  // 气泡矩形不得越过它的滚动容器（上下各 1px 容差）。默认向下弹的现状在这档必红。
+  const edgePrep = await sevalRaw(`
+    (() => {
+      const body = document.querySelector('.settings-body');
+      const label = Array.from(document.querySelectorAll('.field-label'))
+        .find((l) => (l.textContent || '').trim().indexOf('网络') === 0);
+      const mark = label ? label.querySelector('.fnote-mark') : null;
+      if (!body || !mark || !mark.parentElement.querySelector('.fnote-bubble')) {
+        return { ok: false, why: !body ? 'no-settings-body' : 'no-net-mark' };
+      }
+      const savedTop = body.scrollTop;
+      const b0 = body.getBoundingClientRect();
+      const m0 = mark.getBoundingClientRect();
+      // 目标：记号下缘停在容器下缘上方 48px —— 用户"滚到快见底、想看最后几项"的真实形态。
+      // 符号要点：要让记号在视口里往下走，得**减小** scrollTop（内容上移则元素在视口里下移）。
+      body.scrollTop = savedTop + (m0.bottom - (b0.bottom - 48));
+      const m1 = mark.getBoundingClientRect();
+      return {
+        ok: true,
+        savedTop,
+        x: Math.round(m1.left + m1.width / 2),
+        y: Math.round(m1.top + m1.height / 2)
+      };
+    })()
+  `)
+  const swinEdge = getSettingsWin()
+  if (edgePrep?.ok && swinEdge) {
+    // 真手势：sendInputEvent 走浏览器输入管线 —— :hover 与 React 的 onMouseEnter 都真的命中，
+    // 探针形态因此与"用户把鼠标移到 ⓘ 上"同型（脚本 focus 在失焦文档里不命中 :focus，上面已实测）
+    swinEdge.focus()
+    swinEdge.webContents.sendInputEvent({ type: 'mouseMove', x: edgePrep.x, y: edgePrep.y })
+    await new Promise((r) => setTimeout(r, 300))
+  }
+  const fnoteEdge = await sevalRaw(`
+    (async () => {
+      const body = document.querySelector('.settings-body');
+      const label = Array.from(document.querySelectorAll('.field-label'))
+        .find((l) => (l.textContent || '').trim().indexOf('网络') === 0);
+      const mark = label ? label.querySelector('.fnote-mark') : null;
+      const bubble = mark ? mark.parentElement.querySelector('.fnote-bubble') : null;
+      if (!body || !mark || !bubble) return { found: false, why: 'mark/bubble 找不到' };
+      // 裁切祖先按通用策略找：第一个 overflow-y 为 auto|scroll|hidden 的祖先（与 FieldNote 同口径）
+      let host = mark.parentElement;
+      while (host) {
+        const oy = getComputedStyle(host).overflowY;
+        if (oy === 'auto' || oy === 'scroll' || oy === 'hidden') break;
+        host = host.parentElement;
+      }
+      if (!host) host = document.documentElement;
+      const linesBefore = bubble.querySelectorAll('.fnote-line').length;
+      let trigger = 'real-hover';
+      let forced = false;
+      if (getComputedStyle(bubble).display === 'none') {
+        // 真鼠标没到手的退路：合成 mouseover 让 React 的 onMouseEnter 跑起来（判定仍由组件自己算）
+        mark.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+        await new Promise((r) => setTimeout(r, 150));
+        trigger = 'synthetic-mouseover';
+        if (getComputedStyle(bubble).display === 'none') {
+          // 显形只为量几何（:hover 命中不了不代表定位没算），量完立刻交回 CSS
+          bubble.style.display = 'block';
+          forced = true;
+        }
+      }
+      const hr = host.getBoundingClientRect();
+      const br = bubble.getBoundingClientRect();
+      const out = {
+        found: true,
+        trigger,
+        forced,
+        edgeGap: Math.round(hr.bottom - mark.getBoundingClientRect().bottom),
+        inside: br.top >= hr.top - 1 && br.bottom <= hr.bottom + 1,
+        bubble: { top: Math.round(br.top), bottom: Math.round(br.bottom), h: Math.round(br.height) },
+        host: { cls: String(host.className).slice(0, 40), top: Math.round(hr.top), bottom: Math.round(hr.bottom) },
+        flipped: bubble.classList.contains('fnote-flip-up'),
+        maxHeight: getComputedStyle(bubble).maxHeight,
+        lines: bubble.querySelectorAll('.fnote-line').length,
+        linesBefore
+      };
+      if (forced) bubble.style.display = '';
+      mark.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, cancelable: true, view: window }));
+      body.scrollTop = ${edgePrep && typeof edgePrep.savedTop === 'number' ? edgePrep.savedTop : 0};
+      return out;
+    })()
+  `)
+  if (edgePrep?.ok && swinEdge) {
+    swinEdge.webContents.sendInputEvent({ type: 'mouseMove', x: 8, y: 8 })
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  console.log('FNOTE_EDGE=' + JSON.stringify({ prep: edgePrep, edge: fnoteEdge }))
+  checkTrue(
+    'H4-① 下缘 ⓘ 的气泡整块落在滚动容器内（向下弹探出时自动翻上/限高，不越界）',
+    fnoteEdge?.found === true &&
+      (fnoteEdge?.edgeGap ?? 999) <= 120 &&
+      fnoteEdge?.inside === true &&
+      fnoteEdge?.lines === fnoteEdge?.linesBefore &&
+      (fnoteEdge?.lines ?? 0) >= 2,
+    { prep: edgePrep, edge: fnoteEdge }
+  )
+
+  // ── H4-① 续（problem.md 09-15「接力注意」：修的时候必须连界面的抖动感一起验）──────────
+  // 抖动的实质不是"气泡跟着记号平移"（那是正常依附），而是：要看全就得滚动，
+  // 而一滚动它就又跑出可视区。
+  // ⚠️ 判据形态选错了会测不到东西：按"顶/中/底三档固定 scrollTop"筛记号，6 个记号无一命中
+  //（设置页滚动区有 874px 长，没有哪个记号能同时出现在三档里）。正确形态是
+  // **锁定同一个记号，把它推到容器内的上/中/下三个纵向位置**，逐档验气泡整块可见。
+  const fnoteJitter = await sevalRaw(`
+    (() => {
+      const body = document.querySelector('.settings-body');
+      const hostOf = (el) => {
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          const oy = getComputedStyle(p).overflowY;
+          if (oy === 'auto' || oy === 'scroll' || oy === 'hidden') return p;
+        }
+        return document.documentElement;
+      };
+      const marks = Array.from(document.querySelectorAll('.fnote-mark'));
+      if (!body || marks.length === 0) return { found: false, why: '缺 .settings-body 或记号', marks: marks.length };
+      // 取靠后的记号（长文案在那，越界风险也在那）
+      const target = marks[marks.length - 1];
+      const bub = target.parentElement.querySelector('.fnote-bubble');
+      if (!bub) return { found: false, why: '记号旁找不到气泡' };
+      const hr0 = hostOf(target).getBoundingClientRect();
+      const saved = body.scrollTop;
+      const maxTop = Math.max(0, body.scrollHeight - body.clientHeight);
+      const prevDisplay = bub.style.display;
+      // 记号底边在滚动内容里的绝对位置（在 saved 状态下算一次，之后不再依赖视口读数）
+      const absBottom = target.getBoundingClientRect().bottom - hr0.top + saved;
+      const shots = [];
+      for (const ratio of [0.15, 0.5, 0.85]) {
+        // 要让记号底边落在容器视口的 ratio 处：scrollTop = absBottom − 视口内目标位置
+        body.scrollTop = Math.max(0, Math.min(maxTop, absBottom - hr0.top - hr0.height * ratio));
+        const mr = target.getBoundingClientRect();
+        if (mr.top < hr0.top - 1 || mr.bottom > hr0.bottom + 1) {
+          shots.push({ ratio, skipped: '该档记号无法落进容器内（已到滚动边界）', at: body.scrollTop });
+          continue;
+        }
+        bub.style.display = 'block';
+        body.dispatchEvent(new Event('scroll'));
+        const r = bub.getBoundingClientRect();
+        const hr = hostOf(target).getBoundingClientRect();
+        shots.push({
+          ratio,
+          at: body.scrollTop,
+          h: Math.round(r.height),
+          flipped: bub.classList.contains('fnote-flip-up'),
+          inside: r.top >= hr.top - 1 && r.bottom <= hr.bottom + 1,
+          overBy: Math.round(Math.max(0, r.bottom - hr.bottom, hr.top - r.top))
+        });
+      }
+      bub.style.display = prevDisplay;
+      body.scrollTop = saved;
+      const real = shots.filter((s) => !s.skipped);
+      return {
+        found: true,
+        tried: shots.length,
+        n: real.length,
+        shots: real,
+        allInside: real.length > 0 && real.every((s) => s.inside)
+      };
+    })()
+  `)
+  console.log('FNOTE_JITTER=' + JSON.stringify(fnoteJitter))
+  checkTrue(
+    'H4-① 续：同一记号在三档滚动位上气泡都整块可见（滚动中途会重算朝向，不会一滚又跑出去）',
+    fnoteJitter?.found === true && fnoteJitter?.allInside === true,
+    fnoteJitter
+  )
+
   const m3 = await sevalRaw(`
     (() => {
       const pick = (sel) => {
@@ -5840,6 +6011,88 @@ app.whenReady().then(async () => {
     wbPick.count === 7 && wbPick.noPlaybook === true && wbPick.noTimeline === true,
     wbPick
   )
+
+  // ── H4-②（0.13.43 实测现象 A）：窄栏 / 矮栏里的 ＋ 菜单，项不许被静默切掉 ──────────
+  // 菜单 absolute 挂在 .pane 上，而 .wb-row / .dock 都是 overflow:hidden —— 菜单比栏的可视
+  // 高度长时，下缘那些项落在裁切区外，用户只看到开头几行（problem.md 09-15 现象 A/B「矮窗格」）。
+  // 判据绑两条几何：① 菜单盒子必须整块落在栏的裁切区内（越界就得靠菜单内滚看到，
+  // 而现状 overflow 是 visible —— 越界即真丢）；② 项越出栏的范围，只有在菜单可内滚时才允许。
+  // 两档一起量：170px 窄栏（现状不越界，锁死不变量）+ 170px 且栏高 240px（现状红的那档）。
+  // 临时压 .pane 内联尺寸，量完原样复原（下面还有折叠/展开断言，别污染）。
+  const wbNarrow = await win.webContents.executeJavaScript(`
+    (() => {
+      const menu = document.querySelector('.pane-menu');
+      const pane = menu ? menu.closest('.pane') : null;
+      const row = menu ? menu.closest('.wb-row') : null;
+      if (!menu || !pane || !row) return { found: false, why: 'menu/pane/row 缺一' };
+      const chooser = menu.querySelector('.wb-chooser');
+      const prev = pane.getAttribute('style');
+      const measure = () => {
+        const rr = row.getBoundingClientRect();
+        const pr = pane.getBoundingClientRect();
+        const mr = menu.getBoundingClientRect();
+        // 裁切区 = 栏盒子 ∩ 行盒子（两者都会切掉菜单：.pane 是定位基准，.wb-row 有 overflow:hidden）
+        const top = Math.max(rr.top, pr.top);
+        const bottom = Math.min(rr.bottom, pr.bottom);
+        const items = Array.from(menu.querySelectorAll('.wb-pick'));
+        const bad = [];
+        for (const it of items) {
+          const r = it.getBoundingClientRect();
+          if (r.top < top - 1 || r.bottom > bottom + 1 || r.left < mr.left - 1 || r.right > mr.right + 1) {
+            bad.push((it.textContent || '').trim());
+          }
+        }
+        return {
+          clipped: bad.length,
+          bad,
+          count: items.length,
+          lastBottom: items.length ? Math.round(Math.max.apply(null, items.map((i) => i.getBoundingClientRect().bottom))) : 0,
+          hostBottom: Math.round(bottom),
+          menuBottom: Math.round(mr.bottom),
+          menuFits: mr.top >= top - 1 && mr.bottom <= bottom + 1,
+          paneH: Math.round(pr.height),
+          menuH: Math.round(mr.height),
+          innerScroll: menu.scrollHeight > menu.clientHeight + 1,
+          menuOverflowY: getComputedStyle(menu).overflowY,
+          menuMaxH: getComputedStyle(menu).maxHeight,
+          cols: chooser ? getComputedStyle(chooser).gridTemplateColumns : null
+        };
+      };
+      const out = { found: true };
+      try {
+        pane.style.minWidth = '0px';
+        pane.style.width = '170px';
+        out.narrow = measure();
+        pane.style.height = '240px';
+        out.narrowShort = measure();
+        // 一档压到「只够露一行」：problem.md 现象 A 的原话就是只看得见「资源管理器」一项，
+        // 那对应栏高约 96px（菜单从 top:56px 起弹，只剩约 40px）。不补这档，
+        // 判据就没钉在用户实际抱怨的那个形态上。
+        pane.style.height = '96px';
+        out.oneRow = measure();
+      } finally {
+        if (prev === null) pane.removeAttribute('style');
+        else pane.setAttribute('style', prev);
+      }
+      out.restored = pane.getAttribute('style') || '';
+      out.wantStyle = prev || '';
+      return out;
+    })()
+  `)
+  console.log('WB_NARROW=' + JSON.stringify(wbNarrow))
+  const narrowOk = (s) => !!s && s.count === 7 && s.menuFits === true && (s.clipped === 0 || s.innerScroll === true)
+  checkTrue(
+    'H4-② 窄栏 / 矮栏 / 只剩一行三档下 ＋ 菜单整块落在栏内，越界的项只能由菜单内滚看到（不被裁切祖先静默吞掉）',
+    wbNarrow?.found === true &&
+      narrowOk(wbNarrow?.narrow) &&
+      narrowOk(wbNarrow?.narrowShort) &&
+      narrowOk(wbNarrow?.oneRow) &&
+      // 压到只剩一行时，"没有项被静默丢掉"只能靠菜单自身可内滚来保证 —— 这条不成立就是没修
+      wbNarrow?.oneRow?.innerScroll === true &&
+      wbNarrow?.restored === wbNarrow?.wantStyle,
+    wbNarrow
+  )
+
   // 关掉 ＋ 菜单（Pane 里 ＋ 是 toggle，再点一次收起），别影响下面的折叠测试
   await win.webContents.executeJavaScript(`
     (() => {

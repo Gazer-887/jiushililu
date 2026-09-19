@@ -828,6 +828,15 @@ nav {
   left: calc(-1 * var(--sp-4));
 }
 
+/* 贴滚动区下缘时翻成向上弹（H4-①，2026-09-20 用户裁决）：类由 FieldNote 的边界判定挂上，
+   两侧都放不下时它再压 inline max-height，长文案走上面那条 overflow-y 内滚。
+   ⚠️ 上面 `.fnote-mark:hover + .fnote-bubble` 那条兄弟规则**不许删**：脚本是渐进增强，
+   没有它气泡就根本不出现（而不是退回向下弹），门禁也按它验证展开规则在不在。 */
+.fnote-bubble.fnote-flip-up {
+  top: auto;
+  bottom: calc(100% + var(--sp-8));
+}
+
 /* 字号档（plan7 F3）：末档「特大」在 3 列 flex-wrap 里必然换行，让它**铺满整行**且文字居中 ——
    0.13.41 反馈：孤零零缩在左上不对称。只作用于字号那组（choice-list-fontscale），不波及其它选项组 */
 .choice-list-fontscale > .choice-item:last-child {
@@ -2192,6 +2201,10 @@ label.radio {
   left: var(--sp-6);
   right: var(--sp-6);
   z-index: 5;
+  /* 裁切祖先是 .wb-row / .dock（都 overflow:hidden）：菜单比栏高时项会被下缘静默切掉
+     （H4-②，2026-09-20）。限高到栏内可视区（减页签条与余量）并自滚。 */
+  max-height: calc(100% - 64px);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -2208,9 +2221,11 @@ label.radio {
 }
 
 /* 自适应排布（09-19 用户："可选项太多、挤在一块、不会自适应排布"）：
-   列数随栏宽自动增减，窄到一条也放得下、宽了就铺开，不靠人调断点。 */
+   列数随栏宽自动增减，窄到一条也放得下、宽了就铺开，不靠人调断点。
+   ＋ 弹窗一起套用（H4-②，2026-09-20）：窄栏里先靠铺开多列压高度，铺不开才走菜单内滚。 */
 .wb-empty .wb-chooser,
-.dock-body .wb-chooser {
+.dock-body .wb-chooser,
+.pane-menu .wb-chooser {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   gap: var(--sp-8);
