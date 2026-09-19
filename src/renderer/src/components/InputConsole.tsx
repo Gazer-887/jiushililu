@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { Attachment, SkillInfo } from '@shared/ipc'
 import { DRAG_PATH_MIME } from '@shared/fs-tree'
 import PlusMenu from './PlusMenu'
@@ -121,7 +121,15 @@ export default function InputConsole({
     return () => clearTimeout(t)
   }, [attachError])
 
-  const addAttachment = async (): Promise<void> => {
+  /**
+   * ⚠️ 必须 `useCallback`（plan49 L1 同源修复）：它被传给 `PlusMenu` 的 `onAttach`，
+   * 而本次卡顿的病根就是"传给 PlusMenu 的回调每次渲染换新引用"。目前 `PlusMenu` 的
+   * effect 只依赖 `[open]`、没依赖 `onAttach`，所以这条**暂时**不构成闭环 ——
+   * 但只要有人以后给 `onAttach` 加一处 effect 依赖，立刻复发（实测拦在
+   * `tests/unit/render-callback-stability.test.ts`）。依赖只有两个 setState（引用稳定），
+   * 包起来零代价。
+   */
+  const addAttachment = useCallback(async (): Promise<void> => {
     try {
       const a = await window.api.attachFile()
       if (!a) return
@@ -129,7 +137,7 @@ export default function InputConsole({
     } catch (err) {
       setAttachError(cleanError(err))
     }
-  }
+  }, [])
 
   const removeAttachment = (path: string): void => {
     setAttachments((prev) => prev.filter((p) => p.path !== path))
@@ -309,7 +317,7 @@ export default function InputConsole({
           <PlusMenu
             selectedAgent={selectedAgent ?? null}
             {...(onSelectAgent ? { onSelectAgent } : {})}
-            onAttach={() => void addAttachment()}
+            onAttach={addAttachment}
           />
           <BranchChip />
           <PermissionChip />

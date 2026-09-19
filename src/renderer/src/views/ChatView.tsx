@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
 import MessageMarkdown from '../components/MessageMarkdown'
@@ -141,6 +141,11 @@ export default function ChatView() {
         return el ? el.getBoundingClientRect().top - boxTop + box.scrollTop : Number.MAX_SAFE_INTEGER
       })
     }
+    // ⚠️ 顺序刻意如此（2026-09-19）：**先作废旧测量、再重新量**。`outlineItems` 一变本 effect
+    // 就重跑，但那一刻 React 可能还没把新消息提交进 DOM，量出来的是**旧布局**。而下面那个滚动
+    // 联动的 effect 会立刻拿 `tickTopsRef` 算"当前是第几轮" —— 量得旧、又马上被用，就是位置
+    // 对不上的温床。清成空数组 = 明确声明"这份测量作废"，`onScroll` 侧据此判空回退。
+    tickTopsRef.current = []
     const raf = requestAnimationFrame(measure)
     const ro = new ResizeObserver(measure)
     ro.observe(box)
@@ -154,14 +159,39 @@ export default function ChatView() {
     const box = scrollRef.current
     const rail = railRef.current
     if (!box || !rail || outlineItems.length < 2) return
+    /**
+     * ⚠️ **每次挂上新的监听必须先复位"上次激活值"**（2026-09-19 真机 bug：刻度条未经 hover
+     * 就顶着一张预览卡、挡住消息）。
+     *
+     * 病根是这个 ref 的语义被两件事共用了：它既是"滚动节流"的比较基准（本意），又实际充当了
+     * "DOM 上已画的激活态"的唯一真相。而 `outlineItems` 一变（**发一条新消息就会变**，会话列表里
+     * 编辑/回退也会）本 effect 重跑，**副作用是 React 会重建整片刻度** —— 新节点没有 `.on`，
+     * 但 ref 里还留着上一轮的旧值。于是首次 `onScroll()` 算出 `active === ref` → **跳过整个
+     * toggle** → 真实的激活刻度不带 `.on`，而 CSS 把 `.chat-outline-tick.on .chat-outline-peek`
+     * 设成常显 —— 那一根就此"卡亮"，hover 只是让它多亮一根，看着就像凭空冒出来的。
+     *
+     * 复位成 -1（非法值）强制第一次比较必定不等 ⇒ 必定重画一遍。代价是一次可忽略的
+     * `querySelectorAll` + 若干 `classList.toggle`，换来"画的是什么"与"以为画的是什么"永远一致。
+     */
+    spyLastActiveRef.current = -1
+    /** 就地重量（上面那个 effect 已经把 `tickTopsRef` 清空声明作废了，这里负责把它填回来） */
+    const remeasure = (): void => {
+      const boxTop = box.getBoundingClientRect().top
+      tickTopsRef.current = outlineItems.map(({ i }) => {
+        const el = box.querySelector<HTMLElement>(`[data-msg-index="${i}"]`)
+        return el ? el.getBoundingClientRect().top - boxTop + box.scrollTop : Number.MAX_SAFE_INTEGER
+      })
+    }
     const onScroll = (): void => {
       if (scrollRafRef.current) return
       scrollRafRef.current = true
       requestAnimationFrame(() => {
         scrollRafRef.current = false
         const line = box.scrollTop + box.clientHeight * 0.25
-        let active = -1
+        // 测量被作废（本 effect 刚重跑）就就地补一次 —— 否则 tops 为空 ⇒ active 恒 -1 ⇒ 整条不亮
+        if (tickTopsRef.current.length === 0) remeasure()
         const tops = tickTopsRef.current
+        let active = -1
         for (let k = 0; k < tops.length; k++) {
           if (tops[k] <= line) active = k
           else break
@@ -244,6 +274,27 @@ export default function ChatView() {
   const viewRef = useRef<HTMLDivElement>(null)
 
   const active = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId])
+
+  /**
+   * 主 Agent 选择回调 —— **必须稳定引用**（plan49 L1）。
+   *
+   * 病根（2026-09-19 真机卡顿复发，日志实证：12 分钟里渲染进程每分钟被占死 55-60 秒）：
+   * 这里原本写成内联箭头 `onSelectAgent={(name) => {...}}`，**每次渲染都是新函数**。
+   * 而 `PlusMenu` 的 effect 依赖数组里就有它 ⇒ 本页每渲染一次 ⇒ 该 effect 重跑一次 ⇒
+   * `refreshAgents()` 真打一次 IPC（主进程裸读 10 个 agent 文件）⇒ 返回全新对象 ⇒
+   * 订阅 `agentsView` 的组件重渲染 ⇒ **本页再渲染** ⇒ 回到开头。
+   *
+   * ⚠️ 这是**闭环自持**的（实测 0.3 秒 200 次，不熔断就是无限），且不需要外部触发。
+   * 唯一入场券是"本页订阅了 messages，流式期间每来一个字 set 一次" —— 所以只在**对话页**
+   * 发作（新建任务页传的是 `setAgent`，useState setter 引用本就稳定，故一直没事）。
+   * 修法即此：`useCallback` 把引用钉死，外层 effect 就不再被反复唤醒。
+   */
+  const onSelectAgent = useCallback(
+    (name: string | null): void => {
+      if (activeId) void selectAgent(activeId, name ?? '')
+    },
+    [activeId, selectAgent]
+  )
 
   // 流式/工具订阅不在这里（挂 `App`，见 `App.tsx` 的 useStreamSubscriptions）：此处是条件渲染，挂这等于切页就解绑 —— 丢字且卡在生成中
 
@@ -498,9 +549,7 @@ export default function ChatView() {
           onStop={() => void stopStreaming()}
           usedTokens={tokens}
           selectedAgent={active?.agentName ?? null}
-          onSelectAgent={(name) => {
-            if (activeId) void selectAgent(activeId, name ?? '')
-          }}
+          onSelectAgent={onSelectAgent}
           dropZone={viewRef}
         />
       </div>

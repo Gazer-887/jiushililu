@@ -45,6 +45,19 @@ export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: Plu
     // MCP 的连断/启停由 onMcpChanged 在 mcpListServers 消费方广播；此处 open 内拉一次足够
   }, [open])
 
+  /**
+   * 需要主 Agent 选择区时，拉一次候选列表。
+   *
+   * ⚠️ **`onSelectAgent` 必须是稳定引用**（plan49 L1，2026-09-19 真机卡顿实证）：
+   *    本 effect 依赖它 ⇒ 调用方若传内联箭头（**每次渲染都是新函数**）⇒ 本 effect 每渲染重跑一次
+   *    ⇒ `refreshAgents()` 真打 IPC ⇒ 主进程裸读盘 ⇒ 返回全新对象 ⇒ 订阅者重渲染
+   *    ⇒ 调用方再渲染 ⇒ **闭环自持**（实测 0.3 秒 200 次，不熔断即无限；真机上 12 分钟里
+   *    渲染进程每分钟被占死 55–60 秒）。唯一入场券是流式期间每字一次 set，故只在对话页发作。
+   *
+   * 调用方请用 `useCallback` 包稳（见 `ChatView.tsx` 的 `onSelectAgent`）；
+   * 或用现成的稳定 setter（`NewSessionView.tsx` 传的 `setAgent` 即是）。
+   * 回归由 `tests/unit/render-callback-stability.test.ts` 静态守护。
+   */
   useEffect(() => {
     if (!onSelectAgent) return // 不需要选择区就不拉取
     void refreshAgents()
