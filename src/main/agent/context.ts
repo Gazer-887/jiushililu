@@ -15,6 +15,27 @@ export function estimateMessagesTokens(messages: AgentMessage[]): number {
   }, 0)
 }
 
+/** 被中断那一轮的占位句（与 `[历史摘要]` 同一套方括号写法：它是给模型看的说明，不是谁说过的话） */
+const ABORTED_TURN = '[上一轮中断，未产出内容]'
+
+/** 出境形状的最小公共部分：主循环的 `AgentMessage` 与反思链的 `ChatMessage` 都落在里面 */
+type OutboundTurn = { role: string; content: string | null; tool_calls?: readonly unknown[] }
+
+/**
+ * 送给模型前把「空正文、且不带工具调用」的助手轮换占位句 —— 那是被「停止生成」留下的一轮。
+ * 不丢掉：丢掉等于那一轮在模型侧彻底消失，还会把相邻两条 user 贴到一起（Anthropic 不接受相邻同角色）。
+ * 主循环用的 `anthropic-agent` 映射本来就会丢弃空正文助手轮；这道整形兜的是**不经主循环**的那几条链（反思 / 标题）。
+ */
+export function historyForModel<T extends OutboundTurn>(history: T[]): T[] {
+  return history.map((m) =>
+    m.role === 'assistant' &&
+    !m.tool_calls?.length &&
+    String(m.content ?? '').trim().length === 0
+      ? ({ ...m, content: ABORTED_TURN } as T)
+      : m
+  )
+}
+
 export interface TrimOptions {
   /** 上下文窗口（token 数） */
   contextWindow: number

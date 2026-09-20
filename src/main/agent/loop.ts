@@ -4,7 +4,7 @@ import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
 import { setWatchdogPhase, traceSync } from '../watchdog'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
-import { trimMessages, type TrimOptions } from './context'
+import { historyForModel, trimMessages, type TrimOptions } from './context'
 import type { ExecEventRecorder } from './exec-events'
 
 // Agent 主循环（plan6；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，直到出最终答案或预算耗尽。
@@ -88,7 +88,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   const toolMap = new Map(opts.tools.map((t) => [t.schema.name, t]))
   const messages: AgentMessage[] = [
     { role: 'system', content: opts.systemPrompt },
-    ...opts.history
+    // 空正文的助手轮（被中断那一轮留下的）在这里整形，**不带着空串出境**（见 context `historyForModel`）
+    ...historyForModel(opts.history)
   ]
 
   const emitText = (delta: string): void => opts.onText?.(delta)

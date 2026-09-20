@@ -5,6 +5,7 @@
 
 import type { ChatMessage } from '@shared/ipc'
 import { MEMORY_CLASSES, type MemoryCandidate, type MemoryClass } from '@shared/memory'
+import { historyForModel } from '../agent/context'
 import type { MemoryRepo } from './memory-core'
 
 export interface ReflectChat {
@@ -37,7 +38,8 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
 
       let result: { content: string }
       try {
-        result = await chat(input.messages)
+        // 盘上的正文可能带着被中断那一轮留下的空串，出境前整形 —— 反思不经主循环，那道整形罩不到它
+        result = await chat(historyForModel(input.messages))
       } catch {
         // chat 调用失败 → 返回空（留痕由调用方做，本文件不 import log）
         return { candidates: [] }

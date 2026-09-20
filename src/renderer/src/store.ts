@@ -924,9 +924,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 主 Agent（plan17 G2）：从会话 meta 读（真相源），带了但定义不存在 → 主进程报人话错误
       const agentName = get().conversations.find((c) => c.id === conversationId)?.agentName
       await window.api.chatSend({ conversationId, messages: payload, ...(agentName ? { agentName } : {}) })
-    } catch {
-      // 主进程入参校验失败等；常规错误已通过 chatError 事件送达
-      get().markError({ conversationId, payload: '发送失败：请求被主进程拒绝（参数校验未通过）。' })
+    } catch (err) {
+      // 主进程入参校验失败等；常规错误已通过 chatError 事件送达。
+      // ⚠️ 原文必须带出来：`friendlyParse` 给的是「参数不合法：messages.3.content —— …」，
+      //    换成通用句就把"是哪一条消息坏了"这条唯一线索埋了（K8 因此在界面上无从下手）。
+      get().markError({
+        conversationId,
+        payload: `发送失败：${err instanceof Error ? err.message : String(err)}`
+      })
     }
   },
 

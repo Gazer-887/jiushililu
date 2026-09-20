@@ -101,9 +101,11 @@ export interface RollbackOutcome {
 /**
  * 存盘前规整消息：**把"没有内容"的消息丢掉**。这不是防御性编程，而是一条**真实的数据丢失渠道**：渲染端一按发送就塞空
  * `assistant` 占位（流式往它身上长），而落盘校验要求 `content` 至少 1 个字符 —— 于是「没吐字就切会话 / 点停止 / 关窗口」
- * 这几条路**保存必然被拒**；调用方又是 `void persistActive()`，界面无提示、用户只觉得"这段没存上"。空内容消息在契约里本就非法。
+ * 这几条路**保存必然被拒**；调用方又是 `void persistActive()`，界面无提示、用户只觉得"这段没存上"。
  * plan36 例外：**带分段的 assistant 即使空正文也保留**——中间轮次可能只有思考/工具没有正文，
  * 丢掉会让渲染索引与磁盘索引错位，`rollbackTo`（按索引移游标）就会切错位置。
+ * ⚠️ 发送侧（`chatMessagesSchema`）自 K8 起按角色放行空正文助手轮，**不再与这里同口径**：
+ *    那边要的是"发得出去"，这边要的是"存得干净"，把空串挡在模型之外由 `historyForModel` 负责。
  */
 export function normalizeHistory(messages: ChatMessage[]): ChatMessage[] {
   return messages.filter(

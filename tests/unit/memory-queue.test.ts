@@ -287,3 +287,67 @@ describe('runReflection：先校验会话 id 存在（审查 C P1）', () => {
     expect(s?.usageRate).toBe(0)
   })
 })
+
+// K8 的第二个漏口：反思那条链**不经** `runAgentLoop`，而是把盘上的会话正文直接交给 provider。
+// 被「停止生成」留下的空正文助手轮因此原样出境 —— Anthropic 对空 text 块报 400，
+// 而 `memory/reflection.ts` 的 catch 只回空候选、本层不留痕 ⇒ 这条会话的记忆沉淀**静默归零**。
+describe('反思历史出境前整形（K8 第二漏口）', () => {
+  let root: string
+  let cleanup: () => void
+
+  beforeEach(() => {
+    const t = makeTmpRoot()
+    root = t.root
+    cleanup = t.cleanup
+  })
+  afterEach(() => cleanup())
+
+  it('reflectChat 收到的消息里不存在空正文的 assistant', async () => {
+    const seen: ChatMessage[][] = []
+    const store = createMemoryStore(root, nodeFsAdapter, {
+      reflectChat: async (messages) => {
+        seen.push(messages)
+        return { content: '[]' }
+      },
+      conversationsExists: () => true,
+      getConversationForReflect: () => ({
+        messages: [
+          { role: 'user', content: '第一问' },
+          { role: 'assistant', content: '' },
+          { role: 'user', content: '第二问' }
+        ],
+        bodyBytes: 4096
+      })
+    })
+    store.enqueueReflection('c1')
+    await store.runReflection('c1')
+    expect(seen).toHaveLength(1)
+    for (const m of seen[0] ?? []) {
+      if (m.role !== 'assistant') continue
+      expect(m.content.trim().length).toBeGreaterThan(0)
+    }
+  })
+
+  it('整形不许改条数与角色序列（反思靠"谁说了什么"的先后推因果）', async () => {
+    const seen: ChatMessage[][] = []
+    const store = createMemoryStore(root, nodeFsAdapter, {
+      reflectChat: async (messages) => {
+        seen.push(messages)
+        return { content: '[]' }
+      },
+      conversationsExists: () => true,
+      getConversationForReflect: () => ({
+        messages: [
+          { role: 'user', content: '第一问' },
+          { role: 'assistant', content: '' },
+          { role: 'user', content: '第二问' }
+        ],
+        bodyBytes: 4096
+      })
+    })
+    store.enqueueReflection('c2')
+    await store.runReflection('c2')
+    expect((seen[0] ?? []).map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+    expect((seen[0] ?? [])[0]?.content).toBe('第一问')
+  })
+})

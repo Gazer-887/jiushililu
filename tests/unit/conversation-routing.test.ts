@@ -111,3 +111,36 @@ describe('会话路由：片段只能落进它自己那条会话', () => {
     warn.mockRestore()
   })
 })
+
+// K8 排查时被埋掉的那半句：主进程 `friendlyParse` 抛的是
+// 「参数不合法：messages.3.content —— 空正文只允许出现在助手轮」，而渲染层旧 catch 把它换成
+// 一句通用的「请求被主进程拒绝（参数校验未通过）」—— 唯一能定位"是哪条消息坏了"的线索当场没了。
+describe('发送被主进程拒掉时，原文必须送达界面', () => {
+  beforeEach(() => {
+    saved.length = 0
+    useAppStore.setState({
+      activeId: 'A',
+      messages: structuredClone(A_MSGS),
+      streaming: false,
+      streamError: null,
+      saveError: null,
+      runtimes: {}
+    })
+  })
+
+  it('chatSend 抛出的 message 原样出现在 streamError 里', async () => {
+    fakeApi.chatSend.mockRejectedValueOnce(
+      new Error('参数不合法：messages.3.content —— 空正文只允许出现在助手轮')
+    )
+    await useAppStore.getState().sendMessage('再问一句')
+    const err = useAppStore.getState().streamError ?? ''
+    expect(err).toContain('messages.3.content')
+    expect(err).toContain('空正文只允许出现在助手轮')
+  })
+
+  it('阳性对照：没有原文可给时也不能给空白（退回异常字符串）', async () => {
+    fakeApi.chatSend.mockRejectedValueOnce('参数不合法：conversationId —— 不能为空')
+    await useAppStore.getState().sendMessage('再问一句')
+    expect(useAppStore.getState().streamError).toContain('conversationId')
+  })
+})

@@ -36,11 +36,21 @@ export const settingsSchema = z.object({
   apiKey: z.string().max(400).optional()
 })
 
-/** 单条消息（发给模型的通道）：刻意**不含** segments —— 执行分段是本地渲染资产，不随请求出境（plan36 审查坑 2） */
-const messageSchema = z.object({
-  role: z.enum(['system', 'user', 'assistant']),
-  content: z.string().min(1).max(200000)
-})
+/**
+ * 单条消息（发给模型的通道）：刻意**不含** segments —— 执行分段是本地渲染资产，不随请求出境（plan36 审查坑 2）。
+ * 空正文按角色放行（K8）：否则被「停止生成」留下空正文助手轮的那条会话，从此再也发不出消息。
+ * 这比落盘侧 `storedMessageSchema` 松一档（segments 到不了这儿），差额由 agent/context `historyForModel` 兜住。
+ */
+const messageSchema = z
+  .object({
+    role: z.enum(['system', 'user', 'assistant']),
+    content: z.string().max(200000)
+  })
+  .superRefine((m, ctx) => {
+    if (m.content.trim().length === 0 && m.role !== 'assistant') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '空正文只允许出现在助手轮' })
+    }
+  })
 
 /**
  * **发给模型**的消息数组（`chat:send`）：上限 200 是"一次请求别把上下文撑爆"。

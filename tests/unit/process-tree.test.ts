@@ -147,13 +147,27 @@ describe('真进程：**孙进程必须跟着一起死**（否则就是留孤儿
     expect(before, '孙进程没写东西 —— 这条测试的前提不成立，下面的断言无意义').toBeGreaterThan(0)
 
     killProcessTree(parent)
-    // 给它一点时间真的死掉，然后取两个采样点
-    await sleep(700)
-    const mid = statSync(log).size
-    await sleep(900)
-    const after = statSync(log).size
-
-    expect(after, '杀完树之后文件还在长 = **留了孤儿进程**（这正是本函数存在的唯一理由）').toBe(mid)
+    // 等"停笔"而不是等固定时长：全量跑时机器忙，`taskkill` 自己就可能排在几百毫秒之后，
+    // 用固定 sleep 会把"杀得慢"误报成"留了孤儿"（107 个文件并发时实测 mid=30 / after=35）。
+    // 判据没有放宽：必须在 8 秒内出现连续 900ms 零增长，等不到就按孤儿判红。
+    const QUIET_MS = 900
+    const DEADLINE_MS = 8000
+    const startedAt = Date.now()
+    let last = statSync(log).size
+    let quietSince = startedAt
+    let orphan = true
+    while (Date.now() - startedAt < DEADLINE_MS) {
+      await sleep(150)
+      const size = statSync(log).size
+      if (size !== last) {
+        last = size
+        quietSince = Date.now()
+      } else if (Date.now() - quietSince >= QUIET_MS) {
+        orphan = false
+        break
+      }
+    }
+    expect(orphan, '杀完树之后文件还在长 = **留了孤儿进程**（这正是本函数存在的唯一理由）').toBe(false)
 
     // 收尾：万一真留了孤儿，别把它留在机器上
     try {

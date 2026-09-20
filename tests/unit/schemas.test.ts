@@ -135,8 +135,9 @@ describe('storedMessagesSchema（落盘的那一份）', () => {
       { role: 'user' as const, content: '帮我看看这段代码' },
       { role: 'assistant' as const, content: '' } // ← 刚按下发送、还没吐字
     ]
-    // **旧的单一 schema 会把它整个拒掉**：修之前 conv:save 用的就是 chatMessagesSchema
-    expect(chatMessagesSchema.safeParse(streaming).success).toBe(false)
+    // 落盘侧靠"先规整、再校验"过；**不规整就必须被拒** —— 这条是 `normalizeHistory` 仍然承重的证据
+    // （以前这里断言的是 `chatMessagesSchema` 会拒，那个分工在 K8 之后已不存在）
+    expect(storedMessagesSchema.safeParse(streaming).success).toBe(false)
     const res = storedMessagesSchema.safeParse(normalizeHistory(streaming))
     expect(res.success).toBe(true)
     if (res.success) {
@@ -151,5 +152,41 @@ describe('storedMessagesSchema（落盘的那一份）', () => {
     const long = Array.from({ length: 300 }, (_, i) => msg(i))
     expect(chatMessagesSchema.safeParse(long).success).toBe(false)
     expect(storedMessagesSchema.safeParse(long).success).toBe(true)
+  })
+})
+
+// K8（0.13.80 真机点验撞出）：一轮回答**正文还没吐出一个字**时点「停止生成」，`markError` 照样落盘，
+// 会话里就留下一条 `content: ''` 的 assistant 轮。渲染层按既定规则**保留**它（丢了会让回滚索引错位），
+// 于是下一句提问带着它进 `chat:send` → 被 `content.min(1)` 整批拒掉 → **这条会话从此再也发不出消息**，
+// 界面只说"参数校验未通过"。落盘侧（`storedMessageSchema`）plan36 早就放行这种形状了，
+// 发送侧漏了 —— 两份 schema 对同一条规则各说各话，是这一族的根因。
+describe('chatMessagesSchema：空正文的 assistant 轮（K8）', () => {
+  it('真机那份历史原样通过（第 4 条是被中断的空正文助手轮）', () => {
+    const real = [
+      { role: 'user', content: '只派子代理，不要自己执行命令' },
+      { role: 'assistant', content: '已派 code-executor 执行，它的原始回报如下：' },
+      { role: 'user', content: '用 spawn_agents 一次并行派两个 job' },
+      { role: 'assistant', content: '' },
+      { role: 'user', content: '先用 update_todos 建三条待办' }
+    ]
+    expect(chatMessagesSchema.safeParse(real).success).toBe(true)
+  })
+
+  it('整条都是空串的 assistant 也放行（与落盘侧 trim 口径一致）', () => {
+    expect(chatMessagesSchema.safeParse([{ role: 'assistant', content: '   ' }]).success).toBe(true)
+  })
+
+  /** 反向验证：放行必须是**只**放行 assistant，否则这道门等于没关 */
+  it('空正文的 user 仍然拒', () => {
+    expect(chatMessagesSchema.safeParse([{ role: 'user', content: '' }]).success).toBe(false)
+  })
+
+  /** 「空正文」的口径必须与落盘侧一样带 trim —— 不然两份 schema 又会无声分岔（就是 K8 的根因形状） */
+  it('只有空格的 user 也算空正文，仍拒', () => {
+    expect(chatMessagesSchema.safeParse([{ role: 'user', content: '   ' }]).success).toBe(false)
+  })
+
+  it('空正文的 system 仍然拒', () => {
+    expect(chatMessagesSchema.safeParse([{ role: 'system', content: '' }]).success).toBe(false)
   })
 })
