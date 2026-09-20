@@ -43,6 +43,8 @@ const SLOW_REPORT_THROTTLE_MS = 5000
  *  "单块占死"本来就只有一个块入档；"多块累积"没有横跨者，丢几个只让 sumMs 偏保守。
  *  告警后清池（见 tick 内），所以容量只需覆盖**单次**停滞。 */
 const BIG_BLOCKS_MAX = 64
+/** 心跳间隔：5 分钟一条 INFO，成本可忽略，换来"探针活着"的常态证据 */
+const HEARTBEAT_MS = 5 * 60 * 1000
 
 type Block = { label: string; startedAt: number; endedAt: number }
 
@@ -61,6 +63,9 @@ let tracedBlocks = 0
 let tracedMs = 0
 /** 被池子容量裁掉的块数：不报出来的话，末段的 `coveredMs` 会被当成全貌 */
 let droppedBlocks = 0
+let hbTimer: NodeJS.Timeout | null = null
+let hbLastBlocks = 0
+let hbLastMs = 0
 
 export function peekTracedBlocks(): number {
   return tracedBlocks
@@ -211,10 +216,39 @@ function phaseAt(stallStart: number): string {
   return hit
 }
 
-export function startWatchdog(opts?: { intervalMs?: number; thresholdMs?: number }): void {
+/**
+ * 插桩心跳：让「探针是否在响」成为**常态可观测项**，而不是只能靠停滞来反证。
+ * 实测 K1 的起因：0.13.77 真机跑 20.5 分钟停滞 0 条，而 traced/tracedMs 只在停滞告警分支输出
+ * ⇒ "0 条"分不清"确实没卡"与"探针没记账"。
+ * ⚠️ 心跳**只挂在周期定时器上**：别指望"退出时补一次" —— `stopWatchdog` 在生产代码里
+ *    零调用点（真机实测证实：优雅退出后没有第二次心跳），挂在它上面就是死代码。
+ *    每条心跳都带 `total` 累计值，所以最终读数本来就有，不需要退出那一次。
+ * ⚠️ 心跳自己会经 appendFileSync 落盘，而它在插桩名单里 —— 不掐的话每次心跳都给增量垫一笔，
+ * "零记账"信号就被探针自己污染了。`diag()` 的 reporting 闸正好挡住（reporting 期间不记账）。
+ */
+function heartbeat(): void {
+  const delta = tracedBlocks - hbLastBlocks
+  const deltaMs = Math.round(tracedMs - hbLastMs)
+  hbLastBlocks = tracedBlocks
+  hbLastMs = tracedMs
+  const msg = '插桩心跳（探针存活证据）'
+  if (tracedBlocks === 0) {
+    // 应用启动必然走大量同步 fs（store / 技能 / 手册加载）⇒ 自启动零记账只可能是插桩没生效
+    diag(() => log.warn(msg, { blocks: 0, note: '自启动以来一次都没记账 ⇒ 插桩可能未生效，"无停滞"读数不可信' }))
+  } else {
+    diag(() => log.info(msg, { blocks: delta, ms: deltaMs, total: tracedBlocks }))
+  }
+}
+
+export function startWatchdog(opts?: {
+  intervalMs?: number
+  thresholdMs?: number
+  heartbeatMs?: number
+}): void {
   if (timer) return
   intervalMs = opts?.intervalMs ?? 250
   thresholdMs = opts?.thresholdMs ?? 1000
+  const hbMs = opts?.heartbeatMs ?? HEARTBEAT_MS
   lastTick = performance.now()
   history = [{ phase: 'unknown', at: Number.NEGATIVE_INFINITY }, { phase, at: lastTick }]
   // 插桩状态不跨启停存活（与 D-119 ②「缓存不许跨重挂载存活」同源）
@@ -224,6 +258,8 @@ export function startWatchdog(opts?: { intervalMs?: number; thresholdMs?: number
   tracedBlocks = 0
   tracedMs = 0
   droppedBlocks = 0
+  hbLastBlocks = 0
+  hbLastMs = 0
   timer = setInterval(() => {
     const now = performance.now()
     const stall = now - lastTick - intervalMs
@@ -251,11 +287,19 @@ export function startWatchdog(opts?: { intervalMs?: number; thresholdMs?: number
   }, intervalMs)
   // 看门狗不许成为进程不退出理由
   timer.unref?.()
+  if (hbMs > 0 && !hbTimer) {
+    hbTimer = setInterval(heartbeat, hbMs)
+    hbTimer.unref?.()
+  }
 }
 
 export function stopWatchdog(): void {
   if (timer) {
     clearInterval(timer)
     timer = null
+  }
+  if (hbTimer) {
+    clearInterval(hbTimer)
+    hbTimer = null
   }
 }

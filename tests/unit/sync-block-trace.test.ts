@@ -146,6 +146,27 @@ describe('同步块插桩', () => {
     expect(peekTracedBlocks()).toBe(before + 1)
   })
 
+  it('★ 心跳给"探针在响"的常态证据；且心跳写日志**不给自己记账**', async () => {
+    const d = open()
+    startWatchdog({ intervalMs: 20, thresholdMs: 5000, heartbeatMs: 90 })
+    traceSync('blk:hb', () => 1) // 全场唯一一笔真账
+    await sleep(400) // 期间应有 3~4 次心跳
+    const content = readLog(d)
+    const beats = content.split('插桩心跳').length - 1
+    expect(beats).toBeGreaterThanOrEqual(2)
+    const totals = [...content.matchAll(/"total":(\d+)/g)].map((m) => Number(m[1]))
+    // 若 reporting 闸失效，心跳每落一条就给增量垫一笔，total 会跟着心跳次数往上爬
+    expect(Math.max.apply(null, totals)).toBe(1)
+  })
+
+  it('★ 自启动零记账 → 心跳报 WARN（"无停滞"读数不可信，别当"没卡"）', async () => {
+    const d = open()
+    startWatchdog({ intervalMs: 20, thresholdMs: 5000, heartbeatMs: 80 })
+    await sleep(250)
+    const content = readLog(d)
+    expect(content).toContain('自启动以来一次都没记账')
+  })
+
   it('traceSync 不吞异常也不改返回值', () => {
     const before = peekTracedBlocks()
     expect(traceSync('blk:ret', () => 'ok')).toBe('ok')
