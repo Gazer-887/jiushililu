@@ -198,7 +198,7 @@ describe('runSubagents（子代理调度器）', () => {
     const results = await runSubagents({
       definitions: defs,
       task: '干活',
-      tools: [],
+      toolsFor: () => [],
       maxConcurrency: 2,
       maxRoundsPerAgent: 3,
       chatFactory: (def) => async (messages: AgentMessage[]) => {
@@ -224,7 +224,7 @@ describe('runSubagents（子代理调度器）', () => {
     const results = await runSubagents({
       definitions: defs,
       task: 'x',
-      tools: [],
+      toolsFor: () => [],
       chatFactory: (def) => async () => {
         if (def.name === 'bad') throw new Error('模型通道炸了')
         return { text: '完成', toolCalls: [] }
@@ -252,7 +252,7 @@ describe('runSubagents（子代理调度器）', () => {
         }
       ],
       task: '给个方案',
-      tools: [],
+      toolsFor: () => [],
       chatFactory: () => async () => {
         rounds++
         return { text: '## 方案\n1. 改 A', toolCalls: [] } satisfies AgentChatResult

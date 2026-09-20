@@ -63,6 +63,7 @@ const baseInput = {
   platform: 'win32' as NodeJS.Platform,
   toolNames: ['read_file', 'write_file'],
   subagentNames: ['explore'],
+  capabilityGaps: [],
   computerControl: false
 }
 

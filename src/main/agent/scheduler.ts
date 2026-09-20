@@ -6,7 +6,7 @@ import type {
   SubagentJobEvent
 } from '@shared/agent'
 import { runAgentLoop } from './loop'
-import { composeAgentPrompt } from './loader'
+import { composeAgentPrompt, TOOL_OUTPUT_TRUST_BASELINE } from './loader'
 import type { TokenPolicy } from '@shared/token-tier'
 import type { AgentDefinition } from './loader'
 import { withAgentScope, type ExecEventRecorder } from './exec-events'
@@ -33,7 +33,11 @@ export interface SubagentRunOptions {
   task: string
   /** 逐作业任务书（与 definitions 同序）；给了就覆盖该作业的统一任务书 */
   tasks?: string[]
-  tools: AgentTool[]
+  /**
+   * 按定义求该子代理的工具集 —— **不是一个共用数组**：一份共用数组会让 `def.tools` 对子代理
+   * 完全不生效（既不收窄也不授予，plan51 F1 修的正是这个）。上限与口径由 runner 侧决定。
+   */
+  toolsFor: (def: AgentDefinition) => AgentTool[]
   /** 按定义产出模型通道（生产环境按 def.model 选模型；测试注入 mock） */
   chatFactory: (def: AgentDefinition) => (messages: AgentMessage[]) => Promise<AgentChatResult>
   /** 并发上限（D5，默认 3） */
@@ -88,9 +92,12 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
             // 拼接走 loader 的纯函数（plan17 D10）：与主循环同式，防两处格式漂移
             composeAgentPrompt(def, 'subagent') +
             // 输出纪律（§七③）：与主代理同一份 —— 子代理的输出同样计费，纪律不该只约束一半
-            (opts.systemSuffix ? `\n\n${opts.systemSuffix}` : ''),
+            (opts.systemSuffix ? `\n\n${opts.systemSuffix}` : '') +
+            // 防注入基线：与主代理**同一条**。子代理现在真拿得到 write_file / run_command，
+            // 而它读的正是构建日志与命令输出 —— 少了这句，那些内容就能指挥它（批判复查 N-1）
+            `\n\n${TOOL_OUTPUT_TRUST_BASELINE}`,
           history: [{ role: 'user', content: jobTask }],
-          tools: opts.tools,
+          tools: opts.toolsFor(def),
           maxRounds: opts.maxRoundsPerAgent,
           chat: opts.chatFactory(def),
           // 子代理跟主代理**同一个档位**：否则用户看到的省钱行为跟自己的设置对不上，最难解释

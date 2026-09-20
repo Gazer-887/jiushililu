@@ -24,6 +24,11 @@ export interface SelfViewInput {
   subagentNames: string[]
   /** 电脑控制开关（用户设置；当前版本无对应工具，如实报状态） */
   computerControl: boolean
+  /**
+   * 本会话未开放、但**有可派子代理声明了它**的能力（plan51 F4：缺什么 + 怎么拿到）。
+   * 空数组 = 不出现该行 —— 没有出口就不报（约束②：不写拿不到的承诺）。
+   */
+  capabilityGaps: { capability: string; label: string; agents: string[] }[]
 }
 
 /**
@@ -44,6 +49,11 @@ export function composeSelfView(input: SelfViewInput): string {
   if (input.subagentNames.length > 0) {
     lines.push(
       `- 可派子代理（${input.subagentNames.length} 个）：${input.subagentNames.join('、')}；用 spawn_agents 派发，任务书必须自包含`
+    )
+  }
+  for (const gap of input.capabilityGaps) {
+    lines.push(
+      `- 缺能力：${gap.label}（${gap.capability}）本会话未开放，但下列可派子代理声明了它 ⇒ 派发即按其声明装配到位：${gap.agents.join('、')}`
     )
   }
   lines.push('</self_view>')

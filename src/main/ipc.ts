@@ -848,6 +848,10 @@ export function registerIpcHandlers(deps: {
         apiKey,
         history: [{ role: 'user', content: req.task }],
         agentName: req.agentName,
+        // 权限档必须与对话线同源（plan51 复查抓出）：漏传 = 恒按可写档跑，
+        // 于是只读档用户在这个入口上拿到的是可写档的工具集（而子代理现在按声明装配，
+        // 这条路的工具集会随所选 Agent 变化，档位不同源就成了实质越权）
+        permission: getPermissionPreset(),
         conversationId: req.conversationId ?? AGENT_TASK_OWNER,
         // 自视段：一次性任务同样报告配置（模型名/工具/子代理）
         computerControl: getComputerControlEnabled(),

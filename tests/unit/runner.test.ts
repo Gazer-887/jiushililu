@@ -127,7 +127,7 @@ describe('runAgent（工具链路集成）', () => {
     expect(system).toContain('内核 Agent')
   })
 
-  it('【回归】做事纪律对自定义子代理同样生效（不是只给内核默认加）', async () => {
+  it('【回归】做事纪律对**自定义 Agent 当主代理**时同样生效（真子代理路径见 subagent-tools.test.ts）', async () => {
     const ctx = makeCtx()
     mkdirSync(ctx.userAgentsDir, { recursive: true })
     writeFileSync(
