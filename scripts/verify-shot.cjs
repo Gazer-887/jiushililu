@@ -3113,6 +3113,114 @@ app.whenReady().then(async () => {
     fnoteJitter
   )
 
+  // ── H4-① 矮窗档（K4 补）：两侧都塞不下时必须走「限高 + 内滚」───────────────────────
+  // 上面两档都只走到"翻上去就够了"—— `maxHeight` 全程只记录不断言，等于**那条分支从未被证明**。
+  // 窗口高度按**实测气泡高**反推而不是写死一个数：写死的数换台机器 / 换字号就可能什么都不测到。
+  const swinCap = getSettingsWin()
+  let capVerdict = { found: false, why: 'no-settings-win' }
+  if (swinCap) {
+    const [capW, capH0] = swinCap.getContentSize()
+    const nat = await sevalRaw(`
+      (() => {
+        const body = document.querySelector('.settings-body');
+        const label = Array.from(document.querySelectorAll('.field-label'))
+          .find((l) => (l.textContent || '').trim().indexOf('网络') === 0);
+        const bubble = label ? label.querySelector('.fnote-bubble') : null;
+        if (!body || !bubble) return { ok: false, why: 'no-body-or-bubble' };
+        const keep = bubble.style.display;
+        bubble.style.display = 'block';
+        const h = bubble.offsetHeight;
+        bubble.style.display = keep;
+        return { ok: true, h, host: Math.round(body.getBoundingClientRect().height) };
+      })()
+    `)
+    if (nat?.ok) {
+      // 目标：裁切容器高 ≈ 气泡高的 60% ⇒ 上、下两侧都放不下完整气泡（FieldNote 才会走 cap 分支）
+      const targetHost = Math.max(120, Math.round(nat.h * 0.6))
+      swinCap.setContentSize(capW, Math.max(240, capH0 - (nat.host - targetHost)))
+      await new Promise((r) => setTimeout(r, 300))
+      const capPrep = await sevalRaw(`
+        (() => {
+          const body = document.querySelector('.settings-body');
+          const label = Array.from(document.querySelectorAll('.field-label'))
+            .find((l) => (l.textContent || '').trim().indexOf('网络') === 0);
+          const mark = label ? label.querySelector('.fnote-mark') : null;
+          if (!body || !mark) return { ok: false };
+          const savedTop = body.scrollTop;
+          const b0 = body.getBoundingClientRect();
+          const m0 = mark.getBoundingClientRect();
+          body.scrollTop = savedTop + (m0.bottom - (b0.bottom - 48));
+          const m1 = mark.getBoundingClientRect();
+          return { ok: true, savedTop, x: Math.round(m1.left + m1.width / 2), y: Math.round(m1.top + m1.height / 2) };
+        })()
+      `)
+      if (capPrep?.ok) {
+        swinCap.focus()
+        swinCap.webContents.sendInputEvent({ type: 'mouseMove', x: capPrep.x, y: capPrep.y })
+        await new Promise((r) => setTimeout(r, 300))
+      }
+      capVerdict = await sevalRaw(`
+        (async () => {
+          const body = document.querySelector('.settings-body');
+          const label = Array.from(document.querySelectorAll('.field-label'))
+            .find((l) => (l.textContent || '').trim().indexOf('网络') === 0);
+          const mark = label ? label.querySelector('.fnote-mark') : null;
+          const bubble = mark ? mark.parentElement.querySelector('.fnote-bubble') : null;
+          if (!body || !mark || !bubble) return { found: false, why: 'mark/bubble 找不到' };
+          const linesBefore = bubble.querySelectorAll('.fnote-line').length;
+          let trigger = 'real-hover';
+          let forced = false;
+          if (getComputedStyle(bubble).display === 'none') {
+            mark.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+            await new Promise((r) => setTimeout(r, 150));
+            trigger = 'synthetic-mouseover';
+          }
+          // ⚠️ 合成 mouseover 只让 React 的 onMouseEnter 跑了（朝向/限高已算），CSS 的 :hover 仍没命中。
+          // 不显形就量 = 零矩形，会把"探针没量到"误报成"产品越界"—— 显形只为量几何，量完立刻交回 CSS。
+          if (getComputedStyle(bubble).display === 'none') {
+            bubble.style.display = 'block';
+            forced = true;
+          }
+          const hr = body.getBoundingClientRect();
+          const br = bubble.getBoundingClientRect();
+          const mh = getComputedStyle(bubble).maxHeight;
+          const out = {
+            found: true,
+            trigger,
+            forced,
+            naturalH: ${nat?.ok ? nat.h : 0},
+            hostH: Math.round(hr.height),
+            inside: br.top >= hr.top - 1 && br.bottom <= hr.bottom + 1,
+            flipped: bubble.classList.contains('fnote-flip-up'),
+            maxHeight: mh,
+            capped: mh !== 'none' && parseFloat(mh) > 0 && parseFloat(mh) < ${nat?.ok ? nat.h : 1e9},
+            scrollable: bubble.scrollHeight > bubble.clientHeight + 2,
+            lines: bubble.querySelectorAll('.fnote-line').length,
+            linesBefore
+          };
+          mark.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, cancelable: true, view: window }));
+          if (forced) bubble.style.display = '';
+          body.scrollTop = ${capPrep?.ok ? capPrep.savedTop : 0};
+          return out;
+        })()
+      `)
+      capVerdict = Object.assign({}, capVerdict, { prep: capPrep || { ok: false }, targetHost })
+      swinCap.setContentSize(capW, capH0)
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
+  console.log('FNOTE_CAP=' + JSON.stringify(capVerdict))
+  checkTrue(
+    'H4-① 矮窗档：上下都塞不下时气泡被限高且可内滚（内容一条不少、不越出容器）',
+    capVerdict?.found === true &&
+      capVerdict?.inside === true &&
+      capVerdict?.capped === true &&
+      capVerdict?.scrollable === true &&
+      capVerdict?.lines === capVerdict?.linesBefore &&
+      (capVerdict?.lines ?? 0) >= 2,
+    capVerdict
+  )
+
   const m3 = await sevalRaw(`
     (() => {
       const pick = (sel) => {
