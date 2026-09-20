@@ -25,9 +25,16 @@ afterEach(() => {
 
 afterAll(async () => {
   disposeAllShellSessions()
-  // taskkill 异步生效：等句柄释放再删临时目录（删不掉也无害 —— tmpdir 系统会清）
+  // taskkill 异步生效：等句柄释放再删临时目录
   await new Promise((r) => setTimeout(r, 500))
-  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  } catch (err) {
+    // 删不掉确实无害（tmpdir 系统会清），但**不许把它演变成"整个套件判红"**：
+    // 全量并发时子进程句柄释放更慢，这条几乎必红，而红的原因与被测行为无关。
+    // 也不许静默吞掉 —— 留一行带路径与原因的说明，让"没删干净"仍然是可见事实。
+    console.log(`[teardown] 临时目录未删净（无害）：${root} —— ${err instanceof Error ? err.message : String(err)}`)
+  }
 })
 
 describe('shell 会话 · 状态跨步存活（D-085 的核心诉求）', () => {
