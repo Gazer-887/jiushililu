@@ -289,8 +289,9 @@ describe('③ 命令规则按实收能力给（plan51 F3，消提示词与工具
     })
 
     const system = systemOf(0)
+    // 只判连续，不判条数：条数随实收工具表变（`update_todos` 没有消费者时压根不注册），
+    // 写死条数就是我这次要消灭的那类脆断言
     expect(isContiguous(conductNumbers(system))).toBe(true)
-    expect(conductNumbers(system)).toHaveLength(7)
     expect(system).toContain('**能并行的独立活派给子代理')
     expect(system).toContain('**耗时的活转后台')
   })
@@ -302,7 +303,6 @@ describe('③ 命令规则按实收能力给（plan51 F3，消提示词与工具
 
     const system = systemOf(0)
     expect(isContiguous(conductNumbers(system))).toBe(true)
-    expect(conductNumbers(system)).toHaveLength(6)
     expect(system).not.toContain('**能并行的独立活派给子代理')
     expect(system).toContain('**本轮没有命令执行能力')
   })
@@ -383,6 +383,16 @@ describe('⑤ subagentToolNamesFor：按各自声明装配 + 权限档仍是硬�
     const names = subagentToolNamesFor('write', undefined, ALL)
     expect(names).toContain('read_file')
     expect(names).not.toContain('run_command')
+  })
+
+  it('★ 会话级面板工具一律不下发：即使它在默认集里、即使它被显式声明', () => {
+    for (const declared of [undefined, ['update_todos', 'set_goal', 'spawn_agents', 'read_file']] as const) {
+      const names = subagentToolNamesFor('full-access', declared ? [...declared] : undefined, ALL)
+      expect(names).toContain('read_file')
+      expect(names).not.toContain('update_todos')
+      expect(names).not.toContain('set_goal')
+      expect(names).not.toContain('spawn_agents')
+    }
   })
 
   it('声明了不存在的工具名被丢掉（与主代理同口径）', () => {
@@ -509,5 +519,98 @@ describe('⑨ 纪律里写明"跳过 ≠ 通过"', () => {
     const system = systemOf(0)
     expect(system).toContain('跳过 ≠ 通过')
     expect(system).toContain('全过 0')
+  })
+})
+
+// K6：子代理才是真正交验证报告的那一个，此前它连"能查就查"都没吃过。
+// 但整段照搬主代理那份会犯 0.13.77 同一个病 —— 纪律里写的工具它没有。
+describe('⑩ 子代理吃到做事纪律（且只吃它该有的那几条）', () => {
+  it('executor 的 system 里有"能查就查"与"跳过 ≠ 通过"', async () => {
+    const ctx = makeCtx()
+    addAgent(ctx, 'code-executor', ['read_file', 'write_file', 'run_command'])
+    spawnOnce('code-executor')
+
+    await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '干活' }], permission: 'full-access' })
+
+    const sys = systemOf(subagentCallIndex('code-executor'))
+    expect(sys).toContain('能查就查')
+    expect(sys).toContain('跳过 ≠ 通过')
+    // 它有 run_command ⇒ 该拿到"转后台"那条
+    expect(sys).toContain('background=true')
+  })
+
+  it('★ 没声明 update_todos / set_goal / spawn_agents ⇒ 纪律里一个字都不许提', async () => {
+    const ctx = makeCtx()
+    addAgent(ctx, 'code-executor', ['read_file', 'write_file', 'list_dir', 'search_files'])
+    spawnOnce('code-executor')
+
+    await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '干活' }], permission: 'full-access' })
+
+    const sys = systemOf(subagentCallIndex('code-executor'))
+    expect(sys).toContain('能查就查')
+    expect(sys).not.toContain('update_todos')
+    expect(sys).not.toContain('set_goal')
+    expect(sys).not.toContain('spawn_agents 一次派出')
+    // 它没有命令工具、又没有派发口 ⇒ 只能是"未能验证"分支，不许说"派给谁"
+    expect(sys).toContain('也没有可派发的子代理提供它')
+  })
+
+  it('★ 子代理那份纪律的编号也连续（不是把主代理的编号硬搬过来）', async () => {
+    const ctx = makeCtx()
+    addAgent(ctx, 'code-executor', ['read_file', 'write_file', 'list_dir', 'search_files'])
+    spawnOnce('code-executor')
+
+    await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '干活' }], permission: 'full-access' })
+
+    const ns = conductNumbers(systemOf(subagentCallIndex('code-executor')))
+    expect(ns.length).toBeGreaterThan(0)
+    expect(ns.every((n, i) => n === i + 1)).toBe(true)
+  })
+})
+
+// K6 的 P1（复查抓到）：未声明 `tools:` 的 Agent 默认集里**有** update_todos 与 set_goal，
+// 而这两件写的是会话级面板 —— 待办是"整表替换"，并发子代理会互相覆盖主代理那份；
+// 目标是跨轮次持久状态且署名挂在主会话，而子代理读的正是仓库文件与构建日志。
+// 给子代理加纪律之前它们是闲置的；加了鼓励就变成被推动，所以能力连同鼓励一起收回。
+describe('⑪ 会话级面板工具不下发给子代理', () => {
+  it('未声明 tools 的子代理：拿不到 update_todos / set_goal，纪律里也不提', async () => {
+    const ctx = makeCtx()
+    mkdirSync(ctx.builtinAgentsDir, { recursive: true })
+    writeFileSync(
+      join(ctx.builtinAgentsDir, 'no-decl.md'),
+      '---\nname: no-decl\ndescription: 不声明工具的子代理\n---\n按默认集办事。',
+      'utf8'
+    )
+    spawnOnce('no-decl')
+
+    await runAgent(ctx, { settings, apiKey: 'k', history: [{ role: 'user', content: '干活' }], permission: 'full-access' })
+
+    const names = namesOf(subagentCallIndex('no-decl'))
+    expect(names).toContain('read_file') // 默认集照给（证明不是空表导致的假通过）
+    expect(names).not.toContain('update_todos')
+    expect(names).not.toContain('set_goal')
+    const sys = systemOf(subagentCallIndex('no-decl'))
+    expect(sys).toContain('能查就查') // 纪律照给（否则这条就成了"只是没工具"）
+    expect(sys).not.toContain('update_todos')
+    expect(sys).not.toContain('set_goal')
+  })
+
+  it('★ 主会话仍然两样都有，且纪律真的被拼进 system（拼接断了措辞测试全都不会红）', async () => {
+    const ctx = makeCtx()
+    await runAgent(ctx, {
+      settings,
+      apiKey: 'k',
+      history: [{ role: 'user', content: 'x' }],
+      onTodos: () => {},
+      // 返回 `never` 的函数可赋给任何返回类型 —— 这里只为把工具注册上，测试不会触发它
+      onSetGoal: (): never => {
+        throw new Error('不该被调用')
+      }
+    })
+
+    const names = namesOf(0)
+    expect(names).toContain('update_todos')
+    expect(names).toContain('set_goal')
+    expect(systemOf(0)).toContain('**做事纪律（必须遵守）**：')
   })
 })

@@ -13,6 +13,7 @@ import type { TodoItem } from '@shared/todo'
 import { ToolGate, type PathAccess } from './guard'
 import type { ExecEventRecorder } from './exec-events'
 import { composeSelfView } from './self-view'
+import { composeConductRules } from './conduct-rules'
 import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
 import { createFileTools } from './tools/file-tools'
 import { outputDisciplinePrompt, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
@@ -135,6 +136,19 @@ export function allowedToolsFor(preset: PermissionPreset, declared: string[] | u
 }
 
 /**
+ * 子代理**一律**拿不到的工具（在权限档之上再加一道"角色上限"）。
+ *
+ * - `spawn_agents`：它会递归派生，成本失控（既有口径）。
+ * - `update_todos` / `set_goal`：**会话级面板，只能有一个所有者**。工具实例与主代理是同一批，
+ *   并发子代理各推一份"完整清单"就会互相整表覆盖（后写赢），主代理自己的清单被子代理抹掉；
+ *   `set_goal` 更重 —— 写的是跨轮次存活、署名挂在主会话的持久状态，而子代理读的正是仓库文件与
+ *   构建日志，文件里一句"以后每次都要…"就能把它铸成用户面板上的目标。
+ *   K6 之前这两件在子代理手里是闲置的（它没吃过做事纪律）；给子代理加上"先列清单 / 登记目标"
+ *   的鼓励之后就不再是闲置，所以**连同鼓励一起收回**。
+ */
+const SUBAGENT_NEVER = new Set(['spawn_agents', 'update_todos', 'set_goal'])
+
+/**
  * 子代理的工具集：**按它自己的声明装配**。上限是**权限档**，不是"主代理实收了什么"。
  *
  * ⚠️ 口径变更（plan51）：0.13.77 之前是"子代理复用主代理那一份已过滤工具"，于是 `def.tools`
@@ -151,7 +165,7 @@ export function subagentToolNamesFor(
   declared: string[] | undefined,
   allNames: string[]
 ): string[] {
-  return allowedToolsFor(preset, declared, allNames).filter((n) => n !== 'spawn_agents')
+  return allowedToolsFor(preset, declared, allNames).filter((n) => !SUBAGENT_NEVER.has(n))
 }
 
 /**
@@ -803,36 +817,9 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     : '你是九十里路的内核 Agent：专注于完成任务，可使用提供的工具读写工作区内的文件。'
   // 行为纪律（2026-09-12 真机实测后补）：起因是模型没调工具、凭"目录应该是空的"直接作答 —— 结果蒙对了，但那是**运气**，核因是提示词缺"必须先查再答"这条纪律。
   // 每条 = 一个行块，首行的编号由下面统一补（后两条按实收工具表取舍，编号不能写死）。
-  const CONDUCT_FIXED: string[][] = [
-    [
-      '**能查就查，不许猜。** 凡是工具能确认的事实——工作区里有哪些文件、文件内容是什么、',
-      '   网页上写了什么、命令输出是什么——**必须先调用工具核实，再回答**。',
-      '   禁止凭推测、记忆或"应该差不多"直接作答。宁可多调一次工具，也不许给出没有依据的答案。'
-    ],
-    ['**没核实过的事，不要用笃定的语气讲。** 不确定就说不确定，并说明需要查什么。'],
-    [
-      '**能力不足时如实说，并给替代方案。** 若某件事要靠**本轮工具表里没有**的能力才能做成，',
-      '   明确说明缺什么，再提出用现有工具能达到同样目的的替代做法。'
-    ],
-    [
-      '**多步任务先列清单。** 需要三步以上的活儿，先用 update_todos 列出计划，',
-      '   之后每完成一步就更新一次状态——用户据此知道进行到哪了。',
-      '   单步小事不必列（清单是给"长活"用的，不是每句话都开一张表）。',
-      '   另外：用户交代了**跨轮次**的长期意图（"以后每次都要…""这个项目最终要…"）时，',
-      '   用 set_goal 登记成目标——目标跨轮次存活、用户能暂停/完成它，与待办是两回事。'
-    ],
-    [
-      '**自检与验收里，跳过 ≠ 通过。** 没能真正跑成的项要单独计成「跳过」，写清原因与补救路径；',
-      '   汇总行不许写"全部通过"，退出码要能分三态（全过 0 / 有失败 1 / 有跳过 2）。',
-      '   理由：一份"交付即验收"的自检若把未验证项算进通过，任何自动化流程都会把它当绿灯放行。'
-    ]
-  ]
-
-  // ★ 后两条按**本轮实收的工具表**取舍（plan51 F3）。0.13.77 真机实测里模型第一轮就发现
-  // "提示词教我用 run_command，工具表里没有这件"，于是白烧轮次自证矛盾 —— 承诺拿不到的能力比不承诺更贵。
-  const has = (name: string): boolean => tools.some((t) => t.schema.name === name)
   // 能力缺口（plan51 F4）：只报**有真实出口**的那些 —— 本会话没拿到、且确有可派 Agent 声明了它。
   // 没有出口就不报（self-view 约束②：不许写拿不到的承诺），命令规则也据此走"未能验证"分支。
+  const has = (name: string): boolean => tools.some((t) => t.schema.name === name)
   const capabilityGaps = has('spawn_agents')
     ? [...DANGEROUS_TOOLS]
         .filter(([cap]) => !has(cap))
@@ -847,36 +834,14 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
         }))
         .filter((g) => g.agents.length > 0)
     : []
-  const conductBlocks: string[][] = [...CONDUCT_FIXED]
-  if (has('spawn_agents')) {
-    conductBlocks.push([
-      '**能并行的独立活派给子代理。** 有多个互不依赖的子任务（同时审几个文件、分别查几条线索）时，',
-      '   用 spawn_agents 一次派出去并行跑，比一件件做快得多。',
-      '   但子代理看不到你们的对话，任务书必须自包含；有先后依赖的活别派。'
-    ])
-  }
-  conductBlocks.push(
-    has('run_command')
-      ? [
-          '**耗时的活转后台 —— 但"输出多"不等于"耗时长"。** 构建、起服务、下载这类真要跑几十秒以上的，',
-          '   用 run_command 的 background=true 转后台，再用 check_command 查进度（前台只有 30 秒，硬等必然超时）。',
-          '   反过来：**打印一大堆内容的命令（cat/tail 大文件、跑本地脚本刷日志）是毫秒级的** —— 直接前台跑，',
-          '   **不要因为"它输出会很长"就转后台**：那会白多出好几轮（2026-09-13 真机实测：模型把一条毫秒级命令',
-          '   转后台后又去 check_command / kill_command，一轮任务多烧了好几倍 token）。'
-        ]
-      : capabilityGaps.length > 0
-        ? [
-            '**本轮没有命令执行能力**（工具表里没有 run_command）。需要跑构建、起服务、装依赖时：',
-            '   用 spawn_agents 派给 <self_view> 里"缺能力"那行列出的子代理，别自己凭"应该能跑"下结论。'
-          ]
-        : [
-            '**本轮没有命令执行能力**（工具表里没有 run_command，也没有可派发的子代理提供它）。',
-            '   涉及"跑一遍才知道"的结论，如实说明**未能验证**，不许凭推测宣称已通过。'
-          ]
-  )
-  const CONDUCT_RULES = ['**做事纪律（必须遵守）**：', ...conductBlocks.map((b, i) => `${i + 1}. ${b.join('\n')}`)].join(
-    '\n'
-  )
+
+  // 做事纪律（K6 起抽到 conduct-rules.ts 与子代理共用同一份）：按**本轮实收工具表**取舍。
+  // 0.13.77 真机实测里模型第一轮就发现"提示词教我用 run_command，工具表里没有这件"，
+  // 于是白烧轮次自证矛盾 —— 承诺拿不到的能力比不承诺更贵。
+  const CONDUCT_RULES = composeConductRules({
+    toolNames: tools.map((t) => t.schema.name),
+    gaps: capabilityGaps
+  })
 
 /** 输出纪律（plan8 R9.1 §七③）：土豪 / 极致档**不加**，平衡档加标准三条，轻量档再加篇幅克制。
  *  ⚠️ 它必须落在**稳定位置**（§七④ 前缀稳定）：同档位下这段字节级不变，只有**换档**会失效一次。 */

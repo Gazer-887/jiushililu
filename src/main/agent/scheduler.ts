@@ -7,6 +7,7 @@ import type {
 } from '@shared/agent'
 import { runAgentLoop } from './loop'
 import { composeAgentPrompt, TOOL_OUTPUT_TRUST_BASELINE } from './loader'
+import { composeConductRules } from './conduct-rules'
 import type { TokenPolicy } from '@shared/token-tier'
 import type { AgentDefinition } from './loader'
 import { withAgentScope, type ExecEventRecorder } from './exec-events'
@@ -87,17 +88,23 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
         startedAt
       })
       try {
+        // 工具集与纪律**同源同次求值**：纪律要按这份实收工具表取舍，分两次算迟早对不上
+        const jobTools = opts.toolsFor(def)
         const loop = await runAgentLoop({
           systemPrompt:
             // 拼接走 loader 的纯函数（plan17 D10）：与主循环同式，防两处格式漂移
             composeAgentPrompt(def, 'subagent') +
+            // 做事纪律（K6）：按**这个子代理实收的工具表**取舍。整段照搬主代理那份，就会给它
+            // 一堆它没有的工具（update_todos / set_goal / spawn_agents…）—— 那正是 0.13.77 真机
+            // 实测里"提示词承诺工具表没有的能力"的同一个病，而子代理才是真正交验证报告的那一个。
+            // 不传 gaps：子代理拿不到派发口，"派给某某"这条出路对它不成立，会落到"未能验证"分支。
+            `\n\n${composeConductRules({ toolNames: jobTools.map((t) => t.schema.name) })}` +
             // 输出纪律（§七③）：与主代理同一份 —— 子代理的输出同样计费，纪律不该只约束一半
             (opts.systemSuffix ? `\n\n${opts.systemSuffix}` : '') +
-            // 防注入基线：与主代理**同一条**。子代理现在真拿得到 write_file / run_command，
-            // 而它读的正是构建日志与命令输出 —— 少了这句，那些内容就能指挥它（批判复查 N-1）
+            // 防注入基线：与主代理**同一条**。子代理读的正是构建日志与命令输出这类外部内容
             `\n\n${TOOL_OUTPUT_TRUST_BASELINE}`,
           history: [{ role: 'user', content: jobTask }],
-          tools: opts.toolsFor(def),
+          tools: jobTools,
           maxRounds: opts.maxRoundsPerAgent,
           chat: opts.chatFactory(def),
           // 子代理跟主代理**同一个档位**：否则用户看到的省钱行为跟自己的设置对不上，最难解释

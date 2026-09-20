@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { trimMessages } from '../../src/main/agent/context'
+import { composeConductRules } from '@main/agent/conduct-rules'
 import { outputDisciplinePrompt } from '@shared/token-tier'
 import type { AgentMessage } from '@shared/agent'
 
@@ -90,10 +91,12 @@ describe('接线守卫：折叠这个代价**必须留痕**', () => {
 // 2026-09-13 实测：一条"只要求跑一次命令"的任务，模型跑了 9 次工具调用（第 1 次就拿到完整输出）
 // —— 不是没看到，是措辞在推它反复确认。下面这条守的就是那处措辞。
 describe('提示措辞守卫：不许把模型推向"再来一轮"', () => {
-  const runner = readFileSync('src/main/agent/runner.ts', 'utf8')
+  // 判**渲染结果**而不是扫某个源文件：这段文字自 K6 起住在 conduct-rules.ts，
+  // 扫文件的守卫只会因搬家而红，却证明不了"模型真看得到这句话"。
+  const rendered = composeConductRules({ toolNames: ['read_file', 'run_command'] })
 
   it('做事纪律里点明了"输出多不等于耗时长"（否则大输出命令会被转后台，白烧好几轮）', () => {
-    expect(runner).toContain('"输出多"不等于"耗时长"')
-    expect(runner).toContain('不要因为"它输出会很长"就转后台')
+    expect(rendered).toContain('"输出多"不等于"耗时长"')
+    expect(rendered).toContain('不要因为"它输出会很长"就转后台')
   })
 })
