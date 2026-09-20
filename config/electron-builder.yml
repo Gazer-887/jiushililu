@@ -67,6 +67,12 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: 九十里路
+  # ⚠️ 产物文件名必须是 ASCII：GitHub Release 会把 CJK 前缀剥掉（`九十里路 Setup 0.13.78.exe`
+  # 存成 `Setup.0.13.78.exe`、`九十里路-Portable-…` 存成 `-Portable-…`），下载链接当场是坏的。
+  # 2026-09-20 发 v0.13.77/78 时实踩过，细节见 NOTEBOOK/learnings.md 同日条目。
+  # 只改**文件名**：`productName` 仍是「九十里路」，窗口标题、快捷方式、安装包内显示名都不受影响。
+  artifactName: Jiushililu-Setup-${version}.${ext}
 
 portable:
-  artifactName: ${productName}-Portable-${version}.exe
+  # 同上：`${productName}` 会带进 CJK，这里写死 ASCII 前缀
+  artifactName: Jiushililu-Portable-${version}.${ext}
