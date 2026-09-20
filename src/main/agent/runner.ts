@@ -17,9 +17,11 @@ import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
 import { createFileTools } from './tools/file-tools'
 import { outputDisciplinePrompt, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import {
+  createShellSlot,
   createSystemTools,
   createSystemToolsWithConfirm,
-  type CommandConfirm
+  type CommandConfirm,
+  type ShellSlot
 } from './tools/system-tools'
 import type { RuntimeEnv } from './tools/shell-session'
 import { createWebTools } from './tools/web-tools'
@@ -152,6 +154,40 @@ export function subagentToolNamesFor(
   return allowedToolsFor(preset, declared, allNames).filter((n) => n !== 'spawn_agents')
 }
 
+/**
+ * 命令类那一组（`list_dir` / `search_files` / `run_command` / `check_command` / `kill_command`）。
+ *
+ * 单独抽出来的理由：确认卡上的「发起」字段是在**建实例时**定格的，子代理要拿一份写着
+ * 自己名字的实例（否则并发派发时几张卡都写着主代理的名字）。两处各抄一遍这七个入参，
+ * 迟早和 `createAllTools` 分岔 —— 那正是本项目反复踩到的"口径分岔"。
+ */
+export function buildCommandTools(
+  workspaceRoot: string,
+  hooks: ToolHooks,
+  agentLabel: string | undefined
+): AgentTool[] {
+  return hooks.confirmCommand
+    ? createSystemToolsWithConfirm(
+        workspaceRoot,
+        hooks.confirmCommand,
+        hooks.background,
+        agentLabel,
+        hooks.resourcesPath,
+        hooks.pathAccess,
+        hooks.resolveRuntimeEnv,
+        hooks.shellSlot
+      )
+    : createSystemTools(
+        workspaceRoot,
+        hooks.background,
+        agentLabel,
+        hooks.resourcesPath,
+        hooks.pathAccess,
+        hooks.resolveRuntimeEnv,
+        hooks.shellSlot
+      )
+}
+
 export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): AgentTool[] {
   // 没注入写入服务时的默认实现：能写不能删 —— 宁可删不掉，也不能在没有检查点的场景下悄悄硬删
   const writer =
@@ -164,24 +200,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     })
   return [
     ...createFileTools(writer, hooks.policy),
-    ...(hooks.confirmCommand
-      ? createSystemToolsWithConfirm(
-          workspaceRoot,
-          hooks.confirmCommand,
-          hooks.background,
-          hooks.agentLabel,
-          hooks.resourcesPath,
-          hooks.pathAccess,
-          hooks.resolveRuntimeEnv
-        )
-      : createSystemTools(
-          workspaceRoot,
-          hooks.background,
-          hooks.agentLabel,
-          hooks.resourcesPath,
-          hooks.pathAccess,
-          hooks.resolveRuntimeEnv
-        )),
+    ...buildCommandTools(workspaceRoot, hooks, hooks.agentLabel),
     ...createWebTools(hooks.webSearchDeps),
     ...createBrowserTools(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
@@ -277,6 +296,13 @@ export interface ToolHooks {
    * 不注入 = 不覆盖 PATH（本功能未启用时行为与从前逐字一致）。
    */
   resolveRuntimeEnv?: () => RuntimeEnv
+  /**
+   * 本 run 共享的常驻 shell 槽位。**同一个 run 内所有命令工具实例必须共用一个**：
+   * 子代理的确认卡要写自己的名字，所以命令工具按发起者各造一份（见 `buildCommandTools`）；
+   * 若各自持有独立 shell，一个 run 就会出现 1+N 个常驻 shell 并撞上同活上限 ——
+   * 上限淘汰最旧那个时不看它是否在跑，会掐掉用户刚批准的命令。不传 = 本实例自备一个。
+   */
+  shellSlot?: ShellSlot
   /**
    * 记忆工具口（plan19 批 1）。不传 = 不下发 `remember` / `recall`（「有消费者才注册」，同 todos / ask / subagent）；
    * `conversationId` 由 `runAgent` 在装配处补 —— 同一个 hooks 对象会被多条会话共用，它自己不知道这一轮是谁。
@@ -611,8 +637,11 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
    *    否则把一个「权限不足」的问题换成「界面越权」这个更严重的问题（见 `guard.ts` 的 `PathAccess`）；
    * 2. **只有 full-access 才为真**，其余档位 `undefined` = fail-closed。默认档（write）必须维持旧行为。
    */
+  // 权限档在一轮内是定值，且**主/子代理共用同一档**（子代理不许借派发换档）。
+  // 提到最前面：路径放行、确认桥、工具上限三处都要读它，各写一遍 `args.permission ?? 'write'` 迟早分岔。
+  const preset: PermissionPreset = args.permission ?? 'write'
   const pathAccess: PathAccess | undefined =
-    (args.permission ?? 'write') === 'full-access' ? { allowOutside: true } : undefined
+    preset === 'full-access' ? { allowOutside: true } : undefined
 
   // 写入服务（plan7 批 A2）：**快照挂在服务层** —— 界面与 Agent 走的都是这一条路径；子代理复用同一批工具实例，故它们的写操作同样记进本轮的检查点。
   const writer = createWorkspaceWriter(workspaceRoot, {
@@ -635,26 +664,34 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   // 正确语义 = 「**新任务用新环境，正在跑的任务不打断**」，与 VS Code 的
   // 「新开终端才跟随」同构（一个 run ≈ 一个新终端）。改设置 → 下一个 run 生效。
   const runtimeEnvForRun = ctx.resolveRuntimeEnv?.()
-  const allTools = createAllTools(workspaceRoot, {
+  // 一个 run 一个常驻 shell：命令工具实例会按发起者各造一份（确认卡要写谁的名字），
+  // 槽位共享才不会让一个 run 里冒出 1+N 个 shell（上限 4，淘汰时不看是否在跑）。
+  const shellSlot = createShellSlot()
+  /**
+   * 确认桥（plan8 R5）：仅「可写」档注入 —— 只读档本就不下发 run_command；
+   * 完全访问档是用户明确选的"别拦我"。
+   *
+   * ⚠️ 标签**按发起者给**，不能整个 run 共用一个：`agentLabel` 是在建工具实例时定格的，
+   * 子代理若复用主代理那一份，并发派发时几张确认卡都写着主代理的名字，
+   * 用户在错信息下点"允许这一次"（卡片本来就渲染在 `发起：{agent}` 上）。
+   */
+  const confirmBridgeFor = (label: string): CommandConfirm => (command) =>
+    ctx.confirmCommand!({
+      tool: 'run_command',
+      detail: command,
+      agent: label,
+      where: workspaceRoot,
+      conversationId: args.conversationId
+    })
+  const toolHooks: ToolHooks = {
     writer,
     ...(pathAccess ? { pathAccess } : {}),
     webSearchDeps: { firecrawlApiKey: args.firecrawlApiKey ?? null },
     ...(args.policy ? { policy: args.policy } : {}),
     ...(ctx.background ? { background: ctx.background, agentLabel } : {}),
     ...(runtimeEnvForRun ? { resolveRuntimeEnv: () => runtimeEnvForRun } : {}),
-    // 逐次确认（plan8 R5）：仅「可写」档需要 —— 只读档本就不下发 run_command；完全访问档是用户明确选的"别拦我"
-    ...(ctx.confirmCommand && (args.permission ?? 'write') === 'write'
-      ? {
-          confirmCommand: (command: string) =>
-            ctx.confirmCommand!({
-              tool: 'run_command',
-              detail: command,
-              agent: agentLabel,
-              where: workspaceRoot,
-              conversationId: args.conversationId
-            })
-        }
-      : {}),
+    shellSlot,
+    ...(ctx.confirmCommand && preset === 'write' ? { confirmCommand: confirmBridgeFor(agentLabel) } : {}),
     ...(args.onTodos ? { onTodos: args.onTodos } : {}),
     // 记忆（plan19 批 1）：`conversationId` 在这里补 —— 与 `confirmCommand` 同一手法。
     // ⚠️ 开关在这里**每轮读一次**：关掉就整个不下发 remember / recall（结构性关断，
@@ -727,11 +764,10 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     ...(registry.definitions.size > 0 ? { spawnAgents: subagentDispatcher } : {}),
     // L0 检索（plan3/plan4）：打包态把随包的 ripgrep 位置传下去 —— 工具层不许 import electron
     ...(ctx.resourcesPath ? { resourcesPath: ctx.resourcesPath } : {})
-  })
+  }
+  const allTools = createAllTools(workspaceRoot, toolHooks)
   const allNames = allTools.map((t) => t.schema.name)
 
-  // 权限档在一轮内是定值，且**主/子代理共用同一档**（子代理不许借派发换档）
-  const preset: PermissionPreset = args.permission ?? 'write'
   // 工具白名单：**权限档是硬上限**（D-032），自定义 Agent 的 tools 只能在其中再收窄
   //
   // 带计划批准闸的 Agent **不许有派发口**（plan51）：子代理现在按自己的声明装配，留着派发口就
@@ -745,7 +781,18 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
 
   toolsForSubagent = (d) => {
     const allow = new Set(subagentToolNamesFor(preset, d.tools, allNames))
-    return allTools.filter((t) => allow.has(t.schema.name))
+    if (!allow.has('run_command')) return allTools.filter((t) => allow.has(t.schema.name))
+    // 命令工具换成**带子代理自己名字**的实例：确认卡的「发起」与后台任务记录的 `agent`
+    // 都在建实例时定格，复用主代理那一份会让并发派发的几张卡都写着主代理（K5）。
+    // 后台任务存储与确认桥仍是同一批 ⇒ 放行口径、检查点记账都不变。
+    const own = buildCommandTools(
+      workspaceRoot,
+      toolHooks.confirmCommand ? { ...toolHooks, confirmCommand: confirmBridgeFor(d.name) } : toolHooks,
+      d.name
+    ).filter((t) => t.schema.name === 'run_command')
+    // 拿不到就不如实地炸：静默退回主代理那份 = 署名又变回错的，而这正是本段要修的东西
+    if (own.length === 0) throw new Error(`命令工具装配异常：${d.name} 的 run_command 未生成，无法为确认卡署名`)
+    return [...allTools.filter((t) => allow.has(t.schema.name) && t.schema.name !== 'run_command'), ...own]
   }
 
   /** 省 token 档位（§七②③）：**组合根已解析好传进来**；没传（如单测直接调 `runAgent`）按**平衡档**补齐 */
@@ -773,6 +820,11 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       '   单步小事不必列（清单是给"长活"用的，不是每句话都开一张表）。',
       '   另外：用户交代了**跨轮次**的长期意图（"以后每次都要…""这个项目最终要…"）时，',
       '   用 set_goal 登记成目标——目标跨轮次存活、用户能暂停/完成它，与待办是两回事。'
+    ],
+    [
+      '**自检与验收里，跳过 ≠ 通过。** 没能真正跑成的项要单独计成「跳过」，写清原因与补救路径；',
+      '   汇总行不许写"全部通过"，退出码要能分三态（全过 0 / 有失败 1 / 有跳过 2）。',
+      '   理由：一份"交付即验收"的自检若把未验证项算进通过，任何自动化流程都会把它当绿灯放行。'
     ]
   ]
 
@@ -780,7 +832,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   // "提示词教我用 run_command，工具表里没有这件"，于是白烧轮次自证矛盾 —— 承诺拿不到的能力比不承诺更贵。
   const has = (name: string): boolean => tools.some((t) => t.schema.name === name)
   // 能力缺口（plan51 F4）：只报**有真实出口**的那些 —— 本会话没拿到、且确有可派 Agent 声明了它。
-  // 没有出口就不报（self-view 约束②：不许写拿不到的承诺），纪律第 6 条也据此走"未能验证"分支。
+  // 没有出口就不报（self-view 约束②：不许写拿不到的承诺），命令规则也据此走"未能验证"分支。
   const capabilityGaps = has('spawn_agents')
     ? [...DANGEROUS_TOOLS]
         .filter(([cap]) => !has(cap))
@@ -842,7 +894,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   const rulesBlock = args.rulesBlock ?? null
   // 自视段（2026-09-15 用户需求）：模型名取**通道真值**（自定义 Agent 用 def.model，与会话缺省同式）；
   // 子代理清单以 spawn_agents 是否下发为准（"有消费者才注册"的反向：没派发口就不报，免得模型空头许诺）。
-  // 能力缺口那段已在纪律之前算好（纪律第 6 条要按它选分支，两处必须同源）。
+  // 能力缺口那段已在纪律之前算好（命令规则要按它选分支，两处必须同源）。
   const selfViewBlock = composeSelfView({
     model: def?.model ?? args.settings.model,
     providerType: args.settings.providerType,

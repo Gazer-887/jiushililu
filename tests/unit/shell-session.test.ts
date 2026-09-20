@@ -115,3 +115,24 @@ describe('shell 会话 · 失败分型与生命周期', () => {
     expect(r.stdout).toBe('')
   })
 })
+
+// 同一个 run 内主/子代理**共享一个常驻 shell**（0.13.79 的 K5 修复引入共享槽位），而子代理
+// 从 0.13.78 起才真的拿得到 run_command ⇒ "并发调用同一个会话"是一条从未被执行过的路径。
+// `run()` 往同一个 stdin 写、往同一个 stdout 收，不串行就会互串。
+describe('shell 会话 · 并发调用必须串行（共享一个壳的前提）', () => {
+  it('同一会话上同时发两条命令 ⇒ 各自的输出里不许出现对方的内容', async () => {
+    const s = createShellSession(root)
+    const slow = isWin ? 'ping -n 3 127.0.0.1 >nul' : 'sleep 2'
+    const [a, b] = await Promise.all([
+      s.run(`${slow} && echo AAA_ONLY`, 30_000),
+      s.run(`${slow} && echo BBB_ONLY`, 30_000)
+    ])
+
+    expect(a.stdout).toContain('AAA_ONLY')
+    expect(b.stdout).toContain('BBB_ONLY')
+    // 串扰的直接特征：A 收到了 B 的输出（并发时必然发生，因为两个监听挂在同一个 stdout 上）
+    expect(a.stdout).not.toContain('BBB_ONLY')
+    expect(b.stdout).not.toContain('AAA_ONLY')
+    s.dispose()
+  }, 90_000)
+})

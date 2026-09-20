@@ -51,7 +51,10 @@ const WIN_PROMPT = '@JSL-PS1@'
 const liveSessions = new Set<AgentShellSessionImpl>()
 
 function enforceCap(): void {
-  // LRU：liveSessions 是插入序集合，最旧的是第一个
+  // ⚠️ 注释原写"LRU"，实为**按构造顺序 FIFO**：`liveSessions` 是 Set，`add` 不会把已存在的元素
+  //    挪到末尾，所以"用过"不刷新位置。且淘汰**不看目标是否正在执行命令**（dispose → 杀进程树），
+  //    被挤掉的可能是用户刚批准的那条。共享 shell 槽位后一个 run 只占一格，这条闸很少被触到；
+  //    真要改成"用过即置新"或"不杀在跑的"，需连带补并发用例，属独立决策，此处先把话说对。
   while (liveSessions.size > MAX_LIVE_SESSIONS) {
     const oldest = liveSessions.values().next().value
     if (!oldest) break
@@ -182,7 +185,24 @@ class AgentShellSessionImpl implements AgentShellSession {
     return true
   }
 
+  /**
+   * **同一个会话内串行执行**。`runNow` 往同一个 stdin 写命令、往同一个 stdout 收字节，
+   * 并发调用会让 A 收到 B 的输出、超时时的 `killShell()` 还会连带杀掉对方正在跑的壳。
+   *
+   * ⚠️ 这条路径 0.13.79 起才真实可达：子代理第一次拿到 `run_command`（0.13.78），
+   * 而同一个 run 内主/子代理**共享同一个常驻 shell**（共享是对的 —— 各持一份会撞上
+   * 同活上限，而淘汰不看是否在跑）。并发派发此前从未被执行过。
+   */
+  private chain: Promise<unknown> = Promise.resolve()
   run(command: string, timeoutMs: number): Promise<ShellRunResult> {
+    const next = this.chain.then(() => this.runNow(command, timeoutMs))
+    // 前一条失败不许卡住后面的命令：链上只挂"完成"，错误由各自的调用方从 next 里取
+    this.chain = next.catch(() => undefined)
+    return next
+  }
+
+  private runNow(command: string, timeoutMs: number): Promise<ShellRunResult> {
+    // 计时从这里开始 —— 放在 `run()` 里会把**排队时间**算进超时，长队列后面全误判超时
     const startedAt = Date.now()
     if (!this.ensureSpawned()) {
       return Promise.resolve({
