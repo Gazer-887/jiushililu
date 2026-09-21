@@ -7020,7 +7020,8 @@ app.whenReady().then(async () => {
   checkTrue('刻度热区已扩（按钮 ≥20×10 透明热区，条形码本体仍 8px 细 —— 好点不显粗）',
     !!tickGeo && tickGeo.w >= 20 && tickGeo.h >= 10 && parseFloat(tickGeo.bar) <= 9,
     tickGeo)
-  // hover 出卡要**真指针**：CSS :hover 合成事件触发不了（与"合成 click 绕不过 mousedown 竞态"同族教训）
+  // 预览卡的触发条件（09-22 反转 09-18 两条拍板）：**hover 不出、激活也不常显，只有按住拖才出**。
+  // 仍用真指针 + CDP 真拖拽：CSS :hover 与 pointerdown 都合成不出来（同"合成 click 绕过 mousedown 竞态"那条教训）
   const tickCenter = await centerOf('.chat-outline-tick:nth-child(2)')
   if (tickCenter) {
     await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tickCenter.x, y: tickCenter.y })
@@ -7032,11 +7033,73 @@ app.whenReady().then(async () => {
       const list = [...document.querySelectorAll('.chat-outline-tick')];
       const t = list.find((x) => x.matches(':hover')) || list[2] || list[1];
       const p = t ? t.querySelector('.chat-outline-peek') : null;
-      return p ? getComputedStyle(p).display : 'none';
+      return {
+        display: p ? getComputedStyle(p).display : 'no-peek',
+        hovered: !!t && t.matches(':hover'),
+        scrubbing: !!document.querySelector('.chat-outline-rail.is-scrubbing')
+      };
     })()
   `)
-  checkTrue('真指针悬停第 2 根刻度 → 该轮预览卡立即显示（hover 即出，零延迟）',
-    hoverPeek === 'block', { hoverPeek })
+  checkTrue('光悬停不再浮出预览卡（09-22 反转：以前"hover 即出"会停在正文上挡字）',
+    hoverPeek.display === 'none' && hoverPeek.hovered === true && hoverPeek.scrubbing === false,
+    hoverPeek)
+  // 真拖一遍：**先数有几根再取首末**（此处会话只有两轮，写死 nth-child(3) 会拿到 null → 假失败）
+  const dragPeek = await (async () => {
+    const n = await win.webContents.executeJavaScript(
+      `document.querySelectorAll('.chat-outline-tick').length`
+    )
+    if (n < 2) return { ok: false, why: '刻度不足两根，擦洗无从测（会话轮数变了？）', n }
+    const a = await centerOf(`.chat-outline-tick:nth-child(${n})`)
+    const c = await centerOf('.chat-outline-tick:nth-child(1)')
+    if (!a || !c) return { ok: false, why: '取不到首末两根的中心坐标', n, a, c }
+    // 起点自己铺，不依赖上一批判据留在屏上的滚动位置（否则"有没有动"取决于运气）
+    await win.webContents.executeJavaScript(`
+      (() => { const b = document.querySelector('.chat-messages'); b.scrollTop = b.scrollHeight; return 1; })()
+    `)
+    await new Promise((r) => setTimeout(r, 300))
+    const before = await win.webContents.executeJavaScript(
+      `Math.round(document.querySelector('.chat-messages').scrollTop)`
+    )
+    await dbg.sendCommand('Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: a.x, y: a.y, button: 'left', clickCount: 1, buttons: 1 })
+    await dbg.sendCommand('Input.dispatchMouseEvent',
+      { type: 'mouseMoved', x: c.x, y: c.y, button: 'left', buttons: 1 })
+    await new Promise((r) => setTimeout(r, 250))
+    const during = await win.webContents.executeJavaScript(`
+      (() => {
+        const ticks = [...document.querySelectorAll('.chat-outline-tick')];
+        const k = ticks.findIndex((t) => t.classList.contains('is-peeking'));
+        const p = k >= 0 ? ticks[k].querySelector('.chat-outline-peek') : null;
+        const box = document.querySelector('.chat-messages');
+        return {
+          scrubbing: !!document.querySelector('.chat-outline-rail.is-scrubbing'),
+          peekIdx: k,
+          display: p ? getComputedStyle(p).display : 'no-peek',
+          scrollTop: box ? Math.round(box.scrollTop) : null
+        };
+      })()
+    `)
+    await dbg.sendCommand('Input.dispatchMouseEvent',
+      { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', clickCount: 1 })
+    await new Promise((r) => setTimeout(r, 200))
+    const after = await win.webContents.executeJavaScript(`
+      (() => ({
+        scrubbing: !!document.querySelector('.chat-outline-rail.is-scrubbing'),
+        peeking: document.querySelectorAll('.chat-outline-tick.is-peeking').length
+      }))()
+    `)
+    return { ok: true, n, before, during, after }
+  })()
+  checkTrue('按住刻度条从末根拖到首根 → 预览卡跟着指针换根，且内容真的滚过去（scrollTop 下降）',
+    dragPeek.ok === true &&
+      dragPeek.during.scrubbing === true &&
+      dragPeek.during.peekIdx === 0 &&
+      dragPeek.during.display === 'block' &&
+      dragPeek.during.scrollTop < dragPeek.before,
+    dragPeek)
+  checkTrue('松手即收回（擦洗态与预览卡都不许留在界面上）',
+    dragPeek.ok === true && dragPeek.after.scrubbing === false && dragPeek.after.peeking === 0,
+    dragPeek.after)
   await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 10, y: 300 })
   // 滚轮跳轮：在刻度条上滚一下 → 发生跳转（scrollTop 动 或 高亮闪）；且 preventDefault 不吃页面滚
   const wheelBefore = await win.webContents.executeJavaScript(`Math.round(document.querySelector('.chat-messages').scrollTop)`)
@@ -9102,7 +9165,11 @@ app.whenReady().then(async () => {
     scrollSpy !== null && scrollSpy.total >= 2 && scrollSpy.onIdx === scrollSpy.total - 1,
     scrollSpy
   )
-  checkTrue('激活刻度浮出预览卡（向左）', scrollSpy !== null && scrollSpy.peekShown === true, scrollSpy)
+  checkTrue(
+    '激活刻度**不再常显**预览卡（09-22 反转：常显那张会停在正文上挡字；高亮仍在上一条断言里）',
+    scrollSpy !== null && scrollSpy.peekShown === false,
+    scrollSpy
+  )
 
   // —— 语音输入（plan45）：按钮 → 一次性披露 → 录音（假音频设备）→ 停止 → 转写插光标处 ——
   const voiceFlow = await win.webContents.executeJavaScript(`

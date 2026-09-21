@@ -335,6 +335,9 @@ nav {
   padding: 6px 4px;
   border-radius: var(--radius-md);
   z-index: 5;
+  /* 拖动擦洗的前提：不禁掉触摸手势与文本选中，按住拖会变成"滚页面 + 选中一串字" */
+  touch-action: none;
+  user-select: none;
 }
 
 /* 热区与视觉分离（09-18 用户："太细小点不中"）：按钮 24×12 透明热区，
@@ -373,9 +376,10 @@ nav {
   background: var(--accent);
 }
 
-/* 预览卡：滚动激活常显 + **悬停即出**（09-18 用户："指上去要立刻看到当条发言"，零延迟） */
-.chat-outline-tick.on .chat-outline-peek,
-.chat-outline-tick:hover .chat-outline-peek {
+/* 预览卡：**只有按住刻度条拖动时才出**（09-22 用户反转 09-18 的「hover 即出」与「激活常显」两条拍板）。
+   `.is-scrubbing` 挂在轨道上（按下到抬起之间），`.is-peeking` 挂在指针当前压住的那一根上。
+   ⚠️ 以前常显 + hover 两张卡会停在正文上挡字（截图实证），现在松手即收 */
+.chat-outline-rail.is-scrubbing .chat-outline-tick.is-peeking .chat-outline-peek {
   display: block;
 }
 

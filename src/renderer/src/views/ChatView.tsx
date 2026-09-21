@@ -160,15 +160,14 @@ export default function ChatView() {
     const rail = railRef.current
     if (!box || !rail || outlineItems.length < 2) return
     /**
-     * ⚠️ **每次挂上新的监听必须先复位"上次激活值"**（2026-09-19 真机 bug：刻度条未经 hover
-     * 就顶着一张预览卡、挡住消息）。
+     * ⚠️ **每次挂上新的监听必须先复位"上次激活值"**（2026-09-19 真机 bug：刻度条未经操作就亮着）。
      *
      * 病根是这个 ref 的语义被两件事共用了：它既是"滚动节流"的比较基准（本意），又实际充当了
      * "DOM 上已画的激活态"的唯一真相。而 `outlineItems` 一变（**发一条新消息就会变**，会话列表里
      * 编辑/回退也会）本 effect 重跑，**副作用是 React 会重建整片刻度** —— 新节点没有 `.on`，
      * 但 ref 里还留着上一轮的旧值。于是首次 `onScroll()` 算出 `active === ref` → **跳过整个
-     * toggle** → 真实的激活刻度不带 `.on`，而 CSS 把 `.chat-outline-tick.on .chat-outline-peek`
-     * 设成常显 —— 那一根就此"卡亮"，hover 只是让它多亮一根，看着就像凭空冒出来的。
+     * toggle** → 该亮的那一根根本不亮（09-18 时这张预览卡还常显，症状是"凭空卡亮挡字"；
+     * 09-22 预览改成只随拖动出现，同一个 bug 换成了"滚过去却不亮"的坏法 —— **复位这条前提没变**）。
      *
      * 复位成 -1（非法值）强制第一次比较必定不等 ⇒ 必定重画一遍。代价是一次可忽略的
      * `querySelectorAll` + 若干 `classList.toggle`，换来"画的是什么"与"以为画的是什么"永远一致。
@@ -231,10 +230,86 @@ export default function ChatView() {
     return () => rail.removeEventListener('wheel', onWheel)
   }, [outlineItems])
 
-  /** 平滑滚到第 index 条消息并短暂高亮 —— 让"跳到了哪"看得见 */
-  const jumpToMessage = (index: number): void => {
+  /**
+   * 拖动擦洗（09-22 用户反转 09-18 两条拍板：预览卡不再 hover 即出、不再随滚动常显）。
+   * 只有**按住刻度条拖**这一段（pointerdown → pointerup）才出预览，并且内容跟着指针走 ——
+   * 松手就收回，所以它不会像以前那样停在正文上挡字。
+   * ⚠️ 三条实测来的约束：① 拖动中用**瞬时**滚动（`smooth` 会把一串补间排成队，指针越跟越远）；
+   * ② 不闪高亮（擦洗时每根都闪一次是频闪）；③ 预览卡必须 `pointer-events:none`（见 CSS 那条老坑）。
+   */
+  useEffect(() => {
+    const rail = railRef.current
+    if (!rail || outlineItems.length < 2) return
+    const tickEls = (): HTMLElement[] =>
+      Array.from(rail.querySelectorAll<HTMLElement>('.chat-outline-tick'))
+    /** 指针 y → 最近的一根（拖出刻度间距时仍归属最近根，擦洗才不会中途"空档"） */
+    const nearest = (y: number): number => {
+      let best = -1
+      let bestD = Number.POSITIVE_INFINITY
+      tickEls().forEach((t, k) => {
+        const r = t.getBoundingClientRect()
+        const d = r.top <= y && y <= r.bottom ? 0 : Math.min(Math.abs(r.top - y), Math.abs(y - r.bottom))
+        if (d < bestD) {
+          bestD = d
+          best = k
+        }
+      })
+      return best
+    }
+    const paint = (k: number): void => {
+      tickEls().forEach((t, i) => t.classList.toggle('is-peeking', i === k))
+    }
+    let scrubbing = false
+    let last = -1
+    const enter = (y: number): void => {
+      scrubbing = true
+      rail.classList.add('is-scrubbing')
+      const k = nearest(y)
+      if (k === last) return
+      last = k
+      paint(k)
+      if (k >= 0) jumpToMessage(outlineItems[k].i, { smooth: false })
+    }
+    const onDown = (e: PointerEvent): void => {
+      if (e.button !== 0) return
+      rail.setPointerCapture?.(e.pointerId) // 拖出轨道也继续跟（真滚动条就是这个手感）
+      enter(e.clientY)
+    }
+    const onMove = (e: PointerEvent): void => {
+      if (!scrubbing) return
+      enter(e.clientY)
+    }
+    const stop = (): void => {
+      scrubbing = false
+      last = -1
+      rail.classList.remove('is-scrubbing')
+      paint(-1)
+    }
+    rail.addEventListener('pointerdown', onDown)
+    rail.addEventListener('pointermove', onMove)
+    rail.addEventListener('pointerup', stop)
+    rail.addEventListener('pointercancel', stop)
+    // 指针被别的窗口抢走（失焦、Alt-Tab）时 pointerup 可能永远不来 —— 不兜这一下就会"卡在亮着的那根上"
+    window.addEventListener('blur', stop)
+    return () => {
+      rail.removeEventListener('pointerdown', onDown)
+      rail.removeEventListener('pointermove', onMove)
+      rail.removeEventListener('pointerup', stop)
+      rail.removeEventListener('pointercancel', stop)
+      window.removeEventListener('blur', stop)
+      stop()
+    }
+  }, [outlineItems])
+
+  /** 平滑滚到第 index 条消息并短暂高亮 —— 让"跳到了哪"看得见。
+   *  `smooth:false` = 拖动擦洗用的瞬时档（一串补间排队会让指针与内容越离越远） */
+  const jumpToMessage = (index: number, opts: { smooth?: boolean } = {}): void => {
     const el = document.querySelector<HTMLElement>(`[data-msg-index="${index}"]`)
     if (!el) return
+    if (opts.smooth === false) {
+      el.scrollIntoView({ block: 'start' })
+      return
+    }
     el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     el.classList.add('msg-jump-hl')
     window.setTimeout(() => el.classList.remove('msg-jump-hl'), 1400)
