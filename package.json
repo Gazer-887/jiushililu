@@ -11,7 +11,8 @@
     "dev": "npm run clean:vite-temp && electron-vite dev --config config/electron.vite.config.ts",
     "build": "npm run clean:vite-temp && electron-vite build --config config/electron.vite.config.ts",
     "start": "npm run clean:vite-temp && electron-vite preview --config config/electron.vite.config.ts",
-    "dist": "npm run vendor:ripgrep && npm run build && electron-builder --win --config config/electron-builder.yml && node scripts/verify-dist-rg.cjs",
+    "check:docs": "node scripts/check-docs-fresh.cjs",
+    "dist": "npm run check:docs && npm run vendor:ripgrep && npm run build && electron-builder --win --config config/electron-builder.yml && node scripts/verify-dist-rg.cjs",
     "vendor:ripgrep": "node scripts/vendor-ripgrep.cjs",
     "typecheck": "tsc --noEmit -p config/tsconfig.main.json && tsc --noEmit -p config/tsconfig.renderer.json",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --config config/eslint.config.js",
@@ -31,9 +32,11 @@
     "@xterm/xterm": "^6.0.0",
     "diff": "^9.0.0",
     "electron-store": "^8.2.0",
+    "i18next": "^23.16.8",
     "mammoth": "^1.12.3",
     "monaco-editor": "^0.56.0",
     "node-pty": "^1.1.0",
+    "react-i18next": "^13.5.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
