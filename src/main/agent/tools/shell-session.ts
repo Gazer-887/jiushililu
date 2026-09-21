@@ -18,7 +18,8 @@
 //    `@JSL-PS1@`**，输出里全局剥除该串（每行开头的提示符变成空）。
 //
 // 生命周期：每个工具集实例一个会话（= 每个 agent run 一个，轮与轮之间 cd 延续，
-// 新 run 从工作区根重新开始 —— 可预测性优先）；空闲 10 分钟自动回收；同活会话上限 4 个（LRU）。
+// 新 run 从工作区根重新开始 —— 可预测性优先）；空闲 10 分钟自动回收；同活会话上限 4 个
+// （按构造顺序淘汰，不是 LRU：判定口径见 `enforceCap`）。
 
 import { spawn } from 'node:child_process'
 import { killProcessTree, spawnOptsForGroupKill } from '../../process-tree'
@@ -169,7 +170,7 @@ class AgentShellSessionImpl implements AgentShellSession {
     })
     // ⚠️ 全部 unref：空闲会话**不许拽住事件循环**。否则挂着的子进程管道是活动句柄，
     //    会把 vitest worker（以及任何等待自然退出的宿主）吊死（实测全量测试挂死 13 分钟）。
-    //    生命周期由 idle 定时器（同样 unref'd）+ LRU 上限管理，不靠句柄计数。
+    //    生命周期由 idle 定时器（同样 unref'd）+ 活会话上限管理，不靠句柄计数。
     child.unref()
     // 子进程流类型上没声明 unref（运行时有）—— 不 unref 会拽住事件循环（vitest 挂死教训）
     for (const stream of [child.stdin, child.stdout, child.stderr]) {

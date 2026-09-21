@@ -351,3 +351,64 @@ describe('反思历史出境前整形（K8 第二漏口）', () => {
     expect((seen[0] ?? [])[0]?.content).toBe('第一问')
   })
 })
+
+/**
+ * R17（由 K8 两轮复查发现）：`memory/reflection.ts` 以前把 `chat` 的异常咽成 `{ candidates: [] }`，
+ * 于是装配层那条「反思执行器抛错」分支**永远进不去** —— 净效果是"该沉淀却没沉淀"零留痕。
+ * 改语义的另一半必须在这里钉住：**throw 出去不许把队列卡死**（出队发生在调用之前），
+ * 且"一次失败的反思也是一次额度"这条既有口径不变。
+ */
+describe('反思执行器抛错：必须留痕、且不许卡队列（R17）', () => {
+  let root: string
+  let cleanup: () => void
+
+  beforeEach(() => {
+    const t = makeTmpRoot()
+    root = t.root
+    cleanup = t.cleanup
+  })
+  afterEach(() => cleanup())
+
+  it('chat 抛错 → 日志里有「反思执行器抛错」，计数照常 +1，且 runReflection 不 reject', async () => {
+    const logs: Array<{ msg: string; extra?: Record<string, unknown> }> = []
+    const store = createMemoryStore(root, nodeFsAdapter, {
+      reflectChat: async () => {
+        throw new Error('400 empty text block')
+      },
+      conversationsExists: () => true,
+      getConversationForReflect: () => ({ messages: msgs, bodyBytes: 4096 }),
+      onReflectionLog: (msg, extra) => logs.push({ msg, extra })
+    })
+    store.enqueueReflection('c1')
+    await expect(store.runReflection('c1')).resolves.toBeUndefined()
+    const fail = logs.find((l) => l.msg.includes('反思执行器抛错'))
+    expect(fail, '反思失败被咽掉了 —— 这就是 R17：零候选 + 零日志').toBeDefined()
+    expect(String(fail?.extra?.error)).toContain('400 empty text block')
+    expect(store.backend.readMeta().reflectionCount).toBe(1)
+  })
+
+  it('阳性对照：坏的那一条之后，下一条照常反思（队列没被卡住）', async () => {
+    let boom = true
+    const ok: string[] = []
+    const store = createMemoryStore(root, nodeFsAdapter, {
+      reflectChat: async () => {
+        if (boom) {
+          boom = false
+          throw new Error('第一次就是坏的')
+        }
+        ok.push('ran')
+        return { content: '[]' }
+      },
+      conversationsExists: () => true,
+      getConversationForReflect: () => ({ messages: msgs, bodyBytes: 4096 }),
+      onReflectionLog: () => {}
+    })
+    store.enqueueReflection('c1')
+    store.enqueueReflection('c2')
+    await store.runReflection('c1')
+    await store.runReflection('c2')
+    expect(ok).toEqual(['ran'])
+    expect(store.backend.readMeta().reflectionQueue).toEqual([])
+    expect(store.backend.readMeta().reflectionCount).toBe(2)
+  })
+})

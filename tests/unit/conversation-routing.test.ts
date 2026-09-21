@@ -20,6 +20,7 @@ const fakeApi = {
   // 下面三个是 `newSession` / `createConversation` 这条路上要碰的桥（K9 复查补）
   switchConversation: vi.fn(async () => undefined),
   createConversation: vi.fn(async () => ({ id: 'C', title: '新会话', messages: [] })),
+  deleteConversation: vi.fn(async () => undefined),
   listConversations: vi.fn(async () => [])
 }
 vi.stubGlobal('window', { api: fakeApi })
@@ -234,10 +235,10 @@ describe('收口后，当前会话在存档里那份不许继续声称「在跑�
 })
 
 /**
- * 这条守的是 `settleActiveRuntime` 里那句 `s.activeId !== conversationId → 不动手`。
- * 它挡的不是"顺手清掉后台那条的标记"（那个不可能，函数只按传入 id 取条目），而是更隐蔽的一件：
- * 事件属于**后台**那条时，`applyToConversation` 已经用旧存档算出了新存档，若这里再拿
- * **同一份旧存档**派生一遍并排在后面，就会把刚写进去的 `streamError` 盖没。
+ * 这条守的是 `settleRuntime` 里那句 `patched.runtimes ?? s.runtimes` —— 收口必须在
+ * `applyToConversation` **已经算出的那份存档**上派生。它挡的不是"顺手清掉后台那条的标记"
+ * （那个不可能，函数只按传入 id 取条目），而是更隐蔽的一件：事件属于**后台**那条时，
+ * 若这里回头拿 `s.runtimes` 那份**旧存档**再派生一遍并排在后面，就会把刚写进去的 `streamError` 盖没。
  */
 describe('后台那条会话的事件，不许被当前会话的收口逻辑用旧存档盖回去', () => {
   it('markError 打在后台会话上：存档里的错误原文必须留住', async () => {
@@ -371,3 +372,78 @@ describe('切到新建页不许留着上一条的待办与子代理面板', () =
     expect(useAppStore.getState().subagents).toEqual([])
   })
 })
+
+/**
+ * K10：删掉一条会话，它那份"在跑"必须跟着消失。
+ * 渲染端的 `removeConversation` 只改 `activeId`，**不摘存档条目** —— 而并发提示是按 `runtimes` 里
+ * `streaming` 的条数算的（`sendMessage` 里的 `othersRunning`），于是删掉的会话变成一条幽灵，
+ * 界面从此**永久**显示「当前另有 N 条会话正在运行」，且怎么点都消不掉。
+ * ⚠️ 主进程那半边（删之前先 abort 正在跑的一轮）由 `chat-concurrency.test.ts` 的结构守卫管。
+ * 落盘不会把它复活：`conversations-core · saveConversation` 读不到 meta 就返回 null（已核，不是新 bug）。
+ */
+describe('删掉的会话不许留下幽灵运行态（K10）', () => {
+  const runningA = (): void => {
+    useAppStore.setState({
+      activeId: 'A',
+      messages: structuredClone(A_MSGS),
+      streaming: true,
+      streamError: null,
+      saveError: null,
+      runtimes: { A: { ...bSnapshot, streaming: true }, B: { ...bSnapshot, streaming: true } },
+      concurrencyNotice: null
+    })
+  }
+
+  it('删当前这条：它的存档条目摘掉、顶层「在跑」落下', async () => {
+    runningA()
+    await useAppStore.getState().removeConversation('A')
+    expect(useAppStore.getState().runtimes.A, '条目还在 —— 幽灵计数的源头').toBeUndefined()
+    expect(useAppStore.getState().streaming).toBe(false)
+  })
+
+  it('删**后台**那条：摘掉之后，在剩下的会话里发送不该再弹「另有会话在跑」', async () => {
+    runningA()
+    useAppStore.setState({ activeId: 'B' })
+    await useAppStore.getState().removeConversation('B')
+    expect(useAppStore.getState().runtimes.B).toBeUndefined()
+    useAppStore.setState({ activeId: 'A', streaming: false })
+    await useAppStore.getState().sendMessage('A 的问题')
+    expect(useAppStore.getState().concurrencyNotice, 'B 已删除却被算成在跑').toBeNull()
+  })
+
+  it('阳性对照：删 A 不许顺手把 B 的运行态也摘了（那是另一条真在跑的会话）', async () => {
+    runningA()
+    await useAppStore.getState().removeConversation('A')
+    expect(useAppStore.getState().runtimes.B?.streaming, 'B 真在跑，被删 A 顺手清掉是反向的错').toBe(true)
+  })
+
+  it('桥要按**被删那条的 id** 调用（并发时代删错会话是事故）', async () => {
+    runningA()
+    await useAppStore.getState().removeConversation('A')
+    expect(fakeApi.deleteConversation).toHaveBeenCalledWith('A')
+  })
+})
+
+/**
+ * K11（渲染端那一半）：回滚提示条说的是"盘上还留着一条尾巴，可以撤销"。
+ * 一旦用户在回滚后的会话里继续说话，主进程下一次保存会按对账情形 ① **把尾巴作废**
+ * （`conversations-core · saveConversation`），"撤销"当场变成假承诺 —— 提示条必须一起消失。
+ * 硬闸（流式期间不许撤销）在主进程，见 `chat-concurrency.test.ts`。
+ */
+describe('回滚之后继续发送，提示条不许留着骗人（K11）', () => {
+  it('sendMessage 把 rollbackNotice 清掉', async () => {
+    useAppStore.setState({
+      activeId: 'A',
+      messages: structuredClone(A_MSGS),
+      streaming: false,
+      streamError: null,
+      saveError: null,
+      runtimes: {},
+      rollbackNotice: { hidden: 2, total: 4, viaEdit: false },
+      concurrencyNotice: null
+    })
+    await useAppStore.getState().sendMessage('接着问')
+    expect(useAppStore.getState().rollbackNotice).toBeNull()
+  })
+})
+

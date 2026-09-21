@@ -744,9 +744,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 批 2：删的是当前会话 → 通知主进程切到空（让上一条进反思队列；删除后主进程反思会校验 id 存在 → 跳过）
     if (get().activeId === id) void window.api.switchConversation(id, null)
     await window.api.deleteConversation(id)
-    if (get().activeId === id) {
-      set({ activeId: null, messages: [], view: 'new' })
-    }
+    // K10：这条的"在跑"要跟着它一起消失。并发计数读的是 `runtimes` 里 streaming 的条数
+    // （`sendMessage` 的 `othersRunning`），不摘条目就会留一条幽灵 —— 提示条永久说有人在跑。
+    set((s) => {
+      const rest = { ...s.runtimes }
+      delete rest[id]
+      // 屏幕上还是这条才顺手清顶层：上面那个 await 期间用户可能已经切走，那时顶层讲的是另一条会话
+      if (s.activeId !== id) return { runtimes: rest }
+      return {
+        activeId: null,
+        messages: [],
+        view: 'new',
+        streaming: false,
+        streamError: null,
+        toolEvents: [],
+        reasoning: '',
+        todos: [],
+        subagents: [],
+        rollbackNotice: null,
+        runtimes: rest
+      }
+    })
     await get().loadConversations()
   },
 
@@ -945,7 +963,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       streaming: true,
       streamError: null,
       toolEvents: [], // 新一轮，清掉上一轮的工具活动
-      reasoning: ''
+      reasoning: '',
+      // K11：提示条承诺的"盘上还留着一条尾巴可以撤销"当场失效 —— 继续说话之后主进程下一次保存
+      // 会按对账情形 ① 把尾巴作废（`conversations-core · saveConversation`），留着它就是假承诺
+      rollbackNotice: null
     })
     // 先把这条会话的现场存进存档 —— 它被切到后台后，属于它的片段才知道该往哪儿落
     get().archiveCurrent()

@@ -1129,7 +1129,12 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.convUndoRollback, (_e, raw: unknown): ConversationRollbackResult | null => {
     const id = z.string().min(1).max(64).parse(raw)
-    // 撤销是**恢复**，不是破坏 —— 不需要确认
+    // 撤销是**恢复**，不是破坏 —— 不需要确认框；但它同样改正文，所以**运行中不许动**（K11）。
+    // 漏了这道闸时：流式中途把尾巴接回来，随后 done 落盘会拿"恢复后的正文 + 这一轮"去对账，
+    // 于是被回滚掉的那段和新答案搅成一条会话。判据与 `convRollback` 同一条，理由也同一条。
+    if (chatGate.isRunning(id)) {
+      throw new Error('该会话正在生成回复：请先等待其结束或点「停止」，再撤销回滚')
+    }
     const outcome = undoRollback(id)
     if (!outcome) return null
     log.info('撤销会话回滚', { id, cursor: outcome.meta.messageCount, total: outcome.total })
@@ -1142,6 +1147,9 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.convDelete, (_e, raw: unknown): void => {
     const id = z.string().min(1).max(64).parse(raw)
+    // 先停掉它那一轮再删（K10）：不停的话这一轮还在烧 token、还会往已经不存在的那条会话上落盘。
+    // 只 abort 不 end —— 位子由那一轮自己的 `finally` 归还（在那里 end 会把它提前放掉，另一轮能挤进来）。
+    chatGate.abort(id)
     deleteConversation(id)
   })
 

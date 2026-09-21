@@ -36,20 +36,19 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
         return { candidates: [] }
       }
 
-      let result: { content: string }
-      try {
-        // 盘上的正文可能带着被中断那一轮留下的空串，出境前整形 —— 反思不经主循环，那道整形罩不到它
-        result = await chat(historyForModel(input.messages))
-      } catch {
-        // chat 调用失败 → 返回空（留痕由调用方做，本文件不 import log）
-        return { candidates: [] }
-      }
+      // 失败**不在这一层咽**（R17）：以前 catch 成 `{ candidates: [] }`，注释写着"留痕由调用方做"，
+      // 可异常到这里就没了 —— 调用方 `store/memory-store.ts · runReflection` 那条
+      // 「反思执行器抛错」永远进不去，净效果是反思失败 = 零候选 + 零日志。
+      // 出队发生在调用之前，所以抛出去不会把队列卡住（判据见 `memory-queue.test.ts` 的 R17 组）。
+      // 盘上的正文可能带着被中断那一轮留下的空串，出境前整形 —— 反思不经主循环，那道整形罩不到它
+      const result = await chat(historyForModel(input.messages))
 
+      // **只有这一处仍然咽**：模型没按格式回答不是故障，是它的输出形状问题
+      // （返回零候选即可，抛出去会让一次跑偏变成"反思执行器抛错"，把真故障淹在噪音里）
       let parsed: unknown
       try {
         // 模型可能把 JSON 裹在 ```json ``` 里 —— 剥一下（JSON.parse 不认围栏）
-        const text = stripCodeFence(result.content)
-        parsed = JSON.parse(text)
+        parsed = JSON.parse(stripCodeFence(result.content))
       } catch {
         return { candidates: [] }
       }

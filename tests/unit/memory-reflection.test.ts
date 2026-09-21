@@ -132,14 +132,17 @@ describe('产出候选：解析模型输出', () => {
     expect(out.candidates).toEqual([])
   })
 
-  it('chat 抛错 → 返回空（不留痕，留痕交装配层）', async () => {
+  // R17：这一层**不再咽异常**。以前它 catch 成 `{ candidates: [] }`，注释说"留痕由调用方做"，
+  // 可异常在这一层就没了 —— 调用方那条「反思执行器抛错」永远进不去，反思失败成了零候选 + 零日志。
+  it('chat 抛错 → **原样抛出**（留痕在装配层，前提是异常真到得了那儿）', async () => {
     const chat = vi.fn(async () => {
       throw new Error('network')
     })
     const { repo } = makeRepo()
     const runner = createReflectionRunner({ chat })
-    const out = await runner.reflect({ id: 'c1', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
-    expect(out.candidates).toEqual([])
+    await expect(
+      runner.reflect({ id: 'c1', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
+    ).rejects.toThrow('network')
   })
 
   it('normalizeCandidate：缺 name / description / body 的项跳过（不补全）', async () => {
