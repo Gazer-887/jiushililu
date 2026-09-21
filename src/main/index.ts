@@ -559,9 +559,10 @@ app.whenReady().then(async () => {
     },
     // 反思 chat 接口：把会话正文 + 反思 system prompt 发给模型，收回 JSON 候选
     reflectChat: createReflectChat(),
-    // K15：落到会话元数据（只长不缩），用量牌那格「反思 N tokens」才有数
+    // K15：落到会话元数据（逐次累加），用量牌那格「反思 N tokens」才有数
+    // 写完必须喊一声：反思跑在一轮结束之后，而列表重读是这格唯一的刷新时机 —— 不广播就要等下次开会话
     onReflectionUsage: (conversationId, usage) => {
-      addReflectionUsage(conversationId, usage)
+      if (addReflectionUsage(conversationId, usage)) sendToAll(IPC.convChanged)
     }
   })
 

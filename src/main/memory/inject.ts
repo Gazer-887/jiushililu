@@ -38,18 +38,21 @@ export function composeMemoryBlock(index: MemoryIndex): string | null {
 }
 
 /**
- * 注入税：这一段会占掉多少估算 token。**批 1 就能算的读数**，进用量牌。
- * ⚠️ 这是**本地估算**，按既有口径必须标 `estimated`；厂商没报就什么都不显示，不冒充真值。
- */
-/**
  * 注入税 = 记忆段 + 手册段（K17）。相加放在这一层，是为了能被单测钉住 ——
  * 两个调用点都在 `ipc.ts`，那层起不了真进程，账写在那儿等于没人看。
+ * ⚠️ 口径声明：两段的估算函数**刻度不同**（记忆按宽字符逐字、手册按 UTF-8 字节除三），
+ * 所以这个数是"两把尺子各自读数之和"，**只能看趋势，不能当精确 token 用**。
+ * 要横向比必须先统一成一把尺 —— 那是独立一件事，别顺手改估算口径（会动到既有读数）。
  */
 export function sumInjectionTax(memory: number, playbook: number): number {
   const only = (n: number): number => (Number.isFinite(n) && n > 0 ? Math.round(n) : 0)
   return only(memory) + only(playbook)
 }
 
+/**
+ * 记忆段占掉多少估算 token。**批 1 就能算的读数**，进用量牌。
+ * ⚠️ 这是**本地估算**，按既有口径必须标 `estimated`；厂商没报就什么都不显示，不冒充真值。
+ */
 export function estimateMemoryTokens(block: string | null): number {
   if (block === null) return 0
   // 粗估：中日韩字符约 1 token/字，拉丁约 4 字符/token。宁可略高估，也不低报预算。

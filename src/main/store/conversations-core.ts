@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mergeUsageHalves, type TokenUsage } from '@shared/usage'
+import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
 import type {
   ChatMessage,
   Conversation,
@@ -65,9 +65,9 @@ export interface ConversationsRepo {
     }
   ): ConversationMeta | null
   /**
-   * 记一笔**反思用量**（K15）：只长不缩，且「没给」不许把已有的抹掉 —— 与 `usage` 同一条原则
-   * （反思与对话是两条独立写盘的路，晚到的那份若拿旧快照覆盖会让账倒退）。
-   * 会话不存在（已删）→ null，不复活。
+   * 记一笔**反思用量**（K15）：**累加** —— 每次反思报本次用量，同一条会话多次反思要加得起来。
+   * 与 `usage` 的区别：对话那格的总量由渲染端算好后整体写入（那里「没给不许抹」取 max 是对的），
+   * 这一格由主进程逐次累加。会话不存在（已删）→ null，不复活。
    */
   addReflectionUsage(id: string, usage: TokenUsage): ConversationMeta | null
   renameConversation(id: string, title: string): ConversationMeta | null
@@ -348,10 +348,11 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
     addReflectionUsage(id, usage) {
       const current = backend.readMeta()[id]
       if (!current) return null
-      const prev = current.reflectionUsage
+      // **累加**而不是取 max：每次反思报的是**本次**用量，同一条会话反思过三次就该是三次的和。
+      // 算术走 `addUsage`（含"报了 0"与"没报"的区分），不在这儿手写 —— 手写的 `?? 0` 会把 null 加成 NaN。
       const next: ConversationMeta = {
         ...current,
-        reflectionUsage: prev ? mergeUsageHalves(prev, usage) : usage
+        reflectionUsage: addUsage(current.reflectionUsage ?? emptyUsage(), usage)
       }
       backend.putMeta(id, next)
       return next

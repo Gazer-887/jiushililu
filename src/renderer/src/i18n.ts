@@ -16,11 +16,13 @@ const RESOURCES = {
 }
 
 /**
- * 缺译要"能查到"而不是静默：i18next 会先用 `fallbackLng` 兜住（界面回退中文），
- * 再回调这里 —— 两条都要：不白屏、不露 key，同时留下"哪一条没译"的痕迹。
+ * ⚠️ 这条**不是**"哪一条没译"的探测器。i18next 的 `missingKeyHandler` 只在**所有语言都查不到**
+ * 这个键时才触发（实测：en 缺、zh 有时 `t()` 直接回退中文，回调一次都不进）。
+ * 所以它兜的是"键根本没建过"这一种，而"en 漏译"由 `tests/unit/i18n.test.ts` 的
+ * **键集对齐判据**在编译/测试期就挡住 —— 那才是缺译的真正防线，别把责任记到这里。
  */
 const reportMissing = (langs: readonly string[], ns: string, key: string): void => {
-  console.warn('[i18n] 缺译，已回退中文', { key, ns, tried: langs.join(',') })
+  console.warn('[i18n] 所有语言都查不到这个键（多半是表里漏建，不是漏译）', { key, ns, tried: langs.join(',') })
 }
 
 let initialized = false
@@ -34,7 +36,7 @@ export function ensureI18n(locale: Locale = LOCALE_DEFAULT): typeof i18n {
       fallbackLng: LOCALE_DEFAULT,
       defaultNS: NAMESPACE_DEFAULT,
       ns: [...NAMESPACES],
-      // 缺译：先由 fallbackLng 兜住中文，再留一条痕迹（saveMissing 只在"当前语言里没有这个键"时触发）
+      // 缺译由 fallbackLng 兜成中文；saveMissing 只在两边都没有时触发（见 reportMissing 的说明）
       saveMissing: true,
       missingKeyHandler: reportMissing,
       // 文案表已经是成品，不需要复数/插值之外的插件；转义关掉 —— React 自己会转义，双重转义会把 `&` 变成 `&amp;`

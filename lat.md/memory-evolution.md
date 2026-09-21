@@ -62,6 +62,8 @@
 [[src/main/store/conversations-core.ts#ConversationsRepo]] 的 `addReflectionUsage`，落
 `ConversationMeta.reflectionUsage`。存的是**整份用量而不是一个总数** —— 存总数等于替展示层丢掉
 输入/输出这一半信息，将来任何按方向算成本的读法都会拿到假形状（理由见 D-127）。
+合并口径与上面那格**相反**：这里每次写入的是本次调用的增量，所以逐次**累加**（`addUsage`），
+取 max 会把"反思三次"显示成"最大那一次"（反转记录见 D-128）。
 厂商没报仍然什么都不显示：这一格与前三格共用"缺 = 不显示"的规矩，不拿估算冒充真值。
 
 ## 反思链：从会话正文到候选

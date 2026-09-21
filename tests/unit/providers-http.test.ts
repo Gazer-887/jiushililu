@@ -168,4 +168,23 @@ describe('Anthropic：认证头与流式取数走另一套方言', () => {
     expect(chunks).toEqual(['A'])
     expect(usages.length).toBeGreaterThan(0)
   })
+
+  it('非流式：整份响应里的 usage 也要报（`stream: false` 的档案以前永远没有账）', async () => {
+    setHttpFetch(async () =>
+      jsonResponse({
+        content: [{ type: 'text', text: 'hi' }],
+        usage: { input_tokens: 11, output_tokens: 5, cache_read_input_tokens: 3 }
+      })
+    )
+    const chunks: string[] = []
+    const usages: TokenUsage[] = []
+    await new AnthropicProvider().streamChat(
+      { ...req(), settings: { ...settings, stream: false } },
+      { onChunk: (t) => chunks.push(t), onUsage: (u) => usages.push(u) }
+    )
+    expect(chunks).toEqual(['hi'])
+    expect(usages).toEqual([
+      { promptTokens: 11, completionTokens: 5, cachedPromptTokens: 3, reasoningTokens: null }
+    ])
+  })
 })

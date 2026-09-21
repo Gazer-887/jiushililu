@@ -9262,7 +9262,7 @@ app.whenReady().then(async () => {
         leak: document.body.innerText.includes('sidebar:') || document.body.innerText.includes('newTask')
       }))()
     `)
-    await sevalRaw(`
+    const switchedBack = await sevalRaw(`
       (() => {
         const btn = Array.from(document.querySelectorAll('.choice-item'))
           .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '简体中文');
@@ -9271,10 +9271,15 @@ app.whenReady().then(async () => {
       })()
     `)
     await new Promise((r) => setTimeout(r, 700))
-    const back = await win.webContents.executeJavaScript(
-      `(() => document.documentElement.lang ?? null)()`
-    )
-    return { step: 'done', clicked, main, back }
+    // 只回读 <html lang> 挡不住这一条最容易的坏法：属性写对了、文案却没重渲染
+    const back = await win.webContents.executeJavaScript(`
+      (() => ({
+        lang: document.documentElement.lang ?? null,
+        newTask: (Array.from(document.querySelectorAll('.new-task-btn'))[0]?.textContent || '').trim(),
+        workspace: (document.querySelector('.section-label')?.textContent || '').trim()
+      }))()
+    `)
+    return { step: 'done', clicked, main, back, switchedBack }
   })()
   checkTrue(
     '切到 English：主窗已迁移文案变英文、<html lang> 同步，且不许露 key',
@@ -9286,9 +9291,12 @@ app.whenReady().then(async () => {
     langFlow
   )
   checkTrue(
-    '切回简体中文：主窗语言标记复位（不留英文态给后面的探针）',
-    langFlow.back === 'zh-CN',
-    { back: langFlow.back }
+    '切回简体中文：主窗文案与语言标记一并复位（不留英文态给后面的探针）',
+    langFlow.switchedBack === true &&
+      langFlow.back.lang === 'zh-CN' &&
+      langFlow.back.newTask.includes('新建任务') &&
+      langFlow.back.workspace === '工作区',
+    { back: langFlow.back, switchedBack: langFlow.switchedBack }
   )
 
   reportAndExit()

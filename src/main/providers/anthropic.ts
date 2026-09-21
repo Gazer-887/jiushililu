@@ -1,6 +1,6 @@
 import type { ChatMessage, ModelSettings, ReasoningEffort, TestResult } from '@shared/ipc'
 import { createSSEParser } from './sse'
-import { usageFromAnthropicEvent } from './usage-parsers'
+import { usageFromAnthropicEvent, usageFromAnthropicMessage } from './usage-parsers'
 import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
 import { resolveApiUrl } from './url'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
@@ -94,12 +94,18 @@ export class AnthropicProvider implements IProvider {
     if (!res.ok) await throwHttpError(res)
 
     if (!settings.stream || !res.body) {
-      const json = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
+      const json = (await res.json()) as {
+        content?: Array<{ type?: string; text?: string }>
+        usage?: unknown
+      }
       const text = (json.content ?? [])
         .filter((b) => b.type === 'text')
         .map((b) => b.text ?? '')
         .join('')
       if (text) cb.onChunk(text)
+      // 非流式也是一次真调用：不在这儿报，`stream: false` 的档案就永远没有用量（格子空着、不报错）
+      const once = usageFromAnthropicMessage(json)
+      if (once) cb.onUsage?.(once)
       return
     }
 

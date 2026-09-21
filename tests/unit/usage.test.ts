@@ -18,6 +18,7 @@ import {
 import {
   describeUsageShape,
   usageFromAnthropicEvent,
+  usageFromAnthropicMessage,
   usageFromOpenAIChunk
 } from '../../src/main/providers/usage-parsers'
 
@@ -151,6 +152,42 @@ describe('Anthropic 的 usage 解析（**分两处报**：message_start 给输�
     expect(usageFromAnthropicEvent({ type: 'message_delta' })).toBeNull()
     expect(usageFromAnthropicEvent({ type: 'message_delta', usage: { output_tokens: 'x' } })).toBeNull()
     expect(usageFromAnthropicEvent(null)).toBeNull()
+  })
+})
+
+/**
+ * 非流式那条路（`stream: false`）返回的是**整份 message**，没有 `type: message_start` 这种事件外壳。
+ * 用上面的事件解析器读它会恒为 null —— 于是这类档案永远没有账，还不报错。
+ */
+describe('Anthropic 非流式整份响应的 usage 解析', () => {
+  it('input + output 同层给全', () => {
+    expect(
+      usageFromAnthropicMessage({
+        content: [{ type: 'text', text: 'hi' }],
+        usage: { input_tokens: 120, output_tokens: 8 }
+      })
+    ).toEqual({
+      promptTokens: 120,
+      completionTokens: 8,
+      cachedPromptTokens: null,
+      reasoningTokens: null
+    })
+  })
+
+  it('缓存读命中一起收（与流式同口径）', () => {
+    expect(
+      usageFromAnthropicMessage({
+        usage: { input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 64 }
+      })
+    ).toMatchObject({ cachedPromptTokens: 64 })
+  })
+
+  it('只报一半 / 没有 usage / 脏数据 → null（半个账比没有账更坏）', () => {
+    expect(usageFromAnthropicMessage({ usage: { input_tokens: 1 } })).toBeNull()
+    expect(usageFromAnthropicMessage({ usage: { output_tokens: 1 } })).toBeNull()
+    expect(usageFromAnthropicMessage({ content: [] })).toBeNull()
+    expect(usageFromAnthropicMessage({ type: 'message_start', message: { usage: { input_tokens: 9, output_tokens: 1 } } })).toBeNull()
+    expect(usageFromAnthropicMessage(null)).toBeNull()
   })
 })
 

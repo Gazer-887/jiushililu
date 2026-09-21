@@ -160,3 +160,27 @@ export function usageFromAnthropicEvent(json: unknown): TokenUsage | null {
 
   return null
 }
+
+/**
+ * Anthropic **非流式**整份响应：`usage` 一次给全（`input_tokens` 与 `output_tokens` 同层）。
+ * 与事件解析器分开是因为形状不同 —— 整份响应没有 `type` 键，拿上面那个去读会**恒为 null**，
+ * 于是 `stream: false` 的档案永远没有账（不报错，只是那格空着）。
+ */
+export function usageFromAnthropicMessage(json: unknown): TokenUsage | null {
+  if (!json || typeof json !== 'object') return null
+  const usage = (json as { usage?: unknown }).usage
+  if (!usage || typeof usage !== 'object') return null
+  const u = usage as Record<string, unknown>
+  probeShape('anthropic:message', usage)
+  const input = u['input_tokens']
+  const output = u['output_tokens']
+  // 与 OpenAI 同规矩：只报一半的数据宁可不用（半个账比没有账更坏）
+  if (!isNonNegInt(input) || !isNonNegInt(output)) return null
+  const cachedRead = u['cache_read_input_tokens']
+  return {
+    promptTokens: input,
+    completionTokens: output,
+    cachedPromptTokens: isNonNegInt(cachedRead) ? cachedRead : null,
+    reasoningTokens: null
+  }
+}

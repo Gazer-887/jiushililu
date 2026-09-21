@@ -233,7 +233,8 @@ export interface ConversationMeta {
   usage?: TokenUsage
   /** 这条会话**省下**的估算 token（plan8 R9.1）：不是厂商账，故与 `usage` 分开存 —— 混算等于两笔账糊一起 */
   avoidedTokens?: number
-  /** **注入税**累计（plan19 §5.2）：记忆段每轮占掉的**估算** token。与 `usage` / `avoidedTokens` **三笔账分开**
+  /** **注入税**累计（plan19 §5.2 / K17）：每轮**注入**进去的固定开销 —— 记忆段 + 执行手册段，
+   *  两段各自估算后相加（两把尺子刻度不同，见 `inject.ts · sumInjectionTax` 的口径声明）。与 `usage` / `avoidedTokens` **三笔账分开**
    *  —— 厂商真值 / 我们替它做的减法 / 我们自己加的固定开销，混一起就分不清谁是谁 */
   memoryTokens?: number
   /**

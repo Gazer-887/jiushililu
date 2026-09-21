@@ -117,19 +117,37 @@ describe('产出候选：解析模型输出', () => {
   })
 
   it('不是数组 → 返回空（不抛）', async () => {
-    const chat = vi.fn(async () => ({ content: '{"a": 1}' }))
+    const chat = vi.fn(async () => ({
+      content: '{"a": 1}',
+      usage: { promptTokens: 50, completionTokens: 7 }
+    }))
     const { repo } = makeRepo()
     const runner = createReflectionRunner({ chat })
     const out = await runner.reflect({ id: 'c1', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
     expect(out.candidates).toEqual([])
+    // K15：形状不合格不等于这次调用免费 —— 日上限也真消耗了，账要跟着走
+    expect(out.usage).toEqual({ promptTokens: 50, completionTokens: 7 })
   })
 
   it('JSON 解析失败 → 返回空（不抛，不假阳性）', async () => {
-    const chat = vi.fn(async () => ({ content: '这不是 JSON' }))
+    const chat = vi.fn(async () => ({
+      content: '这不是 JSON',
+      usage: { promptTokens: 40, completionTokens: 3 }
+    }))
     const { repo } = makeRepo()
     const runner = createReflectionRunner({ chat })
     const out = await runner.reflect({ id: 'c1', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
     expect(out.candidates).toEqual([])
+    expect(out.usage).toEqual({ promptTokens: 40, completionTokens: 3 })
+  })
+
+  it('前置门挡下的一次都不调模型 → usage 为 null（没调用与没报是两种缺省，都不许写 0）', async () => {
+    const chat = vi.fn(async () => ({ content: '[]', usage: { promptTokens: 1, completionTokens: 1 } }))
+    const { repo } = makeRepo()
+    const runner = createReflectionRunner({ chat })
+    const out = await runner.reflect({ id: 'c1', messages: msgs, bodyBytes: SMALL_BYTES, memory: repo })
+    expect(chat).not.toHaveBeenCalled()
+    expect(out.usage).toBeNull()
   })
 
   // R17：这一层**不再咽异常**。以前它 catch 成 `{ candidates: [] }`，注释说"留痕由调用方做"，

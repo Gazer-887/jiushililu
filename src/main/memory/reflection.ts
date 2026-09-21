@@ -61,15 +61,16 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
 
       // **只有这一处仍然咽**：模型没按格式回答不是故障，是它的输出形状问题
       // （返回零候选即可，抛出去会让一次跑偏变成"反思执行器抛错"，把真故障淹在噪音里）
+      // ⚠️ 但用量照报：这一次调用真发生了、日上限也真消耗了，形状不合格不等于它免费
       let parsed: unknown
       try {
         // 模型可能把 JSON 裹在 ```json ``` 里 —— 剥一下（JSON.parse 不认围栏）
         parsed = JSON.parse(stripCodeFence(result.content))
       } catch {
-        return { candidates: [], usage: null }
+        return { candidates: [], usage: result.usage ?? null }
       }
 
-      if (!Array.isArray(parsed)) return { candidates: [], usage: null }
+      if (!Array.isArray(parsed)) return { candidates: [], usage: result.usage ?? null }
 
       const candidates: MemoryCandidate[] = []
       for (const item of parsed) {

@@ -36,7 +36,7 @@ describe('K14：反思用哪个模型，得真的听设置', () => {
   })
 })
 
-describe('K15：反思用量要有来源，也要只长不缩', () => {
+describe('K15：反思用量要有来源，落盘要逐次累加', () => {
   it('reflect 把厂商用量随候选一起交出来', async () => {
     const chat = vi.fn(async () => ({
       content: '[]',
@@ -60,19 +60,28 @@ describe('K15：反思用量要有来源，也要只长不缩', () => {
     }
   })
 
-  it('落盘：逐字段只长不缩，会话不存在返回 null 且不复活', () => {
+  it('落盘：多次反思逐字段累加，会话不存在返回 null 且不复活', () => {
     const dir = mkdtempSync(join(tmpdir(), 'k15-repo-'))
     try {
       const repo = createConversationsRepo(createFsConversationsBackend(dir))
       const meta = repo.createConversation({ title: 'T', workspace: '/w' })
       repo.addReflectionUsage(meta.id, { promptTokens: 100, completionTokens: 20 })
-      // 晚到的旧快照不许让账倒退，也不许把另一半抹成 0
+      // 每次反思报的是**本次**用量，反思过两次就是两次的和（取 max 会把账读成"最大单次"）
       const after = repo.addReflectionUsage(meta.id, { promptTokens: 60, completionTokens: 45 })
-      expect(after?.reflectionUsage).toEqual({ promptTokens: 100, completionTokens: 45 })
+      expect(after?.reflectionUsage).toEqual({ promptTokens: 160, completionTokens: 65 })
       expect(repo.addReflectionUsage('不存在的那条', { promptTokens: 9, completionTokens: 9 })).toBeNull()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('装配点的最后一跳：回调真的落到会话元数据（断这一跳时上面两条还是全绿的）', () => {
+    const src = readFileSync(join(ROOT, 'src/main/index.ts'), 'utf8')
+    const at = src.indexOf('onReflectionUsage:')
+    expect(at, 'createMemoryStore 又没接 onReflectionUsage —— 用量牌那格会永远是空的').toBeGreaterThan(
+      -1
+    )
+    expect(src.slice(at, at + 200)).toMatch(/addReflectionUsage\(conversationId,\s*usage\)/)
   })
 })
 
