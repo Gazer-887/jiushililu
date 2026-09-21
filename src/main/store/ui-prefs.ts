@@ -7,7 +7,9 @@ import {
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
+  LOCALE_DEFAULT,
   sanitizeFontScale,
+  sanitizeLocale,
   sanitizeStoredWidth,
   sanitizeTheme,
   sanitizeUiFont,
@@ -33,6 +35,8 @@ interface StoredPrefs {
   sidebarWidth?: number
   dockWidth?: number
   theme?: ThemeName
+  /** 界面语言（plan52 S1）。盘上不可信，读出来过 sanitizeLocale */
+  locale?: unknown
   /** 字号档（plan7 批 F3）。盘上不可信，读出来过 sanitizeFontScale */
   fontScale?: unknown
   /** 界面字体 family 名（plan7 批 F3）。⚠️ 读出来过 sanitizeUiFont（白名单清洗，防 CSS 注入） */
@@ -59,6 +63,7 @@ export function getUIPrefs(): UIPrefs {
     ),
     dockWidth: sanitizeStoredWidth(store.store.dockWidth, DOCK_DEFAULT, DOCK_MIN, DOCK_SANITY_MAX),
     theme: sanitizeTheme(store.store.theme),
+    locale: sanitizeLocale(store.store.locale),
     fontScale: sanitizeFontScale(store.store.fontScale),
     uiFont: sanitizeUiFont(store.store.uiFont),
     workbench,
@@ -84,6 +89,12 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
     const theme = sanitizeTheme(patch.theme)
     store.set('theme', theme)
     next.theme = theme
+  }
+  if (patch.locale !== undefined) {
+    // 与 fontScale 同策略：非法值存默认而不是忽略（见 sanitizeLocale）
+    const locale = sanitizeLocale(patch.locale)
+    store.set('locale', locale)
+    next.locale = locale
   }
   if (patch.fontScale !== undefined) {
     // 非法值**存默认档**而不是忽略：让"改坏了"和"没改"在盘上长得不一样，少一层怀疑对象
@@ -128,12 +139,14 @@ export function resetUIPrefs(): UIPrefs {
   store.set('theme', 'qingkong')
   store.set('fontScale', FONT_SCALE_DEFAULT)
   store.set('uiFont', '')
+  store.set('locale', LOCALE_DEFAULT)
   store.set('workbench', emptyLayout())
   store.set('workbenchSizes', emptySizes())
   return {
     sidebarWidth: SIDEBAR_DEFAULT,
     dockWidth: DOCK_DEFAULT,
     theme: 'qingkong',
+    locale: LOCALE_DEFAULT,
     fontScale: FONT_SCALE_DEFAULT,
     uiFont: '',
     workbench: emptyLayout(),

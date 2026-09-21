@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import SettingsWindow from './views/SettingsWindow'
 import './styles.css'
+import { ensureI18n } from './i18n'
 
 /*
  * 渲染入口**按窗口分叉**（2026-09-13，设置独立窗口）。
@@ -28,5 +29,7 @@ if (root) {
   const which = route()
   // 打好标记：样式与门禁都据此区分"这是设置窗口"，不必各自去解析 hash
   document.documentElement.dataset.window = which
+  // 先同步初始化（默认中文）再渲染：否则第一帧没有 i18n 实例，t() 会露出 key —— 真语言随后由 loadUIPrefs 应用
+  ensureI18n()
   createRoot(root).render(<React.StrictMode>{which === 'settings' ? <SettingsWindow /> : <App />}</React.StrictMode>)
 }

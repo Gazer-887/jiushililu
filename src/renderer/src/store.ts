@@ -16,23 +16,8 @@ import type { TodoItem } from '@shared/todo'
 import { addUsage, emptyUsage, mergeOptionalMax, type TokenUsage } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
 import { estimateMessageTokens } from '@shared/tokens'
-import {
-  DOCK_DEFAULT,
-  DOCK_MIN,
-  dockMaxWidth,
-  FONT_SCALE_DEFAULT,
-  SIDEBAR_DEFAULT,
-  SIDEBAR_MAX,
-  SIDEBAR_MIN,
-  clampWidth,
-  fontScalePercent,
-  sanitizeFontScale,
-  sanitizeTheme,
-  sanitizeUiFont,
-  type FontScale,
-  type ThemeName,
-  type UIPrefs
-} from '@shared/splitter'
+import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
+import { applyLocale } from './i18n'
 import {
   activateTab,
   addPane,
@@ -115,6 +100,9 @@ interface AppState {
   dockWidth: number
   theme: ThemeName
   setTheme: (t: ThemeName) => void
+  /** 界面语言（plan52 S1）：文档级属性，与主题同一条「广播 + 重读」通路，两个窗口必须同时变 */
+  locale: Locale
+  setLocale: (l: Locale) => void
   /** 界面字号档（plan7 批 F3）：实现是根元素 font-size 缩放，`--fs-*` 已是 rem 基，一处生效全局 */
   fontScale: FontScale
   setFontScale: (s: FontScale) => void
@@ -433,6 +421,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   fontScale: FONT_SCALE_DEFAULT,
   uiFont: '',
+  locale: LOCALE_DEFAULT,
+  setLocale: (l) => {
+    const locale = sanitizeLocale(l)
+    set({ locale })
+    // 先切语言再落盘：即时生效是这条设置的第一要求（落盘是为了另一个窗口与下次启动跟上来）
+    applyLocale(locale)
+    void useAppStore.getState().persistUIPrefs({ locale })
+  },
   setFontScale: (s) => {
     const scale = sanitizeFontScale(s)
     set({ fontScale: scale })
@@ -491,12 +487,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         sidebarWidth: SIDEBAR_DEFAULT,
         dockWidth: DOCK_DEFAULT,
         theme: 'qingkong',
+        locale: LOCALE_DEFAULT,
         fontScale: FONT_SCALE_DEFAULT,
         uiFont: '',
         workbench: emptyLayout(),
         workbenchSizes: emptySizes()
       })
       applyFontPrefs(FONT_SCALE_DEFAULT, '')
+      applyLocale(LOCALE_DEFAULT)
     }
   },
   loadUIPrefs: async () => {
@@ -507,6 +505,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         sidebarWidth: prefs.sidebarWidth,
         theme: sanitizeTheme(prefs.theme),
+        locale: sanitizeLocale(prefs.locale),
         fontScale,
         uiFont,
         workbench: prefs.workbench,
@@ -516,6 +515,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().setDockWidth(prefs.dockWidth)
       // 启动即应用主题（否则刷新/重开会闪回默认主题）
       document.documentElement.dataset.theme = sanitizeTheme(prefs.theme)
+      // 语言与主题同理：启动即应用，否则第一帧是默认语言、设置回来才变（闪一下）
+      applyLocale(sanitizeLocale(prefs.locale))
       // 字号/字体同理：启动即应用，别让用户设置的档位闪回默认
       applyFontPrefs(fontScale, uiFont)
     } catch {

@@ -20,7 +20,8 @@ import MemorySettings from '../components/MemorySettings'
 import PlaybookManager from '../components/PlaybookManager'
 import FieldNote from '../components/FieldNote'
 import { useAppStore } from '../store'
-import { THEMES, FONT_SCALES } from '@shared/splitter'
+import { THEMES, FONT_SCALES, LOCALES } from '@shared/splitter'
+import { useTranslation } from 'react-i18next'
 import type { SystemFontsResult } from '@shared/font-names'
 import { PERM_HINT, PERM_LABEL } from '../components/InputTools'
 import { TOKEN_TIER_LIST, type TokenSaverTier } from '@shared/token-tier'
@@ -238,6 +239,9 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const loadSettings = useAppStore((s) => s.loadSettings)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
+  const locale = useAppStore((s) => s.locale)
+  const setLocale = useAppStore((s) => s.setLocale)
+  const { t } = useTranslation(['common', 'settings'])
   // ── 字号 / 字体（plan7 批 F3）：值在 store（文档级属性，改了即时生效）──
   const fontScale = useAppStore((s) => s.fontScale)
   const setFontScale = useAppStore((s) => s.setFontScale)
@@ -1291,6 +1295,25 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                   onClick={() => setTheme(t.id)}
                 >
                   <span className="choice-name">{t.label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* 界面语言（plan52 S1）：与主题同类 —— 文档级、即时生效、跨窗口同步 */}
+            <div className="field-label field-label-with-note">
+              {t('settings:language')}
+              <FieldNote text={[t('settings:languageHint')]} />
+            </div>
+            <div className="choice-list" role="radiogroup" aria-label={t('settings:language')}>
+              {LOCALES.map((l) => (
+                <button
+                  key={l.key}
+                  role="radio"
+                  aria-checked={locale === l.key}
+                  className={`choice-item${locale === l.key ? ' is-on' : ''}`}
+                  onClick={() => setLocale(l.key)}
+                >
+                  <span className="choice-name">{l.label}</span>
                 </button>
               ))}
             </div>

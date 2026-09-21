@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useAppStore } from '../store'
 import type { ConversationMeta } from '@shared/ipc'
 
@@ -29,6 +30,8 @@ function groupConversations(list: ConversationMeta[]): Group[] {
 }
 
 export default function Sidebar({ open, width }: { open: boolean; width: number }): JSX.Element {
+  // 界面骨架文案走 i18next（plan52 S1）；命名空间按界面区切，默认 ns = common
+  const { t } = useTranslation(['common', 'sidebar'])
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
   const newSession = useAppStore((s) => s.newSession)
@@ -70,12 +73,12 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
   return (
     <aside className={`sidebar ${open ? '' : 'closed'}`} style={open ? { width } : undefined}>
       <button className="new-task-btn" onClick={newSession}>
-        <span className="plus">＋</span> 新建任务
+        <span className="plus">＋</span> {t('newTask')}
       </button>
 
       <div className="conv-scroll">
-        <div className="section-label">工作区</div>
-        {groups.length === 0 && <div className="conv-empty">暂无会话。</div>}
+        <div className="section-label">{t('sidebar:workspace')}</div>
+        {groups.length === 0 && <div className="conv-empty">{t('sidebar:emptyConversations')}</div>}
         {groups.map((g) => {
           const isCollapsed = collapsed[g.workspace] ?? false
           return (
@@ -185,9 +188,9 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
         {/* 设置入口（09-18 用户：齿轮不直观，改文字框）。⚠️ 无 `.active` 选中态：
             设置是浮在上面的独立窗口，"已打开"由窗口自己表达，侧栏再高亮一次是重复信号。 */}
         <button className="settings-entry-btn" onClick={() => void window.api.openSettingsWindow()}>
-          设置
+          {t('sidebar:settings')}
         </button>
-        <span className="foot-text">会自己长经验的工作台</span>
+        <span className="foot-text">{t('sidebar:tagline')}</span>
       </div>
     </aside>
   )

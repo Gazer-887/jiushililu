@@ -531,6 +531,9 @@ const FAKE_BG_TASKS = [
 /** 设置独立窗口的桩：在 whenReady 里赋值（需要 win 已存在），STUBS 表按名调用 */
 let openSettingsWinStub = () => Promise.resolve({ ok: true })
 let closeSettingsWinStub = () => true
+// 真主进程每次 uiPrefsSet 之后都会广播 settings:changed('ui-prefs')，各窗据此重读。
+// 桩此前只回数据不广播，于是「跨窗同步」这一整类通路在门禁里从来没被测到过。
+let broadcastUIPrefsStub = () => {}
 
 // —— 语音输入（plan45）的桩状态与假音频设备 ——
 // ⚠️ 契约副本：真源是 `src/main/voice/transcribe.ts` + store/settings 的 VoiceConfig 形状。
@@ -1326,6 +1329,7 @@ const STUBS = {
     if (patch && patch.workbench) wbSetCalls.push(Date.now())
     uiPrefsSetCalls.push({ ...patch })
     uiPrefsStub = { ...uiPrefsStub, ...patch }
+    broadcastUIPrefsStub() // 与真主进程同口径：落盘之后必广播，否则测不到别的窗口跟不跟得上
     return { ...uiPrefsStub }
   },
   'ui-prefs:reset': () => {
@@ -1816,6 +1820,11 @@ app.whenReady().then(async () => {
   // 为什么必须真建窗：主窗口与设置窗口是**两个渲染进程**，设置探针全都要打到后者身上。
   // 刻意**不装**任何 flush 拦截（真源也不装）——保证"设置窗口开着时主窗口仍能正常关掉"这条能验。
   const settingsWins = []
+  broadcastUIPrefsStub = () => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('settings:changed', 'ui-prefs')
+    }
+  }
   openSettingsWinStub = async () => {
     // 幂等：已开则聚焦（真源同款）——门禁里连点两次必须只有一个窗口
     const live = settingsWins.find((w) => !w.isDestroyed())
@@ -5759,10 +5768,11 @@ app.whenReady().then(async () => {
     }))()
   `)
   // 2026-09-14 六主题：此前的探针"只 log 不断言"—— TodoPanel 消失案同款盲区，这次补上断言
-  // ⚠️ items 是整个外观分区的 choice-name（主题六项在前 + 字号四项在后），主题断言取前六
+  // ⚠️ items 是整个外观分区的 choice-name：主题六项在前，其后是语言两项（plan52 S1）与字号四项，
+  //      主题断言只取前六 —— 长度这一项管的是"别有人往这个分区里塞东西却没人记账"。
   checkTrue(
     '「外观」六主题齐（晴空/信纸/桃花/夜梦/春和/极光），默认晴空',
-    themeBefore.items.length === 10 &&
+    themeBefore.items.length === 12 &&
       themeBefore.items.slice(0, 6).join(',') === '晴空,信纸,桃花,夜梦,春和,极光' &&
       themeBefore.checked === '晴空' &&
       themeBefore.dataTheme === 'qingkong',
@@ -9207,6 +9217,78 @@ app.whenReady().then(async () => {
       !!lastSend &&
       (lastSend.messages ?? []).filter((m) => m.role === 'user').length === 1,
     { probe: firstSendProbe, sent: lastSend ?? null }
+  )
+
+  // ── 界面语言端到端（plan52 S1）：设置窗里点 English → **主窗**的已迁移文案跟着变英文 ──
+  // 这条测的是三件事接在一起：语言偏好落盘 → 'ui-prefs' 广播 → 另一个窗重读并 changeLanguage。
+  // 单测罩不到（两个渲染进程），所以必须在这儿测。跑完切回中文，别把状态留给后面的批次。
+  const langFlow = await (async () => {
+    // 前面的批次用完就把设置窗关了（那条"关窗后主窗仍可操作"的判据要的），这里得自己再开一次
+    await openSettingsWin()
+    await new Promise((r) => setTimeout(r, 600))
+    // 先切到「外观」分区并**等一帧**：同一次求值里点导航再取选项，拿到的还是旧分区（通用设置）
+    await sevalRaw(`
+      (() => {
+        const nav = Array.from(document.querySelectorAll('.settings-nav-item'))
+          .find((x) => x.textContent.trim() === '外观');  // 语言项在外观分区，留在通用设置里点不到它
+        if (nav) nav.click();
+        return !!nav;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 600))
+    const clicked = await sevalRaw(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('.choice-item'))
+          .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === 'English');
+        if (!btn)
+          return {
+            ok: false,
+            why: '设置页里找不到 English 选项（语言项没渲染？）',
+            navs: Array.from(document.querySelectorAll('.settings-nav-item')).map((x) => x.textContent.trim()),
+            onNav: document.querySelector('.settings-nav-item.is-on')?.textContent?.trim() ?? null,
+            choices: Array.from(document.querySelectorAll('.choice-item .choice-name')).map((x) => x.textContent.trim())
+          };
+        btn.click();
+        return { ok: true };  // 导航是否切成功由上一步的返回值管，这里只报"点到了 English"
+      })()
+    `)
+    if (!clicked.ok) return { step: 'settings-click', ...clicked }
+    await new Promise((r) => setTimeout(r, 900))
+    const main = await win.webContents.executeJavaScript(`
+      (() => ({
+        lang: document.documentElement.lang ?? null,
+        newTask: (Array.from(document.querySelectorAll('.new-task-btn'))[0]?.textContent || '').trim(),
+        workspace: (document.querySelector('.section-label')?.textContent || '').trim(),
+        leak: document.body.innerText.includes('sidebar:') || document.body.innerText.includes('newTask')
+      }))()
+    `)
+    await sevalRaw(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('.choice-item'))
+          .find((b) => b.querySelector('.choice-name')?.textContent?.trim() === '简体中文');
+        if (btn) btn.click();
+        return !!btn;
+      })()
+    `)
+    await new Promise((r) => setTimeout(r, 700))
+    const back = await win.webContents.executeJavaScript(
+      `(() => document.documentElement.lang ?? null)()`
+    )
+    return { step: 'done', clicked, main, back }
+  })()
+  checkTrue(
+    '切到 English：主窗已迁移文案变英文、<html lang> 同步，且不许露 key',
+    langFlow.step === 'done' &&
+      langFlow.main.lang === 'en' &&
+      langFlow.main.newTask.includes('New task') &&
+      langFlow.main.workspace === 'Workspace' &&
+      langFlow.main.leak === false,
+    langFlow
+  )
+  checkTrue(
+    '切回简体中文：主窗语言标记复位（不留英文态给后面的探针）',
+    langFlow.back === 'zh-CN',
+    { back: langFlow.back }
   )
 
   reportAndExit()

@@ -1,7 +1,7 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { z } from 'zod'
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
-import { FONT_SCALE_KEYS, THEME_IDS, UI_FONT_MAX } from '@shared/splitter'
+import { FONT_SCALE_KEYS, THEME_IDS, UI_FONT_MAX, LOCALE_KEYS } from '@shared/splitter'
 import { revertOneHunk, samePath } from './revert-flow'
 import {
   IPC,
@@ -1965,6 +1965,8 @@ export function registerIpcHandlers(deps: {
         // 字号档/字体名（plan7 批 F3）：形状在这层把关，语义清洗（坏值回落）交给 setUIPref
         fontScale: z.enum(FONT_SCALE_KEYS).optional(),
         uiFont: z.string().max(UI_FONT_MAX).optional(),
+        // 界面语言（plan52 S1）：不在这儿加就会**静默被剥掉** —— zod 默认丢弃未知键，表现成「点了没反应」
+        locale: z.enum(LOCALE_KEYS).optional(),
         workbench: workbenchSchema.optional(),
         workbenchSizes: workbenchSizesSchema.optional()
       })

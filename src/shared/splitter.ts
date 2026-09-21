@@ -68,6 +68,23 @@ export function sanitizeTheme(t: unknown): ThemeName {
 }
 
 /**
+ * 界面语言（plan52 S1）：只两值，中文为默认与回退。
+ * ⚠️ 回退必须是 `zh` 而不是"当前"：缺译时宁可露中文，也不许白屏或露 key（见 `shared/i18n/index.ts`）。
+ */
+export const LOCALE_KEYS = ['zh', 'en'] as const
+export type Locale = (typeof LOCALE_KEYS)[number]
+export const LOCALES: Array<{ key: Locale; label: string }> = [
+  { key: 'zh', label: '简体中文' },
+  { key: 'en', label: 'English' }
+]
+export const LOCALE_DEFAULT: Locale = 'zh'
+
+/** 读盘与入参同一条口径：非法值回默认（与 `sanitizeFontScale` 同策略 —— 存默认而不是忽略，让"改坏了"在盘上留痕） */
+export function sanitizeLocale(v: unknown): Locale {
+  return LOCALES.some((l) => l.key === v) ? (v as Locale) : LOCALE_DEFAULT
+}
+
+/**
  * 界面布局偏好（主进程与渲染进程共用同一口径）。
  * 工作台**分栏布局**的模型与运算都在 `workbench.ts`，本文件只管「**单个**抽屉的宽度」——别把多栏逻辑往这儿塞（plan9 §二 已定归属）。
  */
@@ -86,6 +103,8 @@ export interface UIPrefs {
    * 让盘上数据拥有注入 CSS 的能力。
    */
   uiFont: string
+  /** **界面语言**（plan52）：文档级属性，与 `theme` 同一条「广播 + 重读」通路，两窗口必须同时变 */
+  locale: Locale
   /** 工作台分栏布局（plan9）。`panes` 为空 = 工作台收起 */
   workbench: WorkbenchLayout
   /** 栏宽**期望值**；长度恒等于 `panes.length − 1`（末栏吃余量，不存） */
