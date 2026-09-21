@@ -928,6 +928,9 @@ export const useAppStore = create<AppState>((set, get) => ({
               last: usage ?? prev?.last ?? null,
               avoided: (prev?.avoided ?? 0) + avoided,
               memory: (prev?.memory ?? 0) + memoryTax,
+              // 反思那格必须带过去：这里是**重建整条记录**而不是增量合并，漏带就等于
+              // "落盘落对了，但下一轮对话结束时界面上那格静默消失"（K15 渲染端）
+              ...(prev?.reflectionTotal ? { reflectionTotal: prev.reflectionTotal } : {}),
               // 档位：这一轮没带就保留上一次的 —— 老版本主进程不带这个字段，直接覆盖会把已记的档位抹掉
               ...(tier ? { tier } : prev?.tier ? { tier: prev.tier } : {})
             }

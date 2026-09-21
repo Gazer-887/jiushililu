@@ -447,3 +447,41 @@ describe('回滚之后继续发送，提示条不许留着骗人（K11）', () =
   })
 })
 
+
+/**
+ * K15 的另一半：账本里**每一格都必须被所有写路径尊重**。
+ * `markDone` 是"重建整条记录"的写法（不是增量合并），所以新加一格时如果忘了带 prev，
+ * 它会在**下一轮对话结束时静默消失** —— 落盘落对了、界面却只活到下一次发送为止。
+ * 这跟"没给不许抹"是同一条规矩，只是这次漏在渲染端。
+ */
+describe('反思那格账不许被下一轮对话抹掉（K15 渲染端）', () => {
+  const REFLECTION = { promptTokens: 900, completionTokens: 40 }
+
+  it('markDone 重建账本时把 reflectionTotal 带过去', async () => {
+    useAppStore.setState({
+      activeId: 'A',
+      messages: structuredClone(A_MSGS),
+      streaming: true,
+      streamError: null,
+      saveError: null,
+      runtimes: {},
+      usageByConversation: {
+        A: {
+          total: { promptTokens: 10, completionTokens: 5 },
+          last: null,
+          avoided: 0,
+          memory: 0,
+          reflectionTotal: structuredClone(REFLECTION)
+        }
+      }
+    })
+    useAppStore.getState().markDone({
+      conversationId: 'A',
+      payload: { usage: { promptTokens: 100, completionTokens: 20 } }
+    })
+    await flush()
+    const rec = useAppStore.getState().usageByConversation.A
+    expect(rec?.total.promptTokens, "对话那格照常累加").toBe(110)
+    expect(rec?.reflectionTotal, "反思那格被下一轮对话抹掉了").toEqual(REFLECTION)
+  })
+})
