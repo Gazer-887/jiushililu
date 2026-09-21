@@ -2,13 +2,14 @@ This directory defines the high-level concepts, business logic, and architecture
 
 ## 条目
 
-五个主题，按"改动会落在哪一层"切分；每条一句话说清这个文件管什么，细节进对应文件读小节。
+六个主题，按"改动会落在哪一层"切分；每条一句话说清这个文件管什么，细节进对应文件读小节。
 
 - [[agent-kernel]] — Agent 内核：主循环、上下文出境、并发硬闸、子代理工具集装配、渲染端会话归位
 - [[memory-evolution]] — 记忆与自进化：分层记忆、注入税、反思链、执行手册回注
 - [[storage-conversations]] — 存储与会话正文：追加 + 游标、回滚与撤销、两份校验口径、落盘预算
 - [[tools-and-governance]] — 工具层与治理：共享 shell 会话、权限档与确认卡、检查点与命令超时
 - [[quality-discipline]] — 判据工程与门禁：五道闸、能红判据、反向验证、隔离验证进程
+- [[localization]] — 界面语言与跨窗状态：语言为何走主题那条通路、主进程出文、桩不广播等于没测
 
 ## 怎么用（人写、机器查）
 

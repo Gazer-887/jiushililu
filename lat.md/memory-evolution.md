@@ -56,8 +56,13 @@
 对应厂商真值、替它做的减法、自己加的固定开销。估算一律带"估"的标记；
 缺字段一律**不显示**而不补 0——"没记忆"与"税为 0"是两件事。
 [[src/renderer/src/store.ts#mergeUsage]] 并盘上累计时只许往前长（取 max），倒退比不显示更难解释。
-反思自己那次调用不在这三笔里：[[src/main/memory/reflection.ts#ReflectChat]] 只回正文，
-[[src/main/store/memory-store.ts#MemoryStoreReflectionOptions]] 上的用量钩子无人触发，复盘成本目前量不出来。
+反思自己那次调用是**第四格**：它不占对话轮，却真花钱。
+[[src/main/memory/reflection.ts#ReflectChat]] 随候选一起把厂商用量交出来，
+[[src/main/store/memory-store.ts#MemoryStoreReflectionOptions]] 的钩子把它送到
+[[src/main/store/conversations-core.ts#ConversationsRepo]] 的 `addReflectionUsage`，落
+`ConversationMeta.reflectionUsage`。存的是**整份用量而不是一个总数** —— 存总数等于替展示层丢掉
+输入/输出这一半信息，将来任何按方向算成本的读法都会拿到假形状（理由见 D-127）。
+厂商没报仍然什么都不显示：这一格与前三格共用"缺 = 不显示"的规矩，不拿估算冒充真值。
 
 ## 反思链：从会话正文到候选
 
@@ -143,5 +148,6 @@ Playbook 与记忆分目录（[[src/main/store/playbook-fs.ts#playbooksDir]] 与
 （[[src/main/agent/runner.ts#runAgent]] 里记忆段接在安全基线之后）。两个估算函数的口径**不同**：
 [[src/main/memory/inject.ts#estimateMemoryTokens]] 按宽字符逐字计，
 [[src/main/memory/playbook-inject.ts#estimatePlaybookTokens]] 按 UTF-8 字节除三，
-别把两个读数当同一个数比；而且只有前者在收尾时被调用，后者目前只出现在单测里——
-手册回注占掉的 token 今天没有读数。
+别把两个读数当同一个数比。两笔在收尾时由
+[[src/main/memory/inject.ts#sumInjectionTax]] 合成一个注入税读数 —— 相加这件事放在 `inject.ts`
+而不是调用点，是因为调用点在 `ipc.ts`，那一层起不了真进程、也就钉不住单测。
