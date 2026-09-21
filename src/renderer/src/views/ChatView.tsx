@@ -261,41 +261,49 @@ export default function ChatView() {
     }
     let scrubbing = false
     let last = -1
-    const enter = (y: number): void => {
-      scrubbing = true
+    /**
+     * `drive` 只有**移动**才为真。按下不跳是有意为之：按下就瞬跳的话，紧随其后的 `click`
+     * 已经没有路可滑 —— 点击定位会从"滑行过去"退化成"啪一下"（09-22 自查抓出，判据见 verify-shot 的按下/点击两条）。
+     */
+    const enter = (y: number, drive: boolean): void => {
       rail.classList.add('is-scrubbing')
       const k = nearest(y)
       if (k === last) return
       last = k
       paint(k)
-      if (k >= 0) jumpToMessage(outlineItems[k].i, { smooth: false })
+      if (drive && k >= 0) jumpToMessage(outlineItems[k].i, { smooth: false })
     }
     const onDown = (e: PointerEvent): void => {
       if (e.button !== 0) return
-      rail.setPointerCapture?.(e.pointerId) // 拖出轨道也继续跟（真滚动条就是这个手感）
-      enter(e.clientY)
+      scrubbing = true
+      enter(e.clientY, false)
     }
     const onMove = (e: PointerEvent): void => {
       if (!scrubbing) return
-      enter(e.clientY)
+      enter(e.clientY, true)
     }
     const stop = (): void => {
+      if (!scrubbing) return
       scrubbing = false
       last = -1
       rail.classList.remove('is-scrubbing')
       paint(-1)
     }
     rail.addEventListener('pointerdown', onDown)
-    rail.addEventListener('pointermove', onMove)
-    rail.addEventListener('pointerup', stop)
-    rail.addEventListener('pointercancel', stop)
+    // ⚠️ 移动与抬起挂 **window**，且不用 setPointerCapture：捕获会把指针吸到轨道元素上，
+    //    刻度按钮的 `click` 就此不再发生 —— 点击定位整个失效。门禁那条老判据用的是合成
+    //    `el.click()`，绕过捕获，所以只有真鼠标按一遍才暴露（09-22 实测）。
+    //    挂 window 同样能跟出轨道，且不动原生点击链路。
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
     // 指针被别的窗口抢走（失焦、Alt-Tab）时 pointerup 可能永远不来 —— 不兜这一下就会"卡在亮着的那根上"
     window.addEventListener('blur', stop)
     return () => {
       rail.removeEventListener('pointerdown', onDown)
-      rail.removeEventListener('pointermove', onMove)
-      rail.removeEventListener('pointerup', stop)
-      rail.removeEventListener('pointercancel', stop)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
       window.removeEventListener('blur', stop)
       stop()
     }

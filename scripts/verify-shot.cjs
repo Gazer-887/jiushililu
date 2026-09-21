@@ -7100,6 +7100,62 @@ app.whenReady().then(async () => {
   checkTrue('松手即收回（擦洗态与预览卡都不许留在界面上）',
     dragPeek.ok === true && dragPeek.after.scrubbing === false && dragPeek.after.peeking === 0,
     dragPeek.after)
+  // 按下与点击要分得开：擦洗只认"真的移动"，**按下那一下不许抢在 click 之前把位置定死**
+  // （否则紧随其后的平滑滚动没有路可滑，点击定位从滑行退化成瞬跳 —— 09-22 自查抓出的真实回归）
+  const pressVsClick = await (async () => {
+    const first = await centerOf('.chat-outline-tick:nth-child(1)')
+    const st = () =>
+      win.webContents.executeJavaScript(`Math.round(document.querySelector('.chat-messages').scrollTop)`)
+    // 滚动位置**轮询到不动再用**：上一批判据可能还有平滑动画在飞，固定 sleep 会让这条随机翻脸
+    const settle = async () => {
+      let prev = await st()
+      for (let i = 0; i < 12; i++) {
+        await new Promise((r) => setTimeout(r, 120))
+        const now = await st()
+        if (now === prev) return now
+        prev = now
+      }
+      return prev
+    }
+    if (!first) return { ok: false, why: '取不到第 1 根刻度' }
+    await win.webContents.executeJavaScript(`
+      (() => {
+        window.__clickSeen = 0;
+        const r = document.querySelector('.chat-outline-rail');
+        if (r) r.addEventListener('click', () => { window.__clickSeen++; });
+        return 1;
+      })()
+    `)
+    await win.webContents.executeJavaScript(
+      `(() => { const b = document.querySelector('.chat-messages'); b.scrollTop = b.scrollHeight; return 1; })()`
+    )
+    const bottom = await settle()
+    await dbg.sendCommand('Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: first.x, y: first.y, button: 'left', clickCount: 1, buttons: 1 })
+    await new Promise((r) => setTimeout(r, 240))
+    const duringPress = await st()
+    await dbg.sendCommand('Input.dispatchMouseEvent',
+      { type: 'mouseReleased', x: first.x, y: first.y, button: 'left', clickCount: 1 })
+    // 滑行到位为止，最多 2.5s —— 别拿一个拍出来的毫秒数当"动画该多久"
+    let afterClick = bottom
+    let waitedMs = 0
+    for (let i = 0; i < 21; i++) {
+      await new Promise((r) => setTimeout(r, 120))
+      waitedMs += 120
+      afterClick = await st()
+      if (afterClick < bottom) break
+    }
+    const clicks = await win.webContents.executeJavaScript(`window.__clickSeen ?? null`)
+    return { ok: true, bottom, duringPress, afterClick, clicks, waitedMs }
+  })()
+  checkTrue('只按下不移动 → 不跳（擦洗只认真的移动，不许抢在 click 之前定位置）',
+    pressVsClick.ok === true && pressVsClick.bottom > 0 && pressVsClick.duringPress === pressVsClick.bottom,
+    pressVsClick)
+  checkTrue('松手点击 → 仍然滑行定位（点击的平滑滚动没被擦洗抢走；click 计数与耗时一起报，下次翻脸能自证）',
+    pressVsClick.ok === true &&
+      pressVsClick.clicks >= 1 &&
+      pressVsClick.afterClick < pressVsClick.bottom,
+    pressVsClick)
   await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 10, y: 300 })
   // 滚轮跳轮：在刻度条上滚一下 → 发生跳转（scrollTop 动 或 高亮闪）；且 preventDefault 不吃页面滚
   const wheelBefore = await win.webContents.executeJavaScript(`Math.round(document.querySelector('.chat-messages').scrollTop)`)
