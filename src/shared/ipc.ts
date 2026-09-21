@@ -236,6 +236,12 @@ export interface ConversationMeta {
   /** **注入税**累计（plan19 §5.2）：记忆段每轮占掉的**估算** token。与 `usage` / `avoidedTokens` **三笔账分开**
    *  —— 厂商真值 / 我们替它做的减法 / 我们自己加的固定开销，混一起就分不清谁是谁 */
   memoryTokens?: number
+  /**
+   * **反思用量**累计（K15）：反思是切会话时**额外**发出的模型调用，与对话 `usage`、
+   * 注入税 `memoryTokens` 并列为第三笔账 —— 混进任何一笔都会把「用户聊出来的」与
+   * 「机器自己复盘出来的」分不清。缺 = 这条会话还没反思过，界面**不显示**，不补 0。
+   */
+  reflectionUsage?: TokenUsage
   /** **最后一轮**用的省 token 档位（plan8 R9.1 §七②）：档位是全局设置、会话中途可换，故它只代表最近一次 —— 逐轮比对是校准 harness 的事。 */
   tokenTier?: TokenSaverTier
   /**

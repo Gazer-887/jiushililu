@@ -13,7 +13,13 @@ import { applyAssistantChunk, applyAssistantThinking, applyAssistantTool } from 
 import type { AskRequest } from '@shared/ask'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
-import { addUsage, emptyUsage, mergeOptionalMax, type TokenUsage } from '@shared/usage'
+import {
+  addUsage,
+  emptyUsage,
+  mergeOptionalMax,
+  mergeUsageHalves,
+  type TokenUsage
+} from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
 import { estimateMessageTokens } from '@shared/tokens'
 import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
@@ -274,7 +280,9 @@ function mergeUsage(
     const stored = m.usage
     const storedAvoided = m.avoidedTokens ?? 0
     const storedMemory = m.memoryTokens ?? 0
-    if (!stored && storedAvoided === 0 && storedMemory === 0) continue
+    // 反思用量（K15）：装配层以前从不写这个字段，用量牌那格一直是空的 —— 生产端已接上
+    const storedReflection = m.reflectionUsage
+    if (!stored && storedAvoided === 0 && storedMemory === 0 && !storedReflection) continue
     const cur: ConversationUsage | undefined = (next ?? prev)[m.id]
     const cached = mergeOptionalMax(cur?.total.cachedPromptTokens, stored?.cachedPromptTokens)
     const reasoning = mergeOptionalMax(cur?.total.reasoningTokens, stored?.reasoningTokens)
@@ -289,6 +297,14 @@ function mergeUsage(
     const avoided = Math.max(cur?.avoided ?? 0, storedAvoided)
     // 注入税（plan19 §5.2）同样是"只许往前长"：它是累计值，倒退比不显示更难解释
     const memory = Math.max(cur?.memory ?? 0, storedMemory)
+    // 第三笔账逐字段取大的那份（与 usage 同一条「只长不缩」）；两边都没有才是 undefined —— 不替它编 0
+    const reflectionTotal: TokenUsage | undefined =
+      storedReflection || cur?.reflectionTotal
+        ? mergeUsageHalves(
+            cur?.reflectionTotal ?? { promptTokens: 0, completionTokens: 0 },
+            storedReflection ?? { promptTokens: 0, completionTokens: 0 }
+          )
+        : undefined
     const same =
       cur &&
       total.promptTokens === cur.total.promptTokens &&
@@ -296,9 +312,20 @@ function mergeUsage(
       (total.cachedPromptTokens ?? null) === (cur.total.cachedPromptTokens ?? null) &&
       (total.reasoningTokens ?? null) === (cur.total.reasoningTokens ?? null) &&
       avoided === cur.avoided &&
-      memory === cur.memory
+      memory === cur.memory &&
+      reflectionTotal?.promptTokens === cur.reflectionTotal?.promptTokens &&
+      reflectionTotal?.completionTokens === cur.reflectionTotal?.completionTokens
     if (same) continue
-    next = { ...(next ?? prev), [m.id]: { total, last: cur?.last ?? null, avoided, memory } }
+    next = {
+      ...(next ?? prev),
+      [m.id]: {
+        total,
+        last: cur?.last ?? null,
+        avoided,
+        memory,
+        ...(reflectionTotal ? { reflectionTotal } : {})
+      }
+    }
   }
   return next ?? prev
 }

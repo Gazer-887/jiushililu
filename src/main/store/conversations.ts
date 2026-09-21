@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import type { TokenUsage } from '@shared/usage'
 import type { ConversationsRepo } from './conversations-core'
 import { createConversationsRepo } from './conversations-core'
 import {
@@ -68,6 +69,11 @@ export function saveConversation(
   stats?: Parameters<ConversationsRepo['saveConversation']>[2]
 ) {
   return repo().saveConversation(id, messages, stats)
+}
+
+/** 记一笔反思用量（K15）：口径见 `ConversationsRepo.addReflectionUsage` */
+export function addReflectionUsage(id: string, usage: TokenUsage) {
+  return repo().addReflectionUsage(id, usage)
 }
 
 export function renameConversation(id: string, title: string) {

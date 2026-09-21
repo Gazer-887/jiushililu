@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { mergeUsageHalves, type TokenUsage } from '@shared/usage'
 import type {
   ChatMessage,
   Conversation,
@@ -63,6 +64,12 @@ export interface ConversationsRepo {
       bodyBytes?: number
     }
   ): ConversationMeta | null
+  /**
+   * 记一笔**反思用量**（K15）：只长不缩，且「没给」不许把已有的抹掉 —— 与 `usage` 同一条原则
+   * （反思与对话是两条独立写盘的路，晚到的那份若拿旧快照覆盖会让账倒退）。
+   * 会话不存在（已删）→ null，不复活。
+   */
+  addReflectionUsage(id: string, usage: TokenUsage): ConversationMeta | null
   renameConversation(id: string, title: string): ConversationMeta | null
   /**
    * **原子条件改名**（plan26 D-080 智能标题）：仅当当前 title 仍等于 `expected` 时才更新。
@@ -338,6 +345,17 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       return next
     },
 
+    addReflectionUsage(id, usage) {
+      const current = backend.readMeta()[id]
+      if (!current) return null
+      const prev = current.reflectionUsage
+      const next: ConversationMeta = {
+        ...current,
+        reflectionUsage: prev ? mergeUsageHalves(prev, usage) : usage
+      }
+      backend.putMeta(id, next)
+      return next
+    },
     renameConversation(id, title) {
       const current = backend.readMeta()[id]
       if (!current) return null

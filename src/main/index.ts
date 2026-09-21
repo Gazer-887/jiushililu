@@ -52,6 +52,7 @@ import {
   getAutoMemoryEnabled,
   getTerminalLoadProfileEnabled,
   getReflectionDailyLimit,
+  getReflectionModel,
   getDevEnvSelected
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
@@ -62,9 +63,11 @@ import { getMainWindow, getWindow, isWindowOpen, registerWindow, sendToAll } fro
 // 批 2：反思执行器接线 —— 模型调用走 provider 抽象（与对话同一出口），会话读取走 conversations 单例
 import { getSettingsView, getDecryptedApiKey, hasApiKey } from './store/models'
 import { createProvider } from './providers'
-import { getConversation } from './store/conversations'
+import { addReflectionUsage, getConversation } from './store/conversations'
 import type { ChatMessage } from '@shared/ipc'
 import type { ReflectChat } from './memory/reflection'
+import { resolveReflectModel } from './memory/reflection'
+import { mergeUsageHalves, type TokenUsage } from '@shared/usage'
 import { REFLECTION_SYSTEM_PROMPT } from './memory/reflection-prompt'
 
 // 主进程入口：窗口生命周期 + IPC 注册（Agent 内核跑在 worker_threads，不在这里）。
@@ -222,11 +225,14 @@ function installFlushBeforeClose(win: BrowserWindow): void {
  * 模型不可用（没配 Key / 没配端点）→ 返回空内容，反思执行器收到空串后返回空候选。
  */
 function createReflectChat(): ReflectChat {
-  return async (messages: ChatMessage[]): Promise<{ content: string }> => {
-    const settings = getSettingsView()
-    if (!settings.baseURL || !settings.model || !hasApiKey()) {
+  return async (messages: ChatMessage[]): Promise<{ content: string; usage?: TokenUsage | null }> => {
+    const base = getSettingsView()
+    if (!base.baseURL || !base.model || !hasApiKey()) {
       return { content: '' }
     }
+    // K14：以前这个函数只读 base.model，设置页那格「反思模型」读了都不读 —— 用户挑了便宜模型，
+    // 反思仍按对话模型计费。覆盖的是**模型名**（那格是自由文本），端点与 Key 保持当前档案。
+    const settings = { ...base, model: resolveReflectModel(base.model, getReflectionModel()) }
     const apiKey = getDecryptedApiKey()
     const provider = createProvider(settings.providerType)
     const controller = new AbortController()
@@ -236,15 +242,24 @@ function createReflectChat(): ReflectChat {
       ...messages
     ]
     let content = ''
+    let usage: TokenUsage | null = null
     try {
       await provider.streamChat(
         { settings, apiKey, messages: assembled, signal: controller.signal },
-        { onChunk: (text) => { content += text } }
+        {
+          onChunk: (text) => {
+            content += text
+          },
+          // K15：反思这笔账以前根本没有来源，现在随候选一起交回装配层
+          onUsage: (u) => {
+            usage = usage ? mergeUsageHalves(usage, u) : u
+          }
+        }
       )
     } finally {
       clearTimeout(timer)
     }
-    return { content }
+    return { content, usage }
   }
 }
 
@@ -543,7 +558,11 @@ app.whenReady().then(async () => {
       return { messages: conv.messages, bodyBytes: conv.bodyBytes ?? 0 }
     },
     // 反思 chat 接口：把会话正文 + 反思 system prompt 发给模型，收回 JSON 候选
-    reflectChat: createReflectChat()
+    reflectChat: createReflectChat(),
+    // K15：落到会话元数据（只长不缩），用量牌那格「反思 N tokens」才有数
+    onReflectionUsage: (conversationId, usage) => {
+      addReflectionUsage(conversationId, usage)
+    }
   })
 
   // Playbook 库（plan19 批 3）：与记忆库同式 —— 组合根建**一次**，同时给 agent 上下文（工具 + 注入）

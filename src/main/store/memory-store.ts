@@ -157,8 +157,12 @@ export function createMemoryStore(
         conversationId,
         error: err instanceof Error ? err.message : String(err)
       })
-      output = { candidates: [] }
+      output = { candidates: [], usage: null }
     }
+
+    // K15：这笔账以前**没有来源** —— 接口声明了、用量牌的「反思 N tokens」也早建好了，
+    // 但厂商用量从没被交出来。只在真拿到时才回调：没调用与没报是两种缺省，都不许写成 0。
+    if (output.usage) opts.onReflectionUsage?.(conversationId, output.usage)
 
     for (const c of output.candidates) {
       const file = inner.saveCandidate(c, c.conflictWith)

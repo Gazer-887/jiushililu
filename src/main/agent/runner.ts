@@ -230,6 +230,9 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
       ? createMemoryTools({
           repo: hooks.memory.repo,
           conversationId: () => hooks.memory!.conversationId,
+          // K16：上面 ToolHooks 已经把本轮原话算好了，这一层却漏传 —— 于是纠正识别只在单测里活着，
+          // 「重复纠正率」这个对外宣传的读数在生产通路上永远为 0。
+          ...(hooks.memory.lastUserMessage ? { lastUserMessage: hooks.memory.lastUserMessage } : {}),
           ...(hooks.memory.confirm ? { confirm: hooks.memory.confirm } : {})
         })
       : []),

@@ -174,8 +174,8 @@ import { saveSkillFile, deleteSkillFile } from './skills/skills-write'
 import { nodeFsAdapter } from './store/conversations-fs'
 import type { MemoryStore } from './store/memory-store'
 import type { PlaybookStore } from './store/playbook-store'
-import { composeMemoryBlock, estimateMemoryTokens } from './memory/inject'
-import { composePlaybookBlock } from './memory/playbook-inject'
+import { composeMemoryBlock, estimateMemoryTokens, sumInjectionTax } from './memory/inject'
+import { composePlaybookBlock, estimatePlaybookTokens } from './memory/playbook-inject'
 import { composeSkillBlock, filterDisabledEntries } from '@shared/skills'
 import { composeRulesBlock } from './rules/rules'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
@@ -774,7 +774,13 @@ export function registerIpcHandlers(deps: {
         rounds: result.rounds,
         changedFiles: result.changedFiles
       })
-      emit.done(result.usage, result.avoidedTokens ?? 0, getTokenTier(), estimateMemoryTokens(memoryBlock))
+      // 注入税含手册段（K17）：以前只算记忆那一份，`estimatePlaybookTokens` 长期只有单测在引用
+      emit.done(
+        result.usage,
+        result.avoidedTokens ?? 0,
+        getTokenTier(),
+        sumInjectionTax(estimateMemoryTokens(memoryBlock), estimatePlaybookTokens(playbookBlock))
+      )
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
       log.error('对话执行失败', {

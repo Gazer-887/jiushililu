@@ -4,12 +4,17 @@
 //    不留痕（不 import log —— 留痕由调用方做）。
 
 import type { ChatMessage } from '@shared/ipc'
+import type { TokenUsage } from '@shared/usage'
 import { MEMORY_CLASSES, type MemoryCandidate, type MemoryClass } from '@shared/memory'
 import { historyForModel } from '../agent/context'
 import type { MemoryRepo } from './memory-core'
 
 export interface ReflectChat {
-  (messages: ChatMessage[]): Promise<{ content: string }>
+  /**
+   * usage = 这次反思调用厂商报的用量；缺 / null = 没报（K15 之前的常态）。
+   * 不带回来，装配层那条「反思用量」的账就永远没有来源 —— 界面的格子早就建好了，一直空着。
+   */
+  (messages: ChatMessage[]): Promise<{ content: string; usage?: TokenUsage | null }>
 }
 
 export interface ReflectInput {
@@ -21,10 +26,21 @@ export interface ReflectInput {
 
 export interface ReflectOutput {
   candidates: MemoryCandidate[]
+  /** 本次反思的用量（K15）。null = 前置门挡掉没调用，或厂商没报 */
+  usage: TokenUsage | null
 }
 
 /** 前置门阈值：会话正文小于此值不调反思（空话不值得反思） */
 const MIN_BODY_BYTES = 2048
+
+/**
+ * 反思用哪个模型（K14）。设置页那一格是手填的**模型名**，留空 = 跟随对话模型；
+ * 它不是模型档案 id —— 档案 id 当模型名发出去会直接 404。
+ */
+export function resolveReflectModel(activeModel: string, reflectionModel?: string | null): string {
+  const picked = typeof reflectionModel === 'string' ? reflectionModel.trim() : ''
+  return picked.length > 0 ? picked : activeModel
+}
 
 export function createReflectionRunner(opts: { chat: ReflectChat }): {
   reflect: (input: ReflectInput) => Promise<ReflectOutput>
@@ -33,7 +49,7 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
   return {
     async reflect(input) {
       if (input.bodyBytes < MIN_BODY_BYTES) {
-        return { candidates: [] }
+        return { candidates: [], usage: null }
       }
 
       // 失败**不在这一层咽**（R17）：以前 catch 成 `{ candidates: [] }`，注释写着"留痕由调用方做"，
@@ -50,10 +66,10 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
         // 模型可能把 JSON 裹在 ```json ``` 里 —— 剥一下（JSON.parse 不认围栏）
         parsed = JSON.parse(stripCodeFence(result.content))
       } catch {
-        return { candidates: [] }
+        return { candidates: [], usage: null }
       }
 
-      if (!Array.isArray(parsed)) return { candidates: [] }
+      if (!Array.isArray(parsed)) return { candidates: [], usage: null }
 
       const candidates: MemoryCandidate[] = []
       for (const item of parsed) {
@@ -67,7 +83,7 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
         }
         candidates.push(c)
       }
-      return { candidates }
+      return { candidates, usage: result.usage ?? null }
     }
   }
 }

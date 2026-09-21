@@ -41,6 +41,15 @@ export function composeMemoryBlock(index: MemoryIndex): string | null {
  * 注入税：这一段会占掉多少估算 token。**批 1 就能算的读数**，进用量牌。
  * ⚠️ 这是**本地估算**，按既有口径必须标 `estimated`；厂商没报就什么都不显示，不冒充真值。
  */
+/**
+ * 注入税 = 记忆段 + 手册段（K17）。相加放在这一层，是为了能被单测钉住 ——
+ * 两个调用点都在 `ipc.ts`，那层起不了真进程，账写在那儿等于没人看。
+ */
+export function sumInjectionTax(memory: number, playbook: number): number {
+  const only = (n: number): number => (Number.isFinite(n) && n > 0 ? Math.round(n) : 0)
+  return only(memory) + only(playbook)
+}
+
 export function estimateMemoryTokens(block: string | null): number {
   if (block === null) return 0
   // 粗估：中日韩字符约 1 token/字，拉丁约 4 字符/token。宁可略高估，也不低报预算。

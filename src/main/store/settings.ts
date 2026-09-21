@@ -135,8 +135,10 @@ export function setAutoMemoryEnabled(enabled: boolean): boolean {
 }
 
 /**
- * 反思模型（批 2）。返回 `undefined` = 跟随对话模型；
- * 返回非空字符串 = 用户为反思单独指定的**模型档案 id**。
+ * 反思模型（批 2 / K14）。返回 `undefined` = 跟随对话模型；
+ * 返回非空字符串 = 用户为反思单独指定的**模型名**（设置页那一格是自由文本，与模型档案 id 无关 ——
+ * 原注释写作"档案 id"是错的，把它当 id 发出去会直接 404）。
+ * ⚠️ 生效点在 `index.ts · createReflectChat`：以前它读都不读这个值，设置项形同虚设（K14）。
  */
 export function getReflectionModel(): string | undefined {
   const v = store.store.reflectionModel
