@@ -400,6 +400,23 @@ function applyToConversation(
   return { runtimes: { ...s.runtimes, [conversationId]: { ...current, ...patch(current) } } }
 }
 
+/**
+ * 收口（跑完 / 报错 / 点停止）时把这条在存档里的那份落回非运行态 —— 运行期事件只更新顶层，
+ * 不补就留下"答完了还在跑"（侧栏假「正在生成」+ 别条会话的假并发提示，K9）。
+ * 两条约束由 `conversation-routing.test.ts` 的 K9 组守着：须作用在 `applyToConversation` **之后**、存档没这条就不动。
+ */
+function settleRuntime(
+  s: AppState,
+  patched: Partial<AppState>,
+  conversationId: string | null
+): Partial<AppState> {
+  if (!conversationId) return patched
+  const runtimes = patched.runtimes ?? s.runtimes
+  const current = runtimes[conversationId]
+  if (!current || !current.streaming) return patched
+  return { ...patched, runtimes: { ...runtimes, [conversationId]: { ...current, streaming: false } } }
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   view: 'new',
   setView: (view) => set({ view }),
@@ -674,13 +691,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 批 2：切到空会话也通知主进程（prev → null），让上一条进反思队列
     const prev = get().activeId
     if (prev !== null) void window.api.switchConversation(prev, null)
+    // 切走之前先把当前现场收进存档（与 `openConversation` 同一件事）—— 下面就要把顶层抹成空，
+    // 而存档里那份还是**发送时**的快照：不重收，已吐出的字两头都没有，收口落盘会把磁盘上的回答盖成空
+    get().archiveCurrent()
     set({
       view: 'new',
       activeId: null,
       messages: [],
       streamError: null,
       toolEvents: [],
-      reasoning: ''
+      reasoning: '',
+      // 待办与子代理面板也是**这一条会话的现场**，漏清就会残到新建页上（与 `openConversation` 同口径）
+      todos: [],
+      subagents: [],
+      // 顶层的"在跑"属于刚被切走的那条（它转后台了）；留着会让新会话里点发送被
+      // `if (streaming) return` 静默吞掉 —— 不转圈、不报错，看着像按钮坏了
+      streaming: false
     })
   },
 
@@ -690,6 +716,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 批 2：新建会话后通知主进程（prev → conv.id），让上一条进反思队列
     if (prev !== conv.id) void window.api.switchConversation(prev, conv.id)
     await get().loadConversations()
+    // 同 `newSession`：换显示之前先收档，并把属于上一条的顶层"在跑"落回（否则新会话首条被吞）。
+    // ⚠️ 现实里这条路的 `activeId` 已是 null（新建页只在无当前会话时出现），故这两处是**与 `newSession` 同形状的防御**，
+    //    真正堵住那个洞的是 `newSession` 一处 —— 别把它记成两个独立的修复。
+    get().archiveCurrent()
     // ⚠️ 必须清掉上一轮的过程状态 —— 不然工具卡片与思考会留在新会话里把界面占满、报告看不见
     set({
       activeId: conv.id,
@@ -697,7 +727,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       view: 'chat',
       streamError: null,
       toolEvents: [],
-      reasoning: ''
+      reasoning: '',
+      todos: [],
+      subagents: [],
+      streaming: false
     })
     return conv.id
   },
@@ -853,10 +886,14 @@ export const useAppStore = create<AppState>((set, get) => ({
               ...(tier ? { tier } : prev?.tier ? { tier: prev.tier } : {})
             }
           : null
-      return {
-        ...applyToConversation(s, e.conversationId, () => ({ streaming: false })),
-        ...(nextUsage ? { usageByConversation: { ...s.usageByConversation, [e.conversationId]: nextUsage } } : {})
-      }
+      return settleRuntime(
+        s,
+        {
+          ...applyToConversation(s, e.conversationId, () => ({ streaming: false })),
+          ...(nextUsage ? { usageByConversation: { ...s.usageByConversation, [e.conversationId]: nextUsage } } : {})
+        },
+        e.conversationId
+      )
     })
     // ⚠️ 落的是**那一条**（不是当前显示的那条）—— 记错这条就等于后台会话没人存（plan11 P0-1）
     void get().persistConversation(e.conversationId)
@@ -864,10 +901,14 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   markError: (e) => {
     set((s) =>
-      applyToConversation(s, e.conversationId, () => ({
-        streaming: false,
-        streamError: e.payload
-      }))
+      settleRuntime(
+        s,
+        applyToConversation(s, e.conversationId, () => ({
+          streaming: false,
+          streamError: e.payload
+        })),
+        e.conversationId
+      )
     )
     // 错到一半的内容也是内容，照样落盘
     void get().persistConversation(e.conversationId)
@@ -940,7 +981,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const conversationId = get().activeId
     if (conversationId) await window.api.chatAbort(conversationId)
     // **必须自己把 streaming 收回去**，不能只指望随后的 `chat:done`：那条事件万一没到（订阅被拆、页面在后台、渲染进程刚重载），发送键会永远停在「停止」、点了还是"生成中"，死循环。
-    set({ streaming: false })
+    // 落回的是**被停的那一条**：上面那个 await 期间用户完全可能切了会话，此刻顶层说的是另一条，
+    // 按"当前显示这条"清就会把没停过的会话误伤（K9 复查抓出）。
+    set((s) =>
+      settleRuntime(
+        s,
+        s.activeId === conversationId ? { streaming: false } : {},
+        conversationId
+      )
+    )
     await get().persistConversation(conversationId ?? '')
   },
 
