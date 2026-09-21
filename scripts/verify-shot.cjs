@@ -14,6 +14,9 @@ const {
   writeFileSync
 } = require('node:fs')
 const { join } = require('node:path')
+// 界面文案按**键**取（K21）：判据里不许写死表内文案 —— 那条文案一旦切语言，
+// 正向断言假红、定位器静默 no-op 让后面整批空转假绿。守卫见 `tests/unit/gate-copy-guard.test.ts`。
+const { textFor, textsFor } = require('./lib/gate-copy.cjs')
 
 const ROOT = process.cwd()
 
@@ -451,8 +454,14 @@ const netSetCalls = []
 let netGetCalls = 0
 /** 系统字体枚举桩（plan7 批 F3）：给一小把有代表性的名字 —— 含中文 family 与空 message */
 let fontsStub = { ok: true, fonts: ['Arial', 'Consolas', 'Microsoft YaHei', '微软雅黑'], message: null }
-/** ui-prefs 桩改成**有状态**（plan7 批 F3）：字号/字体断言要看"写进去了什么"，无状态桩只能验返回值 */
+/**
+ * ui-prefs 桩改成**有状态**（plan7 批 F3）：字号/字体断言要看"写进去了什么"，无状态桩只能验返回值。
+ * `--locale=en` 让整轮跑在英文态（K21）：判据若还写着死文案，这一档就会红 ——
+ * 中文态跑不出"翻译打破判据"这一整类坏法，所以两种语言都得真跑一遍，不是想想就好。
+ */
+const GATE_LOCALE = process.argv.includes('--locale=en') ? 'en' : 'zh'
 let uiPrefsStub = {
+  locale: GATE_LOCALE,
   sidebarWidth: 248,
   dockWidth: 360,
   theme: 'qingkong',
@@ -2264,7 +2273,12 @@ app.whenReady().then(async () => {
   const entryTxt = await win.webContents.executeJavaScript(
     `document.querySelector('.settings-entry-btn')?.textContent?.trim() ?? ''`
   )
-  checkTrue('侧栏设置入口是「设置」文字框（不再是无字齿轮）', entryTxt === '设置', { entryTxt })
+  // 两种语言都接受：这一条测的是"入口是**有字的框**、不是无字齿轮"，不是测某一种文案
+  const wantEntry = textsFor('sidebar.settings')
+  checkTrue('侧栏设置入口是有文字的框（不再是无字齿轮），且文字取自 i18n 表', wantEntry.includes(entryTxt), {
+    entryTxt,
+    accept: wantEntry
+  })
   const backInfo = await sevalRaw(`
     (() => {
       const b = document.querySelector('.settings-window-back');
@@ -2586,22 +2600,21 @@ app.whenReady().then(async () => {
   memorySwitch = false
   memoryWarnOnNextEnable = false
 
-  for (const [label, slug] of [
-    ['通用设置', 'general'],
-    ['模型', 'model'],
-    ['子 Agent', 'agents'],
-    ['记忆', 'memory'],
-    ['外观', 'appearance'],
-    ['故障排查', 'trouble']
-  ]) {
-    await sevalRaw(`
+  // 分区导航：定位走 **data-nav（真 ID）**，不走路标文案；并且把"点没点到"收成断言 ——
+  // 以前这个返回值被丢掉，导航失败 = 后面整批在错的分区上空转（**假绿**，比红贵）
+  for (const slug of ['general', 'model', 'agents', 'memory', 'appearance', 'trouble']) {
+    const landed = await sevalRaw(`
       (() => {
-        const b = Array.from(document.querySelectorAll('.settings-nav-item'))
-          .find((x) => x.textContent.trim() === ${JSON.stringify(label)});
+        const b = document.querySelector('.settings-nav-item[data-nav=${JSON.stringify(slug)}]');
         if (b) b.click();
         return !!b;
       })()
     `)
+    checkTrue(
+      '设置分区 ' + slug + ' 能按 data-nav 定位并点到（导航失败以前是静默的）',
+      landed === true,
+      landed
+    )
     await new Promise((r) => setTimeout(r, 700))
     const secInfo = await sevalRaw(`
       (() => {
@@ -4580,14 +4593,16 @@ app.whenReady().then(async () => {
   }
   await new Promise((r) => setTimeout(r, 900))
   // 若没有返回按钮（初始就在新建页），直接切到新建视图
-  await win.webContents.executeJavaScript(`
+  // 定位走 class（真钩子），不走文案；且**点没点到要断言** —— 静默 no-op 会让下面整批在错视图上空转
+  const navToNew = await win.webContents.executeJavaScript(`
     (() => {
-      const nav = Array.from(document.querySelectorAll('.sidebar button, .nav-item'))
-        .find((b) => b.textContent.includes('新建任务'));
+      const nav = document.querySelector('.sidebar .new-task-btn');
       if (nav) nav.click();
-      return document.querySelector('.new-task') ? 'ok' : 'retry';
+      return { clicked: !!nav, view: document.querySelector('.new-task') ? 'ok' : 'retry' };
     })()
   `)
+  checkTrue('侧栏新建按钮能按 class 定位并点到（拿文案找元素、又不核结果，是最贵的静默失效）',
+    navToNew.clicked === true, navToNew)
   await new Promise((r) => setTimeout(r, 900))
 
   const centerCheck = await win.webContents.executeJavaScript(`
@@ -4606,7 +4621,7 @@ app.whenReady().then(async () => {
         // 偏移越小越居中：0 = 完美居中
         offsetPx: Math.round(Math.abs(pageMid - boxMid)),
         // 旧文案必须消失，新文案必须就位（2026-09-12 用户指定）
-        hasOldTitle: !!Array.from(document.querySelectorAll('h1')).find((h) => h.textContent.trim() === '新建任务'),
+        hasOldTitle: !!Array.from(document.querySelectorAll('h1')).find((h) => ${JSON.stringify(textsFor('common.newTask'))}.includes(h.textContent.trim())),
         hasOldSlogan: document.body.textContent.includes('说清你想做的事'),
         newTitle: document.querySelector('.new-task-hero h1')?.textContent?.trim() ?? null,
         newSlogan: document.querySelector('.new-task-hero p')?.textContent?.trim() ?? null,
@@ -5546,13 +5561,15 @@ app.whenReady().then(async () => {
   netStub = { ...netStub, proxyMode: 'system', proxyRules: '', hasCredentials: false, effective: 'PROXY 127.0.0.1:7897; DIRECT', applied: true, error: null }
 
   // ── 区块读取辅助：从某个 .field-label 切到下一个 .field-label 之间（⚠️ 它们的父元素是整个
-  // settings-section，不切片的话 querySelector 会读到别的区块的路径/徽标 —— plan10 C 批实测踩中） ──
-  const readSection = (label, buttonNames) => `
+  // settings-section，不切片的话 querySelector 会读到别的区块的路径/徽标 —— plan10 C 批实测踩中）
+  // labels 收**数组**：同一条标题将来迁进 i18n 表后两种语言都要能切到这里（见 textsFor） ──
+  const readSection = (labels, buttonNames) => `
     (() => {
       const body = document.querySelector('.settings-body');
-      const labels = Array.from(body.querySelectorAll('.field-label'));
-      const label = labels.find((l) => l.textContent.trim() === ${JSON.stringify(label)});
-      if (!label) return { found: false };
+      const want = ${JSON.stringify(labels)};
+      const heads = Array.from(body.querySelectorAll('.field-label'));
+      const label = heads.find((l) => want.includes(l.textContent.trim()));
+      if (!label) return { found: false, want };
       const section = label.parentElement;
       const all = Array.from(section.children);
       const start = all.indexOf(label);
@@ -5588,7 +5605,7 @@ app.whenReady().then(async () => {
   // 这条设置的全部语义就两句话：新任务默认在这个目录进行；老会话各自绑定当时的工作区，改这里不影响它们
   {
     const wsRead = async () =>
-      await sevalRaw(readSection('工作区', ['选择目录…', '恢复内置默认', '打开目录']))
+      await sevalRaw(readSection(textsFor('sidebar.workspace'), ['选择目录…', '恢复内置默认', '打开目录']))
     const wsInit = await wsRead()
     checkTrue('工作区行有三键：选择目录… / 恢复内置默认 / 打开目录；内置默认档下「恢复内置默认」禁用（空操作按钮不装可用）',
       // ⚠️ checkTrue 对 cond 做 === true 严判：末位不能落在对象上（truthy 对象不等于 true），包一层 Boolean
@@ -5642,7 +5659,7 @@ app.whenReady().then(async () => {
   // ⚠️ 桩变量是门禁侧的，React 不知道它变了 —— 状态变化必须**通过一次 IPC 调用**（点按钮 → 桩返回新值 → setState）驱动
   {
     const stRead = async () =>
-      await sevalRaw(readSection('存储位置', ['更改…', '恢复默认位置', '打开目录', '撤销']))
+      await sevalRaw(readSection(['存储位置'], ['更改…', '恢复默认位置', '打开目录', '撤销']))
     const stInit = await stRead()
     checkTrue('存储位置行有三键：更改… / 恢复默认位置 / 打开目录；默认位置档下「恢复默认位置」禁用',
       Boolean(
@@ -5749,15 +5766,16 @@ app.whenReady().then(async () => {
       { picks: storagePickCalls, undos: storageUndoCalls.length, resets: storageResetCalls.length })
   }
 
-  // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）
-  await sevalRaw(`
+  // R7 分区导航：主题项在「外观」分区里，不切过去就点不到（改版前是单页平铺）。
+  // 走 data-nav 而不是分区标题文案：标题已进 i18n 表，切语言后这里会静默点不到 → 整批在错分区上量
+  const landedAppearance = await sevalRaw(`
     (() => {
-      const b = Array.from(document.querySelectorAll('.settings-nav-item'))
-        .find((x) => x.textContent.trim() === '外观');
+      const b = document.querySelector('.settings-nav-item[data-nav="appearance"]');
       if (b) b.click();
       return !!b;
     })()
   `)
+  checkTrue('切到「外观」分区（data-nav 定位）—— 主题那批判据的前提', landedAppearance === true, landedAppearance)
   await new Promise((r) => setTimeout(r, 500))
 
   const themeBefore = await sevalRaw(`
@@ -9162,11 +9180,9 @@ app.whenReady().then(async () => {
       (async () => {
         const S = (window.__fsSteps = window.__fsSteps || []);
         try {
-          const buttons = Array.from(document.querySelectorAll('button')).filter((b) =>
-            (b.textContent || '').includes('新建任务'));
-          S.push('buttons:' + buttons.length);
-          const nav = buttons[0];
-          if (!nav) return { ok: false, why: '找不到「新建任务」按钮' };
+          const nav = document.querySelector('.sidebar .new-task-btn');
+          S.push('buttons:' + (nav ? 1 : 0));
+          if (!nav) return { ok: false, why: '侧栏没有 .new-task-btn（定位钩子丢了）' };
           nav.click();
           S.push('nav-clicked');
           await new Promise((r) => setTimeout(r, 600));
@@ -9229,8 +9245,7 @@ app.whenReady().then(async () => {
     // 先切到「外观」分区并**等一帧**：同一次求值里点导航再取选项，拿到的还是旧分区（通用设置）
     await sevalRaw(`
       (() => {
-        const nav = Array.from(document.querySelectorAll('.settings-nav-item'))
-          .find((x) => x.textContent.trim() === '外观');  // 语言项在外观分区，留在通用设置里点不到它
+        const nav = document.querySelector('.settings-nav-item[data-nav="appearance"]');  // 语言项在外观分区，留在通用设置里点不到它
         if (nav) nav.click();
         return !!nav;
       })()
@@ -9285,8 +9300,8 @@ app.whenReady().then(async () => {
     '切到 English：主窗已迁移文案变英文、<html lang> 同步，且不许露 key',
     langFlow.step === 'done' &&
       langFlow.main.lang === 'en' &&
-      langFlow.main.newTask.includes('New task') &&
-      langFlow.main.workspace === 'Workspace' &&
+      langFlow.main.newTask.includes(textFor('common.newTask', 'en')) &&
+      langFlow.main.workspace === textFor('sidebar.workspace', 'en') &&
       langFlow.main.leak === false,
     langFlow
   )
@@ -9294,8 +9309,8 @@ app.whenReady().then(async () => {
     '切回简体中文：主窗文案与语言标记一并复位（不留英文态给后面的探针）',
     langFlow.switchedBack === true &&
       langFlow.back.lang === 'zh-CN' &&
-      langFlow.back.newTask.includes('新建任务') &&
-      langFlow.back.workspace === '工作区',
+      langFlow.back.newTask.includes(textFor('common.newTask', 'zh')) &&
+      langFlow.back.workspace === textFor('sidebar.workspace', 'zh'),
     { back: langFlow.back, switchedBack: langFlow.switchedBack }
   )
 

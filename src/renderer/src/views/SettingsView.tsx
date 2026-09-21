@@ -435,6 +435,9 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
           type="button"
           className={`settings-nav-item${section === s.id ? ' is-on' : ''}`}
           aria-current={section === s.id ? 'page' : undefined}
+          // 真 ID 落 DOM：门禁与将来的自动化按它定位分区，**不许拿显示文案当坐标**
+          // （文案已进 i18n 表、会随界面语言变；靠文案找元素在英文态下会静默 no-op）
+          data-nav={s.id}
           onClick={() => setSection(s.id)}
         >
           <span className="settings-nav-icon">{s.icon}</span>
