@@ -67,6 +67,10 @@ let hbTimer: NodeJS.Timeout | null = null
 let hbLastBlocks = 0
 let hbLastMs = 0
 
+/**
+ * 观测口：**只给测试用**（线上不读它）。留着是有意的 —— 记账数没有别的出口，
+ * 删掉它 `watchdog` 的测试就只能靠日志猜。（plan54 #7 判定：该留并注明）
+ */
 export function peekTracedBlocks(): number {
   return tracedBlocks
 }

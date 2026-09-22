@@ -207,7 +207,12 @@ export interface ConversationGroup {
   items: ConversationMeta[]
 }
 
-/** 按工作区分组：组内按更新时间倒序，组间按各自最新时间倒序（最近用过的排上面） */
+/**
+ * 按工作区分组：组内按更新时间倒序，组间按各自最新时间倒序（最近用过的排上面）。
+ * ⚠️ **线上没人调它**（plan54 #7 → 欠账 K27）：侧栏在渲染层另写了一份同样的分组 + 标签推导
+ *   （`Sidebar.tsx`）。渲染层不能 import 主进程，所以正解是把这份挪到 `src/shared/` 让两边共用 ——
+ *   现在这个状态最坏的地方是**两份会漂**，而单测只钉得住这一份。
+ */
 export function groupByWorkspace(list: ConversationMeta[]): ConversationGroup[] {
   const map = new Map<string, ConversationMeta[]>()
   for (const c of list) {

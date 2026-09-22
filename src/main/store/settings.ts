@@ -431,7 +431,11 @@ export function removeProfileKey(profileId: string): void {
   store.set('apiKeysEncrypted', next)
 }
 
-/** 有 Key 的档案 id（迁移时用来把遗留的那把认领掉、以及清理孤儿 Key） */
+/**
+ * 有 Key 的档案 id。
+ * ⚠️ 注释里"清理孤儿 Key"那一半**没有实现**（plan54 #7 → 欠账 K26）：
+ * 档案解析失败 ≠ 档案不存在，照这份清单删 Key 会把用户凭证抹掉 —— 要做也只能**只报不删**。
+ */
 export function keyedProfileIds(): string[] {
   return Object.keys(store.store.apiKeysEncrypted ?? {})
 }

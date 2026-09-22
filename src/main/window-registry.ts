@@ -83,11 +83,6 @@ export function sendToAll(channel: string, payload?: unknown): number {
   return n
 }
 
-/**
- * 有没有任何窗口开着 —— 取代 `getAllWindows().length === 0` 的判断。
- * 注意：**登记表为空不等于没有窗口**（理论上所有窗口都登记了，这里加一道 Electron 侧兜底更稳）。
- */
-export function hasAnyWindow(): boolean {
-  if (entries.some((e) => !e.win.isDestroyed())) return true
-  return BrowserWindow.getAllWindows().some((w) => !w.isDestroyed())
-}
+// 「有没有任何窗口」这类判断**刻意不提供**（plan54 #5）：2026-09-13 起判据是
+// 「**主窗口**在不在」（`getMainWindow()`）—— 设置窗浮着而主窗被关时，按"有任何窗口"
+// 会不再建主窗，macOS 上就是"点 Dock 没反应"的假死观感。

@@ -842,9 +842,8 @@ app.whenReady().then(async () => {
     initBrowser(win)
     // 状态变化推给所有窗口（地址栏/标题/前进后退可用性）
     setBrowserStateListener((state) => {
-      for (const w of BrowserWindow.getAllWindows()) {
-        if (!w.isDestroyed()) w.webContents.send('browser:changed', state)
-      }
+      // 通道名走 `IPC` 常量（plan54 #4）：裸字面量在改名时会静默断，且没有一道闸会红
+      sendToAll(IPC.browserChanged, state)
     })
     // 把真实实现注入 agent 层的浏览器接缝（那边不 import electron）
     setBrowserAdapter({

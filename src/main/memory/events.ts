@@ -70,7 +70,3 @@ export function parseEventLine(line: string): MemoryEvent | null {
   }
 }
 
-/** 注入段的字节数（写进 `inject` 事件，供注入税核对） */
-export function blockBytes(block: string | null): number {
-  return block === null ? 0 : new TextEncoder().encode(block).length
-}

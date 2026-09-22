@@ -1071,7 +1071,8 @@ export function registerIpcHandlers(deps: {
         nextId: z.string().min(1).max(64).nullable()
       })
       .parse(raw)
-    activeConversationId = input.nextId
+    // 走 setter，别再开第二个写口（plan54 #7：原来 setter 零调用、这里直接赋值）
+    setActiveConversationId(input.nextId)
     // 切走有内容的会话 → 入反思队列 + 异步跑（不 await）
     if (
       input.prevId &&
