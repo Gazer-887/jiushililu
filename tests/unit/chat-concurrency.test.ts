@@ -97,4 +97,10 @@ describe('哪些会话操作必须过并发闸（K10 / K11）', () => {
   it('删除会话先**停掉**它那一轮（不停 = 一轮还在烧 token，而它要落的那条会话已经没了）', () => {
     expect(handlerBody('convDelete')).toContain('chatGate.abort')
   })
+
+  // plan54 断链 #2：`store/goal.ts` 的 `removeGoalsOf` 定义了却**全仓零调用点** ⇒ 删会话后它的目标永久留盘，
+  // 面板上会挂着"属于一条已经不存在的会话"的目标。守卫同 K10 那条：只钉接线在不在。
+  it('删除会话连带清掉它的目标（孤儿目标不许留在盘上）', () => {
+    expect(handlerBody('convDelete')).toContain('removeGoalsOf')
+  })
 })

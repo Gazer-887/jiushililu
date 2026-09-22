@@ -34,6 +34,9 @@ import { createMcpManager } from './mcp/mcp-manager'
 import { nodeFsAdapter } from './store/conversations-fs'
 import { createTerminalSessionStore, type PtyModuleLike } from './terminal-session'
 import type { RuntimeEnv } from './agent/tools/shell-session'
+// 常驻 shell 会话（run_command 的复用层）：退出时必须显式收，否则留下没人管的子进程。
+// 它是**值** import，与上面那行纯类型 import 分开 —— 合成一行会让 `verbatimModuleSyntax` 把值也当类型擦掉。
+import { disposeAllShellSessions } from './agent/tools/shell-session'
 import { currentFingerprint, syncRuntimeBin } from './dev-env/runtime-bin'
 import { injectRuntimePath } from '@shared/runtime-path'
 import { createSystemIntegration } from './system-integration'
@@ -903,6 +906,9 @@ app.whenReady().then(async () => {
     background.killAll()
     // 终端会话同理：**不留没人管的 shell**（它可能正跑着 dev server / 数据库）。
     terminal.killAll()
+    // Agent 的常驻 shell 同理 —— `terminal.killAll()` 只管终端面板那份，
+    // `run_command` 复用出来的 shell 在另一个注册表里（`shell-session.ts` 的 `liveSessions`），不收到就活下来。
+    disposeAllShellSessions()
     // 系统请求也要收（不清掉的话退出瞬间系统仍被我们按着不休眠）。它**只收系统请求、不改用户的落盘选择**
     system.dispose()
   }

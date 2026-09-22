@@ -100,7 +100,7 @@ import {
 } from './schemas'
 import { createChatEmitter } from './chat-emitter'
 import { createChatGate } from './agent/concurrency'
-import { actOnGoal, createGoalFor, listGoals, removeGoal } from './store/goal'
+import { actOnGoal, createGoalFor, listGoals, removeGoal, removeGoalsOf } from './store/goal'
 import type { Goal } from '@shared/goal'
 import {
   BUILTIN_TYPES,
@@ -1157,6 +1157,8 @@ export function registerIpcHandlers(deps: {
     // 只 abort 不 end —— 位子由那一轮自己的 `finally` 归还（在那里 end 会把它提前放掉，另一轮能挤进来）。
     chatGate.abort(id)
     deleteConversation(id)
+    // 目标跟着会话一起清（plan54 #2）：目标是**跨轮次的持久状态**，会话没了它还挂在面板上 = 孤儿
+    removeGoalsOf(id)
   })
 
   ipcMain.handle(IPC.skillsList, (): SkillInfo[] => listSkills(deps.agent))
