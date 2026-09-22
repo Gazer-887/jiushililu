@@ -7,14 +7,17 @@
 // plan19 承诺的「真模型 eval」由 L2（scripts/run-evals.mjs）兑现。
 
 import type { MemoryStats, MemoryClass, MemoryIndex } from '@shared/memory'
+import { parseArchivedFileName } from '@shared/memory'
 import type { MemoryEvent } from '@main/memory/events'
 import { parseEventLine } from '@main/memory/events'
 import { createMemoryRepo, serializeMemory } from '@main/memory/memory-core'
 import { createReflectionRunner } from '@main/memory/reflection'
 import { createMemoryTools } from '@main/agent/tools/memory-tools'
 import { composeMemoryBlock } from '@main/memory/inject'
+import { createArchiveMock } from '../helpers/memory-archive-mock'
 
 const ROOT = '/mem/notes'
+const ARCH = '/mem/archived'
 const FIXED = new Date('2026-09-15T01:00:00.000Z')
 
 /** 场景 seed 的一条初始记忆（serializeMemory 的便捷封装 —— 与落盘格式同源） */
@@ -90,6 +93,8 @@ export interface World {
   events: () => string[]
   /** notes/ 里某 slug 的文件全文（端态落盘检查用） */
   fileText: (slug: string) => string | null
+  /** 归档区（plan53 片 1）：遗忘不再硬删，端态要能证明"正文还在、还能回来" */
+  archived: () => Array<{ slug: string; text: string | null }>
   /** 载入警告（手改防线场景用） */
   warnings: () => string[]
 }
@@ -110,19 +115,25 @@ function makeBackend(seed: Record<string, string> = {}) {
   const files = new Map<string, string>(Object.entries(seed))
   const candidates = new Map<string, string>()
   const events: string[] = []
+  const arch = createArchiveMock({
+    files,
+    notesRoot: ROOT,
+    archRoot: ARCH,
+    fallback: (f) => candidates.get(f) ?? null
+  })
   const backend = {
     events,
     listFiles: () => [...files.keys()].sort(),
     candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
     listCandidates: () => [...candidates.keys()].sort(),
-    read: (f: string) => files.get(f) ?? candidates.get(f) ?? null,
     write: (f: string, t: string) => {
       if (f.startsWith(`${ROOT}/candidates/`)) candidates.set(f, t)
       else files.set(f, t)
     },
     remove: (f: string) => (f.startsWith(`${ROOT}/candidates/`) ? candidates.delete(f) : files.delete(f)),
     pathFor: (slug: string) => `${ROOT}/${slug}.md`,
-    appendEvent: (line: string) => void events.push(line)
+    appendEvent: (line: string) => void events.push(line),
+    ...arch.backend
   }
   return backend
 }
@@ -222,6 +233,16 @@ export async function runScenario(scenario: Scenario): Promise<World> {
     stats: () => repo.computeStats(parseEvents(backend.events)),
     events: () => [...backend.events],
     fileText: (slug) => backend.read(`${ROOT}/${slug}.md`),
+    archived: () =>
+      backend
+        .listArchived()
+        .map((f) => ({ slug: parseArchivedFileName(f.slice(f.lastIndexOf('/') + 1))?.slug ?? '', text: backend.read(f) }))
+        .sort((a, b) => (a.slug < b.slug ? -1 : 1)),
+    archived: () =>
+      backend.listArchived().map((f) => ({
+        slug: parseArchivedFileName(f.split('/').pop() ?? '')?.slug ?? '',
+        text: backend.read(f)
+      })),
     warnings: () => [...warnings]
   }
 }

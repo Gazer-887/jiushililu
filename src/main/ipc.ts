@@ -180,7 +180,7 @@ import { composePlaybookBlock, estimatePlaybookTokens } from './memory/playbook-
 import { composeSkillBlock } from '@shared/skills'
 import { composeRulesBlock } from './rules/rules'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
-import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
+import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings, MemoryRestoreResult } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
 import { getWorkspaceInfo, resetWorkspaceRoot, setWorkspaceRoot } from './store/workspace'
@@ -1326,6 +1326,17 @@ export function registerIpcHandlers(deps: {
       sendToAll(IPC.memoryChanged)
     }
     return removed
+  })
+
+  // ── 恢复归档条目（plan53 片 1）：自动遗忘改成可逆，界面上就要有回去的路 ──
+  ipcMain.handle(IPC.memoryRestore, (_e, raw: unknown): MemoryRestoreResult => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const result = deps.memory.restoreArchived(file)
+    if (result.ok) {
+      log.info('归档记忆已恢复', { file })
+      sendToAll(IPC.memoryChanged)
+    }
+    return result
   })
 
   // ── 合并疑似重复（plan33 问题四）── 方向由 repo.merge 按 createdAt 重判，渲染端传的顺序不 trusted。

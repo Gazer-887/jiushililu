@@ -3,7 +3,8 @@
 // ⚠️ 完全复用 conversation 那套已验证的地基（`atomicWrite` / `FsAdapter`），不另造：
 //    正文是用户攒下来的东西，值得"要么看到新内容、要么看到完整旧内容"。
 
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { archivedFileName, parseArchivedFileName } from '@shared/memory'
 import { parseEventLine, type MemoryEvent } from '../memory/events'
 import { rotateJsonlIfNeeded } from './jsonl'
 import type { MemoryBackend } from '../memory/memory-core'
@@ -52,6 +53,16 @@ export function notePathFor(root: string, slug: string): string {
 /** 候选文件路径：`<root>/candidates/<slug>.md` */
 export function candidatePathFor(root: string, slug: string): string {
   return join(candidatesDir(root), `${slug}.md`)
+}
+
+/** 归档目录（plan53 片 1）：**与 `notes/` 平级** —— `listFiles()` 只列 notes，归档天然不进注入 */
+export function archivedDir(root: string): string {
+  return join(memoryDir(root), 'archived')
+}
+
+/** 归档路径：命名规则的唯一口径在 `@shared/memory` 的 `archivedFileName`（读写两侧共用） */
+export function archivedPathFor(root: string, slug: string, at: Date = new Date()): string {
+  return join(archivedDir(root), archivedFileName(slug, at))
 }
 
 export function metaPath(root: string): string {
@@ -127,6 +138,7 @@ export function createFsMemoryBackend(
   const warn = opts.onWarn ?? (() => {})
   const notes = notesDir(root)
   const candidates = candidatesDir(root)
+  const archived = archivedDir(root)
   /** D-106：read() 的内容缓存。新鲜度键 (mtimeMs, size)，见 `read` 内注释；容量=记忆文件数，不设上限 */
   const readCache = new Map<string, { m: number; s: number; text: string }>()
 
@@ -149,9 +161,14 @@ export function createFsMemoryBackend(
     return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
   }
 
-  /** read/write/remove 同时接受 `notes/` 与 `candidates/` 之内的文件（批 2 候选流通需要） */
+  function insideArchived(file: string): boolean {
+    const rel = relative(resolve(archived), resolve(file))
+    return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
+  }
+
+  /** read/write/remove 接受 `notes/`、`candidates/`、`archived/` 三处（批 2 候选流通 + 片 1 归档流通） */
   function insideMemory(file: string): boolean {
-    return insideNotes(file) || insideCandidates(file)
+    return insideNotes(file) || insideCandidates(file) || insideArchived(file)
   }
 
   return {
@@ -215,6 +232,45 @@ export function createFsMemoryBackend(
       fs.rmSync(file, { force: true })
       readCache.delete(file)
       return true
+    },
+
+    // ── plan53 片 1：可逆归档。**自动遗忘走这里，用户手删仍走 `remove`** ──
+    archive(file) {
+      if (!insideNotes(file)) return null // 只归档正式条目；候选/归档区不许再归档
+      if (!fs.existsSync(file)) return null
+      const slug = basename(file, '.md')
+      const to = archivedPathFor(root, slug)
+      fs.mkdirSync(archived, { recursive: true })
+      fs.writeFileSync(to, fs.readFileSync(file, 'utf8'), 'utf8')
+      fs.rmSync(file, { force: true })
+      readCache.delete(file)
+      readCache.delete(to)
+      return to
+    },
+
+    listArchived() {
+      if (!fs.existsSync(archived)) return []
+      try {
+        return fs.readdirSync(archived).filter((n) => n.endsWith('.md')).map((n) => join(archived, n))
+      } catch (err) {
+        // 与 listFiles 同口径：列不出来不许静默当"没有归档"
+        warn('归档区列不出来，本次按"无归档"处理', { error: err instanceof Error ? err.message : String(err) })
+        return []
+      }
+    },
+
+    restoreFrom(archivedFile) {
+      const parsed = parseArchivedFileName(basename(archivedFile))
+      if (!parsed || !insideArchived(archivedFile)) return null
+      if (!fs.existsSync(archivedFile)) return null
+      const to = notePathFor(root, parsed.slug)
+      if (fs.existsSync(to)) return null // 同名已存在 ⇒ 交回调用方给理由，这里绝不覆盖
+      fs.mkdirSync(notes, { recursive: true })
+      fs.writeFileSync(to, fs.readFileSync(archivedFile, 'utf8'), 'utf8')
+      fs.rmSync(archivedFile, { force: true })
+      readCache.delete(archivedFile)
+      readCache.delete(to)
+      return to
     },
 
     pathFor(slug) {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import FieldNote from './FieldNote'
-import { MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass, type MemoryEntry } from '@shared/memory'
+import { MEMORY_CLASSES, MEMORY_LIMITS, type ArchivedEntry, type MemoryClass, type MemoryEntry } from '@shared/memory'
 import { useAppStore } from '../store'
 
 // 记忆页签（plan19 批 1）：查看 / 编辑 / 删除 + 「本次新增」巡检区。
@@ -34,6 +34,8 @@ export default function MemoryManager(): JSX.Element {
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
   /** 用户点「忽略」的重复对（本次会话内不再显示；不持久化 —— 下次进来还会提醒，清理要用户亲手做） */
   const [dismissedDups, setDismissedDups] = useState<Set<string>>(new Set())
+  /** 归档区默认折起：它是"出过的事"不是"要办的事"，摊开会把待批准挤下去 */
+  const [archivedOpen, setArchivedOpen] = useState(false)
 
   useEffect(() => {
     void refresh()
@@ -42,6 +44,7 @@ export default function MemoryManager(): JSX.Element {
 
   const entries = view?.entries ?? []
   const candidates = view?.candidates ?? []
+  const archived = view?.archived ?? []
   const inspected = entries.filter((e) => e.origin === 'model')
   // 疑似重复（plan33 问题四）：结构化数据来自主进程 loadAll；忽略掉的本地过滤
   const dupKey = (p: { files: [string, string] }): string => `${p.files[0]}|${p.files[1]}`
@@ -121,6 +124,15 @@ export default function MemoryManager(): JSX.Element {
     void refresh()
   }
 
+  // plan53 片 1：自动遗忘不再硬删，条目移进归档区；这里是把「还能取回来」摊到台面上的那段 UI。
+  const restore = async (entry: ArchivedEntry): Promise<void> => {
+    const res = await window.api.restoreMemory(entry.file)
+    setNotice(
+      res.ok ? { ok: true, text: `已恢复「${entry.name}」，重新计入注入索引` } : { ok: false, text: res.reason }
+    )
+    void refresh()
+  }
+
   return (
     <div className="mem-panel">
       <div className="mem-head">
@@ -175,6 +187,33 @@ export default function MemoryManager(): JSX.Element {
               </div>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {archived.length > 0 ? (
+        <div className="mem-archived">
+          <button type="button" className="mem-archived-toggle" onClick={() => setArchivedOpen((v) => !v)}>
+            已归档 {archived.length} 条 {archivedOpen ? '▴' : '▾'}
+          </button>
+          {archivedOpen ? (
+            <>
+              <div className="mem-archived-note">
+                条目数达到上限时，最久未使用的记忆移入此处，不再注入。
+                恢复后回到生效集合；同名条目已存在时需先删除或改名。
+              </div>
+              {archived.map((a) => (
+                <div key={a.file} className="mem-archived-row">
+                  <span className="mem-badge">{CLASS_LABEL[a.class]}</span>
+                  <span className="mem-name">{a.name}</span>
+                  <span className="mem-desc">{a.description}</span>
+                  <span className="mem-archived-at">{a.archivedAt.slice(0, 10)}</span>
+                  <button type="button" onClick={() => void restore(a)}>
+                    恢复
+                  </button>
+                </div>
+              ))}
+            </>
+          ) : null}
         </div>
       ) : null}
 

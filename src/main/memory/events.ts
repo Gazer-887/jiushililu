@@ -19,6 +19,9 @@ export type MemoryEventPayload =
   | { kind: 'write'; conversationId: string | null; name: string; rejected: true; reason: string }
   | { kind: 'recall'; conversationId: string | null; name: string; found: boolean }
   | { kind: 'delete'; conversationId: string | null; name: string; by: 'user' | 'model' | 'system' }
+  // plan53 片 1：**自动遗忘 = 可逆归档**。与 `delete` 分家是因为存活率把 delete 记成"丢失"，
+  // 而一条还能一键恢复的东西不该进那笔账（R4）。用户手删仍记 `delete`。
+  | { kind: 'archive'; conversationId: string | null; name: string; by: 'system' | 'user' }
   | { kind: 'flag'; conversationId: string | null; name: string }
   | { kind: 'inject'; conversationId: string | null; names: string[] }
   // 批 2：候选批准（name=新候选 name，oldName=被覆盖的旧记忆 name）
@@ -47,7 +50,7 @@ export function serializeEvent(event: MemoryEvent): string {
 }
 
 const KINDS = new Set([
-  'write', 'recall', 'delete', 'flag', 'inject', 'approve', 'conflict',
+  'write', 'recall', 'delete', 'archive', 'flag', 'inject', 'approve', 'conflict',
   'playbook_write', 'playbook_recall', 'playbook_inject',
   'correct'
 ])

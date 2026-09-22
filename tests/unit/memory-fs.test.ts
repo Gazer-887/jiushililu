@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { nodeFsAdapter } from '@main/store/conversations-fs'
 import type { FsAdapter } from '@main/store/conversations-fs'
 import {
+  archivedDir,
   createFsMemoryBackend,
   emptyMeta,
   eventsPath,
@@ -18,6 +19,7 @@ import {
   notesDir,
   rotateEventsIfNeeded
 } from '@main/store/memory-fs'
+import { archivedFileName, parseArchivedFileName } from '@shared/memory'
 import { MAX_FILE_BYTES } from '@main/log'
 import { createMemoryStore } from '@main/store/memory-store'
 
@@ -250,3 +252,92 @@ describe('read() 内容缓存的新鲜度正确性（D-106）', () => {
   })
 })
 
+
+// ── plan53 片 1：可逆归档（真 backend，只测这一层自己的移动与门禁） ──────────────
+describe('归档区：自动遗忘从硬删改成可移动（plan53 片 1）', () => {
+  const BODY = '---\nname: n000\n---\n\n旧条目 0'
+  function seeded() {
+    const fs = mapFs({ [notePathFor(ROOT, 'n000')]: BODY })
+    return { fs, backend: createFsMemoryBackend(ROOT, fs) }
+  }
+
+  it('archive 是**移动**：notes 里没了，archived/ 里正文逐字一致', () => {
+    const { fs, backend } = seeded()
+    const from = notePathFor(ROOT, 'n000')
+    const to = backend.archive(from)
+    expect(to).not.toBeNull()
+    expect(norm(to!)).toContain(norm(archivedDir(ROOT)))
+    expect(fs.files.has(norm(from))).toBe(false)
+    expect(fs.files.get(norm(to!))).toBe(BODY)
+  })
+
+  it('归档不进生效集合：listFiles 只列 notes/，listArchived 只列 archived/', () => {
+    const { backend } = seeded()
+    backend.archive(notePathFor(ROOT, 'n000'))
+    expect(backend.listFiles()).toEqual([])
+    expect(backend.listArchived()).toHaveLength(1)
+  })
+
+  it('只有正式条目进得来：候选与归档区自身都不许再归档', () => {
+    const { fs, backend } = seeded()
+    const cand = backend.candidatePathFor('x')
+    fs.writeFileSync(cand, 'c', 'utf8')
+    expect(backend.archive(cand)).toBeNull()
+    const a = backend.archive(notePathFor(ROOT, 'n000'))!
+    expect(backend.archive(a)).toBeNull()
+    expect(fs.files.has(norm(a))).toBe(true) // 被拒的那次不许动原文件
+  })
+
+  it('★ 恢复：回到 notes/、归档区清空、正文不变（恢复的是同一条，不是副本）', () => {
+    const { fs, backend } = seeded()
+    const a = backend.archive(notePathFor(ROOT, 'n000'))!
+    const back = backend.restoreFrom(a)
+    expect(norm(back!)).toBe(norm(notePathFor(ROOT, 'n000')))
+    expect(fs.files.get(norm(notePathFor(ROOT, 'n000')))).toBe(BODY)
+    expect(backend.listArchived()).toEqual([])
+  })
+
+  it('★ 同名已存在 → 恢复被拒，两边正文都不动（静默覆盖等于抹掉用户新写的那条）', () => {
+    const { fs, backend } = seeded()
+    const a = backend.archive(notePathFor(ROOT, 'n000'))!
+    backend.write(notePathFor(ROOT, 'n000'), '---\nname: n000\n---\n\n重写过的')
+    expect(backend.restoreFrom(a)).toBeNull()
+    expect(fs.files.get(norm(notePathFor(ROOT, 'n000')))).toContain('重写过的')
+    expect(fs.files.get(norm(a))).toBe(BODY) // 归档件留着，用户自己决定怎么合
+  })
+
+  it('恢复的门禁在归档区内：notes/ 路径与兄弟目录 archived-evil/ 一律拒', () => {
+    const { fs, backend } = seeded()
+    expect(backend.restoreFrom(notePathFor(ROOT, 'n000'))).toBeNull()
+    // 兄弟目录里放一个**文件名完全合规**的归档件：只查文件名挡不住它，必须靠目录边界
+    const evil = `${archivedDir(ROOT)}-evil/${archivedFileName('n000', new Date('2026-09-20T08:30:12.456Z'))}`
+    fs.writeFileSync(evil, BODY, 'utf8')
+    expect(backend.restoreFrom(evil)).toBeNull()
+    expect(fs.files.has(norm(evil))).toBe(true) // 被拒的那次不许动原文件
+  })
+})
+
+describe('归档文件名规则（读写两侧唯一口径）', () => {
+  it('slug 往返：带连字符的名字不被时刻里的连字符吃掉', () => {
+    const at = new Date('2026-09-20T08:30:12.456Z')
+    expect(parseArchivedFileName(archivedFileName('prefers-table-files', at))).toEqual({
+      slug: 'prefers-table-files',
+      archivedAt: at.toISOString()
+    })
+    // 时刻必须是**能 new Date 的**合法 ISO —— 文件名里那串 `-` 换回去才算还原，否则界面显示 Invalid Date
+    expect(new Date(parseArchivedFileName(archivedFileName('n', at))!.archivedAt).getTime()).toBe(at.getTime())
+  })
+
+  it('同一 slug 两个时刻 → 两个文件名（按 slug 命名的话，第二次归档就顶掉第一次）', () => {
+    const a = archivedFileName('n000', new Date('2026-09-20T08:30:12.456Z'))
+    const b = archivedFileName('n000', new Date('2026-09-21T08:30:12.456Z'))
+    expect(a).not.toBe(b)
+    expect(parseArchivedFileName(a)!.slug).toBe(parseArchivedFileName(b)!.slug)
+  })
+
+  it('不合规文件名解析为 null（缺时刻 / 缺分隔 / 目录内混入别的文件）', () => {
+    expect(parseArchivedFileName('n000.md')).toBeNull()
+    expect(parseArchivedFileName('2026-09-20T08-30-12-456Zn000.md')).toBeNull()
+    expect(parseArchivedFileName('readme.md')).toBeNull()
+  })
+})

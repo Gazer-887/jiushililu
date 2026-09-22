@@ -630,10 +630,30 @@ let memoryEntries = [
   }
 ]
 let memoryWarnings = []
+// plan53 片 1：归档区夹具（自动遗忘不再硬删）。文件名口径照 `shared/memory.ts::archivedFileName` ——
+// 时刻里的 `:` 与 `.` 换成 `-`，界面上显示的日期由 `archivedAt`（合法 ISO）取前 10 位
+let memoryArchived = [
+  {
+    name: 'forgotten-toolchain',
+    description: '被上限挤掉的一条',
+    class: 'knowledge',
+    origin: 'model',
+    evidence: { conversationId: 'c1' },
+    createdAt: '2026-09-10T00:00:00.000Z',
+    updatedAt: '2026-09-10T00:00:00.000Z',
+    body: '正文。',
+    file: '/mem/archived/2026-09-20T08-30-12-456Z__forgotten-toolchain.md',
+    archivedAt: '2026-09-20T08:30:12.456Z'
+  }
+]
 const memorySaveCalls = []
 const memoryDeleteCalls = []
+const memoryRestoreCalls = []
 /** 批 4：标记「这条不对」的调用流水 */
 const memoryFlagCalls = []
+// 技能禁用名单（plan34 S2a / K13 补桩）：桩状态**自洽可读**——get 返回当前名单，set 收整份名单并留流水。
+let skillsDisabled = []
+const skillsDisabledCalls = []
 // 记忆开关（plan19 批 1）的桩状态；`warnOnNextEnable` 用来模拟"主进程判定这是最大风险组合"
 let memorySwitch = false
 let memoryWarnOnNextEnable = false
@@ -871,7 +891,8 @@ const STUBS = {
       0
     ),
     warnings: memoryWarnings.slice(),
-    candidates: memoryCandidates.map((c) => ({ ...c }))
+    candidates: memoryCandidates.map((c) => ({ ...c })),
+    archived: memoryArchived.map((a) => ({ ...a }))
   }),
   'memory:read': (file) => memoryEntries.find((e) => e.file === file) ?? null,
   'memory:save': (input) => {
@@ -899,6 +920,23 @@ const STUBS = {
     memoryEntries = memoryEntries.filter((e) => e.file !== file)
     memoryBroadcast()
     return memoryEntries.length !== before
+  },
+  // plan53 片 1：契约副本（真源 `src/main/ipc.ts` 的 `memory:restore` + `memory-core.ts::restoreArchived`）。
+  // ⚠️ 必须真的把条目从归档区搬回 entries 并广播 —— 否则下面的"恢复后回到生效列表"绿得没有意义
+  'memory:restore': (file) => {
+    memoryRestoreCalls.push(file)
+    const hit = memoryArchived.find((a) => a.file === file)
+    if (!hit) return { ok: false, reason: '恢复失败：归档文件不存在或路径越界' }
+    const target = `/mem/notes/${hit.name}.md`
+    if (memoryEntries.some((e) => e.file === target)) {
+      return { ok: false, reason: `已存在同名条目「${hit.name}」，请先删除或改名再恢复（不覆盖）` }
+    }
+    memoryArchived = memoryArchived.filter((a) => a.file !== file)
+    const entry = { ...hit }
+    delete entry.archivedAt
+    memoryEntries = memoryEntries.concat([entry])
+    memoryBroadcast()
+    return { ok: true }
   },
   // ── 记忆开关（plan19 批 1）── 判据 14 的**界面契约**：真实判定在 src/main/ipc.ts
   //    （关→开 且 permissionPreset === 'full-access'）；门禁不加载它，故用 memoryWarnOnNextEnable 直接给值
@@ -1198,6 +1236,16 @@ const STUBS = {
     { name: 'planner', description: '规划员：把目标拆成有序步骤', source: 'builtin' },
     { name: 'reviewer', description: '审查员：只读审查', source: 'builtin' }
   ],
+  // K13：技能禁用名单的读写桩（真源 `src/main/ipc.ts` 的两个 handler）。
+  // 缺它时 `SkillsPanel` / `InputConsole` / `PlusMenu` 每次挂载都在主进程报
+  // `No handler registered for 'skills-disabled:get'` —— 判定数不受影响，所以是**静默**的，
+  // 而那条 error 日志会把真的通路故障淹在同一堆输出里。
+  'skills-disabled:get': () => skillsDisabled.slice(),
+  'skills-disabled:set': (names) => {
+    skillsDisabled = Array.isArray(names) ? names.slice() : []
+    skillsDisabledCalls.push(skillsDisabled.slice())
+    return skillsDisabled.slice()
+  },
   // ── 子 Agent 管理（plan17）── 桩**有状态**（save 后 list 能看见），照 git:* 先例；
   // 撞名分级与覆盖标记都要能在断言里走到。file 用路径形状与真源一致（用户层绝对路径）。
   'agents:list': () => ({
@@ -8833,6 +8881,10 @@ app.whenReady().then(async () => {
           names: Array.from(p.querySelectorAll('.mem-row .mem-name')).map((n) => n.textContent.trim()),
           badges: Array.from(p.querySelectorAll('.mem-row .mem-badge')).map((n) => n.textContent.trim()),
           warnRows: p.querySelectorAll('.mem-warn-row').length,
+          // plan53 片 1：归档区（默认折起，展开才有行）—— 折叠态与"忘了渲染"必须能区分开
+          archivedToggle: p.querySelector('.mem-archived-toggle')?.textContent.trim() ?? null,
+          archivedNames: Array.from(p.querySelectorAll('.mem-archived-row .mem-name')).map((n) => n.textContent.trim()),
+          archivedDates: Array.from(p.querySelectorAll('.mem-archived-row .mem-archived-at')).map((n) => n.textContent.trim()),
           actions: Array.from(p.querySelectorAll('.mem-row-actions button')).map((b) => b.textContent.trim()),
           // 消息主干只许承载 user / assistant —— 这条**不许**被"面板自己好看"掩盖
           msgClasses: Array.from(document.querySelectorAll('.msg')).map((m) => m.className),
@@ -9009,6 +9061,65 @@ app.whenReady().then(async () => {
       memoryDeleteCalls.includes('/mem/notes/uses-pnpm.md') &&
       !memAfterDelete.names.includes('uses-pnpm'),
     { clicked: memDeleteClicked, calls: memoryDeleteCalls, names: memAfterDelete.names }
+  )
+
+  // ── plan53 片 1：归档区上界面，且「恢复」真的把条目取回生效集合 ──
+  // 折叠态先判：默认折起是设计决定（归档不是待办），所以第一条断言是"计数在、行不在"——
+  // 直接数行会把"忘了渲染"和"按设计折起"混成同一种红。
+  const archivedCollapsed = await readMemoryPanel()
+  checkTrue(
+    '片 1：归档区默认折起，但折叠标题带着条数（不展开也知道有几条被挤掉）',
+    archivedCollapsed.archivedNames.length === 0 &&
+      (archivedCollapsed.archivedToggle || '').includes('已归档 1 条'),
+    { toggle: archivedCollapsed.archivedToggle, names: archivedCollapsed.archivedNames }
+  )
+  await win.webContents.executeJavaScript(`
+    (() => { const b = document.querySelector('.mem-archived-toggle'); if (b) b.click(); return !!b; })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const archivedExpanded = await readMemoryPanel()
+  console.log(
+    'MEMORY_ARCHIVED=' +
+      JSON.stringify({
+        toggle: archivedExpanded.archivedToggle,
+        names: archivedExpanded.archivedNames,
+        dates: archivedExpanded.archivedDates
+      })
+  )
+  checkTrue(
+    '片 1：展开后能看到归档条目与归档日期（被抹掉的不只是内容，还有"什么时候没的"）',
+    archivedExpanded.archivedNames.includes('forgotten-toolchain') &&
+      archivedExpanded.archivedDates[0] === '2026-09-20',
+    { names: archivedExpanded.archivedNames, dates: archivedExpanded.archivedDates }
+  )
+  const restoreClicked = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.mem-archived-row'))
+        .find((r) => (r.querySelector('.mem-name')?.textContent || '').includes('forgotten-toolchain'));
+      if (!row) return false;
+      const btn = Array.from(row.querySelectorAll('button')).find((b) => b.textContent.trim() === '恢复');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const memAfterRestore = await readMemoryPanel()
+  console.log(
+    'MEMORY_RESTORE=' +
+      JSON.stringify({
+        calls: memoryRestoreCalls,
+        names: memAfterRestore.names,
+        archived: memAfterRestore.archivedNames,
+        toggle: memAfterRestore.archivedToggle
+      })
+  )
+  checkTrue(
+    '片 1：「恢复」走 memory:restore，条目回到生效列表且归档区不再显示（只改界面不搬数据 = 假恢复）',
+    restoreClicked === true &&
+      memoryRestoreCalls.includes('/mem/archived/2026-09-20T08-30-12-456Z__forgotten-toolchain.md') &&
+      memAfterRestore.names.includes('forgotten-toolchain') &&
+      !memAfterRestore.archivedNames.includes('forgotten-toolchain'),
+    { restoreClicked, calls: memoryRestoreCalls, names: memAfterRestore.names }
   )
 
   // 护栏 2（D-043）：本轮写入痕迹的面板。面板只显示**当前会话**的痕迹 ——

@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest'
 import type { AgentTool } from '@shared/agent'
 import { createMemoryRepo, type MemoryRepo } from '@main/memory/memory-core'
 import { createMemoryTools } from '@main/agent/tools/memory-tools'
+import { createArchiveMock } from '../helpers/memory-archive-mock'
 
 const ROOT = '/mem/notes'
+const ARCH = '/mem/archived'
 const FIXED = new Date('2026-09-15T01:30:00.000Z')
 
 function setup(
@@ -14,15 +16,16 @@ function setup(
 ) {
   const files = new Map<string, string>()
   const events: string[] = []
+  const arch = createArchiveMock({ files, notesRoot: ROOT, archRoot: ARCH })
   const backend = {
     listFiles: () => [...files.keys()].sort(),
     candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
     listCandidates: () => [],
-    read: (f: string) => files.get(f) ?? null,
     write: (f: string, t: string) => void files.set(f, t),
     remove: (f: string) => files.delete(f),
     pathFor: (slug: string) => `${ROOT}/${slug}.md`,
-    appendEvent: (line: string) => void events.push(line)
+    appendEvent: (line: string) => void events.push(line),
+    ...arch.backend
   }
   const repo: MemoryRepo = createMemoryRepo(backend, {
     now: () => FIXED,

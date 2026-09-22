@@ -7,8 +7,10 @@ import { createMemoryRepo, parseMemoryFile, serializeMemory } from '@main/memory
 import { composeMemoryBlock } from '@main/memory/inject'
 import { REFLECTION_SYSTEM_PROMPT } from '@main/memory/reflection-prompt'
 import { parseMemoryImport } from '@shared/memory-import'
+import { createArchiveMock } from '../helpers/memory-archive-mock'
 
 const ROOT = '/mem/notes'
+const ARCH = '/mem/archived'
 const FIXED = new Date('2026-09-15T01:00:00.000Z')
 const iso = FIXED.toISOString()
 
@@ -17,6 +19,12 @@ function memBackend(seed: Record<string, string> = {}) {
   const files = new Map<string, string>(Object.entries(seed))
   const candidates = new Map<string, string>()
   const events: string[] = []
+  const arch = createArchiveMock({
+    files,
+    notesRoot: ROOT,
+    archRoot: ARCH,
+    fallback: (f) => candidates.get(f) ?? null
+  })
   return {
     files,
     candidates,
@@ -24,14 +32,14 @@ function memBackend(seed: Record<string, string> = {}) {
     listFiles: () => [...files.keys()].sort(),
     candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
     listCandidates: () => [...candidates.keys()].sort(),
-    read: (f: string) => files.get(f) ?? candidates.get(f) ?? null,
     write: (f: string, t: string) => {
       if (f.startsWith(`${ROOT}/candidates/`)) candidates.set(f, t)
       else files.set(f, t)
     },
     remove: (f: string) => (f.startsWith(`${ROOT}/candidates/`) ? candidates.delete(f) : files.delete(f)),
     pathFor: (slug: string) => `${ROOT}/${slug}.md`,
-    appendEvent: (line: string) => void events.push(line)
+    appendEvent: (line: string) => void events.push(line),
+    ...arch.backend
   }
 }
 

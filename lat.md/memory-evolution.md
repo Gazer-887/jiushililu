@@ -16,6 +16,12 @@
 其余不注入并双通道留痕，但**不删文件**——删是用户的决定，系统只做"哪条生效"的消解。
 [[src/main/memory/memory-core.ts#isExemptFromForget]] 让 style 与 profile 免于 LRU：
 被自动遗忘掉的偏好等于系统替用户做了决定。
+其余条目被上限挤掉时**移进 `archived/` 而不是删掉**（[[src/main/store/memory-fs.ts#archivedDir]]）——
+"三个月前悄悄删了你的记忆"这句话解释不起，可逆则不需要解释。归档区物理隔离在 notes 之外，
+`listFiles()` 只列 notes，所以归档既不进注入也进不了 `recall`；界面上的恢复入口读的是同一张索引
+（[[src/renderer/src/components/MemoryManager.tsx#MemoryManager]]）。
+恢复走**移动**、同名已存在时**绝不覆盖**（[[src/main/memory/memory-core.ts#createMemoryRepo]] 的 `restoreArchived`）——
+撞名的那条可能是用户回来之后自己新写的，覆盖等于把两件事合成一件说不清的。
 
 ## 索引段与正文段是两段
 
@@ -123,6 +129,8 @@
 
 删除删文件、留一条带 by 的 delete 事件，事件本身不删——不然
 [[src/main/memory/memory-core.ts#computeStats]] 算不出存活率。
+自动遗忘归档时记的是 `archive` 而不是 `delete`（[[src/main/memory/events.ts#KINDS]]）：
+"还能一键恢复"不算丢失，记成丢失会让存活率被自己的安全网凭空压低，误伤率跟着被污染。
 合并把较旧那条的正文以引用块并入较新那条再删旧文件，方向在 [[src/main/memory/memory-core.ts#createMemoryRepo]]
 的 `merge` 里按 `createdAt` 重判：调用方传的顺序不可信。
 

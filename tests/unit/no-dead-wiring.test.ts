@@ -57,3 +57,24 @@ describe('#5 假防线：hasAnyWindow', () => {
     expect(index.slice(at, at + 700)).toContain('getMainWindow()')
   })
 })
+
+describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', () => {
+  // 少一处 = 那条链在某一端根本没通：界面上按了没反应，且不报错、门禁也抓不到（plan54 同族断链）。
+  // `memory:delete` 是**阳性对照** —— 它在本批之前就已经接全，若连它都判不过，那是判据坏了不是代码坏了。
+  const gate = readFileSync(join(__dirname, '../../scripts/verify-shot.cjs'), 'utf8')
+  for (const { key, literal } of [
+    { key: 'memoryDelete', literal: 'memory:delete' },
+    { key: 'memoryRestore', literal: 'memory:restore' }
+  ]) {
+    it(`${literal}：常量 / 主进程 handler / preload 桥 / 门禁桩 四处齐`, () => {
+      expect(src('shared/ipc.ts')).toContain(`${key}: '${literal}'`)
+      expect(src('main/ipc.ts')).toContain(`ipcMain.handle(IPC.${key}`)
+      expect(src('preload/index.ts')).toContain(`IPC.${key}`)
+      expect(gate).toContain(`'${literal}':`)
+    })
+  }
+
+  it('渲染层真的按下过恢复这个钮（通道接全却没人调 = 又一根断链）', () => {
+    expect(src('renderer/src/components/MemoryManager.tsx')).toContain('window.api.restoreMemory(')
+  })
+})

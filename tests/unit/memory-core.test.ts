@@ -6,23 +6,27 @@ import { MEMORY_LIMITS, type MemoryEntry } from '@shared/memory'
 import { buildIndex, computeStats, createMemoryRepo, indexLine, parseMemoryFile, serializeMemory, slugFor } from '@main/memory/memory-core'
 import { composeMemoryBlock, estimateMemoryTokens } from '@main/memory/inject'
 import { injectionKey, parseEventLine, serializeEvent } from '@main/memory/events'
+import { createArchiveMock } from '../../tests/helpers/memory-archive-mock'
 
 const ROOT = '/mem/notes'
+const ARCH = '/mem/archived' // 与 notes 平级（真实布局在 memory/ 下），listFiles 只列 notes
 
 function memBackend(seed: Record<string, string> = {}) {
   const files = new Map<string, string>(Object.entries(seed))
   const events: string[] = []
+  const arch = createArchiveMock({ files, notesRoot: ROOT, archRoot: ARCH })
   return {
     files,
     events,
+    archived: arch.archived,
     listFiles: () => [...files.keys()].sort(),
     candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
     listCandidates: () => [],
-    read: (f: string) => files.get(f) ?? null,
     write: (f: string, t: string) => void files.set(f, t),
     remove: (f: string) => files.delete(f),
     pathFor: (slug: string) => `${ROOT}/${slug}.md`,
-    appendEvent: (line: string) => void events.push(line)
+    appendEvent: (line: string) => void events.push(line),
+    ...arch.backend
   }
 }
 
@@ -486,16 +490,78 @@ describe('LRU 遗忘（批 4 判据 1/2）', () => {
     expect(r.ok === false && r.reason).toContain('风格/画像类')
   })
 
-  it('遗忘落 delete 事件 + by: system', () => {
+  // plan53 片 1：**自动遗忘从"硬删"改成"可逆归档"** ⇒ 这条判据同批改口径（不是删判据）。
+  // 归档与删除分成两种事件，是因为 `computeStats` 的存活率把 delete 记成"丢失" ——
+  // 一个还能一键恢复的东西不该进那笔账（R4）。
+  it('遗忘落 archive 事件 + by: system，且**不记 delete**（归档不是丢失）', () => {
     const seed = seedFull(100)
     const { repo, backend } = makeRepoWithEvents(seed)
     repo.save({ ...valid, name: 'new-entry', description: 'd' })
-    const deleteEvent = backend.events.find((l) => {
-      const e = JSON.parse(l)
-      return e.kind === 'delete' && e.by === 'system'
-    })
-    expect(deleteEvent).toBeDefined()
-    expect(JSON.parse(deleteEvent!).name).toBe('m0')
+    const kinds = backend.events.map((l) => JSON.parse(l))
+    const archived = kinds.find((e) => e.kind === 'archive' && e.by === 'system')
+    expect(archived).toBeDefined()
+    expect(archived.name).toBe('m0')
+    expect(kinds.some((e) => e.kind === 'delete' && e.by === 'system')).toBe(false)
+    expect(repo.list().total).toBe(100)
+  })
+
+  it('★ 归档不硬删：notes 里没了，archived 里**正文完整**', () => {
+    const seed = seedFull(100)
+    const { repo, backend } = makeRepoWithEvents(seed)
+    const before = backend.files.get(`${ROOT}/m0.md`)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    expect(backend.files.has(`${ROOT}/m0.md`)).toBe(false)
+    // 归档文件名带归档时刻（同一 slug 第二次归档不许覆盖第一次 ⇒ 归档区自己不能变成丢数据的地方），
+    // 所以这里按模式找，不钉死路径
+    const archivedKey = [...backend.archived.keys()].find((k) => /^\/mem\/archived\/.*__m0\.md$/.test(k))
+    expect(archivedKey).toBeDefined()
+    expect(backend.archived.get(archivedKey!)).toBe(before)
+  })
+
+  it('归档条目不进生效集合（不进注入索引、不算 total、不算 omitted）', () => {
+    const seed = seedFull(100)
+    const { repo } = makeRepoWithEvents(seed)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    const names = repo.list().entries.map((e) => e.name)
+    expect(names).not.toContain('m0')
+    expect(repo.list().archived.map((a) => a.name)).toEqual(['m0'])
+  })
+
+  it('★ 恢复：回到生效集合，`updatedAt` 与归档前一致（排序与 LRU 判据都靠它）', () => {
+    const seed = seedFull(100)
+    const { repo, backend } = makeRepoWithEvents(seed)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    const archivedAt = repo.list().archived[0]
+    expect(archivedAt).toBeDefined()
+    const r = repo.restoreArchived(archivedAt.file)
+    expect(r.ok).toBe(true)
+    const back = repo.get(`${ROOT}/m0.md`)
+    expect(back).not.toBeNull()
+    expect(back!.updatedAt).toBe(archivedAt.updatedAt)
+    expect(repo.list().archived.length).toBe(0)
+    expect(backend.archived.size).toBe(0) // 恢复是**移动**不是复制，归档区不留残余
+  })
+
+  it('恢复时同名已存在 → 拒、给理由，**绝不覆盖**（静默覆盖等于把用户新写的那条抹掉）', () => {
+    const seed = seedFull(100)
+    const { repo } = makeRepoWithEvents(seed)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    const target = repo.list().archived[0].file
+    repo.save({ ...valid, name: 'm0', description: '手又写了一遍' }) // 同名条目回来了
+    const r = repo.restoreArchived(target)
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.reason).toContain('已存在')
+    expect(repo.get(`${ROOT}/m0.md`)!.description).toBe('手又写了一遍')
+  })
+
+  it('阳性对照：用户手删仍走 delete（不许把"删"偷偷做成"归档"）', () => {
+    const seed = seedFull(3)
+    const { repo, backend } = makeRepoWithEvents(seed)
+    expect(repo.remove(`${ROOT}/m1.md`, 'user')).toBe(true)
+    const kinds = backend.events.map((l) => JSON.parse(l))
+    expect(kinds.some((e) => e.kind === 'delete' && e.by === 'user')).toBe(true)
+    expect(kinds.some((e) => e.kind === 'archive')).toBe(false)
+    expect(repo.list().archived.length).toBe(0)
   })
 
   it('编辑既有条目不触发遗忘（有 input.file）', () => {

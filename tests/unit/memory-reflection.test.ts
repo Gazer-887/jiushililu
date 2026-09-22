@@ -17,22 +17,25 @@ import type { MemoryCandidate } from '@shared/memory'
 import { createMemoryRepo } from '@main/memory/memory-core'
 import type { MemoryBackend } from '@main/memory/memory-core'
 import { createReflectionRunner } from '@main/memory/reflection'
+import { createArchiveMock } from '../helpers/memory-archive-mock'
 
 const ROOT = '/mem/notes'
+const ARCH = '/mem/archived'
 const FIXED = new Date('2026-09-15T01:00:00.000Z')
 
 function memBackend(seed: Record<string, string> = {}) {
   const files = new Map<string, string>(Object.entries(seed))
   const events: string[] = []
+  const arch = createArchiveMock({ files, notesRoot: ROOT, archRoot: ARCH })
   const backend: MemoryBackend & { events: string[] } = {
     listFiles: () => [...files.keys()].filter((f) => f.startsWith(`${ROOT}/`) && !f.startsWith(`${ROOT}/candidates/`)).sort(),
     candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
     listCandidates: () => [...files.keys()].filter((f) => f.startsWith(`${ROOT}/candidates/`)).sort(),
-    read: (f: string) => files.get(f) ?? null,
     write: (f: string, t: string) => void files.set(f, t),
     remove: (f: string) => files.delete(f),
     pathFor: (slug: string) => `${ROOT}/${slug}.md`,
     appendEvent: (line: string) => void events.push(line),
+    ...arch.backend,
     events
   }
   return backend

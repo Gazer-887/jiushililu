@@ -294,7 +294,7 @@ export const scenarios: Scenario[] = [
   // ── 复杂：遗忘 + 画像 + 组合 ─────────────────────────────────────────
   {
     id: 'E11',
-    desc: '满库遗忘：写第 101 条 → 最旧普通条目被删，画像与风格豁免',
+    desc: '满库遗忘：写第 101 条 → 最旧普通条目进归档区（正文可恢复），画像与风格豁免',
     level: 'complex',
     seed: {
       ...seedMany('n', 98, 'default', '旧条目'),
@@ -312,12 +312,18 @@ export const scenarios: Scenario[] = [
     ],
     expect: (w) => {
       expect(w.view().total).toBe(100)
-      expect(w.fileText('n000')).toBeNull() // 最旧的普通条目被遗忘
+      expect(w.fileText('n000')).toBeNull() // 最旧的普通条目离开生效集合
       expect(w.fileText('n001')).not.toBeNull()
       expect(w.fileText('oldest-style')).not.toBeNull() // style 豁免
       expect(w.fileText('user-profile')).not.toBeNull() // 画像豁免
       expect(w.fileText('fresh-entry')).not.toBeNull()
-      expect(w.events().some((l) => l.includes('"delete"'))).toBe(true)
+      // plan53 片 1：遗忘是**归档**不是硬删 —— 正文原样留在归档区，且归档区里不许有豁免类
+      expect(w.archived().map((a) => a.slug)).toEqual(['n000'])
+      expect(w.archived()[0].text).toContain('旧条目 0')
+      expect(w.archived().some((a) => a.slug === 'oldest-style' || a.slug === 'user-profile')).toBe(false)
+      // 归档不进"丢失"那笔账（R4）：事件必须是 archive + by:system，且全场没有 delete
+      expect(w.events().some((l) => l.includes('"archive"') && l.includes('"by":"system"'))).toBe(true)
+      expect(w.events().some((l) => l.includes('"delete"'))).toBe(false)
     }
   },
   {

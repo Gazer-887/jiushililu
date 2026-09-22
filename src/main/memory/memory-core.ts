@@ -2,6 +2,8 @@
 // 以及 CRUD 的完整行为。⚠️ 不 import electron / fs —— 存储接缝由 `MemoryBackend` 注入，本文件可单测。
 // 分层照项目惯例：领域逻辑住这里，布局与原子写住 `store/memory-fs.ts`，装配住 `store/memory-store.ts`。
 
+import { basename } from 'node:path'
+import { parseArchivedFileName } from '@shared/memory'
 import {
   MEMORY_CLASSES,
   MEMORY_LIMITS,
@@ -9,6 +11,7 @@ import {
   memoryNameKey,
   utf8Bytes,
   validateMemoryFields,
+  type ArchivedEntry,
   type MemoryCandidate,
   type MemoryClass,
   type MemoryEntry,
@@ -18,7 +21,8 @@ import {
   type MemoryOrigin,
   type MemorySaveInput,
   type MemorySaveResult,
-  type MemoryStats
+  type MemoryStats,
+  type MemoryRestoreResult
 } from '@shared/memory'
 import { injectionKey, serializeEvent, type MemoryEvent, type MemoryEventPayload } from './events'
 import { findDuplicatePairs, findSimilarEntry } from './similarity'
@@ -38,6 +42,12 @@ export interface MemoryBackend {
   listCandidates(): string[]
   /** 追加一行事件（追加型，不是原子写 —— 半行尾部可容忍） */
   appendEvent(line: string): void
+  /** plan53 片 1：把 notes 条目**移进**归档区（可逆）。失败返回 null */
+  archive(file: string): string | null
+  /** 归档区文件列表（与 `listFiles()` 互斥 —— 归档不进注入索引） */
+  listArchived(): string[]
+  /** 从归档移回 notes；目标已存在则返回 null（**绝不覆盖**，理由由调用方给） */
+  restoreFrom(archivedFile: string): string | null
 }
 
 /** 解析出来的一条（`file` 由调用方补上） */
@@ -247,7 +257,8 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
     usedBytes: bytes,
     warnings: [],
     duplicates: [],
-    candidates: []
+    candidates: [],
+    archived: []
   }
 }
 
@@ -270,6 +281,8 @@ export interface MemoryRepoOptions {
 export interface MemoryRepo {
   /** 读全部并建索引。坏文件 fail-soft（跳过 + 留痕），绝不因一条坏数据拖垮整张表 */
   list(): MemoryIndex
+  /** plan53 片 1：把归档条目放回生效集合。同名已存在 ⇒ 拒，**绝不覆盖** */
+  restoreArchived(file: string): MemoryRestoreResult
   get(file: string): MemoryEntry | null
   listFiles(): string[]
   save(input: MemorySaveInput): MemorySaveResult
@@ -393,6 +406,27 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     return { entries, warnings, duplicates }
   }
 
+  /** 归档条目（plan53 片 1）：从 archived/ 读，同样**不进注入索引段**（物理隔离在 notes 之外） */
+  function loadArchived(): ArchivedEntry[] {
+    const out: ArchivedEntry[] = []
+    for (const file of backend.listArchived()) {
+      const parsedName = parseArchivedFileName(basename(file))
+      const text = backend.read(file)
+      if (!parsedName || text === null) {
+        // 文件名不合规或读不出来：跳过但留痕，不许静默当成"没有归档"
+        warn('归档区有一个文件认不出命名，已跳过', { file: basename(file) })
+        continue
+      }
+      const result = parseMemoryFile(text)
+      if (!result.ok) {
+        warn('归档条目解析失败，已跳过', { file: basename(file), reason: result.reason })
+        continue
+      }
+      out.push({ ...result.parsed, file, archivedAt: parsedName.archivedAt })
+    }
+    return out.sort((a, b) => (a.archivedAt < b.archivedAt ? 1 : -1)) // 最近的排前面
+  }
+
   /** 候选条目（批 2）：从 candidates/ 读，**不进注入索引段**（buildIndex 不见它们） */
   function loadCandidates(): MemoryEntry[] {
     const out: MemoryEntry[] = []
@@ -435,7 +469,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     list() {
       const { entries, warnings, duplicates } = loadAll()
       const candidates = loadCandidates()
-      return { ...buildIndex(entries), warnings, duplicates, candidates }
+      return { ...buildIndex(entries), warnings, duplicates, candidates, archived: loadArchived() }
     },
 
     get(file) {
@@ -525,13 +559,16 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
             )
           }
           const toForget = candidates[0]!
-          backend.remove(toForget.file)
-          record({
-            kind: 'delete',
-            conversationId: currentConversation(),
-            name: toForget.name,
-            by: 'system'
-          })
+          // plan53 片 1：**自动遗忘不再硬删**，改成移进归档区（正文原样、可一键恢复）。
+          // 事件也从 `delete` 换成 `archive` —— 存活率那笔账里，"还能恢复"不该算成"丢失"（R4）。
+          // 归档失败（返回 null）时**退回硬删**并留 warn：宁可少一条，也不要突破 100 条上限。
+          if (backend.archive(toForget.file) === null) {
+            backend.remove(toForget.file)
+            warn('自动遗忘归档失败，已退回硬删（宁可少一条，也不突破条数上限）', { name: toForget.name })
+            record({ kind: 'delete', conversationId: currentConversation(), name: toForget.name, by: 'system' })
+          } else {
+            record({ kind: 'archive', conversationId: currentConversation(), name: toForget.name, by: 'system' })
+          }
         }
         file = backend.pathFor(slug)
         createdAt = now().toISOString()
@@ -569,6 +606,20 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         record({ kind: 'delete', conversationId: currentConversation(), name: before.name, by })
       }
       return removed
+    },
+
+    restoreArchived(archivedFile) {
+      const parsedName = parseArchivedFileName(basename(archivedFile))
+      if (!parsedName) return { ok: false, reason: '归档文件名不合规，取不回条目名' }
+      if (backend.read(backend.pathFor(parsedName.slug)) !== null) {
+        return { ok: false, reason: `已存在同名条目「${parsedName.slug}」，请先删除或改名再恢复（不覆盖）` }
+      }
+      if (backend.restoreFrom(archivedFile) === null) {
+        return { ok: false, reason: '恢复失败：归档文件不存在或路径越界' }
+      }
+      // 不另记事件：`archive` 没算进"丢失"，恢复回去就不需要补一笔"写入"——
+      // 补了会让存活率凭空上涨（同一笔 written 被数两次）。
+      return { ok: true }
     },
 
     // plan33 问题四：合并疑似重复对。方向**在方法内重判**（按 createdAt 取新旧）——

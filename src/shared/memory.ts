@@ -105,7 +105,21 @@ export interface MemoryIndex {
    * 巡检区用这个字段显示候选 + 批准/拒绝按钮；批准后变成正式条目进 `entries`。
    */
   candidates: MemoryEntry[]
+  /**
+   * 归档区（plan53 片 1）：被**自动遗忘**的条目，正文还在、可一键恢复。
+   * ⚠️ 与 `candidates` 一样**不进注入段** —— 物理隔离在 `memory/archived/`，`listFiles()` 只列 `notes/`。
+   */
+  archived: ArchivedEntry[]
 }
+
+/** 归档条目：正文原样保留，这里只给列表要显示的几项 */
+export interface ArchivedEntry extends MemoryEntry {
+  /** 归档时刻（从文件名取，见 `store/memory-fs.ts` 的 `archivedPathFor`） */
+  archivedAt: string
+}
+
+/** 恢复归档条目的结果。失败必须带理由 —— 界面上要能解释"为什么点不动" */
+export type MemoryRestoreResult = { ok: true } | { ok: false; reason: string }
 
 /** 保存入参。`file` 缺省 = 新建；带 `file` = 编辑既有条目 */
 export interface MemorySaveInput {
@@ -479,4 +493,24 @@ export function validateMemoryFields(input: {
   }
   if (guard.action === 'reject') return { ok: false, reason: guard.reason }
   return { ok: true, guard }
+}
+
+/**
+ * 归档文件名的唯一口径（plan53 片 1）：`<归档时刻>__<slug>.md`，时刻里的 `:` 与 `.` 换成 `-`。
+ * 带时刻是为了**同一 slug 第二次归档不许覆盖第一次** —— 归档区自己变成丢数据的地方就白做了。
+ * 放这里而不是 store 里：命名规则要能被"读侧"（列表）与"写侧"（移入移出）共用，两边各写一份必漂。
+ */
+export function archivedFileName(slug: string, at: Date = new Date()): string {
+  return `${at.toISOString().replace(/[:.]/g, '-')}__${slug}.md`
+}
+
+/** 从归档文件名取回 slug 与归档时刻 —— 必须是 `archivedFileName` 的**逆**：时刻还原成合法 ISO，
+ *  界面才 `new Date()` 得出来（`2026-09-20T08-30-12-456Z` 那种写法是 Invalid Date）。
+ *  不合规返回 null（调用方跳过并留痕，不静默当成没有） */
+export function parseArchivedFileName(base: string): { slug: string; archivedAt: string } | null {
+  const m =
+    /^(?<d>\d{4}-\d{2}-\d{2})T(?<h>\d{2})-(?<mi>\d{2})-(?<s>\d{2})-(?<ms>\d{3})Z__(?<slug>.+)\.md$/.exec(base)
+  if (!m?.groups) return null
+  const { d, h, mi, s, ms, slug } = m.groups
+  return { slug: slug!, archivedAt: `${d}T${h}:${mi}:${s}.${ms}Z` }
 }

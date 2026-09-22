@@ -6362,6 +6362,40 @@ body[data-resizing] {
   min-width: 0;
 }
 
+/* 归档区（plan53 片 1）：自动遗忘的条目停在这里等恢复。
+   是"已经发生过的事"而不是"要办的事"，所以用中性墨色 + 默认折起，不跟候选/重复那两块抢警示色 */
+.mem-archived {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.mem-archived-toggle {
+  align-self: flex-start;
+}
+
+.mem-archived-note {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+}
+
+.mem-archived-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mem-archived-at {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
 .mem-warn {
   padding: 8px;
   border: 1px solid var(--danger-border);

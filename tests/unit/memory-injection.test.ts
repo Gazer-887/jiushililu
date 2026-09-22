@@ -10,6 +10,7 @@ import type { ModelSettings } from '@shared/ipc'
 import type { AgentRuntimeContext } from '@main/agent/runner'
 import { createCheckpointStore } from '@main/store/checkpoints'
 import { createMemoryRepo, type MemoryRepo } from '@main/memory/memory-core'
+import { createArchiveMock } from '../helpers/memory-archive-mock'
 import { composeMemoryBlock } from '@main/memory/inject'
 
 const openaiSpy = vi.fn(async () => ({ text: '完成', toolCalls: [] }))
@@ -67,16 +68,17 @@ function toolNamesOf(callIndex = 0): string[] {
 
 function fakeRepo(): MemoryRepo {
   const files = new Map<string, string>()
+  const arch = createArchiveMock({ files, notesRoot: '/mem/notes', archRoot: '/mem/archived' })
   return createMemoryRepo(
     {
       listFiles: () => [...files.keys()].sort(),
       candidatePathFor: (slug: string) => `/mem/candidates/${slug}.md`,
       listCandidates: () => [],
-      read: (f) => files.get(f) ?? null,
       write: (f, t) => void files.set(f, t),
       remove: (f) => files.delete(f),
       pathFor: (slug) => `/mem/notes/${slug}.md`,
-      appendEvent: () => {}
+      appendEvent: () => {},
+      ...arch.backend
     },
     { onWarn: () => {} }
   )
