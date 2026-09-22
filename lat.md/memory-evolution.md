@@ -26,6 +26,9 @@
 索引行的**唯一口径**是 [[src/main/memory/memory-core.ts#indexLine]]——
 预算账（[[src/main/memory/memory-core.ts#buildIndex]]）与真正发出去的文字都用它，各写一份就会算出与发送不一致的字节。
 截断要求确定性（同刻按 name 升序），否则同一批记忆每次截掉不同条目，"越用越稳定"就反了。
+预算的**读数**也从同一处出：`buildIndex` 把逐行累出来的字节数当 `usedBytes` 一并返回，界面只读这一个数
+（[[src/renderer/src/components/MemoryManager.tsx#MemoryManager]]）。**上限不在载荷里重复传** ——
+载荷多带一份常量就多一处会漂移的副本，界面直接读 `MEMORY_LIMITS`。
 `omitted` 必须如实带进段尾（不静默截断是 R9.1 红线）。
 ⚠️ 一处已知边界：`recall` 取名字查的是注入集合，被预算截断的那几条既看不见也取不到，而段尾那句提示对它并不成立。
 

@@ -244,6 +244,7 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
     entries: kept,
     total: entries.length,
     omitted: entries.length - kept.length,
+    usedBytes: bytes,
     warnings: [],
     duplicates: [],
     candidates: []

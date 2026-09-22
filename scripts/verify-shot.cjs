@@ -603,6 +603,8 @@ let memoryCandidates = [
     file: '/mem/candidates/likes-dark-mode.md'
   }
 ]
+const GATE_CLASS_LABELS = { style: '风格', default: '默认', knowledge: '知识', profile: '画像' }
+
 let memoryEntries = [
   {
     name: 'prefers-tables',
@@ -861,6 +863,13 @@ const STUBS = {
     entries: memoryEntries.map((e) => ({ ...e })),
     total: memoryEntries.length,
     omitted: 0,
+    // 契约副本（真源 `memory-core.ts::buildIndex` 的字节账）：逐行 UTF-8 含换行。
+    // 桩里的夹具很小、永远撞不到 8KB 上限，故不模拟截断 —— 截断那条账由单测钉（memory-core.test.ts）
+    usedBytes: memoryEntries.reduce(
+      (s, e) => s + Buffer.byteLength(`- [${GATE_CLASS_LABELS[e.class] ?? e.class}] ${e.name}：${e.description}
+`, 'utf8'),
+      0
+    ),
     warnings: memoryWarnings.slice(),
     candidates: memoryCandidates.map((c) => ({ ...c }))
   }),
@@ -8845,6 +8854,24 @@ app.whenReady().then(async () => {
       memList.badges.includes('风格'),
     memList
   )
+  // 注入预算读数（plan53 片 0 / M3）：界面上那个"已用 / 上限"必须等于**在 Node 侧按同一把尺子
+  // 另算一遍**的字节和 —— 抄来的常量、漏上报、换了尺子，三种坏法都会当场红。
+  // 只从文本里抠数字，不认中文措辞（K21：判据不许依赖界面文案）
+  const expectIndexBytes = memoryEntries.reduce(
+    (s, e) => s + Buffer.byteLength(`- [${GATE_CLASS_LABELS[e.class] ?? e.class}] ${e.name}：${e.description}
+`, 'utf8'),
+    0
+  )
+  const statNums = (memList.stat || '').match(/(\d+)\s*\/\s*(\d+)/)
+  checkTrue(
+    '记忆页签：注入预算读数等于逐行字节和（写死上限或不上报都会红）',
+    !!statNums &&
+      Number(statNums[1]) === expectIndexBytes &&
+      Number(statNums[2]) === 8 * 1024 &&
+      expectIndexBytes > 0,
+    { stat: memList.stat, expectIndexBytes, parsed: statNums && statNums.slice(1) }
+  )
+
   checkTrue(
     '巡检区只收 `origin: model` 的条目（用户手写的不进巡检），且标出条数',
     memList.inspectRows.length === 1 &&

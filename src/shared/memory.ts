@@ -87,6 +87,11 @@ export interface MemoryIndex {
   total: number
   /** 因预算被截断而未注入的条目数 */
   omitted: number
+  /**
+   * 注入索引段**已用字节**（逐行 UTF-8，含行尾换行），与 `omitted` 同一把尺子算出来的。
+   * 上限不在这里重复传：界面直接读 `MEMORY_LIMITS.maxIndexBytes`，少一处副本少一处漂移。
+   */
+  usedBytes: number
   /** 解析或校验失败被跳过的文件与原因（fail-soft，但绝不静默） */
   warnings: string[]
   /**

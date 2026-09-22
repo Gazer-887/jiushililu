@@ -184,6 +184,35 @@ describe('索引与预算截断（omitted 必须如实）', () => {
     expect(bytes).toBeLessThanOrEqual(MEMORY_LIMITS.maxIndexBytes)
     expect(idx.omitted).toBeGreaterThan(0)
   })
+
+  // ── plan53 片 0（M3）：注入预算的字节读数 ──
+  // 判据口径：`usedBytes` 必须与"进 prompt 的那几行"是**同一把尺子**算出来的，
+  // 否则界面那个「已用 N / 上限 M」只是一句好看的话 —— 写死上限也能过前两条。
+  const sumLines = (entries: { name: string; class: string; description: string }[]): number =>
+    entries.reduce((s, e) => s + Buffer.byteLength(`${indexLine(e as never)}\n`, 'utf8'), 0)
+
+  it('usedBytes 等于逐行 UTF-8 字节和（含换行）', () => {
+    const idx = buildIndex([entry('a', 'style'), entry('b', 'default')])
+    expect(idx.usedBytes).toBe(sumLines(idx.entries))
+    expect(idx.usedBytes).toBeGreaterThan(0)
+  })
+
+  it('空库读数是 0，不是 undefined', () => {
+    expect(buildIndex([]).usedBytes).toBe(0)
+  })
+
+  it('字节截断场景下读数仍等于留下那几行的和（写死上限会当场红）', () => {
+    const fat = Array.from({ length: 200 }, (_, i) => ({
+      ...entry(`h${String(i).padStart(3, '0')}`, 'default'),
+      description: '很长的描述'.repeat(6)
+    }))
+    const idx = buildIndex(fat)
+    expect(idx.omitted).toBeGreaterThan(0)
+    expect(idx.usedBytes).toBe(sumLines(idx.entries))
+    expect(idx.usedBytes).toBeLessThanOrEqual(MEMORY_LIMITS.maxIndexBytes)
+    // 真被截断 ⇒ 读数必然**严格小于**上限；等于上限说明那个数是抄来的，不是账算出来的
+    expect(idx.usedBytes).toBeLessThan(MEMORY_LIMITS.maxIndexBytes)
+  })
 })
 
 describe('CRUD：校验、撞名、上限、确认档、幂等', () => {
@@ -376,12 +405,12 @@ describe('注入段（护栏 3）', () => {
   }
 
   it('一条都没有 → 整段不出现（不注入空壳）', () => {
-    expect(composeMemoryBlock({ entries: [], total: 0, omitted: 0, warnings: [] })).toBeNull()
+    expect(composeMemoryBlock({ entries: [], total: 0, omitted: 0, usedBytes: 0, warnings: [] })).toBeNull()
     expect(estimateMemoryTokens(null)).toBe(0)
   })
 
   it('含数据边界声明，且静态可复现', () => {
-    const idx = { entries: [e], total: 1, omitted: 0, warnings: [] }
+    const idx = { entries: [e], total: 1, omitted: 0, usedBytes: 0, warnings: [] }
     const a = composeMemoryBlock(idx)
     const b = composeMemoryBlock(idx)
     expect(a).toBe(b)
@@ -391,12 +420,12 @@ describe('注入段（护栏 3）', () => {
   })
 
   it('超预算时如实带出未注入条数', () => {
-    const block = composeMemoryBlock({ entries: [e], total: 9, omitted: 8, warnings: [] })
+    const block = composeMemoryBlock({ entries: [e], total: 9, omitted: 8, usedBytes: 0, warnings: [] })
     expect(block).toContain('另有 8 条')
   })
 
   it('注入税随内容增长', () => {
-    const small = estimateMemoryTokens(composeMemoryBlock({ entries: [e], total: 1, omitted: 0, warnings: [] }))
+    const small = estimateMemoryTokens(composeMemoryBlock({ entries: [e], total: 1, omitted: 0, usedBytes: 0, warnings: [] }))
     expect(small).toBeGreaterThan(0)
   })
 })

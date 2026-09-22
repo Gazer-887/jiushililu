@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import FieldNote from './FieldNote'
-import { MEMORY_CLASSES, type MemoryClass, type MemoryEntry } from '@shared/memory'
+import { MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass, type MemoryEntry } from '@shared/memory'
 import { useAppStore } from '../store'
 
 // 记忆页签（plan19 批 1）：查看 / 编辑 / 删除 + 「本次新增」巡检区。
@@ -137,8 +137,10 @@ export default function MemoryManager(): JSX.Element {
 
       {view && view.total > 0 ? (
         <div className="mem-stat">
-          共 {view.total} 条
-          {view.omitted > 0 ? `，其中 ${view.omitted} 条因超出注入上限未生效` : ''}
+          共 {view.total} 条 · 注入预算 {view.usedBytes} / {MEMORY_LIMITS.maxIndexBytes} 字节
+          {view.omitted > 0
+            ? `，${view.omitted} 条因该预算未注入（未注入的条目模型也取不到，删减或缩短描述后才会带上）`
+            : ''}
           {stats && stats.survivalRate !== null
             ? ` · 存活 ${Math.round(stats.survivalRate * 100)}%`
             : ''}
