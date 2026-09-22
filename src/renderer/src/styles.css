@@ -383,8 +383,8 @@ nav {
   display: block;
 }
 
-/* 激活预览卡（§3.5）：向左浮出（right: 100%+），垂直居中该刻度；激活时**始终**显示（拍板③）。
-   **常驻 DOM**（imperative 联动只切 class 不插拔节点）：默认隐藏，`.on` 激活才显示 */
+/* 预览卡定位：向左浮出（right: 100%+），垂直居中该刻度。**常驻 DOM**（imperative 联动只切 class 不插拔节点），
+   默认隐藏；显隐只由上面那条 `.is-scrubbing .is-peeking` 规则决定 —— `.on` 只管高亮，不管显隐。 */
 .chat-outline-peek {
   display: none;
   position: absolute;

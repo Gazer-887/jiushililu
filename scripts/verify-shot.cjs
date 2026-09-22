@@ -9221,6 +9221,9 @@ app.whenReady().then(async () => {
     scrollSpy !== null && scrollSpy.total >= 2 && scrollSpy.onIdx === scrollSpy.total - 1,
     scrollSpy
   )
+  // 强度证据（别只读 CSS 就判它恒绿）：补回 0.13.85 那条 `.chat-outline-tick.on .chat-outline-peek{display:block}`
+  // → 本条与上一条负向判据**各自精确红**（09-22 两次实测，其余 393 条不响）。探针不进擦洗是设计如此：
+  // 它守的是"常显被装回来"，那不需要指针事件。擦洗真身由上面 `dragPeek` 那组走真鼠标覆盖。
   checkTrue(
     '激活刻度**不再常显**预览卡（09-22 反转：常显那张会停在正文上挡字；高亮仍在上一条断言里）',
     scrollSpy !== null && scrollSpy.peekShown === false,
