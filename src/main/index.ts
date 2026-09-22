@@ -56,7 +56,8 @@ import {
   getTerminalLoadProfileEnabled,
   getReflectionDailyLimit,
   getReflectionModel,
-  getDevEnvSelected
+  getDevEnvSelected,
+  getSkillsDisabled
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
 import { createChatEmitter } from './chat-emitter'
@@ -584,7 +585,10 @@ app.whenReady().then(async () => {
       ? join(process.resourcesPath, 'skills')
       : join(app.getAppPath(), 'resources/skills'),
     userDir: join(userDataDir, 'skills'),
-    onWarn: (message) => log.warn(message, {})
+    onWarn: (message) => log.warn(message, {}),
+    // 禁用名单走**注入**而不是让 skills 层去读 settings（那条不变量由 architecture.test.ts 守卫）。
+    // 口径只写在 store 一处：注入清单与 `use_skill` 注册都从 `activeEntries()` 出。
+    isDisabled: (name) => getSkillsDisabled().includes(name)
   })
 
   // MCP 客户端（plan23）：配置住 userData/mcp-servers.json（用户资产，含 env token → 原子写）。

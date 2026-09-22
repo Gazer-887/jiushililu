@@ -176,7 +176,8 @@ import type { MemoryStore } from './store/memory-store'
 import type { PlaybookStore } from './store/playbook-store'
 import { composeMemoryBlock, estimateMemoryTokens, sumInjectionTax } from './memory/inject'
 import { composePlaybookBlock, estimatePlaybookTokens } from './memory/playbook-inject'
-import { composeSkillBlock, filterDisabledEntries } from '@shared/skills'
+// 过滤口径已收进 `skills-store.activeEntries()`（plan54 #6），这里不再自己滤禁用名单
+import { composeSkillBlock } from '@shared/skills'
 import { composeRulesBlock } from './rules/rules'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
 import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings } from '@shared/memory'
@@ -1474,9 +1475,11 @@ export function registerIpcHandlers(deps: {
     const store = deps.agent.skills?.store
     if (!store) return null
     // plan34 S1：**注入前**过滤掉被禁用的技能 —— 这里是「真禁用」的落点（模型侧确实看不到），
-    // **不是**靠设置页藏 UI。⚠️ 只过滤注入，不过滤 `store.view()`：设置页必须看到被禁用的项才能重新开启。
+    // **不是**靠设置页藏 UI。⚠️ 只过滤生效集合，不过滤 `store.view()`：设置页必须看到被禁用的项才能重新开启。
+    // 09-22（plan54 #6）：过滤口径收进 store 的 `activeEntries()` —— 原来这里自己滤一遍、
+    // `hasActive()` / `read()` 却不滤，同一个"禁用"在两层有两种含义，模型仍能按名字读到被禁技能。
     // 立即生效（用户拍板）：工具/技能每轮装配，下一轮请求自然按新开关走。
-    const enabledEntries = filterDisabledEntries(store.view().entries, getSkillsDisabled())
+    const enabledEntries = store.activeEntries()
     const { block, droppedByBytes, droppedByCount } = composeSkillBlock(enabledEntries)
     if (droppedByBytes + droppedByCount > 0) {
       log.warn(
