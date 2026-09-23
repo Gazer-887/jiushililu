@@ -58,6 +58,24 @@ describe('#5 假防线：hasAnyWindow', () => {
   })
 })
 
+describe('K27：工作区分组只许有一份实现', () => {
+  const sidebar = src('renderer/src/components/Sidebar.tsx')
+  const shared = src('shared/conversation-group.ts')
+
+  it('侧栏不许再自己数分组 / 自己推展示名（两份规则会漂，漂了没有任何一道闸会红）', () => {
+    expect(sidebar).not.toContain('function groupConversations')
+    expect(sidebar).not.toContain('new Map<string, ConversationMeta[]>')
+    // 展示名推导也只许在 shared 那一处：侧栏自己 split 一次，就又是一份真相
+    expect(sidebar).not.toContain('.split(')
+  })
+
+  it('阳性对照：撤的是副本不是规则 —— shared 里那份仍在，且侧栏真的 import 它', () => {
+    expect(shared).toContain('export function groupByWorkspace')
+    expect(shared).toContain('export function workspaceLabel')
+    expect(sidebar).toContain("import { groupByWorkspace } from '@shared/conversation-group'")
+  })
+})
+
 describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', () => {
   // 少一处 = 那条链在某一端根本没通：界面上按了没反应，且不报错、门禁也抓不到（plan54 同族断链）。
   // `memory:delete` 是**阳性对照** —— 它在本批之前就已经接全，若连它都判不过，那是判据坏了不是代码坏了。

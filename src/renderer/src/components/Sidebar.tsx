@@ -1,33 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppStore } from '../store'
-import type { ConversationMeta } from '@shared/ipc'
+import { groupByWorkspace } from '@shared/conversation-group'
 
 // 侧边栏（P2）：新建任务 + 按工作区分组的会话历史 + 齿轮设置。显隐由顶栏控制（open 受控），品牌名在顶栏不重复。
 // 交互参考：opencode 的新建流程、WorkBuddy 的分组历史（去掉专家/连接器等花哨项）。
-
-interface Group {
-  workspace: string
-  label: string
-  items: ConversationMeta[]
-}
-
-/** 与主进程同一套分组规则：组内按更新时间倒序 */
-function groupConversations(list: ConversationMeta[]): Group[] {
-  const map = new Map<string, ConversationMeta[]>()
-  for (const c of list) {
-    const bucket = map.get(c.workspace)
-    if (bucket) bucket.push(c)
-    else map.set(c.workspace, [c])
-  }
-  return [...map.entries()]
-    .map(([workspace, items]) => ({
-      workspace,
-      label: workspace.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() ?? workspace,
-      items: [...items].sort((a, b) => b.updatedAt - a.updatedAt)
-    }))
-    .sort((a, b) => (b.items[0]?.updatedAt ?? 0) - (a.items[0]?.updatedAt ?? 0))
-}
 
 export default function Sidebar({ open, width }: { open: boolean; width: number }): JSX.Element {
   // 界面骨架文案走 i18next（plan52 S1）；命名空间按界面区切，默认 ns = common
@@ -52,7 +29,8 @@ export default function Sidebar({ open, width }: { open: boolean; width: number 
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null)
 
-  const groups = groupConversations(conversations)
+  // 分组规则只有一份，在 `@shared/conversation-group`（K27）：两边各写一份会漂，而漂了没有一道闸会红
+  const groups = groupByWorkspace(conversations)
 
   useEffect(() => {
     if (!menuFor) return

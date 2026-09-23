@@ -194,41 +194,6 @@ export function sanitizeGeneratedTitle(raw: string | undefined | null): string |
   return t
 }
 
-/** 工作区展示名：取路径末段（侧边栏一行放得下），完整路径留给悬停提示 */
-export function workspaceLabel(path: string): string {
-  const normalized = path.replace(/[\\/]+$/, '')
-  const parts = normalized.split(/[\\/]/).filter((p) => p.length > 0)
-  return parts.length > 0 ? parts[parts.length - 1]! : path
-}
-
-export interface ConversationGroup {
-  workspace: string
-  label: string
-  items: ConversationMeta[]
-}
-
-/**
- * 按工作区分组：组内按更新时间倒序，组间按各自最新时间倒序（最近用过的排上面）。
- * ⚠️ **线上没人调它**（plan54 #7 → 欠账 K27）：侧栏在渲染层另写了一份同样的分组 + 标签推导
- *   （`Sidebar.tsx`）。渲染层不能 import 主进程，所以正解是把这份挪到 `src/shared/` 让两边共用 ——
- *   现在这个状态最坏的地方是**两份会漂**，而单测只钉得住这一份。
- */
-export function groupByWorkspace(list: ConversationMeta[]): ConversationGroup[] {
-  const map = new Map<string, ConversationMeta[]>()
-  for (const c of list) {
-    const bucket = map.get(c.workspace)
-    if (bucket) bucket.push(c)
-    else map.set(c.workspace, [c])
-  }
-  return [...map.entries()]
-    .map(([workspace, items]) => ({
-      workspace,
-      label: workspaceLabel(workspace),
-      items: [...items].sort((a, b) => b.updatedAt - a.updatedAt)
-    }))
-    .sort((a, b) => (b.items[0]?.updatedAt ?? 0) - (a.items[0]?.updatedAt ?? 0))
-}
-
 // ── 六个入口（plan10 步骤 0 锁行为、A 批改成分层）────────────────────
 // 三条与"读盘足迹"有关的约定：**列表与白名单只读 meta**（不碰任何正文文件，这是分层唯一要换来的东西）；
 // **每写一条会话只写它自己那份正文**（不再重写全部会话）；**写序：先正文、后索引** —— 反过来的话索引里会

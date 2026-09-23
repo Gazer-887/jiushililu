@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import {
-  deriveTitle,
-  fitStoredBudget,
-  groupByWorkspace,
-  normalizeHistory,
-  workspaceLabel
-} from '@main/store/conversations-core'
+import { deriveTitle, fitStoredBudget, normalizeHistory } from '@main/store/conversations-core'
+// 分组与展示名搬进 `src/shared/`（K27）：侧栏与主进程共用一份，测试也跟着只钉这一份
+import { groupByWorkspace, workspaceLabel } from '@shared/conversation-group'
 import { chatMessagesSchema, storedMessagesSchema } from '@main/schemas'
 import type { ChatMessage, ConversationMeta } from '@shared/ipc'
 
