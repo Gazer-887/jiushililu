@@ -1,4 +1,11 @@
-import type { AgentChatResult, AgentMessage, AgentLoopResult, AgentTool, ToolEvent } from '@shared/agent'
+import type {
+  AgentChatResult,
+  AgentMessage,
+  AgentLoopResult,
+  AgentTool,
+  ToolEvent,
+  ToolImageRef
+} from '@shared/agent'
 import { toolCallDetail } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
@@ -203,6 +210,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       opts.execEvents?.record('tool_call', { tool: tc.name })
 
       const toolStartedAt = Date.now()
+      let toolImages: ToolImageRef[] = []
       // 看门狗标记（plan37 S0）：save/restore 回前值 —— 单槽阶段硬写 'idle' 会抹平并发路径（见 watchdog.ts）
       const prevPhase = setWatchdogPhase(`tool:${tc.name}`)
       let output: string
@@ -211,7 +219,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           output = `错误：未知工具「${tc.name}」。可用工具：${[...toolMap.keys()].join('、') || '（无）'}`
         } else {
           try {
-            output = await tool.execute(parseArgs(tc.arguments))
+            const raw = await tool.execute(parseArgs(tc.arguments))
+            // 工具可以只回文本（绝大多数），也可以回"文本 + 图片引用"（plan44 S2b）。
+            // 归一化只在这一处发生：**进模型的一直是 text**，images 只交给界面事件。
+            const outcome = typeof raw === 'string' ? { text: raw } : raw
+            output = outcome.text
+            toolImages = outcome.images ?? []
           } catch (err) {
             output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
           }
@@ -263,7 +276,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         name: tc.name,
         phase: failed ? 'error' : 'end',
         summary: summarize(output),
-        ...(saved > 0 ? { savedTokens: saved } : {})
+        ...(saved > 0 ? { savedTokens: saved } : {}),
+        ...(toolImages.length > 0 ? { images: toolImages } : {})
       })
       // plan26 D-077：tool_result 只记元数据 —— bytes 是输出大小、**正文不进事件流**
       opts.execEvents?.record('tool_result', {

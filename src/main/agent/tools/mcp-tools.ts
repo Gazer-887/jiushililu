@@ -2,7 +2,8 @@
 // 工具名用 mcp__<server>__<tool>（D-061）：多服务器重名不打架，来源可辨。
 // 执行走确认桥（D-064）：服务器是在用户机器上跑的**外部代码**，保守默认每次确认。
 
-import type { AgentTool } from '@shared/agent'
+import type { AgentTool, ToolImageRef, ToolOutcome } from '@shared/agent'
+import type { McpImagePart } from '../../mcp/mcp-manager'
 import type { McpManager } from '../../mcp/mcp-manager'
 import {
   PROCESS_RISK_NOTE,
@@ -33,6 +34,12 @@ export interface McpToolDeps {
    * 漏传它 = 拦了却不说，排查时"该有的日志一条都没有"会把方向带偏（本 bug 就是这么骗过一轮排查的）。
    */
   onGatedDrop: (fullName: string, reason: string) => void
+  /**
+   * 把 MCP 返回的图片落成界面可看的截图（plan44 S2b）。**必填** —— 漏传等于图又被静默丢掉，
+   * 正是这一片要修的那个症状（同一个教训见上面 `computerControl` 那条注释）。
+   * 由组合根注入：工具层不碰 userData。
+   */
+  saveImages: (images: McpImagePart[]) => ToolImageRef[]
 }
 
 export function createMcpTools(deps: McpToolDeps): AgentTool[] {
@@ -71,11 +78,16 @@ export function createMcpTools(deps: McpToolDeps): AgentTool[] {
         }
         // D-066：callTool 的错误以人话文本返回（manager 内已处理），模型可读可自纠
         // O2：桌面派只打主屏（display 是工具参数，按 schema 覆写；非桌面派直通）
-        return deps.manager.callTool(
+        const res = await deps.manager.callTool(
           ref.server,
           ref.name,
           isDesktop ? forceMainDisplay(ref.inputSchema, payload) : payload
         )
+        // 图片只进界面：文本里已经写了"有一张截图"，模型据此知道存在，但**不会**把 base64 读进上下文。
+        const saved = res.images.length > 0 ? deps.saveImages(res.images) : []
+        if (saved.length === 0) return res.text
+        const out: ToolOutcome = { text: res.text, images: saved }
+        return out
       }
     })
   }

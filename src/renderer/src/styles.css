@@ -6494,6 +6494,49 @@ body[data-resizing] {
   flex: 1;
 }
 
+.tool-shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 2px;
+  padding-left: 22px;
+}
+
+.tool-shot {
+  margin: 0;
+  /* 给**确定宽度**而不是只给 max-width：只写 max-width 时，小图（或 1x1 的测试图）会按内在
+     尺寸缩成一条线，门禁量到高度 0 —— 而"渲染出来了"必须与图片自身尺寸无关。 */
+  width: 220px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.tool-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tool-shot figcaption {
+  padding: 2px 6px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  text-align: right;
+}
+
+.tool-shot-loading,
+.tool-shot-missing {
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
 .mem-badge {
   flex: none;
   padding: 0 6px;

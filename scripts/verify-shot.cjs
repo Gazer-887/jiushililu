@@ -672,6 +672,10 @@ let memoryArchived = [
     archivedAt: '2026-09-21T09:00:00.000Z'
   }
 ]
+const SHOT_OK = '20260924T022033-0-abcdef.png'
+/** 1x1 PNG 的 data URL：够让探针量到真实渲染高度，又不必塞几百 KB */
+const SHOT_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 const memorySaveCalls = []
 const memoryDeleteCalls = []
 const memoryRestoreCalls = []
@@ -997,6 +1001,10 @@ const STUBS = {
     memorySwitchCalls.push(enabled)
     return { enabled, warnFullAccess: memoryWarnOnNextEnable && enabled && !before }
   },
+  // plan44 S2b：截图按引用读。两张里只有一张给得出正文 —— 另一张走"取不到"那条文案，
+  // 两条界面分支各钉一条判据（桩只回一个死值的话，"取不到"那条永远测不到）
+  'mcp:artifact-read': (name) => (name === SHOT_OK ? SHOT_DATA_URL : null),
+
   // ── 批 2：候选通路（plan19）── approve = 从候选提升到正式条目；reject = 删候选
   'memory:approve': (file) => {
     memoryApproveCalls.push(file)
@@ -2089,6 +2097,21 @@ app.whenReady().then(async () => {
       detail: 'x=1024 y=768'
     }
   })
+  // plan44 S2b：带图片引用的工具事件 —— 走**真链路**（推送 → preload → store → 组件），
+  // 中途任何一环把 `images` 字段丢了，缩略图就出不来（而那正是这一片的全部意义）
+  win.webContents.send('chat:tool', {
+    conversationId: 'c1',
+    payload: {
+      id: 'probe-shot-tool',
+      name: 'mcp__windows-mcp__TakeScreenshot',
+      phase: 'end',
+      summary: '屏幕已捕获（约 0 KB，已存为界面可查看的截图）',
+      images: [
+        { name: '20260924T022033-0-abcdef.png', mime: 'image/png', bytes: 68 },
+        { name: '20260924T022100-1-fedcba.png', mime: 'image/png', bytes: 42 }
+      ]
+    }
+  })
   win.webContents.send('chat:reasoning', {
     conversationId: 'c1',
     payload: '先看看入口文件怎么写的…'
@@ -2160,6 +2183,32 @@ app.whenReady().then(async () => {
     })()
   `)
   console.log('PROCESS_VISIBLE=' + JSON.stringify(processVisible))
+
+  // plan44 S2b：截图上屏。**与上面同一时刻取**（再晚对话就继续往前推，最后一条消息不再是带截图的那条），
+  // 且**必须等解码完成再量** —— data URL 的 `complete` 在探针跑到时常常还是 false，
+  // 那一刻量到的尺寸 0 是探针在骗人，不是产品没画（实测：宽 219 / naturalWidth 0 / complete false）。
+  const shots = await win.webContents.executeJavaScript(`
+    (async () => {
+      const assts = Array.from(document.querySelectorAll('.chat-messages .msg-assistant'));
+      const last = assts[assts.length - 1];
+      const box = last ? last.querySelector('.tool-shots') : null;
+      if (!box) return { found: false };
+      for (let i = 0; i < 40; i++) {
+        const im = box.querySelector('img');
+        if (im && im.complete && im.naturalWidth > 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const imgs = Array.from(box.querySelectorAll('img'));
+      return {
+        found: true,
+        rendered: imgs.length,
+        height: imgs[0] ? Math.round(imgs[0].getBoundingClientRect().height) : 0,
+        width: imgs[0] ? Math.round(imgs[0].getBoundingClientRect().width) : 0,
+        missing: box.querySelectorAll('.tool-shot-missing').length
+      };
+    })()
+  `)
+  console.log('TOOL_SHOTS=' + JSON.stringify(shots))
 
   // —— 待办清单面板（plan7 批 D：输入框上方的任务栏）——
   const todoInfo = await win.webContents.executeJavaScript(`
@@ -6675,10 +6724,27 @@ app.whenReady().then(async () => {
     processVisible.segmentsInsideMsg === true,
     processVisible.segmentOrder
   )
+
   checkTrue(
-    'plan36：消息内分段顺序 = 到达顺序（正文 → tool → thinking）',
+    'S2b：MCP 截图在工具卡里渲染成缩略图（引用→IPC 取正文→真尺寸；节点存在不算）',
+    shots.found === true &&
+      shots.rendered === 1 &&
+      shots.height > 40 &&
+      shots.width > 40 &&
+      shots.missing === 1,
+    shots
+  )
+  checkTrue(
+    'S2b：取不到的那张明说"截图已不在"，不留一个空白格子让人以为图是透明的',
+    shots.found === true && shots.missing === 1,
+    shots
+  )
+  checkTrue(
+    // S2b 起这里多了**第三条** tool-log（截图那条 end 事件）：顺序仍等于到达顺序。
+    // 期望值写死条数是**有意的**——它同时是"新事件不许插到 thinking 之后"的位置判据。
+    'plan36：消息内分段顺序 = 到达顺序（正文 → tool×3 → thinking）',
     JSON.stringify(processVisible.segmentOrder) ===
-      JSON.stringify(['msg-content', 'tool-log', 'tool-log', 'reasoning-block']),
+      JSON.stringify(['msg-content', 'tool-log', 'tool-log', 'tool-log', 'reasoning-block']),
     processVisible.segmentOrder
   )
   checkTrue(

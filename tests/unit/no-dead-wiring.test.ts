@@ -85,6 +85,8 @@ describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', (
     { key: 'memoryRestore', literal: 'memory:restore' },
     { key: 'memoryClearArchive', literal: 'memory:clear-archive' },
     // plan53 片 2：审批门的逃生开关。这两个通道一旦少一处，设置页那个格子就是装饰品（点了没反应、不报错）
+    // plan44 S2b：截图按引用读，缺任何一处都是"图在盘上、界面永远转圈"
+    { key: 'mcpArtifactRead', literal: 'mcp:artifact-read' },
     { key: 'memoryGetApprovalGate', literal: 'memory:get-approval-gate' },
     { key: 'memorySetApprovalGate', literal: 'memory:set-approval-gate' }
   ]) {
@@ -103,6 +105,10 @@ describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', (
 
   it('渲染层真的调用过清空归档（`clearArchivedMemory`，K28）', () => {
     expect(src('renderer/src/components/MemoryManager.tsx')).toContain('window.api.clearArchivedMemory(')
+  })
+
+  it('渲染层真的调用过截图读取（`MessageSegments.tsx`，S2b）', () => {
+    expect(src('renderer/src/components/MessageSegments.tsx')).toContain('window.api.readMcpArtifact(')
   })
 
   it('渲染层真的调用过审批门读写（`MemorySettings.tsx`，片 2）', () => {

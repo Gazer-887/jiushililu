@@ -43,6 +43,8 @@ import {
   type McpServerStatus,
   type SettingsChangedKind
 } from '@shared/ipc'
+import { readMcpImageDataUrl, saveMcpImage } from './mcp/artifacts'
+import type { ToolImageRef } from '@shared/agent'
 import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getMemoryApprovalGate, setMemoryApprovalGate, getComputerControlEnabled, setComputerControlEnabled, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
 import { transcribe, testVoiceEndpoint } from './voice/transcribe'
 import type { VoicePatch } from '@shared/voice'
@@ -690,6 +692,19 @@ export function registerIpcHandlers(deps: {
         firecrawlApiKey: getFirecrawlKey() || null,
         // 自视段（2026-09-15）：电脑控制开关由组合根读好传入（runner 不碰 electron-store）
         computerControl: getComputerControlEnabled(),
+        // plan44 S2b：MCP 截图落进 userData/mcp-artifacts/，界面按引用读；**不进模型上下文**。
+        // 必填（漏传 = 截图静默消失，正是这一片要修的症状），故两处装配都补。
+        saveImages: (imgs) =>
+          imgs
+            .map((img, i) =>
+              saveMcpImage(deps.userDataDir, {
+                mime: img.mime,
+                base64: img.base64,
+                index: i,
+                now: () => new Date()
+              })
+            )
+            .filter((x): x is ToolImageRef => x !== null),
         conversationId,
         onText: (delta) => {
           if (firstSignalAt === 0) {
@@ -862,6 +877,19 @@ export function registerIpcHandlers(deps: {
         conversationId: req.conversationId ?? AGENT_TASK_OWNER,
         // 自视段：一次性任务同样报告配置（模型名/工具/子代理）
         computerControl: getComputerControlEnabled(),
+        // plan44 S2b：MCP 截图落进 userData/mcp-artifacts/，界面按引用读；**不进模型上下文**。
+        // 必填（漏传 = 截图静默消失，正是这一片要修的症状），故两处装配都补。
+        saveImages: (imgs) =>
+          imgs
+            .map((img, i) =>
+              saveMcpImage(deps.userDataDir, {
+                mime: img.mime,
+                base64: img.base64,
+                index: i,
+                now: () => new Date()
+              })
+            )
+            .filter((x): x is ToolImageRef => x !== null),
         // Firecrawl（plan32）：与对话线同一口径 —— 配了就用，没配回落默认源
         firecrawlApiKey: getFirecrawlKey() || null,
         // 一次性任务也注入记忆并采集痕迹（少了它，模型在这里 remember 就没人上报 —— 静默缺口）
@@ -1379,6 +1407,12 @@ export function registerIpcHandlers(deps: {
   // ── 审批门（plan53 片 2 / D-131）── 默认开：模型写的长期记忆先进候选、由人批准才注入。
   //    关掉是**逃生开关**，语义变化立刻生效（每次写现读），故变更后广播让右抽屉重读候选区。
   ipcMain.handle(IPC.memoryGetApprovalGate, (): boolean => getMemoryApprovalGate())
+
+  // plan44 S2b：工具卡片里的截图。名字来自存档（可能是手改的坏数据），故校验在 artifacts 模块里做，
+  // 这里只保证越界/不存在都回 null —— 不抛、不把路径信息带回渲染层。
+  ipcMain.handle(IPC.mcpArtifactRead, (_e, raw: unknown): string | null =>
+    readMcpImageDataUrl(deps.userDataDir, z.string().min(1).max(120).parse(raw))
+  )
 
   ipcMain.handle(IPC.memorySetApprovalGate, (_e, raw: unknown): boolean => {
     const enabled = z.boolean().parse(raw)

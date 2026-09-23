@@ -1,4 +1,8 @@
 import { afterAll, describe, expect, it } from 'vitest'
+
+/** 1x1 PNG，只用来占位 */
+const PNG_1X1 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,6 +41,11 @@ async function makeEchoServer(): Promise<{ clientTransport: Transport }> {
           properties: { text: { type: 'string', description: '要回显的文本' } },
           required: ['text']
         }
+      },
+      {
+        name: 'shot',
+        description: '返回一段文本加一张图片（plan44 S2b 用）',
+        inputSchema: { type: 'object', properties: {} }
       }
     ]
   }))
@@ -44,6 +53,14 @@ async function makeEchoServer(): Promise<{ clientTransport: Transport }> {
     if (req.params.name === 'echo') {
       const text = (req.params.arguments as { text?: string } | undefined)?.text ?? ''
       return { content: [{ type: 'text', text: `echo: ${text}` }] }
+    }
+    if (req.params.name === 'shot') {
+      return {
+        content: [
+          { type: 'text', text: '屏幕已捕获' },
+          { type: 'image', data: PNG_1X1, mimeType: 'image/png' }
+        ]
+      }
     }
     return { content: [{ type: 'text', text: `未知工具 ${req.params.name}` }], isError: true }
   })
@@ -74,6 +91,33 @@ async function makeManager(
 }
 
 describe('mcp-manager（真协议 · InMemory）', () => {
+  // plan44 S2b：以前 image 块被压成"[image 类型内容]"，用户与模型两头都看不见图。
+  // 现在文本里留一个"有这张图"的指针，base64 单独交出去 —— 由调用方决定落盘与显示。
+  it('image 段：文本给指针、base64 另交，不再压成"[image 类型内容]"', async () => {
+    const { clientTransport } = await makeEchoServer()
+    const manager = await makeManager(async () => clientTransport)
+    await manager.connectAll()
+
+    const out = await manager.callTool('test', 'shot', {})
+    expect(out.text).toContain('屏幕已捕获')
+    expect(out.text).toContain('已存为界面可查看的截图')
+    expect(out.text).not.toContain('[image 类型内容]')
+    // 文本里**不许**带 base64 —— 那是模型上下文与存档体积的入口
+    expect(out.text).not.toContain(PNG_1X1)
+    expect(out.images).toHaveLength(1)
+    expect(out.images[0]?.mime).toBe('image/png')
+    expect(out.images[0]?.base64).toBe(PNG_1X1)
+  })
+
+  it('未连接的 server 调用 → 人话文本 + 空图片数组（不是 undefined，调用方不必防）', async () => {
+    const { clientTransport } = await makeEchoServer()
+    const manager = await makeManager(async () => clientTransport)
+    const out = await manager.callTool('test', 'shot', {})
+    expect(out.text).toContain('未连接')
+    expect(out.images).toEqual([])
+    void clientTransport
+  })
+
   it('连接 → 发现工具（mcp__ 前缀）→ 调用返回文本（判据 1）', async () => {
     const { clientTransport } = await makeEchoServer()
     const manager = await makeManager(async () => clientTransport)
@@ -81,11 +125,12 @@ describe('mcp-manager（真协议 · InMemory）', () => {
 
     expect(manager.hasConnected()).toBe(true)
     const tools = manager.activeTools()
-    expect(tools.map((t) => t.fullName)).toEqual(['mcp__test__echo'])
+    expect(tools.map((t) => t.fullName)).toEqual(['mcp__test__echo', 'mcp__test__shot'])
     expect(tools[0]?.inputSchema).toBeDefined()
 
     const out = await manager.callTool('test', 'echo', { text: '你好' })
-    expect(out).toBe('echo: 你好')
+    expect(out.text).toBe('echo: 你好')
+    expect(out.images).toEqual([])
   })
 
   it('server 报错（isError）→ 人话文本返回，不抛异常（判据 2 / D-066）', async () => {
@@ -94,8 +139,8 @@ describe('mcp-manager（真协议 · InMemory）', () => {
     await manager.connectAll()
 
     const out = await manager.callTool('test', 'no-such-tool', {})
-    expect(out).toContain('MCP 工具返回错误')
-    expect(out).toContain('未知工具 no-such-tool')
+    expect(out.text).toContain('MCP 工具返回错误')
+    expect(out.text).toContain('未知工具 no-such-tool')
   })
 
   it('连接失败 → state=error，不阻塞其他流程（D-063）', async () => {

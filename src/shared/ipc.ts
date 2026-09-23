@@ -397,6 +397,11 @@ export const IPC = {
   memoryGetAuto: 'memory:get-auto',
   memorySetAuto: 'memory:set-auto',
   /** **记忆开关**（plan19 批 1）：批 1 只管通路 A（模型工具）是否下发，通路 B 不受它管 */
+  /**
+   * 读一张 MCP 截图产物（plan44 S2b）：入参是**受限文件名**（由 `mcp-artifacts` 模块生成），
+   * 返回 data URL；形状不合规或文件不存在一律 null —— 界面拿不到路径，也就没有穿越面。
+   */
+  mcpArtifactRead: 'mcp:artifact-read',
   memoryGetSwitch: 'memory:get-switch',
   memorySetSwitch: 'memory:set-switch',
   /**
@@ -790,6 +795,7 @@ export interface ApiBridge {
   getMemorySwitch(): Promise<boolean>
   setMemorySwitch(enabled: boolean): Promise<import('./memory').MemorySwitchResult>
   /** plan53 片 2：审批门（模型写入需人工批准）读与写。写返回改后的值。 */
+  readMcpArtifact(name: string): Promise<string | null>
   getMemoryApprovalGate(): Promise<boolean>
   setMemoryApprovalGate(enabled: boolean): Promise<boolean>
   /** **电脑控制开关**（plan44 门控）与 **E5 终端 profile 开关**（默认关，下一次起终端生效） */

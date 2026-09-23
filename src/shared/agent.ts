@@ -11,8 +11,11 @@ export interface ToolSchema {
 
 export interface AgentTool {
   schema: ToolSchema
-  /** 返回值是给模型看的文本：错误也走文本回，让模型自行纠正 */
-  execute(args: Record<string, unknown>): Promise<string>
+  /**
+   * 返回值是**给模型看的文本**：错误也走文本回，让模型自行纠正。
+   * `ToolOutcome` 那一支只给需要交图的工具（plan44 S2b）；其余工具返 string，一个字都不用改。
+   */
+  execute(args: Record<string, unknown>): Promise<string | ToolOutcome>
 }
 
 export interface AgentMessage {
@@ -47,6 +50,32 @@ export interface ToolEvent {
   summary?: string
   /** 这一步输出被窗口化时省下的估算 token：用户看得见"它压了"，才有依据判断活会不会变糊 */
   savedTokens?: number
+  /**
+   * 这一步产出的**图片产物引用**（plan44 S2b）：只存名字/类型/大小，正文在 `mcp-artifacts/` 里。
+   * ⚠️ 它属于 `segments`（本地渲染与回看资产），**不发给模型** —— 与"记忆正文不进 prompt、
+   *    要细节用 recall"是同一条口径：模型不需要看见截图，用户需要。
+   */
+  images?: ToolImageRef[]
+}
+
+/**
+ * 图片产物的引用（plan44 S2b）。
+ * ⚠️ `name` 是**由主进程生成的受限文件名**，读取侧按它做白名单校验 —— 存路径等于给穿越留门。
+ */
+export interface ToolImageRef {
+  name: string
+  mime: string
+  bytes: number
+}
+
+/**
+ * 工具执行结果（plan44 S2b 起允许带图片）。
+ * `execute` 的返回类型刻意是 `string | ToolOutcome`：**老工具一个字都不用改**，
+ * 只有需要交图的那一个通路返回结构体 —— 改全体签名会把"加缩略图"变成动工具契约。
+ */
+export interface ToolOutcome {
+  text: string
+  images?: ToolImageRef[]
 }
 
 /**

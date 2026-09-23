@@ -45,19 +45,47 @@ function validateServerConfig(input: McpServerConfig): string | null {
   return null
 }
 
-function contentToText(content: unknown): string {
-  if (!Array.isArray(content)) return String(content ?? '')
-  return content
+/**
+ * MCP 返回内容的拆解（plan44 S2b）：文本段拼成给模型的文本，**image 段收下来另交**。
+ * 以前 image 块被压成"[image 类型内容]"—— 用户与模型两头都看不见图，
+ * 而桌面操作最怕的就是"点了截图，界面只给一行字"。
+ * 非文本非图片（audio / resource）仍按原样报类型，不假装收了。
+ */
+function contentToParts(content: unknown): { text: string; images: McpImagePart[] } {
+  const images: McpImagePart[] = []
+  if (!Array.isArray(content)) return { text: String(content ?? ''), images }
+  const text = content
     .map((b) => {
-      const block = b as { type?: string; text?: string }
+      const block = b as { type?: string; text?: string; data?: string; mimeType?: string }
       if (block.type === 'text') return block.text ?? ''
+      if (block.type === 'image' && typeof block.data === 'string') {
+        images.push({ mime: block.mimeType ?? 'image/png', base64: block.data })
+        // 文本里只留"有这么一张图"的指针：模型据此知道截图存在，但不必吃 base64
+        return `[图片 约 ${Math.round((block.data.length * 3) / 4 / 1024)} KB，已存为界面可查看的截图]`
+      }
       return `[${block.type ?? '未知'} 类型内容]`
     })
     .join('\n')
+  return { text, images }
 }
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+/** MCP 返回的一张图（base64 原样；落盘由调用方决定 —— manager 不碰 userData 之外的写） */
+export interface McpImagePart {
+  mime: string
+  base64: string
+}
+
+/**
+ * 工具调用结果（plan44 S2b）。`text` 是给模型看的那份；
+ * `images` 只给界面，**不进模型上下文** —— 模型不需要看见截图，用户需要。
+ */
+export interface McpCallResult {
+  text: string
+  images: McpImagePart[]
 }
 
 export interface McpManager {
@@ -72,7 +100,8 @@ export interface McpManager {
   /** 断开并重连（UI「重连」按钮；配置变更后也走它） */
   reconnect(name: string): Promise<McpSaveResult>
   /** 转发调用（D-066：错误以人话返回，不抛异常 —— 让模型看到错误并自纠） */
-  callTool(server: string, tool: string, args: Record<string, unknown>): Promise<string>
+  /** 转发调用（D-066：错误以人话返回，不抛异常 —— 让模型看到错误并自纠） */
+  callTool(server: string, tool: string, args: Record<string, unknown>): Promise<McpCallResult>
   /** 连接状态变化时通知（UI 刷新） */
   onChange(cb: () => void): () => void
   /** 组合根在启动时调用：全量连接，失败不阻塞（D-063） */
@@ -244,16 +273,16 @@ export function createMcpManager(deps: {
       return { ok: true }
     },
 
-    async callTool(server, tool, args): Promise<string> {
+    async callTool(server, tool, args): Promise<McpCallResult> {
       const client = clients.get(server)
-      if (!client) return `MCP 服务器「${server}」未连接，无法调用 ${tool}。`
+      if (!client) return { text: `MCP 服务器「${server}」未连接，无法调用 ${tool}。`, images: [] }
       try {
         const result = await client.callTool({ name: tool, arguments: args })
-        const text = contentToText(result.content)
+        const { text, images } = contentToParts(result.content)
         // D-066：isError 以人话返回（不抛异常）—— 让模型看到错误并自纠
-        return result.isError ? `MCP 工具返回错误：${text}` : text
+        return { text: result.isError ? `MCP 工具返回错误：${text}` : text, images }
       } catch (e) {
-        return `MCP 调用失败（${server}/${tool}）：${errText(e)}`
+        return { text: `MCP 调用失败（${server}/${tool}）：${errText(e)}`, images: [] }
       }
     },
 

@@ -7,7 +7,8 @@ import type {
   AgentLoopResult,
   AgentTool,
   SubagentJobEvent,
-  ToolEvent
+  ToolEvent,
+  ToolImageRef
 } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
 import { ToolGate, type PathAccess } from './guard'
@@ -34,7 +35,7 @@ import { createPlaybookTools } from './tools/playbook-tools'
 import { createSkillTools } from './tools/skill-tools'
 import { createMcpTools } from './tools/mcp-tools'
 import type { SkillsStore } from '../skills/skills-store'
-import type { McpManager } from '../mcp/mcp-manager'
+import type { McpImagePart, McpManager } from '../mcp/mcp-manager'
 import type { MemoryRepo } from '../memory/memory-core'
 import type { PlaybookRepo } from '../memory/playbook-core'
 import { createAskTools, type AskReporter } from './tools/ask-tools'
@@ -67,6 +68,12 @@ import { SUMMARY_SYSTEM_PROMPT } from './context'
  * 自定义 Agent 在 `tools` 里显式声明才会下发，而可写档下每次执行前**逐次确认**（plan8 R5）。
  */
 const log = createLogger('agent-runner')
+
+/** plan44 S2b：装配层没给落盘函数时的**响亮**兜底 —— 宁可留一条 warn，也不静默吞掉截图 */
+function dropImagesWithLog(images: McpImagePart[]): ToolImageRef[] {
+  log.warn('MCP 返回了图片，但本次装配未提供落盘函数，已丢弃并留痕', { count: images.length })
+  return []
+}
 
 /**
  * 门控拦下工具时的**默认日志落点**（D-119 ① 的复查结论）。
@@ -266,7 +273,9 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
           // `false` 被条件展开吞成"字段不存在"，看着与显式关闭等价，实则把"关"与"没设置"混成一回事 ——
           // 权限开关上这种含糊迟早出事（D-119 ① 的 P0 复查结论）。
           computerControl: hooks.mcp.computerControl === true,
-          onGatedDrop: hooks.mcp.onGatedDrop ?? defaultGatedDropLog
+          onGatedDrop: hooks.mcp.onGatedDrop ?? defaultGatedDropLog,
+          // 漏传它 = 截图又被静默丢掉（plan44 S2b 要修的就是这个），所以类型上是必填
+          saveImages: hooks.mcp.saveImages
         })
       : [])
   ]
@@ -361,6 +370,11 @@ export interface ToolHooks {
      */
     computerControl: boolean
     onGatedDrop?: (fullName: string, reason: string) => void
+    /**
+     * MCP 图片落盘（plan44 S2b）。**必填** —— 理由与 `computerControl` 同一条：
+     * 漏传不报错，只会让截图静默消失，正是这一片要修的症状。
+     */
+    saveImages: (images: McpImagePart[]) => ToolImageRef[]
   }
   /** 打包态资源根（找随包的 ripgrep）。装配层注入 —— runner 不许 import electron；不传 = 只用环境变量/PATH 上的 rg */
   resourcesPath?: string | null
@@ -539,6 +553,12 @@ export interface RunAgentArgs {
    * 生产侧 `ipc.ts` 每次发送都现取 `getComputerControlEnabled()`，不存在漏传。
    */
   computerControl?: boolean
+  /**
+   * MCP 图片落盘（plan44 S2b）。这里**可选**（标题生成 / 子代理那几条路径用不上），
+   * 但缺省不是"丢掉算了" —— 走 `dropImagesWithLog`：收不到图就**记一条 warn**。
+   * 静默丢图是这一片要修的原始症状，不能换个地方复发。
+   */
+  saveImages?: (images: McpImagePart[]) => ToolImageRef[]
   /**
    * plan27：显式跳过计划批准闸。
    * ⚠️ **内层（executor）递归调用必须传 `true`** —— 与「executor 自身不带 `approval:plan`」构成**双保险**，
@@ -752,6 +772,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
             // plan44 决策 4：桌面派门控读**本轮**的 computerControl（ipc 每次发送现取设置）；
             // 被拦工具记日志（决策 3b：未知工具名默认屏蔽要"看得见被拦了什么"才查得动）
             computerControl: args.computerControl === true,
+            saveImages: args.saveImages ?? dropImagesWithLog,
             onGatedDrop: defaultGatedDropLog,
             ...(ctx.confirmCommand
               ? {
