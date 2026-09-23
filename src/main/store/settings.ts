@@ -23,6 +23,12 @@ interface StoredSettings extends ModelSettings {
   /** **记忆开关**（plan19 批 1）。缺字段 = 老配置 → 视为开（否则记忆批做了等于没做） */
   memoryEnabled?: boolean
   /**
+   * **审批门**（plan53 片 2 / D-131）：模型自主发起的长期记忆写入是否需要用户批准才生效。
+   * 缺字段 = 未设 → **开**（与 `memoryEnabled` 同口径：这道门是本批的目的本身，
+   * 老配置里没有这个字段不等于用户要求关掉）。显式 `false` = 逃生开关，回到直写。
+   */
+  memoryApprovalGate?: boolean
+  /**
    * **自动记忆（反思）开关**（批 2 plan19）。`undefined` = 未显式设 → 由省 token 档位提供默认值
    * （轻量档关、其余开 —— 反思是额外一次模型调用，省 token 用户不应被默认烧钱）。
    * ⚠️ 显式设过的不会被档位覆盖（用户的选择优先于档位默认）。
@@ -114,6 +120,20 @@ export function getMemoryEnabled(): boolean {
 export function setMemoryEnabled(enabled: boolean): boolean {
   store.set('memoryEnabled', enabled)
   return getMemoryEnabled()
+}
+
+/**
+ * **审批门**（plan53 片 2 / D-131）。开 = 模型写的长期记忆先进候选、用户批准后才注入；
+ * 关 = 回到直写（逃生开关）。缺字段按**开**处理，判断走 `!== false` —— 与 `getMemoryEnabled` 同口径：
+ * 老配置里没这个字段不等于用户要求关掉。
+ */
+export function getMemoryApprovalGate(): boolean {
+  return store.store.memoryApprovalGate !== false
+}
+
+export function setMemoryApprovalGate(enabled: boolean): boolean {
+  store.set('memoryApprovalGate', enabled)
+  return getMemoryApprovalGate()
 }
 
 /**

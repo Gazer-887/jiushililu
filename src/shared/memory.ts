@@ -144,6 +144,12 @@ export interface MemorySaveInput {
    * 仅在 `saveCandidate` 写入候选目录时使用；正式 save 路径不写它。
    */
   conflictWith?: string
+  /**
+   * plan53 §四之二 R1 v2：**这一轮的命中来自用户否过**（`remember` 工具算出因果链后带下来）。
+   * ⚠️ 只有模型通路能带 —— `memory:save` 的 schema 不收这个字段，界面伪造不出来。
+   * 单独出现不算纠正：必须与 `conflictWith` 同时成立（没有对象就不叫"纠正"，叫新增）。
+   */
+  fromCorrection?: boolean
 }
 
 /**
@@ -207,12 +213,25 @@ export interface MemoryAutoSettings {
  */
 export type MemorySaveResult =
   | { ok: true; file: string; guard: MemoryGuardVerdict }
+  /**
+   * plan53 片 2：审批门开着时的模型直写 —— **没生效**，落成待批准的候选。
+   * ⚠️ 故意**不带 `file`**：这条不是生效条目。若与上一支共用 `file`，所有 `if (ok) 用 file`
+   * 的调用点都会把候选路径当条目路径继续用（日志、广播、界面全都错得静默）。
+   */
+  | { ok: true; queued: true; candidateFile: string; guard: MemoryGuardVerdict }
   | {
       ok: false
       reason: string
       needsConfirm?: boolean
       similar?: { file: string; name: string; description: string }
     }
+
+/**
+ * 批准候选的结果。⚠️ 排除 `queued` —— 批准这条路径固定按"人认可"（`origin: 'user'`）写，
+ * 审批门只管模型来源，所以"批准之后又变提案"不是一种可能结局，而是一种**装配错误**。
+ * 把它从类型里剔掉，调用点才不必为一个不该存在的分支写代码。
+ */
+export type MemoryApproveResult = Exclude<MemorySaveResult, { queued: true }>
 
 /** 一对疑似重复的存量条目（plan33 问题四）：面板「疑似重复」区的数据源 */
 export interface MemoryDuplicatePair {

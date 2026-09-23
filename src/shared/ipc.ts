@@ -400,6 +400,12 @@ export const IPC = {
   memoryGetSwitch: 'memory:get-switch',
   memorySetSwitch: 'memory:set-switch',
   /**
+   * **审批门**（plan53 片 2 / D-131）：模型写的长期记忆是否需用户批准才生效。默认开；
+   * 关掉 = 逃生开关，回到"写完下一轮就进 prompt"。生效时机 = **下一次写**（每次写现读，不重启）。
+   */
+  memoryGetApprovalGate: 'memory:get-approval-gate',
+  memorySetApprovalGate: 'memory:set-approval-gate',
+  /**
    * **电脑控制开关**（2026-09-15 用户需求；plan44 起接 windows-mcp）。关 = 桌面类 MCP 工具整批不下发
    * （消费侧门控，见 `shared/computer-use`）；开关变更自下一轮对话生效。
    */
@@ -783,6 +789,9 @@ export interface ApiBridge {
   /** **记忆开关**：批 1 只管通路 A。`warnFullAccess` = 开启时正处于完全访问档（判据 14 要当场告警） */
   getMemorySwitch(): Promise<boolean>
   setMemorySwitch(enabled: boolean): Promise<import('./memory').MemorySwitchResult>
+  /** plan53 片 2：审批门（模型写入需人工批准）读与写。写返回改后的值。 */
+  getMemoryApprovalGate(): Promise<boolean>
+  setMemoryApprovalGate(enabled: boolean): Promise<boolean>
   /** **电脑控制开关**（plan44 门控）与 **E5 终端 profile 开关**（默认关，下一次起终端生效） */
   getComputerControl(): Promise<boolean>
   setComputerControl(enabled: boolean): Promise<boolean>

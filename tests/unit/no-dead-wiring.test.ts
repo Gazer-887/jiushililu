@@ -65,7 +65,10 @@ describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', (
   for (const { key, literal } of [
     { key: 'memoryDelete', literal: 'memory:delete' },
     { key: 'memoryRestore', literal: 'memory:restore' },
-    { key: 'memoryClearArchive', literal: 'memory:clear-archive' }
+    { key: 'memoryClearArchive', literal: 'memory:clear-archive' },
+    // plan53 片 2：审批门的逃生开关。这两个通道一旦少一处，设置页那个格子就是装饰品（点了没反应、不报错）
+    { key: 'memoryGetApprovalGate', literal: 'memory:get-approval-gate' },
+    { key: 'memorySetApprovalGate', literal: 'memory:set-approval-gate' }
   ]) {
     it(`${literal}：常量 / 主进程 handler / preload 桥 / 门禁桩 四处齐`, () => {
       expect(src('shared/ipc.ts')).toContain(`${key}: '${literal}'`)
@@ -82,5 +85,11 @@ describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', (
 
   it('渲染层真的调用过清空归档（`clearArchivedMemory`，K28）', () => {
     expect(src('renderer/src/components/MemoryManager.tsx')).toContain('window.api.clearArchivedMemory(')
+  })
+
+  it('渲染层真的调用过审批门读写（`MemorySettings.tsx`，片 2）', () => {
+    const settings = src('renderer/src/components/MemorySettings.tsx')
+    expect(settings).toContain('window.api.getMemoryApprovalGate()')
+    expect(settings).toContain('window.api.setMemoryApprovalGate(')
   })
 })

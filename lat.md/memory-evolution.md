@@ -90,6 +90,10 @@
 [[src/main/memory/reflection-prompt.ts#REFLECTION_SYSTEM_PROMPT]]，为的是单测能断言它而不拖着 electron 全家桶；
 候选一律落 [[src/main/store/memory-fs.ts#candidatesDir]]，与正式条目物理隔离——
 [[src/main/memory/memory-core.ts#MemoryBackend]] 的 `listFiles` 只列正式目录，没批准的候选进不了注入段。
+候选有两个来源（`origin` 记着是谁提的，界面据此出两种徽标）：反思提炼，以及模型调
+[[src/main/agent/tools/memory-tools.ts#createMemoryTools]] 写长期记忆时被审批门改道过来的那部分
+（[[src/main/memory/memory-core.ts#createMemoryRepo]] 的 `modelWritesNeedApproval`）。
+审批闸开在 `save()` 而不是工具层：以后再多一条模型通路会自动被罩住，不靠每个调用点记得判一次。
 
 失败留痕在装配层而不在执行器：执行器只咽下"输出形状不对"这一种
 （模型没按格式回答不是故障），其余异常一律抛出；[[src/main/store/memory-store.ts#createMemoryStore]]
@@ -138,9 +142,12 @@
 
 候选的两个终态不对称：批准要么覆盖旧条目（`origin` 沿用旧条目）、要么提升为新条目（`origin` 记 user，
 批准等于用户认可），两种都必须删候选文件，否则同名双条同时进索引；拒绝只删文件。
-模型侧的"纠正"是另一条判据：光有同名改写不算纠正，必须同时命中
-[[src/main/agent/tools/memory-tools.ts#NEGATION_WORDS]]（[[src/main/agent/tools/memory-tools.ts#hasNegation]]），
-否则模型可以自己把"用户否掉了这条"写成事件，重复纠正率就不再是用户给的信号。
+模型侧的"纠正"要三件事同时成立才算（plan53 §四之二 R1 v2）：提案撞名于既有条目、来源那一轮的用户
+原话命中 [[src/main/agent/tools/memory-tools.ts#NEGATION_WORDS]]（[[src/main/agent/tools/memory-tools.ts#hasNegation]]）、
+**且该提案被用户批准**。记账时刻因此从"写入成功"推到"批准生效"——公式一行不动，动的只有时刻。
+两个方向都会把这条链写坏：在提案那一刻记，等于把"打算改"记成"已改"；批准后又拒绝还留着事件，
+而 [[src/main/memory/events.ts]] 只追加不删改，错了再也回改不了，重复纠正率就不再是用户给的信号。
+`correct` 的会话与轮次取候选里存的**来源那一轮**（批准可能在几天后的另一条会话里）。
 
 ## 手册回注落在哪
 

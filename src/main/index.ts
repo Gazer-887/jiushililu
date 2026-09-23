@@ -52,6 +52,7 @@ import {
   getNetworkCredentials,
   setNetworkCredentials,
   getMemoryEnabled,
+  getMemoryApprovalGate,
   getAutoMemoryEnabled,
   getTerminalLoadProfileEnabled,
   getReflectionDailyLimit,
@@ -553,6 +554,9 @@ app.whenReady().then(async () => {
     onWarn: (message, extra) => log.warn(message, extra),
     onReflectionLog: (message, extra) => log.info(message, extra),
     dailyLimit: getReflectionDailyLimit(),
+    // plan53 片 2（D-131）：审批门**每次写现读**。设置页那个开关是逃生口，
+    // 建库时读一次会把它变成"重启才生效"——用户当场关掉、下一轮照样被拦，那是骗人。
+    modelWritesNeedApproval: () => getMemoryApprovalGate(),
     // 校验会话存在（审查 C P1：不重试坏 id，不卡住队列）
     conversationsExists: (id) => getConversation(id) !== null,
     // 取会话正文（含 bodyBytes）—— 反思前置门靠 bodyBytes 判断是否值得跑

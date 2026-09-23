@@ -187,11 +187,15 @@ export default function MemoryManager(): JSX.Element {
         <div className="mem-candidates">
           <div className="mem-candidates-title">待批准 {candidates.length} 条</div>
           <div className="mem-candidates-note">
-            反思从历史会话提炼的候选。批准后生效（覆盖同名旧记忆）；不批准不会注入。
+            反思提炼或模型提案的候选。批准后生效（撞名时覆盖那条旧条目）；不批准不会注入。
           </div>
           {candidates.map((c) => (
             <div key={c.file} className="mem-candidate-row">
-              <span className="mem-badge mem-badge-reflection">候选</span>
+              <span
+                className={c.origin === 'model' ? 'mem-badge mem-badge-model' : 'mem-badge mem-badge-reflection'}
+              >
+                {c.origin === 'model' ? '模型提案' : c.origin === 'reflection' ? '反思候选' : '来源异常'}
+              </span>
               <span className="mem-name">{c.name}</span>
               <span className="mem-desc">{c.description}</span>
               <div className="mem-candidate-actions">

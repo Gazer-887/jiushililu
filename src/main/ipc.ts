@@ -43,7 +43,7 @@ import {
   type McpServerStatus,
   type SettingsChangedKind
 } from '@shared/ipc'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getComputerControlEnabled, setComputerControlEnabled, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getMemoryApprovalGate, setMemoryApprovalGate, getComputerControlEnabled, setComputerControlEnabled, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
 import { transcribe, testVoiceEndpoint } from './voice/transcribe'
 import type { VoicePatch } from '@shared/voice'
 import type { SystemSettings, SystemView } from '@shared/system'
@@ -1273,7 +1273,6 @@ export function registerIpcHandlers(deps: {
     // 入口，但编辑既有画像条目时分类要能保留）；模型直写 profile 由 save 层拒绝（D-073）。
     class: z.enum(['style', 'default', 'knowledge', 'profile']),
     body: z.string().min(1).max(100_000),
-    origin: z.enum(['model', 'user', 'reflection']).optional(),
     evidence: z
       .object({ conversationId: z.string().min(1).max(64), turnIndex: z.number().int().min(0).optional() })
       .nullable()
@@ -1310,9 +1309,16 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.memorySave, (_e, raw: unknown): MemorySaveResult => {
     const input = friendlyParse(memorySaveSchema, raw)
-    const result = deps.memory.save(input as MemorySaveInput)
+    // 来源**钉死成 `user`**，schema 连 `origin` 字段都不收（收了又忽略 = 骗人）。
+    // 这条通道由人触发（右抽屉编辑 / 选中即记 / 导入）；让渲染层能自称 `model`，
+    // 等于给它一把"把手动编辑拦成候选"和"把条目伪装成模型写的"的钥匙 —— 两重错都不该有可能发生。
+    const result = deps.memory.save({ ...input, origin: 'user' } as MemorySaveInput)
     if (result.ok) {
-      log.info('记忆已保存', { name: input.name, file: result.file })
+      if ('queued' in result) {
+        log.info('模型写入已落为待批准候选（未生效）', { name: input.name, candidateFile: result.candidateFile })
+      } else {
+        log.info('记忆已保存', { name: input.name, file: result.file })
+      }
       sendToAll(IPC.memoryChanged)
     }
     return result
@@ -1369,6 +1375,18 @@ export function registerIpcHandlers(deps: {
   // ── 记忆开关（plan19 批 1）── 批 1 只管**通路 A**：关掉就不下发 remember / recall（结构性，
   //    由 runAgent 每轮按 `enabled()` 判断，"有消费者才注册"的同一口径）。通路 B 是用户主动行为，不受它管。
   ipcMain.handle(IPC.memoryGetSwitch, (): boolean => getMemoryEnabled())
+
+  // ── 审批门（plan53 片 2 / D-131）── 默认开：模型写的长期记忆先进候选、由人批准才注入。
+  //    关掉是**逃生开关**，语义变化立刻生效（每次写现读），故变更后广播让右抽屉重读候选区。
+  ipcMain.handle(IPC.memoryGetApprovalGate, (): boolean => getMemoryApprovalGate())
+
+  ipcMain.handle(IPC.memorySetApprovalGate, (_e, raw: unknown): boolean => {
+    const enabled = z.boolean().parse(raw)
+    const before = getMemoryApprovalGate()
+    const after = setMemoryApprovalGate(enabled)
+    if (before !== after) sendToAll(IPC.memoryChanged)
+    return after
+  })
 
   ipcMain.handle(IPC.memorySetSwitch, (_e, raw: unknown): MemorySwitchResult => {
     const enabled = z.boolean().parse(raw)

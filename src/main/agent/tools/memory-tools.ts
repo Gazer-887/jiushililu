@@ -108,16 +108,30 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
       const isCorrection = conflict !== null && hasNegation(lastUser)
       const editFile = isCorrection ? conflict.file : undefined
 
-      const first = deps.repo.save({
-        name,
-        description,
-        class: cls as MemoryClass,
-        body,
-        origin: 'model',
-        evidence,
-        ...(editFile === undefined ? {} : { file: editFile })
-      })
+      // `fromCorrection` 只带"这轮用户否过"那半边，撞没撞名由 core 侧与 `file` 一起判
+      // （v2 条件 ①+②）。core 若把这条改写成候选，会把它随候选带走 —— 届时**不记此刻的账**。
+      const submit = (confirmed: boolean) =>
+        deps.repo.save({
+          name,
+          description,
+          class: cls as MemoryClass,
+          body,
+          origin: 'model',
+          evidence,
+          ...(isCorrection ? { fromCorrection: true } : {}),
+          ...(editFile === undefined ? {} : { file: editFile }),
+          ...(confirmed ? { confirmed: true } : {})
+        })
+
+      const PENDING =
+        `已将「${name}」提交为**待确认提案**：用户批准之前不会生效、也不会注入后续对话。` +
+        '（要改现有条目请等批准结果，不要重复提交同一条）'
+
+      const first = submit(false)
       if (first.ok) {
+        // 审批门开着 —— 这条还没生效。回话必须说实话：说"已记住"会让模型下一轮当它已经存在，
+        // 而用户看见的是"模型说记了、我却没在库里找到"，两头都是假账。
+        if ('queued' in first) return PENDING
         if (!isCorrection) return `已记住「${name}」。用户可在工作台的记忆页签里查看或删除它。`
         // 因果链成立 → 落 correct 事件（重复纠正率的唯一数据来源）
         deps.repo.record({ kind: 'correct', conversationId, name, ...(turnIndex === null ? {} : { turnIndex }) })
@@ -129,21 +143,19 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
       const agreed = await deps.confirm(first.reason)
       if (!agreed) return '用户没有确认，这条没有写入。'
 
-      const second = deps.repo.save({
-        name,
-        description,
-        class: cls as MemoryClass,
-        body,
-        origin: 'model',
-        evidence,
-        confirmed: true,
-        ...(editFile === undefined ? {} : { file: editFile })
-      })
-      if (!second.ok) return `没有写入：${second.reason}`
-      if (isCorrection) {
-        deps.repo.record({ kind: 'correct', conversationId, name, ...(turnIndex === null ? {} : { turnIndex }) })
+      const second = submit(true)
+      if (second.ok) {
+        // 确认桥只服务直写通路（gate 关掉时）。真走到 queued 说明门又开了 —— 同样说实话，不报"已记住"。
+        if ('queued' in second) return PENDING
+        // 直写 + 用户已在确认桥点头 ⇒ 这一笔已经生效，纠正的账就在这一刻落。
+        // （§四之二 要求"逃生开关关掉时行为与 v1 一致"，这里就是那半边；漏了它，
+        //  命中确认档的纠正一条都不记 —— 重复纠正率会偏，而没有任何一条判据会红。）
+        if (isCorrection) {
+          deps.repo.record({ kind: 'correct', conversationId, name, ...(turnIndex === null ? {} : { turnIndex }) })
+        }
+        return `已记住「${name}」（用户已确认）。`
       }
-      return `已记住「${name}」（用户已确认）。`
+      return `没有写入：${second.reason}`
     }
   }
 

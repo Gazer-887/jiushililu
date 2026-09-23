@@ -249,7 +249,8 @@ describe('判据 6：画像候选批准 = 原地覆盖（无二选一）；覆�
     )
     const r = repo.approveCandidate(candidateFile)
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.reason).toContain('反思')
+    // 新文案里「反思」出现两次（画像支与其余分类支都含它）—— 只 `toContain('反思')` 红了也分不出是哪一支
+    if (!r.ok) expect(r.reason).toContain('画像候选只允许反思来源')
   })
 })
 

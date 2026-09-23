@@ -602,6 +602,19 @@ let memoryCandidates = [
     updatedAt: '2026-09-15T02:00:00.000Z',
     body: '从历史会话提炼：用户多次切换到深色主题。',
     file: '/mem/candidates/likes-dark-mode.md'
+  },
+  // plan53 片 2：模型自己调 `remember` 也会落候选（审批门默认开）。徽标必须与反思候选分得开 ——
+  // 用户批准的是"谁说的"，混成一种徽标等于替模型把话说了。
+  {
+    name: 'fix-flaky-tests',
+    description: '测试偶发红先查计时器',
+    class: 'default',
+    origin: 'model',
+    evidence: null,
+    createdAt: '2026-09-15T02:00:00.000Z',
+    updatedAt: '2026-09-15T02:00:00.000Z',
+    body: '模型在对话里记下的做法。',
+    file: '/mem/candidates/fix-flaky-tests.md'
   }
 ]
 const GATE_CLASS_LABELS = { style: '风格', default: '默认', knowledge: '知识', profile: '画像' }
@@ -662,6 +675,9 @@ let memoryArchived = [
 const memorySaveCalls = []
 const memoryDeleteCalls = []
 const memoryRestoreCalls = []
+// plan53 D5：候选通路以前**有桩无判据**。加记录器才验得了「点下去真的走了 IPC」这半句
+const memoryApproveCalls = []
+const memoryRejectCalls = []
 /** 批 4：标记「这条不对」的调用流水 */
 const memoryFlagCalls = []
 // 技能禁用名单（plan34 S2a / K13 补桩）：桩状态**自洽可读**——get 返回当前名单，set 收整份名单并留流水。
@@ -670,6 +686,9 @@ const skillsDisabledCalls = []
 const memoryClearArchiveCalls = []
 // 记忆开关（plan19 批 1）的桩状态；`warnOnNextEnable` 用来模拟"主进程判定这是最大风险组合"
 let memorySwitch = false
+// plan53 片 2：审批门（默认开）。桩要**真改状态** —— 只回固定值会让界面那条红在探针上而不是产品上
+let memoryApprovalGate = true
+const memoryApprovalGateCalls = []
 let memoryWarnOnNextEnable = false
 const memorySwitchCalls = []
 // ── Playbook（plan19 批 3）的桩状态 ──
@@ -917,7 +936,9 @@ const STUBS = {
       name: input?.name ?? '',
       description: input?.description ?? '',
       class: input?.class ?? 'style',
-      origin: input?.origin ?? 'model',
+      // 契约副本：真源 `memory:save` 把来源**钉死成 user**（schema 连 origin 字段都不收）——
+      // 这条通道由人触发。让载荷能自称 model，等于给"把手动编辑拦成候选"留了个口子。
+      origin: 'user',
       evidence: input?.evidence ?? null,
       createdAt: at,
       updatedAt: at,
@@ -962,6 +983,13 @@ const STUBS = {
   },
   // ── 记忆开关（plan19 批 1）── 判据 14 的**界面契约**：真实判定在 src/main/ipc.ts
   //    （关→开 且 permissionPreset === 'full-access'）；门禁不加载它，故用 memoryWarnOnNextEnable 直接给值
+  // plan53 片 2：审批门读写（契约副本，真源 `src/main/ipc.ts` 的同名 handler）
+  'memory:get-approval-gate': () => memoryApprovalGate,
+  'memory:set-approval-gate': (enabled) => {
+    memoryApprovalGate = enabled
+    memoryApprovalGateCalls.push(enabled)
+    return enabled
+  },
   'memory:get-switch': () => memorySwitch,
   'memory:set-switch': (enabled) => {
     const before = memorySwitch
@@ -971,6 +999,7 @@ const STUBS = {
   },
   // ── 批 2：候选通路（plan19）── approve = 从候选提升到正式条目；reject = 删候选
   'memory:approve': (file) => {
+    memoryApproveCalls.push(file)
     const cand = memoryCandidates.find((c) => c.file === file)
     if (!cand) return { ok: false, reason: '候选文件不存在' }
     if (cand.conflictWith) {
@@ -989,6 +1018,7 @@ const STUBS = {
     return { ok: true, file: cand.conflictWith ?? `/mem/notes/${cand.name}.md`, guard: { action: 'allow' } }
   },
   'memory:reject': (file) => {
+    memoryRejectCalls.push(file)
     const before = memoryCandidates.length
     memoryCandidates = memoryCandidates.filter((c) => c.file !== file)
     return memoryCandidates.length !== before
@@ -2658,6 +2688,50 @@ app.whenReady().then(async () => {
     memSettings.h2 === '记忆' && memSettings.hasCheckbox === true && memSettings.disabled === false,
     memSettings
   )
+
+  // ── plan53 片 2：审批门的逃生开关要在设置页看得见、点得动 ──
+  // 门本体由单测钉（memory-approval-gate.test.ts）；这里只钉界面契约：
+  // ① 默认勾选态**取自 `memory:get-approval-gate` 的读数**（写死 true 的话，用户关掉后重开窗口会看到它又亮了）
+  // ② 点下去真的写回主进程（不写回 = 设置是装饰品）
+  const readGateBox = () =>
+    sevalRaw(`
+      (() => {
+        const rows = Array.from(document.querySelectorAll('.settings-section .checkbox'));
+        const row = rows.find((r) => r.textContent.includes('模型写入需人工批准'));
+        const input = row ? row.querySelector('input[type="checkbox"]') : null;
+        return input
+          ? { found: true, checked: input.checked, disabled: input.disabled }
+          : { found: false, rows: rows.map((r) => r.textContent.trim()) };
+      })()
+    `)
+  const gateBox0 = await readGateBox()
+  console.log('MEM_GATE_BOX=' + JSON.stringify({ gateBox0, initial: memoryApprovalGate }))
+  checkTrue(
+    '片 2：设置页有「模型写入需人工批准」格子，勾选态来自审批门读数（不是写死）',
+    gateBox0.found === true && gateBox0.disabled === false && gateBox0.checked === memoryApprovalGate,
+    { gateBox0, initial: memoryApprovalGate }
+  )
+  await sevalRaw(
+    `(() => {
+      const row = Array.from(document.querySelectorAll('.settings-section .checkbox'))
+        .find((r) => r.textContent.includes('模型写入需人工批准'));
+      row.querySelector('input[type="checkbox"]').click();
+      return true;
+    })()`
+  )
+  await new Promise((r) => setTimeout(r, 500))
+  const gateBox1 = await readGateBox()
+  checkTrue(
+    '片 2：关掉审批门真的走 `memory:set-approval-gate` 并当场改勾选态（点了不动 = 设置是装饰品）',
+    memoryApprovalGateCalls.length === 1 &&
+      memoryApprovalGateCalls[0] === false &&
+      gateBox1.checked === false &&
+      memoryApprovalGate === false,
+    { calls: memoryApprovalGateCalls, gateBox1, state: memoryApprovalGate }
+  )
+  // 摆回默认态：后面的判据不应建立在这条被改过的读数上
+  memoryApprovalGate = true
+  memoryApprovalGateCalls.length = 0
 
   // 判据 14：完全访问档下开启记忆 → **当场**出现告警（躺一行字等于没写）。
   // ⚠️ 先把"主进程判定为最大风险组合"这个开关打开 —— 上一版忘了置位，桩返回 false，
@@ -8910,6 +8984,9 @@ app.whenReady().then(async () => {
           badges: Array.from(p.querySelectorAll('.mem-row .mem-badge')).map((n) => n.textContent.trim()),
           warnRows: p.querySelectorAll('.mem-warn-row').length,
           // plan53 片 1：归档区（默认折起，展开才有行）—— 折叠态与"忘了渲染"必须能区分开
+          // plan53 D5 / 片 2：候选区（徽标 + 名字）—— 批准与拒绝两步以前没有一条判据走过界面
+          candBadges: Array.from(p.querySelectorAll('.mem-candidate-row .mem-badge')).map((n) => n.textContent.trim()),
+          candNames: Array.from(p.querySelectorAll('.mem-candidate-row .mem-name')).map((n) => n.textContent.trim()),
           archivedToggle: p.querySelector('.mem-archived-toggle')?.textContent.trim() ?? null,
           archivedNames: Array.from(p.querySelectorAll('.mem-archived-row .mem-name')).map((n) => n.textContent.trim()),
           archivedDates: Array.from(p.querySelectorAll('.mem-archived-row .mem-archived-at')).map((n) => n.textContent.trim()),
@@ -9181,6 +9258,61 @@ app.whenReady().then(async () => {
       memAfterClear.names.includes('forgotten-toolchain') &&
       memAfterClear.names.includes('prefers-tables'),
     { calls: memoryClearArchiveCalls, names: memAfterClear.names, archived: memAfterClear.archivedNames }
+  )
+
+  // ── plan53 D5 + 片 2：候选通路不再是「有桩无判据」──
+  // 三步各钉一条：徽标分得开来源 → 批准真的把条目搬进生效集合 → 拒绝真的不留痕迹。
+  // 少任何一步，剩下的两步都可以是空转（这正是 D5 立项时记下的毛病）。
+  const memCand0 = await readMemoryPanel()
+  console.log('MEMORY_CANDIDATES=' + JSON.stringify({ badges: memCand0.candBadges, names: memCand0.candNames }))
+  checkTrue(
+    '片 2：候选区把「反思候选」与「模型提案」分开显示（批准的是"谁说的"，混成一个徽标等于替模型把话说了）',
+      memCand0.candBadges.includes('反思候选') &&
+      memCand0.candBadges.includes('模型提案') &&
+      memCand0.candNames.includes('fix-flaky-tests') &&
+      memCand0.candNames.includes('likes-dark-mode'),
+    { badges: memCand0.candBadges, names: memCand0.candNames }
+  )
+
+  const clickedApprove = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.mem-candidate-row'))
+        .find((r) => r.querySelector('.mem-name')?.textContent.trim() === 'fix-flaky-tests');
+      if (!row) return false;
+      Array.from(row.querySelectorAll('.mem-candidate-actions button')).find((b) => b.textContent.trim() === '批准').click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const memAfterApprove = await readMemoryPanel()
+  checkTrue(
+    'D5：批准模型提案 → 条目进生效列表、候选区不再显示（只改徽标不搬数据 = 假批准）',
+    clickedApprove === true &&
+      memoryApproveCalls.includes('/mem/candidates/fix-flaky-tests.md') &&
+      memAfterApprove.names.includes('fix-flaky-tests') &&
+      !memAfterApprove.candNames.includes('fix-flaky-tests') &&
+      memAfterApprove.candNames.includes('likes-dark-mode'),
+    { calls: memoryApproveCalls, names: memAfterApprove.names, cand: memAfterApprove.candNames }
+  )
+
+  const clickedReject = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.mem-candidate-row'))
+        .find((r) => r.querySelector('.mem-name')?.textContent.trim() === 'likes-dark-mode');
+      if (!row) return false;
+      Array.from(row.querySelectorAll('.mem-candidate-actions button')).find((b) => b.textContent.trim() === '拒绝').click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const memAfterReject = await readMemoryPanel()
+  checkTrue(
+    'D5：拒绝候选 → 候选消失且**不**进生效列表（拒绝必须真的不留痕迹）',
+    clickedReject === true &&
+      memoryRejectCalls.includes('/mem/candidates/likes-dark-mode.md') &&
+      memAfterReject.candNames.length === 0 &&
+      !memAfterReject.names.includes('likes-dark-mode'),
+    { calls: memoryRejectCalls, cand: memAfterReject.candNames, names: memAfterReject.names }
   )
 
   // 护栏 2（D-043）：本轮写入痕迹的面板。面板只显示**当前会话**的痕迹 ——

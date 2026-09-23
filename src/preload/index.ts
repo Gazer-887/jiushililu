@@ -139,6 +139,8 @@ const api: ApiBridge = {
   // 记忆开关（批 1）：只管通路 A
   getMemorySwitch: () => ipcRenderer.invoke(IPC.memoryGetSwitch),
   setMemorySwitch: (enabled: boolean) => ipcRenderer.invoke(IPC.memorySetSwitch, enabled),
+  getMemoryApprovalGate: () => ipcRenderer.invoke(IPC.memoryGetApprovalGate),
+  setMemoryApprovalGate: (enabled: boolean) => ipcRenderer.invoke(IPC.memorySetApprovalGate, enabled),
   // ── 记忆批 2：候选批准/拒绝 + 统计 + 会话切换通知 ──
   approveMemory: (file: string) => ipcRenderer.invoke(IPC.memoryApprove, file),
   rejectMemory: (file: string) => ipcRenderer.invoke(IPC.memoryReject, file),

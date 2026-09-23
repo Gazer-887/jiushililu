@@ -20,6 +20,7 @@ import {
   rotateEventsIfNeeded
 } from '@main/store/memory-fs'
 import { archivedFileName, parseArchivedFileName } from '@shared/memory'
+import { createMemoryRepo } from '@main/memory/memory-core'
 import { MAX_FILE_BYTES } from '@main/log'
 import { createMemoryStore } from '@main/store/memory-store'
 
@@ -348,5 +349,54 @@ describe('归档文件名规则（读写两侧唯一口径）', () => {
     expect(parseArchivedFileName('n000.md')).toBeNull()
     expect(parseArchivedFileName('2026-09-20T08-30-12-456Zn000.md')).toBeNull()
     expect(parseArchivedFileName('readme.md')).toBeNull()
+  })
+})
+
+describe('plan53 片 2：模型提案走**真 fs 后端**（假后端少实现一处，产品就是没被验到）', () => {
+  /** 真后端 + 真 repo 跑一遍：提案写进 candidates/ → 不进 listFiles → 能被读出 → 批准落进 notes/ */
+  function run(opts: { gate: boolean; seedConflict?: boolean }) {
+    const fs = mapFs()
+    const backend = createFsMemoryBackend(ROOT, fs)
+    const repo = createMemoryRepo(backend, {
+      now: () => new Date('2026-09-15T02:00:00.000Z'),
+      ...(opts.gate ? { modelWritesNeedApproval: () => true } : {})
+    })
+    const res = repo.save({
+      name: 'prefers-tables',
+      description: '回答偏好用表格',
+      class: 'style',
+      body: '正文。',
+      origin: 'model'
+    })
+    return { fs, backend, repo, res }
+  }
+
+  it('闸门开：提案落在 candidates/ 且**不**被 listFiles 列出（列进去就等于进注入段）', () => {
+    const { backend, repo, res } = run({ gate: true })
+    expect(res.ok === true && 'queued' in res).toBe(true)
+    const cand = norm(backend.candidatePathFor('prefers-tables'))
+    expect(backend.listCandidates().map(norm)).toContain(cand)
+    expect(backend.listFiles().map(norm)).not.toContain(cand)
+    // 读侧要认 candidates/（insideMemory）—— 不认的话批准时读不出来，门就成了只进不出的黑洞
+    expect(backend.read(cand)).toContain('name: prefers-tables')
+    expect(repo.list().entries.map((e) => e.name)).not.toContain('prefers-tables')
+  })
+
+  it('批准后条目真的落到 notes/ 并被 listFiles 列出；候选文件已删', () => {
+    const { backend, repo } = run({ gate: true })
+    const cand = norm(backend.candidatePathFor('prefers-tables'))
+    const r = repo.approveCandidate(cand)
+    expect(r.ok).toBe(true)
+    const note = norm(backend.pathFor('prefers-tables'))
+    expect(backend.listFiles().map(norm)).toContain(note)
+    expect(backend.read(note)).toContain('origin: user')
+    expect(backend.read(cand)).toBeNull()
+  })
+
+  it('阳性对照：逃生开关关掉时，同一次写直接落 notes/（门不是唯一通路）', () => {
+    const { backend, res } = run({ gate: false })
+    expect(res.ok === true && 'file' in res).toBe(true)
+    expect(backend.listFiles().map(norm)).toContain(norm(backend.pathFor('prefers-tables')))
+    expect(backend.listCandidates()).toHaveLength(0)
   })
 })

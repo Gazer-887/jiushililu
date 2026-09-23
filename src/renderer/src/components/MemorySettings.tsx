@@ -11,8 +11,10 @@ import { MEMORY_LIMITS, type MemoryAutoSettings } from '@shared/memory'
 
 export default function MemorySettings(): JSX.Element {
   const [enabled, setEnabled] = useState<boolean | null>(null)
+  const [gate, setGate] = useState<boolean | null>(null)
   const [warn, setWarn] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savingGate, setSavingGate] = useState(false)
   const [importing, setImporting] = useState(false)
   const [summary, setSummary] = useState<string | null>(null)
   const [auto, setAuto] = useState<MemoryAutoSettings | null>(null)
@@ -20,6 +22,7 @@ export default function MemorySettings(): JSX.Element {
 
   useEffect(() => {
     void window.api.getMemorySwitch().then(setEnabled)
+    void window.api.getMemoryApprovalGate().then(setGate)
     void window.api.getMemoryAuto().then(setAuto)
   }, [])
 
@@ -30,6 +33,13 @@ export default function MemorySettings(): JSX.Element {
     setEnabled(res.enabled)
     setWarn(res.warnFullAccess)
     setSaving(false)
+  }
+
+  const toggleGate = async (): Promise<void> => {
+    if (gate === null || savingGate) return
+    setSavingGate(true)
+    setGate(await window.api.setMemoryApprovalGate(!gate))
+    setSavingGate(false)
   }
 
   const toggleAuto = async (): Promise<void> => {
@@ -89,6 +99,24 @@ export default function MemorySettings(): JSX.Element {
           经常巡检。
         </div>
       ) : null}
+
+      <div className="mem-subsection">
+        <div className="mem-subsection-title">写入审批</div>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={gate ?? true}
+            disabled={gate === null || savingGate}
+            onChange={() => void toggleGate()}
+          />
+          模型写入需人工批准
+        </label>
+        <p className="mem-settings-lead mem-settings-lead-muted">
+          开：模型写入先进入「记忆」页签的待批准区，批准后生效；未批准不注入后续对话。
+          关：模型写入直接生效并在下一轮注入，不再逐条确认。
+          自动记忆（反思）产出的候选不受本项影响，始终需批准。
+        </p>
+      </div>
 
       <div className="mem-subsection">
         <div className="mem-subsection-title">自动记忆</div>

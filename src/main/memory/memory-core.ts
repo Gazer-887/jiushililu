@@ -21,6 +21,7 @@ import {
   type MemoryOrigin,
   type MemorySaveInput,
   type MemorySaveResult,
+  type MemoryApproveResult,
   type MemoryStats,
   type MemoryRestoreResult
 } from '@shared/memory'
@@ -65,6 +66,11 @@ export interface ParsedMemory {
    * ⚠️ 只在候选 frontmatter 里出现；正式条目 serialize 不写它（写进 notes 会让普通条目带着指向自己的标记，无意义）。
    */
   conflictWith?: string
+  /**
+   * plan53 R1 v2：这条提案是**用户否过之后**提出的改写（与 `conflictWith` 同时才有意义）。
+   * 候选专用标记 —— 正式条目不写（生效条目上没有"待生效的纠正"这回事）。
+   */
+  fromCorrection?: boolean
 }
 
 export type ParseResult = { ok: true; parsed: ParsedMemory } | { ok: false; reason: string }
@@ -83,7 +89,9 @@ const KNOWN_KEYS = new Set([
   'createdAt',
   'updatedAt',
   // 批 2：候选 frontmatter 才会写它，普通条目不写但解析要认（否则 approve 时读不出旧记忆 file）
-  'conflictWith'
+  'conflictWith',
+  // plan53 R1 v2：候选才写的"这轮用户否过"标记（正式条目不写，但读侧要认，否则未知键直接拒）
+  'fromCorrection'
 ])
 
 const REQUIRED_KEYS = ['name', 'description', 'class', 'origin', 'createdAt', 'updatedAt'] as const
@@ -142,6 +150,13 @@ export function parseMemoryFile(text: string): ParseResult {
   const body = after.startsWith('\n') ? after.slice(1) : after
   // 批 2：conflictWith 只在候选 frontmatter 出现，可有可无
   const conflictWith = fields['conflictWith'] || undefined
+  // plan53 R1 v2：只认 'true' / 'false' 两个值 —— 别的写法一律拒（严格解析口径：
+  // 一个没人读懂的 `fromCorrection: yes` 会在批准时静默变成"没纠正"，那笔账再也查不回来）
+  const rawFromCorrection = fields['fromCorrection']
+  if (rawFromCorrection !== undefined && rawFromCorrection !== 'true' && rawFromCorrection !== 'false') {
+    return { ok: false, reason: `fromCorrection 只能是 true / false：${rawFromCorrection.slice(0, 20)}` }
+  }
+  const fromCorrection = rawFromCorrection === 'true'
   return {
     ok: true,
     parsed: {
@@ -153,7 +168,8 @@ export function parseMemoryFile(text: string): ParseResult {
       createdAt: fields['createdAt']!,
       updatedAt: fields['updatedAt']!,
       body,
-      ...(conflictWith === undefined ? {} : { conflictWith })
+      ...(conflictWith === undefined ? {} : { conflictWith }),
+      ...(fromCorrection ? { fromCorrection: true } : {})
     }
   }
 }
@@ -178,6 +194,8 @@ export function serializeMemory(parsed: ParsedMemory): string {
     `updatedAt: ${parsed.updatedAt}`,
     // 批 2：候选才写 conflictWith。普通条目无此字段（写成 `undefined` 不会出现在数组里）
     ...(parsed.conflictWith ? [`conflictWith: ${parsed.conflictWith}`] : []),
+    // plan53 R1 v2：候选才写。假值整个键不写（与缺证据同口径 —— 留 `false` 只是多一份要再剥的形态）
+    ...(parsed.fromCorrection ? ['fromCorrection: true'] : []),
     '---',
     ''
   ]
@@ -276,6 +294,13 @@ export interface MemoryRepoOptions {
    * 若让各处调用方自己上报，忘一次就等于**用户看不见**（那是护栏 2 失效，不是少一条日志）。
    */
   onWrite?: (info: { name: string; ok: boolean; reason?: string }) => void
+  /**
+   * plan53 片 2（D-131）：**模型自主发起**的写入是否需要人工批准才生效。开 ⇒ 落候选，关 ⇒ 直写。
+   * ⚠️ 这里**不给默认值 true** —— 单测与隔离验证进程都按直写跑，给 true 会让它们的既有语义一夜翻掉，
+   * 那种"测试悄悄验着另一套行为"正是 K14–K17 那批假绿。真应用的默认值在 `store/settings.ts`（**开**），
+   * 由 `index.ts` 接进来；漏接由 `memory-approval-gate.test.ts` 的结构守卫钉住。
+   */
+  modelWritesNeedApproval?: () => boolean
 }
 
 export interface MemoryRepo {
@@ -315,7 +340,7 @@ export interface MemoryRepo {
    * 批准候选：若有 conflictWith，用候选内容覆盖旧记忆 + 删候选；否则把候选提升为正式条目。
    * ⚠️ 必须删候选文件（审查 B P1，否则同名双条进索引）。
    */
-  approveCandidate(file: string): MemorySaveResult
+  approveCandidate(file: string): MemoryApproveResult
   /** 拒绝候选：删候选文件（幂等；不落事件 —— 拒绝是用户行为，不进事件流） */
   rejectCandidate(file: string): boolean
   /** 从事件流算统计（存活率 / 使用率）。⚠️ 不读盘 —— 否则"删了又写回"会让数字假性归零 */
@@ -447,6 +472,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
 
   const currentConversation = opts.conversationId ?? (() => null)
   const notify = opts.onWrite ?? (() => {})
+  const needsApproval = opts.modelWritesNeedApproval ?? (() => false)
   let lastInjectKey: string | null = null
 
   /** 落一条事件。`inject` 去重：集合没变就不写（否则它在一轮里会被写很多次，主导日志增长） */
@@ -466,6 +492,113 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     record({ kind: 'write', conversationId: currentConversation(), name, rejected: true, reason })
     notify({ name, ok: false, reason })
     return needsConfirm ? { ok: false, reason, needsConfirm: true } : { ok: false, reason }
+  }
+
+  /**
+   * plan53 片 2（D1）：审批门开着时，模型这条改写**不落 notes**，落 candidates 等人工批准。
+   * 先自己跑一遍校验，是为了把**具体理由**带回给模型 —— `saveCandidate` 只回空串，
+   * 让它内部再拒一次的话，模型只能收到一句"没写进去"，改不出下一条。
+   */
+  function queueForApproval(input: MemorySaveInput, guard: MemoryGuardVerdict): MemorySaveResult {
+    const conflict = input.file
+    if (conflict === undefined) {
+      // 直写路径上那两道"新条目"闸门（同名 / 高度相似）在这里**照样先拦**，不留到批准时。
+      // 拖到批准时才拦的后果不是数据安全（`save` 仍会拒），而是候选区里躺着一堆**永远批不动**的条目：
+      // 模型收不到"换个更具体的 name"这个信号，用户只会看到点了批准就报错（plan33 问题四那道闸门白建）。
+      const existing = loadAll().entries
+      const key = memoryNameKey(input.name)
+      if (existing.some((e) => memoryNameKey(e.name) === key)) {
+        return refuse(input.name, '已存在同名条目。请换一个 name，或先编辑那一条')
+      }
+      const dup = rejectAsSimilar(input, existing)
+      if (dup !== null) return dup
+    }
+    const cand: MemoryCandidate = {
+      name: input.name,
+      description: input.description,
+      class: input.class,
+      body: input.body,
+      origin: 'model',
+      evidence: input.evidence ?? null,
+      ...(conflict === undefined ? {} : { conflictWith: conflict }),
+      // 撞不到对象的"纠正"只是新增（v2 条件 ①），标记就地抹掉、不带进候选
+      ...(input.fromCorrection === true && conflict !== undefined ? { fromCorrection: true } : {})
+    }
+    const file = saveCandidateFile(cand)
+    if (file === '') return { ok: false, reason: '提案未能落进候选区（原因见本轮写入痕迹）' }
+    // **不**调 notify：这条还没写进库。`onWrite` 喂的是对话流里那行「本轮写入痕迹」，
+    // 报 ok:true 等于对用户说"记住了"，而工具回话说的是"待确认" —— 同一轮两句相反的话。
+    // 提案的可见性有它自己的两个落点：工具回话 + 记忆页签的候选区。
+    return { ok: true, queued: true, candidateFile: file, guard }
+  }
+
+  /**
+   * 候选区目录前缀（从 `candidatePathFor` 反推，不再新增一个后端接口 —— 每多一个接口方法，
+   * 全仓那批假后端就少实现一处而没人发现，这是片 1 踩过的）。
+   * ⚠️ 判"在不在候选区"用**目录**而不是"在不在 `listCandidates()` 里"：后者会让"候选已被删"
+   * 与"这根本不是候选路径"混成一件（拒绝要幂等 —— 现有判据钉着它，见 `memory-conflict.test.ts`）。
+   */
+  function insideCandidatesDir(file: string): boolean {
+    const probe = backend.candidatePathFor('__probe__')
+    const dir = probe.slice(0, probe.lastIndexOf('/') + 1)
+    const toPosix = (x: string): string => x.split(String.fromCharCode(92)).join('/')
+    const f = toPosix(file)
+    return !f.includes('..') && f.startsWith(toPosix(dir))
+  }
+
+  /**
+   * 相似闸的拒绝出口 —— 直写与候选**两条通路共用**：少一处留痕，"门开着的时候被相似闸拒了"
+   * 在事件流与本轮写入痕迹里就都不存在了；两处各写一份措辞，则迟早漂成两道不同的闸。
+   */
+  function rejectAsSimilar(input: MemorySaveInput, existing: MemoryEntry[]): MemorySaveResult | null {
+    const similar = findSimilarEntry({ name: input.name, description: input.description }, existing)
+    if (!similar) return null
+    const reason =
+      `已存在高度相似的记忆「${similar.name}」（摘要：${similar.description}）。` +
+      '若要更新它，请编辑那一条而不是新建；若内容确实不同，请换一个更具体的 name 再存。'
+    record({ kind: 'write', conversationId: currentConversation(), name: input.name, rejected: true, reason })
+    notify({ name: input.name, ok: false, reason })
+    return { ok: false, reason, similar: { file: similar.file, name: similar.name, description: similar.description } }
+  }
+
+  /**
+   * 候选落盘（**已过校验**的那份）。origin 取候选自己声明的来源 ——
+   * 批 2 只有反思一种，片 2 起还有 `model`（模型提案），徽标要分得清是谁提的。
+   */
+  function saveCandidateFile(input: MemoryCandidate): string {
+    const conflictWith = input.conflictWith
+    const slug = slugFor(input.name)
+    if (slug === null) {
+      const reason = 'name 无法用作文件名（含保留字或全为空白）'
+      record({
+        kind: 'write',
+        conversationId: currentConversation(),
+        name: input.name,
+        rejected: true,
+        reason
+      })
+      notify({ name: input.name, ok: false, reason })
+      return ''
+    }
+
+    const ts = now().toISOString()
+    const file = backend.candidatePathFor(slug)
+    backend.write(
+      file,
+      serializeMemory({
+        name: input.name,
+        description: input.description,
+        class: input.class,
+        origin: input.origin ?? 'reflection',
+        evidence: input.evidence ?? null,
+        createdAt: ts,
+        updatedAt: ts,
+        body: input.body,
+        ...(conflictWith ? { conflictWith } : {}),
+        ...(input.fromCorrection === true && conflictWith ? { fromCorrection: true } : {})
+      })
+    )
+    return file
   }
 
   return {
@@ -507,6 +640,15 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         return refuse(input.name, guard.reason, true)
       }
 
+      // plan53 片 2（D1 / D-131）：模型自主发起的写入默认**不生效**，先落候选等人批准。
+      // 闸口开在 `save()` 而不是工具层 —— 以后再多一条模型通路会自动被罩住，
+      // 不靠"每个调用点记得判一次"（那种漏接在本项目有个名字，叫 K 组）。
+      // ⚠️ 位置在确认档**之后**：确认档的语义是"先问用户一句"，而批准候选就是那句问话的
+      //    异步形态（同一道判断不问两遍），所以这里不再为它单独 refuse 一次。
+      if ((input.origin ?? 'model') === 'model' && needsApproval()) {
+        return queueForApproval(input, guard)
+      }
+
       const existing = loadAll().entries
       let file: string
       let createdAt: string
@@ -530,28 +672,8 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         // 拒绝并带回 `similar` 指针（UI 据此给"更新那条/仍要另存"二选一）；模型通路没有 force，
         // 被拒后只能换更具体的 name —— 这正是闸门的目的。存量堆积走面板的「疑似重复」区清理。
         if (input.force !== true) {
-          const similar = findSimilarEntry(
-            { name: input.name, description: input.description },
-            existing
-          )
-          if (similar) {
-            const reason =
-              `已存在高度相似的记忆「${similar.name}」（摘要：${similar.description}）。` +
-              '若要更新它，请编辑那一条而不是新建；若内容确实不同，请换一个更具体的 name 再存。'
-            record({
-              kind: 'write',
-              conversationId: currentConversation(),
-              name: input.name,
-              rejected: true,
-              reason
-            })
-            notify({ name: input.name, ok: false, reason })
-            return {
-              ok: false,
-              reason,
-              similar: { file: similar.file, name: similar.name, description: similar.description }
-            }
-          }
+          const dup = rejectAsSimilar(input, existing)
+          if (dup !== null) return dup
         }
         if (existing.length >= MEMORY_LIMITS.maxEntries) {
           // 批 4：LRU 遗忘 —— 按 updatedAt 找最旧的非豁免条目删除（style/profile 豁免，plan25 D-071）
@@ -704,41 +826,16 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         notify({ name: input.name, ok: false, reason: validation.reason })
         return ''
       }
-
-      const slug = slugFor(input.name)
-      if (slug === null) {
-        const reason = 'name 无法用作文件名（含保留字或全为空白）'
-        record({
-          kind: 'write',
-          conversationId: currentConversation(),
-          name: input.name,
-          rejected: true,
-          reason
-        })
-        notify({ name: input.name, ok: false, reason })
-        return ''
-      }
-
-      const ts = now().toISOString()
-      const file = backend.candidatePathFor(slug)
-      backend.write(
-        file,
-        serializeMemory({
-          name: input.name,
-          description: input.description,
-          class: input.class,
-          origin: 'reflection',
-          evidence: input.evidence ?? null,
-          createdAt: ts,
-          updatedAt: ts,
-          body: input.body,
-          ...(conflictWith ? { conflictWith } : {})
-        })
-      )
-      return file
+      return saveCandidateFile({ ...input, ...(conflictWith ? { conflictWith } : {}) })
     },
 
     approveCandidate(file) {
+      // ⚠️ 先认"这是候选区里的路径"再动它。`file` 来自渲染进程，而 `insideMemory` 认三个区
+      // （notes / candidates / archived）—— 缺这条断言，递一个 `archived/*.md` 进来就能把归档件
+      // 提升成生效条目并删掉原件（用户那边的现象是"归档少了一条、库里多了一条我没写过的"）。
+      if (!insideCandidatesDir(file)) {
+        return { ok: false, reason: '要批准的不在候选区里（只接受 memory/candidates/ 下的文件）' }
+      }
       const text = backend.read(file)
       if (text === null) return { ok: false, reason: '候选文件读不出来或不存在' }
       const parsed = parseMemoryFile(text)
@@ -747,10 +844,17 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
 
       // 带冲突：用候选内容覆盖旧记忆 + 删候选（审查 B P1，否则同名双条进索引）
       if (p.conflictWith) {
-        // plan25 D-073 断言：覆盖分支只对反思来源开放 —— 候选文件由 saveCandidate 落盘
-        // （origin 固定 'reflection'）。若未来出现别的候选来源，这里先拦住，不许静默绕过审批语义。
-        if (p.origin !== 'reflection') {
-          return { ok: false, reason: '候选来源异常（只允许反思流程产生候选），已拒绝覆盖' }
+        // plan25 D-073 的断言：覆盖分支原本"只允许反思来源"。片 2 起模型提案也是候选来源，
+        // 但**画像仍只对反思开放** —— 画像改错的影响面是整份档案，而产品里没有任何一条通路会产出
+        // "模型来源的画像候选"（工具 enum 不含 profile、save 层在路由之前就拒），
+        // 它出现在盘上只有两种可能：手改 / 伪造。那种情况下不覆盖，比覆盖更值得。
+        const allowedOrigins: readonly MemoryOrigin[] =
+          p.class === 'profile' ? (['reflection'] as const) : (['reflection', 'model'] as const)
+        if (!allowedOrigins.includes(p.origin)) {
+          return {
+            ok: false,
+            reason: `候选来源异常（画像候选只允许反思来源；其余分类允许反思 / 模型提案），已拒绝覆盖：${p.origin}`
+          }
         }
         const oldEntry = this.get(p.conflictWith)
         // 旧记忆可能已被删了 —— origin / createdAt 兜底，不报错（用户删旧记忆后还能批准候选）
@@ -778,6 +882,18 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           name: p.name,
           oldName
         })
+        // R1 口径 v2（plan53 §四之二）：**"生效"才算纠正** —— 提案那一刻不落账（那是"打算改"），
+        // 拒绝更是永不落账（事件流只追加，记错了再也回改不了）。
+        // ⚠️ 指针取候选里存的**来源那一轮**，不是批准现场：纠正本来就是那一轮对话的事，
+        //    批准可能发生在几天后的另一条会话里 —— 记成批准轮会让时间线自己漂走。
+        if (p.fromCorrection === true) {
+          record({
+            kind: 'correct',
+            conversationId: p.evidence?.conversationId ?? null,
+            name: p.name,
+            ...(p.evidence?.turnIndex === undefined ? {} : { turnIndex: p.evidence.turnIndex })
+          })
+        }
         notify({ name: p.name, ok: true })
         return { ok: true, file: p.conflictWith, guard: { action: 'allow' } }
       }
@@ -791,8 +907,16 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         class: p.class,
         body: p.body,
         origin: 'user',
-        evidence: p.evidence
+        evidence: p.evidence,
+        // 批准这个动作本身就是确认桥要问的那一句（`guard.action === 'confirm'` 的语义是"问用户一句"）。
+        // 不带 `confirmed` 的话，正文命中确认档的候选会**永远批不动** —— 用户点了批准只收到一句拒绝。
+        confirmed: true
       })
+      // 批准固定按 `origin: 'user'` 写 ⇒ 审批门（只管模型来源）拦不到这里。真拦到了说明
+      // 这条路径的来源被改成了模型 —— 那时绝不能把候选文件当生效条目返回（界面会报"已批准"而盘上没变）。
+      if ('queued' in saveResult) {
+        return { ok: false, reason: '批准被审批门拦下：批准路径不该带模型来源，属装配错误' }
+      }
       if (saveResult.ok) {
         backend.remove(file)
         record({
@@ -806,6 +930,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     },
 
     rejectCandidate(file) {
+      // 只删候选区里的东西 —— 与 `approveCandidate` 同一道断言，理由同上（拒绝一个归档件
+      // 会是"静默删掉可恢复数据且连 delete 事件都不落"，那是本片最坏的一种坏法）。
+      if (!insideCandidatesDir(file)) return false
       // 幂等：文件不存在 = 成功。不落事件（拒绝是用户行为，不进事件流）
       if (backend.read(file) === null) return true
       return backend.remove(file)

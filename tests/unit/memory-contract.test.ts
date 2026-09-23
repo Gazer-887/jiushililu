@@ -1,6 +1,8 @@
 // 记忆契约层单测（plan19 批 1）。钉住"唯一校验口径"与写入侧判定的分级。
 // ⚠️ 只测纯函数，不碰 fs / electron —— 该契约同时被渲染进程引用（守卫甲）。
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   MEMORY_CLASSES,
@@ -18,6 +20,17 @@ import {
 import { parseMemoryImport } from '@shared/memory-import'
 
 const ok = { name: 'prefers-tables', description: '回答偏好用表格', body: '正文。' }
+
+describe('审批门默认值（plan53 片 2 / D-131「默认开」）', () => {
+  it('`getMemoryApprovalGate` 必须走 `!== false`：缺字段=开，而不是"没设过=关"', () => {
+    // 结构守卫：`store/settings.ts` 吃 electron-store（要起 electron 才跑得动），所以钉源码形状。
+    // 写成 `=== true` 的话，老配置与从没进过设置页的用户会**静默没有门** —— 那是 D-131 的反面。
+    const src = readFileSync(join(__dirname, '../../src/main/store/settings.ts'), 'utf8')
+    const body = src.slice(src.indexOf('export function getMemoryApprovalGate'))
+    expect(body).toContain('export function getMemoryApprovalGate(): boolean {')
+    expect(body).toContain('return store.store.memoryApprovalGate !== false')
+  })
+})
 
 describe('影响面分类与注入策略（plan25 D-071 扩画像）', () => {
   it('四类：三影响面 + 画像；style 与 profile 总是注入，另两类条件注入', () => {
