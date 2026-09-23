@@ -306,6 +306,15 @@ describe('归档区：自动遗忘从硬删改成可移动（plan53 片 1）', (
     expect(fs.files.get(norm(a))).toBe(BODY) // 归档件留着，用户自己决定怎么合
   })
 
+  it('★ remove 认归档区（K28 清空归档的地基）：假后端曾只认 notes，把这条藏住了', () => {
+    const { fs, backend } = seeded()
+    const a = backend.archive(notePathFor(ROOT, 'n000'))!
+    expect(backend.remove(a)).toBe(true)
+    expect(fs.files.has(norm(a))).toBe(false)
+    expect(backend.listArchived()).toEqual([])
+    expect(backend.remove(a)).toBe(false) // 第二次没有可删的东西，不许谎报成功
+  })
+
   it('恢复的门禁在归档区内：notes/ 路径与兄弟目录 archived-evil/ 一律拒', () => {
     const { fs, backend } = seeded()
     expect(backend.restoreFrom(notePathFor(ROOT, 'n000'))).toBeNull()

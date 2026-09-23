@@ -11,10 +11,16 @@ let tick = 0
 export interface ArchiveMock {
   backend: {
     read(file: string): string | null
+    /**
+     * 与真后端同口径：`remove` 也覆盖三处（notes / candidates / archived）。
+     * ⚠️ 各文件自己那份 `remove` 只认 notes —— 归档件于是"删不掉"，K28 清空归档的判据就是这么暴露的。
+     * 这里给一份 faithful 实现，spread 在自带 remove 之后即生效。
+     */
+    remove(file: string): boolean
     archive(file: string): string | null
     listArchived(): string[]
     restoreFrom(archivedFile: string): string | null
-  }
+  };
   /** 归档区本体，供断言直接看正文 */
   archived: Map<string, string>
 }
@@ -23,8 +29,9 @@ export function createArchiveMock(opts: {
   files: Map<string, string>
   notesRoot: string
   archRoot: string
-  /** 假后端自己的其它目录（如 candidates/）—— read 在 notes、归档区都查不到时问它 */
+  /** 假后端自己的其它目录（如 candidates/）—— read 与 remove 在 notes、归档区都够不着时问它 */
   fallback?: (file: string) => string | null
+  removeFallback?: (file: string) => boolean
 }): ArchiveMock {
   const archived = new Map<string, string>()
   const { files, notesRoot, archRoot } = opts
@@ -32,6 +39,11 @@ export function createArchiveMock(opts: {
     archived,
     backend: {
       read: (file) => files.get(file) ?? archived.get(file) ?? opts.fallback?.(file) ?? null,
+      remove: (file) => {
+        if (archived.delete(file)) return true
+        if (files.delete(file)) return true
+        return opts.removeFallback?.(file) ?? false
+      },
       archive: (file) => {
         if (!file.startsWith(`${notesRoot}/`) || !file.endsWith('.md')) return null
         const text = files.get(file)

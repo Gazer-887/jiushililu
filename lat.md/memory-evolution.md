@@ -22,6 +22,8 @@
 （[[src/renderer/src/components/MemoryManager.tsx#MemoryManager]]）。
 恢复走**移动**、同名已存在时**绝不覆盖**（[[src/main/memory/memory-core.ts#createMemoryRepo]] 的 `restoreArchived`）——
 撞名的那条可能是用户回来之后自己新写的，覆盖等于把两件事合成一件说不清的。
+反过来，K28 的**清空归档**是用户显式处置 ⇒ 逐条记 `delete`（[[src/main/memory/memory-core.ts#createMemoryRepo]] 的 `clearArchived`）：
+"还能恢复"不进丢失账、"亲手清掉"才进 —— 两个方向共用一条判据，改任一边都会有一条红。
 
 ## 索引段与正文段是两段
 

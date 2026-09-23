@@ -1339,6 +1339,17 @@ export function registerIpcHandlers(deps: {
     return result
   })
 
+  // ── K28：清空归档。这是**用户显式处置**，所以逐条记 delete（与自动遗忘的 archive 相对）：
+  //    还能恢复的不算丢失，清空之后的才是。条数为 0 不广播 —— 空操作不该让别的窗口白重拉一次
+  ipcMain.handle(IPC.memoryClearArchive, (): number => {
+    const removed = deps.memory.clearArchived()
+    if (removed > 0) {
+      log.info('归档记忆已清空', { removed })
+      sendToAll(IPC.memoryChanged)
+    }
+    return removed
+  })
+
   // ── 合并疑似重复（plan33 问题四）── 方向由 repo.merge 按 createdAt 重判，渲染端传的顺序不 trusted。
   ipcMain.handle(
     IPC.memoryMerge,

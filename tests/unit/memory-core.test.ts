@@ -564,6 +564,53 @@ describe('LRU 遗忘（批 4 判据 1/2）', () => {
     expect(repo.list().archived.length).toBe(0)
   })
 
+  // ── K28：清空归档 = 用户显式处置 ⇒ 记 delete（与自动遗忘的 archive 对称，那还能恢复、这不能） ──
+  it('★ 清空归档：归档区清空、生效集合一条不少、返回清掉的条数', () => {
+    const seed = seedFull(100)
+    const { repo, backend } = makeRepoWithEvents(seed)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' }) // 挤出一条进归档
+    expect(repo.list().archived.length).toBe(1)
+    const notesBefore = [...backend.files.keys()].filter((k) => k.startsWith(`${ROOT}/`)).length
+    expect(repo.clearArchived()).toBe(1)
+    expect(repo.list().archived.length).toBe(0)
+    expect(repo.list().total).toBe(100) // 生效集合不受影响
+    expect([...backend.files.keys()].filter((k) => k.startsWith(`${ROOT}/`)).length).toBe(notesBefore)
+  })
+
+  it('★ 清空落的是**逐条** delete(by:user)，名字与归档条目对得上', () => {
+    const seed = seedFull(100)
+    const { repo, backend } = makeRepoWithEvents(seed)
+    // 两条各自给描述与正文：都用同一个 description 会被**相似闸**挡掉第二条（实测踩到），
+    // 那样就只剩 1 条归档 —— 夹具不许顺手违反被测规则之外的另一条规则
+    repo.save({ ...valid, name: 'x1', description: '第一条独立内容甲', body: '正文甲：与乙无关的描述内容。' })
+    repo.save({ ...valid, name: 'x2', description: '第二条独立内容乙', body: '正文乙：与甲无关的另一段描述。' }) // 两次挤出 ⇒ 归档 2 条
+    const archived = repo.list().archived.map((a) => a.name).sort()
+    expect(archived.length).toBe(2)
+    backend.events.length = 0
+    expect(repo.clearArchived()).toBe(2)
+    const evs = backend.events.map((l) => JSON.parse(l))
+    expect(evs.filter((e) => e.kind === 'delete' && e.by === 'user').map((e) => e.name).sort()).toEqual(archived)
+    expect(evs.some((e) => e.kind === 'archive')).toBe(false) // 清空不许被记成"还能恢复"
+  })
+
+  it('空归档时清空 → 返回 0 且一条事件都不落（幂等；否则统计会被空操作灌水）', () => {
+    const { repo, backend } = makeRepoWithEvents(seedFull(3))
+    backend.events.length = 0
+    expect(repo.clearArchived()).toBe(0)
+    expect(backend.events).toEqual([])
+  })
+
+  it('★ 口径判据：清空**算丢失**（archive 不算、这一笔该算）⇒ 存活账必须跟着掉', () => {
+    const seed = seedFull(100)
+    const { repo, backend } = makeRepoWithEvents(seed)
+    repo.save({ ...valid, name: 'new-entry', description: 'd' })
+    const s1 = computeStats(backend.events.map((l) => JSON.parse(l)))
+    repo.clearArchived()
+    const s2 = computeStats(backend.events.map((l) => JSON.parse(l)))
+    expect(s2.alive).toBe(s1.alive - 1) // 独立重算：被清空的那条从此算丢
+    expect(s2.written).toBe(s1.written) // 分母不许动（清空不是"又多写了一条"）
+  })
+
   it('编辑既有条目不触发遗忘（有 input.file）', () => {
     const seed = seedFull(100)
     const repo = makeRepo(seed)

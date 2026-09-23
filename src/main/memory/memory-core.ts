@@ -283,6 +283,11 @@ export interface MemoryRepo {
   list(): MemoryIndex
   /** plan53 片 1：把归档条目放回生效集合。同名已存在 ⇒ 拒，**绝不覆盖** */
   restoreArchived(file: string): MemoryRestoreResult
+  /**
+   * K28：清空归档区，返回清掉的条数。
+   * 与自动遗忘**相反**：那条还能恢复（记 `archive`），这条是用户显式处置 ⇒ 逐条记 `delete`，进"丢失"那笔账。
+   */
+  clearArchived(): number
   get(file: string): MemoryEntry | null
   listFiles(): string[]
   save(input: MemorySaveInput): MemorySaveResult
@@ -620,6 +625,20 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       // 不另记事件：`archive` 没算进"丢失"，恢复回去就不需要补一笔"写入"——
       // 补了会让存活率凭空上涨（同一笔 written 被数两次）。
       return { ok: true }
+    },
+
+    // K28：清空归档 = 用户显式处置，与自动遗忘相反 —— 那还能恢复（记 `archive`），这条不能，所以逐条记 `delete`。
+    // 存活率的账因此**会**掉一格：这不是副作用，是口径本身（"丢失"只算用户亲手放弃的）。
+    // 解析不出的归档件照样删掉（否则清不干净），但不落事件 —— 它从来不在条目数里，落了对账会对不上。
+    clearArchived() {
+      let removed = 0
+      for (const file of backend.listArchived()) {
+        const name = this.get(file)?.name ?? null
+        if (!backend.remove(file)) continue
+        if (name) record({ kind: 'delete', conversationId: currentConversation(), name, by: 'user' })
+        removed++
+      }
+      return removed
     },
 
     // plan33 问题四：合并疑似重复对。方向**在方法内重判**（按 createdAt 取新旧）——

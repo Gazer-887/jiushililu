@@ -645,6 +645,18 @@ let memoryArchived = [
     body: '正文。',
     file: '/mem/archived/2026-09-20T08-30-12-456Z__forgotten-toolchain.md',
     archivedAt: '2026-09-20T08:30:12.456Z'
+  },
+  {
+    name: 'forgotten-second',
+    description: '第二条被挤掉的',
+    class: 'default',
+    origin: 'model',
+    evidence: { conversationId: 'c1' },
+    createdAt: '2026-09-11T00:00:00.000Z',
+    updatedAt: '2026-09-11T00:00:00.000Z',
+    body: '正文。',
+    file: '/mem/archived/2026-09-21T09-00-00-000Z__forgotten-second.md',
+    archivedAt: '2026-09-21T09:00:00.000Z'
   }
 ]
 const memorySaveCalls = []
@@ -655,6 +667,7 @@ const memoryFlagCalls = []
 // 技能禁用名单（plan34 S2a / K13 补桩）：桩状态**自洽可读**——get 返回当前名单，set 收整份名单并留流水。
 let skillsDisabled = []
 const skillsDisabledCalls = []
+const memoryClearArchiveCalls = []
 // 记忆开关（plan19 批 1）的桩状态；`warnOnNextEnable` 用来模拟"主进程判定这是最大风险组合"
 let memorySwitch = false
 let memoryWarnOnNextEnable = false
@@ -938,6 +951,14 @@ const STUBS = {
     memoryEntries = memoryEntries.concat([entry])
     memoryBroadcast()
     return { ok: true }
+  },
+  // K28：清空归档的桩。真返回**条数**并清空归档区 + 广播 —— 只回个 ok 不搬状态就是假清空
+  'memory:clear-archive': () => {
+    memoryClearArchiveCalls.push(memoryArchived.length)
+    const n = memoryArchived.length
+    memoryArchived = []
+    if (n > 0) memoryBroadcast()
+    return n
   },
   // ── 记忆开关（plan19 批 1）── 判据 14 的**界面契约**：真实判定在 src/main/ipc.ts
   //    （关→开 且 permissionPreset === 'full-access'）；门禁不加载它，故用 memoryWarnOnNextEnable 直接给值
@@ -9077,7 +9098,7 @@ app.whenReady().then(async () => {
   checkTrue(
     '片 1：归档区默认折起，但折叠标题带着条数（不展开也知道有几条被挤掉）',
     archivedCollapsed.archivedNames.length === 0 &&
-      (archivedCollapsed.archivedToggle || '').includes('已归档 1 条'),
+      (archivedCollapsed.archivedToggle || '').includes('已归档 2 条'),
     { toggle: archivedCollapsed.archivedToggle, names: archivedCollapsed.archivedNames }
   )
   await win.webContents.executeJavaScript(`
@@ -9096,6 +9117,7 @@ app.whenReady().then(async () => {
   checkTrue(
     '片 1：展开后能看到归档条目与归档日期（被抹掉的不只是内容，还有"什么时候没的"）',
     archivedExpanded.archivedNames.includes('forgotten-toolchain') &&
+      archivedExpanded.archivedNames.includes('forgotten-second') &&
       archivedExpanded.archivedDates[0] === '2026-09-20',
     { names: archivedExpanded.archivedNames, dates: archivedExpanded.archivedDates }
   )
@@ -9125,8 +9147,40 @@ app.whenReady().then(async () => {
     restoreClicked === true &&
       memoryRestoreCalls.includes('/mem/archived/2026-09-20T08-30-12-456Z__forgotten-toolchain.md') &&
       memAfterRestore.names.includes('forgotten-toolchain') &&
-      !memAfterRestore.archivedNames.includes('forgotten-toolchain'),
+      !memAfterRestore.archivedNames.includes('forgotten-toolchain') &&
+      memAfterRestore.archivedNames.includes('forgotten-second'),
     { restoreClicked, calls: memoryRestoreCalls, names: memAfterRestore.names }
+  )
+
+  // —— K28：清空归档 = 不可撤销的处置，所以「确认框 → 走 IPC → 只剩生效集合」三步都要钉住。
+  // 特别地：**生效条目数不许因为清空而变动** —— 清空只吃归档区，误伤 notes 是最坏的坏法。
+  const cleared = await win.webContents.executeJavaScript(`
+    (() => {
+      let asked = null;
+      window.confirm = (m) => { asked = m; return true; };
+      const btn = Array.from(document.querySelectorAll('.mem-archived-foot button'))
+        .find((b) => b.textContent.trim() === '清空归档');
+      if (!btn) return { found: false };
+      btn.click();
+      return { found: true, asked };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const memAfterClear = await readMemoryPanel()
+  checkTrue(
+    'K28：清空归档前先问（确认框不可少）',
+    cleared.found === true && typeof cleared.asked === 'string' && cleared.asked.includes('不可恢复'),
+    cleared
+  )
+  checkTrue(
+    'K28：清空走 `memory:clear-archive`，归档区清空而**生效条目一条不少**（误伤 notes 是最坏坏法）',
+    memoryClearArchiveCalls.length === 1 &&
+      memoryClearArchiveCalls[0] === 1 &&
+      memAfterClear.archivedNames.length === 0 &&
+      memAfterClear.archivedToggle === null &&
+      memAfterClear.names.includes('forgotten-toolchain') &&
+      memAfterClear.names.includes('prefers-tables'),
+    { calls: memoryClearArchiveCalls, names: memAfterClear.names, archived: memAfterClear.archivedNames }
   )
 
   // 护栏 2（D-043）：本轮写入痕迹的面板。面板只显示**当前会话**的痕迹 ——

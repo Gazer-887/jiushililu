@@ -133,6 +133,23 @@ export default function MemoryManager(): JSX.Element {
     void refresh()
   }
 
+  // K28：归档区不能只进不出。清空是**不可撤销**的，所以条数、目录、后果都要在确认框里说清
+  const clearAll = async (): Promise<void> => {
+    const n = archived.length
+    if (!window.confirm(`清空 ${n} 条归档记忆？
+
+清空后不可恢复：正文将从 memory/archived/ 删除，且不再计入"可恢复"。`)) {
+      return
+    }
+    const removed = await window.api.clearArchivedMemory()
+    setNotice(
+      removed > 0
+        ? { ok: true, text: `已清空 ${removed} 条归档记忆（不可恢复）` }
+        : { ok: false, text: '归档区已为空，未做改动' }
+    )
+    void refresh()
+  }
+
   return (
     <div className="mem-panel">
       <div className="mem-head">
@@ -212,6 +229,12 @@ export default function MemoryManager(): JSX.Element {
                   </button>
                 </div>
               ))}
+              <div className="mem-archived-foot">
+                <button type="button" onClick={() => void clearAll()}>
+                  清空归档
+                </button>
+                <span className="mem-archived-note">清空后不可恢复；只影响归档区，生效中的记忆不受影响。</span>
+              </div>
             </>
           ) : null}
         </div>

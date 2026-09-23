@@ -129,6 +129,7 @@ const api: ApiBridge = {
   deleteMemory: (file: string) => ipcRenderer.invoke(IPC.memoryDelete, file),
   // plan53 片 1：自动遗忘已改成可逆归档，这里是"取回来"那条路
   restoreMemory: (file: string) => ipcRenderer.invoke(IPC.memoryRestore, file),
+  clearArchivedMemory: () => ipcRenderer.invoke(IPC.memoryClearArchive),
   // plan33 问题四：合并疑似重复对（方向主进程重判）
   mergeMemory: (olderFile: string, newerFile: string) =>
     ipcRenderer.invoke(IPC.memoryMerge, { olderFile, newerFile }),

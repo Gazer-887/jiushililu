@@ -378,6 +378,8 @@ export const IPC = {
   memoryDelete: 'memory:delete',
   /** 恢复归档条目（plan53 片 1）：把 `archived/` 里的一条放回生效集合。同名已存在则拒 */
   memoryRestore: 'memory:restore',
+  /** K28：清空归档区（用户显式处置）。返回清掉的条数；逐条落 delete 事件 —— 过了这一步才是真丢失 */
+  memoryClearArchive: 'memory:clear-archive',
   /** 合并疑似重复对（plan33 问题四）：较旧正文并入较新条目 + 删旧 */
   memoryMerge: 'memory:merge',
   /** save/delete 后的跨窗广播（同 agents 口径） */
@@ -774,6 +776,8 @@ export interface ApiBridge {
   deleteMemory(file: string): Promise<boolean>
   /** 恢复归档条目（plan53 片 1）：同名已存在则拒，理由给用户自己处置 */
   restoreMemory(file: string): Promise<import('./memory').MemoryRestoreResult>
+  /** 清空归档区（K28）：返回清掉的条数。不可撤销，界面上必须先经用户确认 */
+  clearArchivedMemory(): Promise<number>
   /** 合并疑似重复对（plan33 问题四）：方向由主进程按 createdAt 重判，返回人话结果 */
   mergeMemory(olderFile: string, newerFile: string): Promise<{ ok: boolean; message: string }>
   /** **记忆开关**：批 1 只管通路 A。`warnFullAccess` = 开启时正处于完全访问档（判据 14 要当场告警） */

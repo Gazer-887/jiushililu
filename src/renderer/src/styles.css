@@ -6396,6 +6396,13 @@ body[data-resizing] {
   font-size: var(--fs-xs);
 }
 
+.mem-archived-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .mem-warn {
   padding: 8px;
   border: 1px solid var(--danger-border);

@@ -64,7 +64,8 @@ describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', (
   const gate = readFileSync(join(__dirname, '../../scripts/verify-shot.cjs'), 'utf8')
   for (const { key, literal } of [
     { key: 'memoryDelete', literal: 'memory:delete' },
-    { key: 'memoryRestore', literal: 'memory:restore' }
+    { key: 'memoryRestore', literal: 'memory:restore' },
+    { key: 'memoryClearArchive', literal: 'memory:clear-archive' }
   ]) {
     it(`${literal}：常量 / 主进程 handler / preload 桥 / 门禁桩 四处齐`, () => {
       expect(src('shared/ipc.ts')).toContain(`${key}: '${literal}'`)
@@ -74,7 +75,12 @@ describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', (
     })
   }
 
-  it('渲染层真的按下过恢复这个钮（通道接全却没人调 = 又一根断链）', () => {
+  // 通道接全 ≠ 界面上有人按 —— 两个动作各钉一条，少一个就是又一根静默断链
+  it('渲染层真的调用过恢复（`restoreMemory`）', () => {
     expect(src('renderer/src/components/MemoryManager.tsx')).toContain('window.api.restoreMemory(')
+  })
+
+  it('渲染层真的调用过清空归档（`clearArchivedMemory`，K28）', () => {
+    expect(src('renderer/src/components/MemoryManager.tsx')).toContain('window.api.clearArchivedMemory(')
   })
 })

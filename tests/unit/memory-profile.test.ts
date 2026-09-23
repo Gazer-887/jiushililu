@@ -23,7 +23,8 @@ function memBackend(seed: Record<string, string> = {}) {
     files,
     notesRoot: ROOT,
     archRoot: ARCH,
-    fallback: (f) => candidates.get(f) ?? null
+    fallback: (f) => candidates.get(f) ?? null,
+    removeFallback: (f) => candidates.delete(f)
   })
   return {
     files,
