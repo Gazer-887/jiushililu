@@ -82,7 +82,8 @@ jobs:
         run: xvfb-run --auto-servernum npx playwright test --config config/playwright.config.ts
 
   # ── plan53 D-5 · 真渲染门禁进 CI ──────────────────────────────────────────
-  # `scripts/verify-shot.cjs` 是第五道闸：自建窗口 + 自建 IPC 桩，跑 399 条界面判据。
+  # `scripts/verify-shot.cjs` 是第五道闸：自建窗口 + 自建 IPC 桩，把全部界面判据跑一遍。
+  # 条数**不写进步骤名**（写过一次，加判据就得改 workflow，否则名字变成假账）—— 以日志里的 `CHECKS=` 为准。
   # 此前只在各端本机跑，换端改界面没有任何东西会红（plan54 那族"接上了没人验"的同源问题）。
   #
   # 可行性是**实测定论**的（09-23，本机 Docker `node:22-bookworm`）：Linux 首轮 399 条里红 2，
@@ -124,7 +125,7 @@ jobs:
       #    所以 e2e 的"同条件"本身就已经含关沙箱 —— 要与 e2e 对齐，反而必须显式加这个开关。
       #    沙箱状态不是任何一条判据的标的，两边都关 ⇒ 口径仍然一致。
       # 红了就红：`reportAndExit` 有任何一条不匹配就 exit(1)，job 跟着失败（不加 continue-on-error）。
-      - name: 真渲染门禁（399 条界面判据）
+      - name: 真渲染门禁（判据条数看日志 CHECKS=）
         run: xvfb-run --auto-servernum npx electron --no-sandbox scripts/verify-shot.cjs
 
       # 判据本身只给读数与名字，"到底长什么样"在截图里 —— 只在失败时上传，绿的时候没必要留产物。
