@@ -80,3 +80,57 @@ jobs:
         # X 由 xvfb-run 自己挑空闲显示号并导出 DISPLAY，故不在 job.env 里写死 :99
         # （写死等于赌那个号没被占，多一个没必要失败模式）。
         run: xvfb-run --auto-servernum npx playwright test --config config/playwright.config.ts
+
+  # ── plan53 D-5 · 真渲染门禁进 CI ──────────────────────────────────────────
+  # `scripts/verify-shot.cjs` 是第五道闸：自建窗口 + 自建 IPC 桩，跑 399 条界面判据。
+  # 此前只在各端本机跑，换端改界面没有任何东西会红（plan54 那族"接上了没人验"的同源问题）。
+  #
+  # 可行性是**实测定论**的（09-23，本机 Docker `node:22-bookworm`）：Linux 首轮 399 条里红 2，
+  # 两条都在门禁脚本自己身上（拿盘符正则冒充绝对路径），已按真源 `isAbsolute` 修（`d8e26e6`）；
+  # 修后 **Windows 399/0 ‖ Linux 容器 399/0**，容器一轮 3m12s ⇒ 超时按 15m 给，留一倍余量给冷启动。
+  gate-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # apt 清单**照抄 e2e job 那份 + 只加中文字体**：e2e 已在同一 runner 上跑通真 Electron，
+      # 说明其余运行库与 `xauth` runner 镜像自带（本机裸 Debian 探针要装 18 项，那是镜像差异不是需求差异）。
+      # `fonts-noto-cjk` 不能省 —— runner 默认无中文字体，中文换行/裁切一变，吃几何量的判据就会假红。
+      - name: 装 Electron 系统库 + 中文字体
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libnss3 libatk-bridge2.0-0 libdrm2 libgbm1 libasound2t64 libcups2 libxkbcommon0 \
+            fonts-noto-cjk
+
+      - name: 安装依赖（要 Electron 二进制，故不设 ELECTRON_SKIP_BINARY_DOWNLOAD）
+        run: npm ci
+
+      - name: 构建（门禁驱动 out/ 产物，没有 dev server 兜底）
+        run: npm run build
+
+      # 不传 `--no-sandbox`：GH runner 以非 root 跑，e2e 同条件已能起 Electron（传了等于让 CI 验一个
+      # 与本机不同的进程）。若日志出现 `Running as root without --no-sandbox`，说明 runner 用户变了，
+      # 那时再补这个开关 —— 而不是现在就为"可能要"先偏口径。
+      # 红了就红：`reportAndExit` 有任何一条不匹配就 exit(1)，job 跟着失败（不加 continue-on-error）。
+      - name: 真渲染门禁（399 条界面判据）
+        run: xvfb-run --auto-servernum npx electron scripts/verify-shot.cjs
+
+      # 判据本身只给读数与名字，"到底长什么样"在截图里 —— 只在失败时上传，绿的时候没必要留产物。
+      # 路径照脚本的 `SHOTS = join(process.cwd(), 'Photo')`，不是 `shots/`；
+      # 且这里刻意用 `error`：路径写错必须响，用 `ignore` 会把"产物根本没落对地方"吞成静默。
+      - name: 失败时留截图
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-shot-failure
+          path: Photo/*.png
+          if-no-files-found: error
+          retention-days: 7
+
