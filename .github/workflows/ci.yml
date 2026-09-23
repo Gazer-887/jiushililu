@@ -115,12 +115,17 @@ jobs:
       - name: 构建（门禁驱动 out/ 产物，没有 dev server 兜底）
         run: npm run build
 
-      # 不传 `--no-sandbox`：GH runner 以非 root 跑，e2e 同条件已能起 Electron（传了等于让 CI 验一个
-      # 与本机不同的进程）。若日志出现 `Running as root without --no-sandbox`，说明 runner 用户变了，
-      # 那时再补这个开关 —— 而不是现在就为"可能要"先偏口径。
+      # ⚠️ `--no-sandbox` 是**首轮实测逼出来的**（run 35827699762）：不加就是
+      #    `FATAL:setuid_sandbox_host.cc` —— chrome-sandbox 要 root:root + SUID 4755，
+      #    npm 解包出来的二进制在 runner 上拿不到这个位，与"是不是 root 用户"无关。
+      #    上一版这里写的依据（"e2e 同条件已能起 Electron ⇒ 不用关沙箱"）**是反的**：
+      #    Playwright 起 electron 时默认就往参数里塞 `--no-sandbox`
+      #    （`playwright-core/lib/coreBundle.js`：`if (!options.chromiumSandbox && …) unshift('--no-sandbox')`），
+      #    所以 e2e 的"同条件"本身就已经含关沙箱 —— 要与 e2e 对齐，反而必须显式加这个开关。
+      #    沙箱状态不是任何一条判据的标的，两边都关 ⇒ 口径仍然一致。
       # 红了就红：`reportAndExit` 有任何一条不匹配就 exit(1)，job 跟着失败（不加 continue-on-error）。
       - name: 真渲染门禁（399 条界面判据）
-        run: xvfb-run --auto-servernum npx electron scripts/verify-shot.cjs
+        run: xvfb-run --auto-servernum npx electron --no-sandbox scripts/verify-shot.cjs
 
       # 判据本身只给读数与名字，"到底长什么样"在截图里 —— 只在失败时上传，绿的时候没必要留产物。
       # 路径照脚本的 `SHOTS = join(process.cwd(), 'Photo')`，不是 `shots/`；
