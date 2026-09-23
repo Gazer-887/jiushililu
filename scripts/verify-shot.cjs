@@ -13,7 +13,8 @@ const {
   statSync,
   writeFileSync
 } = require('node:fs')
-const { join } = require('node:path')
+const { isAbsolute, join } = require('node:path')
+const { tmpdir } = require('node:os')
 // 界面文案按**键**取（K21）：判据里不许写死表内文案 —— 那条文案一旦切语言，
 // 正向断言假红、定位器静默 no-op 让后面整批空转假绿。守卫见 `tests/unit/gate-copy-guard.test.ts`。
 const { textFor, textsFor } = require('./lib/gate-copy.cjs')
@@ -1416,7 +1417,10 @@ const STUBS = {
     const s = typeof p === 'string' ? p : ''
     attachPathCalls.push(s)
     const ws = 'D:\\jsllworkplace_for_test'
-    const abs = /^[a-zA-Z]:[\\/]/.test(s) ? s.replace(/\//g, '\\') : ws + '\\' + s.replace(/\//g, '\\')
+    // 绝对路径的判据照**真源**：`workspace-fs.ts::readAttachment` 用的是 `isAbsolute`。
+    // 这里原先拿盘符正则冒充，Linux 上会把 `/tmp/...` 判成相对路径 ⇒ 整条"区外附件"分支走歪。
+    // 相对路径仍按工作区根拼（保持本文件其它桩一贯的 Windows 路径形状，不引第二种写法）。
+    const abs = isAbsolute(s) ? s : ws + '\\' + s.replace(/\//g, '\\')
     const name = abs.split(/[\\/]/).pop() || 'a.txt'
     return {
       name,
@@ -4579,7 +4583,9 @@ app.whenReady().then(async () => {
   // —— ③-2 从系统资源管理器拖文件进来（dataTransfer.files 那条分支）——
   // ⚠️ 只有这条分支会传绝对路径（合成事件走的是自定义 MIME 那条），用户报的越界正出在这里。
   // CDP 的 drag 事件可直接带 files（真实路径），渲染端才拿得到真 File、getPathForFile 才有得可查。
-  const osDragFile = join(process.env.TEMP || '.', 'jsl-verify-os-drag.txt')
+  // `TEMP` 是 Windows 独有变量；原来缺省退到 `'.'`，在 Linux 上就变成一个相对路径 ——
+  // 而这族判据测的正是"系统拖进来的是绝对路径"。缺省改 `tmpdir()`，两平台都给绝对路径。
+  const osDragFile = join(process.env.TEMP || tmpdir(), 'jsl-verify-os-drag.txt')
   writeFileSync(osDragFile, '从系统资源管理器拖进来的一个真文件\n', 'utf8')
   const osDragCalls = []
   attachPathCalls.length = 0
@@ -4614,8 +4620,9 @@ app.whenReady().then(async () => {
     osDrag = {
       attempted: true,
       payloads: osDragCalls.slice(),
-      // **拿到的必须是绝对路径** —— 相对路径走不到这条分支，走到了就说明串了
-      gotAbsolute: osDragCalls.some((p) => /^[a-zA-Z]:[\\/]/.test(p)),
+      // **拿到的必须是绝对路径** —— 相对路径走不到这条分支，走到了就说明串了。
+      // 判据用 `isAbsolute`（与真源同一把尺）；原来的盘符正则只能量 Windows，Linux 上必假红。
+      gotAbsolute: osDragCalls.some((p) => isAbsolute(p)),
       titles: chips.titles,
       badges: chips.badges
     }
