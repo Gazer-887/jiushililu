@@ -529,6 +529,21 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       }
       const dup = rejectAsSimilar(input, existing)
       if (dup !== null) return dup
+      // ③ **候选之间也要互检**（K29）：候选区刻意不进 `buildIndex`，所以相似闸拿"已生效条目"比时
+      //    完全看不见待批队列 —— 换一个近义 name 就能无限堆提案（09-25 实测 71 条、40+ 条成簇）。
+      // ⚠️ 只在这条**模型通路**上拦，用户手动写不拦：候选还没生效，拿它去挡一次显式写入是错的。
+      //    也**不带 `similar` 指针** —— 那个字段驱动界面给出"更新那条"，而候选不是可编辑的条目。
+      const pendingDup = findSimilarEntry(
+        { name: input.name, description: input.description },
+        loadCandidates()
+      )
+      if (pendingDup !== null) {
+        return refuse(
+          input.name,
+          `已有一条待批准提案「${pendingDup.name}」在说同一件事（摘要：${pendingDup.description}）。` +
+            '请先让用户处理那一条，不要重复提案。'
+        )
+      }
     }
     const cand: MemoryCandidate = {
       name: input.name,
@@ -541,8 +556,11 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       // 撞不到对象的"纠正"只是新增（v2 条件 ①），标记就地抹掉、不带进候选
       ...(input.fromCorrection === true && conflict !== undefined ? { fromCorrection: true } : {})
     }
-    const file = saveCandidateFile(cand)
-    if (file === '') return { ok: false, reason: '提案未能落进候选区（原因见本轮写入痕迹）' }
+    const stored = saveCandidateFile(cand)
+    if (stored.file === '') {
+      return { ok: false, reason: stored.reason ?? '提案未能落进候选区（原因见本轮写入痕迹）' }
+    }
+    const file = stored.file
     // **不**调 notify：这条还没写进库。`onWrite` 喂的是对话流里那行「本轮写入痕迹」，
     // 报 ok:true 等于对用户说"记住了"，而工具回话说的是"待确认" —— 同一轮两句相反的话。
     // 提案的可见性有它自己的两个落点：工具回话 + 记忆页签的候选区。
@@ -581,12 +599,13 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
   /**
    * 候选落盘（**已过校验**的那份）。origin 取候选自己声明的来源 ——
    * 批 2 只有反思一种，片 2 起还有 `model`（模型提案），徽标要分得清是谁提的。
+   *
+   * 返回 `{ file, reason }` 而不是裸串（plan55 片③）：`queueForApproval` 要把**具体理由**回给模型
+   * —— 只回"没写进去"，模型改不出下一条（与 `saveCandidate` 早期那个毛病同族）。
+   * 三道闸都装在这里，不装在各调用点：反射链与模型提案链**共用这一个口**，漏一处就是 K29 的现行形状。
    */
-  function saveCandidateFile(input: MemoryCandidate): string {
-    const conflictWith = input.conflictWith
-    const slug = slugFor(input.name)
-    if (slug === null) {
-      const reason = 'name 无法用作文件名（含保留字或全为空白）'
+  function saveCandidateFile(input: MemoryCandidate): { file: string; reason?: string } {
+    const rejectWith = (reason: string): { file: string; reason: string } => {
       record({
         kind: 'write',
         conversationId: currentConversation(),
@@ -595,11 +614,29 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         reason
       })
       notify({ name: input.name, ok: false, reason })
-      return ''
+      return { file: '', reason }
+    }
+    const conflictWith = input.conflictWith
+    const slug = slugFor(input.name)
+    if (slug === null) {
+      return rejectWith('name 无法用作文件名（含保留字或全为空白）')
+    }
+
+    const file = backend.candidatePathFor(slug)
+    // ① 同名撞同一个 slug ⇒ 旧版是**后写的顶掉前一条**（静默丢一份提案）。现在拒，让前一条活着。
+    if (backend.read(file) !== null) {
+      return rejectWith(`候选区已有一条同名提案「${input.name}」，不再重复落盘（先处理那一条再提）`)
+    }
+    // ② 条数上限：超限**报数并拒绝新提案**，不静默丢、也不折进 `archived/`
+    //    （归档区是"曾生效、可恢复"的语义，恢复一条从未生效的提案会把它直接推进生效集）。
+    const pending = backend.listCandidates().length
+    if (pending >= MEMORY_LIMITS.maxCandidates) {
+      return rejectWith(
+        `候选区已满（${pending} / ${MEMORY_LIMITS.maxCandidates} 条）。请先到「记忆」页签批准或拒绝一些，再提新的`
+      )
     }
 
     const ts = now().toISOString()
-    const file = backend.candidatePathFor(slug)
     backend.write(
       file,
       serializeMemory({
@@ -615,7 +652,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         ...(input.fromCorrection === true && conflictWith ? { fromCorrection: true } : {})
       })
     )
-    return file
+    return { file }
   }
 
   return {
@@ -852,7 +889,8 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         notify({ name: input.name, ok: false, reason: validation.reason })
         return ''
       }
-      return saveCandidateFile({ ...input, ...(conflictWith ? { conflictWith } : {}) })
+      // 公开契约仍是"成功给路径、失败给空串"（反射链按它计数）；具体理由走事件流与 `notify`
+      return saveCandidateFile({ ...input, ...(conflictWith ? { conflictWith } : {}) }).file
     },
 
     approveCandidate(file) {

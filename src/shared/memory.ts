@@ -49,7 +49,14 @@ export const MEMORY_LIMITS = {
   /** name 字符上限；同时当文件名用 */
   maxNameChars: 64,
   /** 证据原话进事件流前的截断长度；防 events.jsonl 变成第二份会话正文 */
-  maxEvidenceQuoteChars: 240
+  maxEvidenceQuoteChars: 240,
+  /**
+   * 候选区（待批准提案）条数上限（plan53 片 3 之外的 K29 / plan55 片③）。
+   * 09-25 实测积压到 **71 条**而此前**没有任何上限** —— 反思日上限 20 次，无人清就无限长。
+   * ⚠️ 与上面几个数同一声明：**无实验支撑的初值**（校准协议见 plan19 §十二）。
+   * 取值理由只有一条能站住：50 ≈ 明显超出"一次能审完"的量（按每簇 6~8 条算约 6 簇）。
+   */
+  maxCandidates: 50
 } as const
 
 /**
