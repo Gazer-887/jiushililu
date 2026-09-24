@@ -36,6 +36,11 @@ export default function MemoryManager(): JSX.Element {
   const [dismissedDups, setDismissedDups] = useState<Set<string>>(new Set())
   /** 归档区默认折起：它是"出过的事"不是"要办的事"，摊开会把待批准挤下去 */
   const [archivedOpen, setArchivedOpen] = useState(false)
+  /** 预筛（plan55 片④）：手动触发，结果一句话报在上面 —— 它要花 token，不该自动跑 */
+  const [prescreening, setPrescreening] = useState(false)
+  const [prescreenNote, setPrescreenNote] = useState<string | null>(null)
+  /** 展开看来源的合并稿（会话内状态，与「忽略」同档） */
+  const [openCluster, setOpenCluster] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     void refresh()
@@ -49,6 +54,57 @@ export default function MemoryManager(): JSX.Element {
   // 疑似重复（plan33 问题四）：结构化数据来自主进程 loadAll；忽略掉的本地过滤
   const dupKey = (p: { files: [string, string] }): string => `${p.files[0]}|${p.files[1]}`
   const duplicates = (view?.duplicates ?? []).filter((p) => !dismissedDups.has(dupKey(p)))
+
+  const toggleSet = (s: Set<string>, k: string): Set<string> => {
+    const next = new Set(s)
+    if (next.has(k)) next.delete(k)
+    else next.add(k)
+    return next
+  }
+
+  // 簇视图（plan55 片④-b）：合并稿一行，被它吃掉的来源收进展开区 —— 行数从"条数"降到"簇数"。
+  // ⚠️ 来源在合并稿被批准之前**仍然是独立候选**（片④-a 的"不动来源"约束），
+  //    所以这里只是**收进展开区**，不是把它们藏掉；单独批准某条来源后，合并稿会跳过已不在的那个文件。
+  const byFilePath = new Map(candidates.map((c) => [c.file, c]))
+  const clusters = candidates
+    .filter((c) => (c.mergeSources?.length ?? 0) > 1)
+    .map((draft) => ({
+      draft,
+      sources: (draft.mergeSources ?? []).map((f) => byFilePath.get(f)).filter((s) => s !== undefined)
+    }))
+  const claimed = new Set(clusters.flatMap((g) => g.sources.map((s) => s.file)))
+  // 单条 = 既不是簇稿、也没被任何簇稿收走。⚠️ 不许按"有没有 mergeSources"筛：
+  // 一条只有 1 个来源的稿子会同时落不进 `clusters`（要 ≥2）和这里，而它仍在队列里 ——
+  // 界面上没有那一行 = 没有批准/弃用按钮，用户怎么点都清不掉它。
+  const clusterDraftFiles = new Set(clusters.map((g) => g.draft.file))
+  const singles = candidates.filter((c) => !claimed.has(c.file) && !clusterDraftFiles.has(c.file))
+
+  /** K30：候选带 `conflictWith` 时，把"批准会覆盖哪一条"摊出来 —— 批量入口的前提 */
+  const conflictLabel = (c: MemoryEntry & { conflictWith?: string }): JSX.Element | null => {
+    if (!c.conflictWith) return null
+    const old = entries.find((e) => e.file === c.conflictWith)
+    return (
+      <span className="mem-conflict">
+        {old ? `将覆盖：《${old.name}》` : '将覆盖一条已不在库中的条目'}
+      </span>
+    )
+  }
+
+  const runPrescreen = async (): Promise<void> => {
+    setPrescreening(true)
+    try {
+      const r = await window.api.prescreenMemory()
+      setPrescreenNote(
+        r.ok
+          ? `分成 ${r.clusters} 簇，写了 ${r.merged} 份合并稿；${r.uncovered} 条未被归并` +
+              (r.rejected.length > 0 ? `；${r.rejected.length} 份未采信` : '')
+          : (r.reason ?? '整理未成功')
+      )
+      void refresh()
+    } finally {
+      setPrescreening(false)
+    }
+  }
 
   const mergePair = async (p: { files: [string, string]; names: [string, string] }): Promise<void> => {
     const res = await window.api.mergeMemory(p.files[0], p.files[1])
@@ -185,11 +241,58 @@ export default function MemoryManager(): JSX.Element {
 
       {candidates.length > 0 ? (
         <div className="mem-candidates">
-          <div className="mem-candidates-title">待批准 {candidates.length} 条</div>
+          <div className="mem-candidates-head">
+            <div className="mem-candidates-title">待批准 {candidates.length} 条</div>
+            <button
+              type="button"
+              className="mem-prescreen"
+              disabled={prescreening}
+              onClick={() => void runPrescreen()}
+            >
+              {prescreening ? '整理中…' : '整理'}
+            </button>
+          </div>
           <div className="mem-candidates-note">
             反思提炼或模型提案的候选。批准后生效（撞名时覆盖那条旧条目）；不批准不会注入。
           </div>
-          {candidates.map((c) => (
+          {prescreenNote ? (
+            <div className="mem-prescreen-note" data-probe="prescreen">
+              {prescreenNote}
+            </div>
+          ) : null}
+          {/* plan55 片④-b：合并稿按簇摆在最前 —— 一簇一行，被并掉的来源收进展开区。
+              这是"逐条管理"真正变少的地方：行数从条数降到簇数。 */}
+          {clusters.map((g) => (
+            <div key={g.draft.file} className="mem-candidate-row mem-cluster">
+              <span className="mem-badge mem-badge-merged">合并稿 · {g.sources.length} 条</span>
+              <span className="mem-name">{g.draft.name}</span>
+              <span className="mem-desc">{g.draft.description}</span>
+              {conflictLabel(g.draft)}
+              <div className="mem-candidate-actions">
+                <button type="button" onClick={() => void approve(g.draft)}>
+                  批准这一簇
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpenCluster((s) => toggleSet(s, g.draft.file))}
+                >
+                  {openCluster.has(g.draft.file) ? '收起来源' : '看来源'}
+                </button>
+                <button type="button" onClick={() => void reject(g.draft)}>
+                  弃用此稿
+                </button>
+              </div>
+              {openCluster.has(g.draft.file)
+                ? g.sources.map((s) => (
+                    <div key={s.file} className="mem-cluster-source">
+                      <span className="mem-name">{s.name}</span>
+                      <span className="mem-desc">{s.description}</span>
+                    </div>
+                  ))
+                : null}
+            </div>
+          ))}
+          {singles.map((c) => (
             <div key={c.file} className="mem-candidate-row">
               <span
                 className={c.origin === 'model' ? 'mem-badge mem-badge-model' : 'mem-badge mem-badge-reflection'}
@@ -198,6 +301,7 @@ export default function MemoryManager(): JSX.Element {
               </span>
               <span className="mem-name">{c.name}</span>
               <span className="mem-desc">{c.description}</span>
+              {conflictLabel(c)}
               <div className="mem-candidate-actions">
                 <button type="button" onClick={() => void approve(c)}>
                   批准

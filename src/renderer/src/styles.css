@@ -6551,6 +6551,60 @@ body[data-resizing] {
   color: var(--ask-cinnabar);
 }
 
+/* plan55 片④-b：候选区簇视图。墨色体系里没有绿/蓝，"合并稿"用朱砂描边而不是新色 */
+.mem-candidates-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mem-prescreen {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  font-size: var(--fs-xs);
+}
+
+.mem-prescreen:disabled {
+  color: var(--muted);
+}
+
+.mem-prescreen-note {
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.mem-badge-merged {
+  border-color: var(--ask-cinnabar-line);
+  color: var(--ask-cinnabar);
+  font-weight: 600;
+}
+
+.mem-cluster {
+  border-left: 2px solid var(--ask-cinnabar-line);
+  padding-left: 6px;
+}
+
+.mem-cluster-source {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  margin: 2px 0 0 14px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.mem-conflict {
+  flex: none;
+  color: var(--ask-cinnabar);
+  font-size: var(--fs-xs);
+}
+
 .mem-name {
   flex: none;
   color: var(--fg);

@@ -618,6 +618,17 @@ let memoryCandidates = [
   }
 ]
 const GATE_CLASS_LABELS = { style: '风格', default: '默认', knowledge: '知识', profile: '画像' }
+// 契约副本（真源 `MemoryIndex.duplicates`，由 `loadAll()` 现算）：桩里**不给这个字段**，
+// 「疑似重复」那一整段在门禁里就从来没渲染过 —— 桩齐 ≠ 测到的第三种形状（审查 R-D3）。
+let memoryDuplicates = [
+  {
+    // ⚠️ 用**专用**夹具，不复用 `uses-pnpm`：那条前面被"删除"判据动过，
+    //    拿它当配对会让桩走进"有一边已不存在"的早退分支，合并这段就又是假绿。
+    files: ['/mem/notes/packem-hint.md', '/mem/notes/packem-rule.md'],
+    names: ['packem-hint', 'packem-rule'],
+    descriptions: ['锁文件必须一起提交', '提交时锁文件必须一并提交']
+  }
+]
 
 let memoryEntries = [
   {
@@ -641,6 +652,29 @@ let memoryEntries = [
     updatedAt: '2026-09-15T00:00:00.000Z',
     body: '正文。',
     file: '/mem/notes/uses-pnpm.md'
+  },
+  {
+    name: 'packem-hint',
+    description: '锁文件必须一起提交',
+    class: 'knowledge',
+    // origin 一律 user：巡检区那条判据钉的是"只收 model 来源"，给成 model 会串扰它
+    origin: 'user',
+    evidence: null,
+    createdAt: '2026-09-15T00:30:00.000Z',
+    updatedAt: '2026-09-15T00:30:00.000Z',
+    body: '正文一。',
+    file: '/mem/notes/packem-hint.md'
+  },
+  {
+    name: 'packem-rule',
+    description: '提交时锁文件必须一并提交',
+    class: 'knowledge',
+    origin: 'user',
+    evidence: null,
+    createdAt: '2026-09-15T01:00:00.000Z',
+    updatedAt: '2026-09-15T01:00:00.000Z',
+    body: '正文二。',
+    file: '/mem/notes/packem-rule.md'
   }
 ]
 // K36：两类事各喂一条夹具，判据才分得开"读不出来"与"已生效但要过目"。
@@ -694,7 +728,10 @@ const memoryApproveCalls = []
 const memoryRejectCalls = []
 // plan55 片④：预筛被点了几次 —— 判据要能区分"按钮存在"与"按钮真的走了 IPC"
 const prescreenCalls = []
-/** 批 4：标记「这条不对」的调用流水 */
+const memoryMergeCalls = []
+// 桩最后一次返回的报告。界面那句汇报**对着这份数据判**，不写死字符串：
+// 写死的断言其实是在验"桩自己编的账"，真源算错了也照样绿（审查 R-D2）。
+let lastPrescreenReport = null/** 批 4：标记「这条不对」的调用流水 */
 const memoryFlagCalls = []
 // 技能禁用名单（plan34 S2a / K13 补桩）：桩状态**自洽可读**——get 返回当前名单，set 收整份名单并留流水。
 let skillsDisabled = []
@@ -946,6 +983,9 @@ const STUBS = {
     warnings: memoryWarnings.slice(),
     needsReview: memoryReview.map((r) => ({ ...r })),
     candidates: memoryCandidates.map((c) => ({ ...c })),
+    // 契约副本（R-D3）：真源 `loadAll()` 一直带着 `duplicates`，桩里缺这个字段 ⇒
+    // 「疑似重复」整段（含「合并到较新」这个入口）在门禁里**从来没渲染过**。
+    duplicates: memoryDuplicates.map((p) => ({ ...p, files: [...p.files], names: [...p.names], descriptions: [...p.descriptions] })),
     archived: memoryArchived.map((a) => ({ ...a }))
   }),
   'memory:read': (file) => memoryEntries.find((e) => e.file === file) ?? null,
@@ -1039,6 +1079,12 @@ const STUBS = {
       memoryEntries.push({ ...cand, file: `/mem/notes/${cand.name}.md`, origin: 'user' })
     }
     memoryCandidates = memoryCandidates.filter((c) => c.file !== file)
+    // 契约副本（真源 `memory-core.ts::approveCandidate` → `absorbMergeSources`）：批准合并稿要把
+    // 它并掉的来源**一起收掉**。桩不跟着做，簇批准就只验到"少了一行"，验不到"少了几行"。
+    if (cand.mergeSources?.length) {
+      const absorbed = new Set(cand.mergeSources)
+      memoryCandidates = memoryCandidates.filter((c) => !absorbed.has(c.file))
+    }
     memoryBroadcast()
     return { ok: true, file: cand.conflictWith ?? `/mem/notes/${cand.name}.md`, guard: { action: 'allow' } }
   },
@@ -1049,36 +1095,45 @@ const STUBS = {
     return memoryCandidates.length !== before
   },
   'memory:prescreen': () => {
-    prescreenCalls += 1
+    prescreenCalls.push(1)
     // 桩**真改候选夹具**：只回一个数字而界面什么都不变，"整理"这个按钮在门禁里就永远只是被点了一下
     // （K13 剩下的那半边正是这个形状 —— 桩齐 ≠ 测到）。
-    memoryCandidates = [
-      {
-        name: 'verbatim-output-merged',
-        description: '要求逐字回贴原始 stdout（并自 2 条提案）',
-        class: 'default',
-        origin: 'model',
-        evidence: null,
-        createdAt: '2026-09-25T00:00:00.000Z',
-        updatedAt: '2026-09-25T00:00:00.000Z',
-        body: '用户要求子代理逐字回贴原始 stdout，并严格禁止任务书之外的探测或命令。',
-        file: '/mem/notes/candidates/verbatim-output-merged.md',
-        mergeSources: [
-          '/mem/notes/candidates/verbatim-raw-output.md',
-          '/mem/notes/candidates/verbatim-raw-stdout.md'
-        ]
-      },
-      ...memoryCandidates
-    ]
-    memoryBroadcast()
-    return {
+    // ⚠️ 合并稿的来源只能取**当前队列里真有的**候选：真源的分组来自同一份清单，
+    //    写死两个路径会让"队列已空还能整理出一条"这种坏法在门禁里照不出来。
+    const sources = memoryCandidates.slice(0, 2).map((c) => c.file)
+    if (sources.length >= 2) {
+      memoryCandidates = [
+        {
+          name: 'verbatim-output-merged',
+          description: '要求逐字回贴原始 stdout（并自 2 条提案）',
+          class: 'default',
+          origin: 'model',
+          evidence: null,
+          createdAt: '2026-09-25T00:00:00.000Z',
+          updatedAt: '2026-09-25T00:00:00.000Z',
+          body: '用户要求子代理逐字回贴原始 stdout，并严格禁止任务书之外的探测或命令。',
+          file: '/mem/candidates/verbatim-output-merged.md',
+          mergeSources: sources
+        },
+        ...memoryCandidates
+      ]
+    }
+    // 契约副本（真源 `ipc.ts` 的 memoryPrescreen handler）：**只有真写出稿子才广播** ——
+    // 没写东西却喊"变了"会让每个窗口白重读一遍。
+    if (sources.length >= 2) memoryBroadcast()
+    // ⚠️ 四个数字全部由桩**自己真做出来的状态**推出来（审查 R-D2）：写死 `clusters:3 / uncovered:1`
+    //    的话，界面那句汇报就变成"照实显示了桩编的账"，真源算错了也照样绿。
+    lastPrescreenReport = {
       ok: true,
-      merged: 1,
-      clusters: 3,
-      uncovered: 1,
-      rejected: [{ name: 'ghost-src', reason: '来源指向不存在的候选' }],
+      merged: sources.length >= 2 ? 1 : 0,
+      clusters: 1,
+      uncovered: Math.max(0, memoryCandidates.length - (sources.length >= 2 ? 3 : 2)),
+      // 这一条是**夹具**而不是算出来的账：真源在模型给出不存在的来源编号时就会产出它，
+      // 界面要显示"N 份未采信"，就得有一份带 rejected 的报告可喂。
+      rejected: [{ name: 'ghost-src', reason: '来源编号不存在' }],
       usage: { promptTokens: 1200, completionTokens: 180, totalTokens: 1380 }
     }
+    return lastPrescreenReport
   },
   'memory:stats': () => ({ survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }),
   // 批 4：用户标记「这条不对」—— 只落事件 + 统计跟着变（契约副本）
@@ -1896,7 +1951,33 @@ const STUBS = {
     if (typeof patch?.reflectionDailyLimit === 'number') memoryAutoStub.reflectionDailyLimit = patch.reflectionDailyLimit
     return { ...memoryAutoStub }
   },
-  'memory:merge': () => ({ ok: true, message: '已合并为一条' }), // { ok, message }
+  // 契约副本（真源 `memory-core.ts::merge`）：**方向在方法内按 createdAt 重判**，
+  // 较旧那条正文并进较新的并删旧条；返回 `{ ok, message }`，message 形如「已把「X」并入「Y」并删除旧条」。
+  // 桩原来无状态且措辞与真源不同 ⇒ 界面上「合并到较新」这个入口从来没被门禁走过。
+  'memory:merge': (pair) => {
+    // 契约副本：preload 把两个路径包成 **一个对象**发过来（`{ olderFile, newerFile }`），
+    // 桩按位置参数收就永远查不到条目 —— 于是"点了合并没反应"这种坏法在门禁里照不出来。
+    const fileA = pair?.olderFile
+    const fileB = pair?.newerFile
+    memoryMergeCalls.push([fileA, fileB])
+    const a = memoryEntries.find((e) => e.file === fileA)
+    const b = memoryEntries.find((e) => e.file === fileB)
+    if (!a || !b) return { ok: false, message: '要合并的条目有一边已不存在（可能已被删除）' }
+    if (a.file === b.file) return { ok: false, message: '同一条目不需要合并' }
+    const older = a.createdAt <= b.createdAt ? a : b
+    const newer = a.createdAt <= b.createdAt ? b : a
+    newer.body = `${newer.body}
+
+## 合并自「${older.name}」
+
+${older.body}`
+    memoryEntries = memoryEntries.filter((e) => e.file !== older.file)
+    memoryDuplicates = memoryDuplicates.filter(
+      (pair) => !pair.files.includes(older.file) && !pair.files.includes(newer.file)
+    )
+    memoryBroadcast()
+    return { ok: true, message: `已把「${older.name}」并入「${newer.name}」并删除旧条` }
+  },
   'plan:approve-respond': () => true, // boolean；本表不留"只记录、无人读"的状态
   'skill:save': () => ({ ok: true }), // SkillWriteResult：{ ok: true } | { ok: false; reason }
   'skill:delete': () => ({ ok: true })
@@ -9166,6 +9247,17 @@ app.whenReady().then(async () => {
           // plan53 D5 / 片 2：候选区（徽标 + 名字）—— 批准与拒绝两步以前没有一条判据走过界面
           candBadges: Array.from(p.querySelectorAll('.mem-candidate-row .mem-badge')).map((n) => n.textContent.trim()),
           candNames: Array.from(p.querySelectorAll('.mem-candidate-row .mem-name')).map((n) => n.textContent.trim()),
+          // plan55 片④-b：簇视图三件套必须**各自可数** —— 「整理」有没有真走到 IPC、合并稿有没有成行、
+          // 来源是不是点开才可见，混在 candNames 里一个都判不出来。
+          clusterRows: Array.from(p.querySelectorAll('.mem-cluster')).map((r) => r.querySelector('.mem-name')?.textContent.trim() ?? ''),
+          clusterBadges: Array.from(p.querySelectorAll('.mem-cluster > .mem-badge')).map((n) => n.textContent.trim()),
+          clusterSourceNames: Array.from(p.querySelectorAll('.mem-cluster-source .mem-name')).map((n) => n.textContent.trim()),
+          conflictLabels: Array.from(p.querySelectorAll('.mem-conflict')).map((n) => n.textContent.trim()),
+          // R-D3：疑似重复段以前在门禁里**从不渲染**（桩不给 duplicates 字段），三样都得单独可采
+          dupTitle: p.querySelector('.mem-dups-title')?.textContent.trim() ?? null,
+          dupNames: Array.from(p.querySelectorAll('.mem-dup-row .mem-name')).map((n) => n.textContent.trim()),
+          dupButtons: Array.from(p.querySelectorAll('.mem-dup-actions button')).map((b) => b.textContent.trim()),
+          prescreenNote: p.querySelector('.mem-prescreen-note')?.textContent.trim() ?? null,
           archivedToggle: p.querySelector('.mem-archived-toggle')?.textContent.trim() ?? null,
           archivedNames: Array.from(p.querySelectorAll('.mem-archived-row .mem-name')).map((n) => n.textContent.trim()),
           archivedDates: Array.from(p.querySelectorAll('.mem-archived-row .mem-archived-at')).map((n) => n.textContent.trim()),
@@ -9465,6 +9557,39 @@ app.whenReady().then(async () => {
     { badges: memCand0.candBadges, names: memCand0.candNames }
   )
 
+  // ── R-D3：疑似重复段（桩以前不带 `duplicates` ⇒ 这段从来没在门禁里出现过）──────────
+  const memDups = await readMemoryPanel()
+  checkTrue(
+    'plan33 问题四：疑似重复成组显示，并给出「合并到较新」入口（不显示 = 用户只能逐条手删）',
+    memDups.dupTitle !== null &&
+      memDups.dupTitle.includes('1 组') &&
+      memDups.dupNames.includes('packem-hint') &&
+      memDups.dupNames.includes('packem-rule') &&
+      memDups.dupButtons.includes('合并到较新'),
+    { title: memDups.dupTitle, names: memDups.dupNames, buttons: memDups.dupButtons }
+  )
+
+  const clickedMerge = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.mem-dup-actions button'))
+        .find((x) => x.textContent.trim() === '合并到较新');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const memAfterMerge = await readMemoryPanel()
+  checkTrue(
+    'plan33 问题四：「合并到较新」真的走 memory:merge 并按 createdAt 留较新的那条（方向不许交给调用方传序）',
+    clickedMerge === true &&
+      memoryMergeCalls.length === 1 &&
+      memAfterMerge.names.includes('packem-rule') &&
+      !memAfterMerge.names.includes('packem-hint') &&
+      memAfterMerge.dupTitle === null,
+    { calls: memoryMergeCalls, names: memAfterMerge.names, title: memAfterMerge.dupTitle }
+  )
+
   const clickedApprove = await win.webContents.executeJavaScript(`
     (() => {
       const row = Array.from(document.querySelectorAll('.mem-candidate-row'))
@@ -9504,6 +9629,177 @@ app.whenReady().then(async () => {
       memAfterReject.candNames.length === 0 &&
       !memAfterReject.names.includes('likes-dark-mode'),
     { calls: memoryRejectCalls, cand: memAfterReject.candNames, names: memAfterReject.names }
+  )
+
+  // ── plan55 片④-b：整理 → 按簇批准 ────────────────────────────────────────────
+  // 「待批准一长串、要逐条管理」是这一片要解决的真问题，所以判据必须量到**行数真的变少了**：
+  // 只看"合并稿出现在界面上"等于没验 —— 来源没被收掉的话，队列反而更长。
+  // ⚠️ 生效列表一起重铺：上面那几条判据删过条目，而 `conflictLabel` 要拿 `conflictWith`
+  //    去生效集里找那一条 —— 找不到的话"将覆盖《谁》"这句就永远测不到（实测踩过一次假失败）。
+  memoryEntries = [
+    {
+      name: 'prefers-tables',
+      description: '回答偏好用表格',
+      class: 'style',
+      origin: 'user',
+      evidence: null,
+      createdAt: '2026-09-14T00:00:00.000Z',
+      updatedAt: '2026-09-14T00:00:00.000Z',
+      body: '正文。',
+      file: '/mem/notes/prefers-tables.md'
+    },
+    {
+      name: 'uses-pnpm',
+      description: '本项目包管理用 pnpm',
+      class: 'knowledge',
+      origin: 'model',
+      evidence: { conversationId: 'c1' },
+      createdAt: '2026-09-15T00:00:00.000Z',
+      updatedAt: '2026-09-15T00:00:00.000Z',
+      body: '正文。',
+      file: '/mem/notes/uses-pnpm.md'
+    }
+  ]
+  memoryCandidates = [
+    {
+      name: 'verbatim-raw-output',
+      description: '要求逐字回贴 stdout',
+      class: 'default',
+      origin: 'reflection',
+      evidence: null,
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '候选正文一。',
+      file: '/mem/candidates/verbatim-raw-output.md'
+    },
+    {
+      name: 'verbatim-raw-stdout',
+      description: '要求逐字回贴 stdout 输出',
+      class: 'default',
+      origin: 'model',
+      evidence: null,
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '候选正文二。',
+      file: '/mem/candidates/verbatim-raw-stdout.md'
+    },
+    // 审查 R-C1 的形状：只有 1 个来源的稿子既不成簇（要 ≥2）、又不该被"带 mergeSources 就单条排除"
+    // 那一条筛掉 —— 它在队列里却没有那一行 = 没有批准/拒绝按钮，用户怎么点都清不掉。
+    // 来源指向一条已经不存在的候选，顺带走过"来源先被删掉"这条路。
+    {
+      name: 'orphan-draft',
+      description: '一份只剩一个来源指针的旧合并稿',
+      class: 'default',
+      origin: 'model',
+      evidence: null,
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '候选正文零。',
+      file: '/mem/candidates/orphan-draft.md',
+      mergeSources: ['/mem/candidates/already-gone.md']
+    },
+    // K30：批量入口的前提是"批准会覆盖哪一条"得摊在眼前，否则一键批准 = 盲签
+    {
+      name: 'uses-pnpm-v2',
+      description: '本项目包管理用 pnpm（补：锁文件必须提交）',
+      class: 'knowledge',
+      origin: 'model',
+      evidence: null,
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '候选正文三。',
+      file: '/mem/candidates/uses-pnpm-v2.md',
+      conflictWith: '/mem/notes/uses-pnpm.md'
+    }
+  ]
+  memoryBroadcast()
+  await new Promise((r) => setTimeout(r, 700))
+  const prePre = await readMemoryPanel()
+  checkTrue(
+    '片④-b：带 conflictWith 的候选把「将覆盖：《哪一条》」摊出来，且只有 1 个来源的旧稿仍有一行可批（K30 / R-C1）',
+    prePre.candNames.length === 4 &&
+      prePre.candNames.includes('orphan-draft') &&
+      prePre.conflictLabels.length === 1 &&
+      prePre.conflictLabels[0].includes('uses-pnpm'),
+    { cand: prePre.candNames, conflict: prePre.conflictLabels }
+  )
+
+  const clickedPre = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.mem-prescreen'))[0];
+      if (!b) return false;
+      b.click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const preMerged = await readMemoryPanel()
+  checkTrue(
+    '片④-b：「整理」真的走 memory:prescreen，合并稿成簇且**来源收进展开区**（行数从条数降到簇数）',
+    clickedPre === true &&
+      prescreenCalls.length === 1 &&
+      preMerged.clusterRows.includes('verbatim-output-merged') &&
+      preMerged.clusterBadges.some((t) => t.includes('2 条')) &&
+      // 来源被簇收走 ⇒ 不再各占一行；带冲突的那条仍是单条，不许被误收
+      !preMerged.candNames.includes('verbatim-raw-output') &&
+      preMerged.candNames.includes('uses-pnpm-v2') &&
+      preMerged.conflictLabels.length === 1,
+    { calls: prescreenCalls.length, rows: preMerged.clusterRows, cand: preMerged.candNames }
+  )
+  checkTrue(
+    '片④-b：整理结果如实报数（簇数 / 稿数 / 未采信数都上屏，不许只报"完成"）',
+    lastPrescreenReport !== null &&
+      preMerged.prescreenNote !== null &&
+      preMerged.prescreenNote.includes(`分成 ${lastPrescreenReport.clusters} 簇`) &&
+      preMerged.prescreenNote.includes(`写了 ${lastPrescreenReport.merged} 份合并稿`) &&
+      preMerged.prescreenNote.includes(`${lastPrescreenReport.rejected.length} 份未采信`),
+    { note: preMerged.prescreenNote, report: lastPrescreenReport }
+  )
+
+  const clickedSources = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.mem-cluster'))
+        .find((r) => r.querySelector('.mem-name')?.textContent.trim() === 'verbatim-output-merged');
+      if (!row) return false;
+      Array.from(row.querySelectorAll('.mem-candidate-actions button'))
+        .find((b) => b.textContent.trim() === '看来源').click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const preExpanded = await readMemoryPanel()
+  checkTrue(
+    '片④-b：「看来源」能把并掉的那几条摊开（批准之前用户得看得见被吃掉了什么）',
+    clickedSources === true &&
+      preExpanded.clusterSourceNames.includes('verbatim-raw-output') &&
+      preExpanded.clusterSourceNames.includes('verbatim-raw-stdout'),
+    { sources: preExpanded.clusterSourceNames }
+  )
+
+  const clickedClusterApprove = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = Array.from(document.querySelectorAll('.mem-cluster'))
+        .find((r) => r.querySelector('.mem-name')?.textContent.trim() === 'verbatim-output-merged');
+      if (!row) return false;
+      Array.from(row.querySelectorAll('.mem-candidate-actions button'))
+        .find((b) => b.textContent.trim() === '批准这一簇').click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const preApproved = await readMemoryPanel()
+  checkTrue(
+    '片④-b：「批准这一簇」一次让合并稿生效并**把来源一起收掉**（只删稿不删来源 = 队列越整理越长）',
+    clickedClusterApprove === true &&
+      memoryApproveCalls.includes('/mem/candidates/verbatim-output-merged.md') &&
+      preApproved.names.includes('verbatim-output-merged') &&
+      !preApproved.candNames.includes('verbatim-output-merged') &&
+      !preApproved.candNames.includes('verbatim-raw-output') &&
+      !preApproved.candNames.includes('verbatim-raw-stdout') &&
+      // 没被这一簇覆盖的那条仍然在，且覆盖提示没丢
+      preApproved.candNames.includes('uses-pnpm-v2') &&
+      preApproved.conflictLabels.length === 1,
+    { cand: preApproved.candNames, names: preApproved.names, conflict: preApproved.conflictLabels }
   )
 
   // 护栏 2（D-043）：本轮写入痕迹的面板。面板只显示**当前会话**的痕迹 ——
