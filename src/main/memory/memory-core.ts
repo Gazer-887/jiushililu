@@ -637,7 +637,8 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
    *
    * 返回 `{ file, reason }` 而不是裸串（plan55 片③）：`queueForApproval` 要把**具体理由**回给模型
    * —— 只回"没写进去"，模型改不出下一条（与 `saveCandidate` 早期那个毛病同族）。
-   * 四道闸都装在这里，不装在各调用点：反射链与模型提案链**共用这一个口**，漏一处就是 K29 的现行形状。
+   * 三道闸（① 同名 ② 上限 ③ 互检）都装在这里，不装在各调用点：反射链与模型提案链
+   * **共用这一个口**，漏一处就是 K29 的现行形状。字段校验在两个调用点各跑一次（话术要能带回给模型）。
    */
   function saveCandidateFile(input: MemoryCandidate): { file: string; reason?: string } {
     const rejectWith = (reason: string): { file: string; reason: string } => {
