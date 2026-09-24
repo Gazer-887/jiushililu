@@ -80,7 +80,8 @@
 ## 反思链：从会话正文到候选
 
 一条会话产出候选走 [[src/main/memory/reflection.ts#createReflectionRunner]]，**不进 Agent 主循环**：
-不带工具、不带记忆注入（[[src/main/index.ts#createReflectChat]]）。切这条线的理由是成本与身份——
+不带工具；记忆只带一份**只读的已知清单**（[[src/main/memory/reflection-prompt.ts#composeReflectionContext]]
+产的 `<known-memories>` = 已生效索引 + 当前待批候选），不是把注入段整份再烧一遍。切这条线的理由是成本与身份——
 走主循环就等于带着刚被审的那段上下文再烧一轮工具预算，还可能把正在提炼的东西再 `remember` 一遍。
 
 四处形状是被迫与主循环对齐的：前置门看 [[src/main/memory/reflection.ts#MIN_BODY_BYTES]]，
@@ -90,10 +91,14 @@
 [[src/main/memory/reflection-prompt.ts#REFLECTION_SYSTEM_PROMPT]]，为的是单测能断言它而不拖着 electron 全家桶；
 候选一律落 [[src/main/store/memory-fs.ts#candidatesDir]]，与正式条目物理隔离——
 [[src/main/memory/memory-core.ts#MemoryBackend]] 的 `listFiles` 只列正式目录，没批准的候选进不了注入段。
-候选有两个来源（`origin` 记着是谁提的，界面据此出两种徽标）：反思提炼，以及模型调
+候选有三个来源（`origin` 记着是谁提的，界面据此出徽标）：反思提炼；模型调
 [[src/main/agent/tools/memory-tools.ts#createMemoryTools]] 写长期记忆时被审批门改道过来的那部分
-（[[src/main/memory/memory-core.ts#createMemoryRepo]] 的 `modelWritesNeedApproval`）。
+（[[src/main/memory/memory-core.ts#createMemoryRepo]] 的 `modelWritesNeedApproval`）；
+以及用户点「整理」后由预筛写出的**合并稿**（`origin: model` 且带 `mergeSources`，见
+[[src/main/store/memory-store.ts#createMemoryStore]] 的 `runPrescreen`）。
 审批闸开在 `save()` 而不是工具层：以后再多一条模型通路会自动被罩住，不靠每个调用点记得判一次。
+候选侧的**互检与上限**同理开在唯一的落盘口 `saveCandidateFile` 上 —— 积压的主产线是反思链，
+挂在某一条通路的调用点上就等于给最忙的那条留了空档。
 
 失败留痕在装配层而不在执行器：执行器只咽下"输出形状不对"这一种
 （模型没按格式回答不是故障），其余异常一律抛出；[[src/main/store/memory-store.ts#createMemoryStore]]
@@ -142,6 +147,9 @@
 
 候选的两个终态不对称：批准要么覆盖旧条目（`origin` 沿用旧条目）、要么提升为新条目（`origin` 记 user，
 批准等于用户认可），两种都必须删候选文件，否则同名双条同时进索引；拒绝只删文件。
+批准**合并稿**时还要把它并掉的来源候选一起收掉 —— 那些从未生效，故事件记 `delete` 但带 `candidate: true`：
+留痕要留，存活率那笔账不进（候选成功落盘本来就不记 `write`，进账就成了"整理一次、记忆反而少一条"）。
+指向 notes 之外的 `conflictWith` 一律不认（它来自候选 frontmatter，是外部输入），按新条目另存。
 模型侧的"纠正"要三件事同时成立才算（plan53 §四之二 R1 v2）：提案撞名于既有条目、来源那一轮的用户
 原话命中 [[src/main/agent/tools/memory-tools.ts#NEGATION_WORDS]]（[[src/main/agent/tools/memory-tools.ts#hasNegation]]）、
 **且该提案被用户批准**。记账时刻因此从"写入成功"推到"批准生效"——公式一行不动，动的只有时刻。

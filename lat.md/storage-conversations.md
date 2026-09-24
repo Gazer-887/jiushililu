@@ -135,8 +135,8 @@ electron-store 只支持"整个对象一把写"，与分层不可兼得；它又
 每条会话的 meta 带一个 `workspace` 字符串，它同时是侧栏的分组键与主进程授权白名单的成员。
 一个字段两用是这个存储层最省真相源的地方，也是最容易被忽略的耦合。
 
-读侧：[[src/main/store/conversations-core.ts#groupByWorkspace]] 按它分组（组内按更新时间倒序，
-组间按各自最新时间倒序），[[src/main/store/conversations-core.ts#workspaceLabel]] 取路径末段当展示名、
+读侧：[[src/shared/conversation-group.ts#groupByWorkspace]] 按它分组（组内按更新时间倒序，
+组间按各自最新时间倒序），[[src/shared/conversation-group.ts#workspaceLabel]] 取路径末段当展示名、
 完整路径留给悬停。写侧：[[src/main/store/conversations.ts#knownWorkspaces]]
 从整张 meta 表去重得出白名单，切换工作区、打开目录、新建会话三处判定共用它。
 
