@@ -554,6 +554,10 @@ app.whenReady().then(async () => {
     onWarn: (message, extra) => log.warn(message, extra),
     onReflectionLog: (message, extra) => log.info(message, extra),
     dailyLimit: getReflectionDailyLimit(),
+    // plan55 片①-b（D-139 R6）：守卫要能判「运行环境为 X」是否与本机矛盾，而真源只有这里知道。
+    // ⚠️ 不写进 `shared/memory.ts` 也不写进 `memory-store.ts` —— 那两层是纯函数，硬编码平台名会让
+    // 换一台机器就跑出错误判定（09-25 那条真实候选正是这么来的）。
+    hostPlatform: process.platform,
     // plan53 片 2（D-131）：审批门**每次写现读**。设置页那个开关是逃生口，
     // 建库时读一次会把它变成"重启才生效"——用户当场关掉、下一轮照样被拦，那是骗人。
     modelWritesNeedApproval: () => getMemoryApprovalGate(),

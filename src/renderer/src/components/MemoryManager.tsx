@@ -296,6 +296,19 @@ export default function MemoryManager(): JSX.Element {
         </div>
       ) : null}
 
+      {view && view.needsReview.length > 0 ? (
+        /* K36：这些条目**已经生效、正在注入**，只是内容守卫要人过目一眼。
+           以前它们和"真读不出来"共用一个 `warnings`，被标题说成"未能加载" —— 用户据此以为数据丢了。 */
+        <div className="mem-warn mem-review">
+          <div className="mem-warn-title">{view.needsReview.length} 条需你过目</div>
+          {view.needsReview.map((r) => (
+            <div key={r.file} className="mem-warn-row">
+              {r.name}：{r.reason}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {view && view.warnings.length > 0 ? (
         <div className="mem-warn">
           <div className="mem-warn-title">{view.warnings.length} 条未能加载</div>

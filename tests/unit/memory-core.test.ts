@@ -320,6 +320,75 @@ describe('读盘路径也要挡（只挡写入侧 = 给手改留后门）', () =
   })
 })
 
+// K36（plan55 片①-a）：`warnings` 里曾混着两类完全不同的事 —— 真读不出来（条目被排除）
+// 与"条目照常入库注入、只是内容守卫要人过目一眼"。面板标题按前者命名 ⇒ 后者被显示成"未能加载"。
+// 本组判据钉的就是**分家之后**的形状；分家前 ①②④ 三条必红。
+describe('K36 读侧分家：「未加载」与「需你过目」不许共用一个读数', () => {
+  /** 正文只能这样造：`fileText` 的正文写死是 `正文。`，塞进 frontmatter 会被解析器当未知字段拒掉 */
+  const withBody = (name: string, body: string): string =>
+    fileText({ name }).replace('正文。', body)
+
+  it('① 标记档（含敏感名词）的条目照常注入，且**不**算进「未加载」', () => {
+    const repo = makeRepo({
+      [`${ROOT}/ref.md`]: withBody('ref', '密钥存放在 1Password 里，需要时去那查。')
+    })
+    const idx = repo.list()
+    expect(idx.entries.map((e) => e.name)).toEqual(['ref'])
+    expect(idx.warnings.some((w) => w.includes('ref.md'))).toBe(false)
+    expect(idx.needsReview.map((r) => r.file)).toEqual([`${ROOT}/ref.md`])
+  })
+
+  it('② 确认档（授权口径）同样分家，并把理由带进界面', () => {
+    const repo = makeRepo({
+      [`${ROOT}/quiet.md`]: withBody('quiet', '用户要求长任务期间免打扰，跑完再汇报。')
+    })
+    const idx = repo.list()
+    expect(idx.entries).toHaveLength(1)
+    expect(idx.warnings).toHaveLength(0)
+    expect(idx.needsReview).toHaveLength(1)
+    expect(idx.needsReview[0]!.reason).toContain('确认')
+  })
+
+  it('③ 真读不出来的仍进「未加载」，且不进「需过目」（两个数不许互相顶替）', () => {
+    const repo = makeRepo({
+      [`${ROOT}/good.md`]: fileText({ name: 'good' }),
+      [`${ROOT}/broken.md`]: '这不是 frontmatter'
+    })
+    const idx = repo.list()
+    expect(idx.entries.map((e) => e.name)).toEqual(['good'])
+    expect(idx.warnings).toHaveLength(1)
+    expect(idx.needsReview).toHaveLength(0)
+  })
+
+  it('④ 硬拒档（已知凭据前缀）属「未加载」，不是「需过目」', () => {
+    const repo = makeRepo({
+      [`${ROOT}/evil.md`]: withBody('evil', '令牌 ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+    })
+    const idx = repo.list()
+    expect(idx.entries).toHaveLength(0)
+    expect(idx.warnings.some((w) => w.includes('evil.md'))).toBe(true)
+    expect(idx.needsReview).toHaveLength(0)
+  })
+
+  it('⑤ 过目完（用户手改后不再命中守卫）⇒ 从「需过目」里消失，不必删条目', () => {
+    const files: Record<string, string> = {
+      [`${ROOT}/ref.md`]: withBody('ref', '密钥存放在 1Password 里，需要时去那查。')
+    }
+    const before = makeRepo(files).list()
+    expect(before.needsReview).toHaveLength(1)
+    const backend = memBackend({
+      [`${ROOT}/ref.md`]: withBody('ref', '读大文件先量字节数再决定读多少，避免整份进上下文。')
+    })
+    const after = createMemoryRepo(backend, {
+      now: () => FIXED,
+      onWarn: () => {},
+      conversationId: () => 'c1'
+    }).list()
+    expect(after.needsReview).toHaveLength(0)
+    expect(after.entries).toHaveLength(1)
+  })
+})
+
 describe('事件流：批 1 必须埋，事后补不回来', () => {
   const kinds = (lines: string[]) => lines.map((l) => JSON.parse(l).kind as string)
 
@@ -709,5 +778,54 @@ describe('疑似重复检测（plan33，原批 4 判据 5）', () => {
     })
     const idx = repo.list()
     expect(idx.duplicates).toHaveLength(0)
+  })
+})
+
+// ── 片①-b（plan55 / D-139 R6）：闸必须装在咽喉点，不是装在某个调用点 ──────────────
+// 纯函数那侧的判定由 `memory-contract.test.ts` 钉；本组钉的是**三条通路都走同一个口**：
+// 用户/模型写入（save）、候选落盘（saveCandidate）、手改文件（loadAll 读侧）。
+describe('片①-b 硬闸装在咽喉点：三条通路都拦得住', () => {
+  const PII = '运行环境为 Windows，用户名为 gazer'
+
+  it('save 被拒且不落盘（不是"落一条看不见的"）', () => {
+    const { repo, backend } = makeRepoWithEvents()
+    const r = repo.save({ name: 'env-user', description: '环境说明', class: 'default', body: PII, origin: 'user' })
+    expect(r.ok).toBe(false)
+    expect(backend.files.size).toBe(0)
+    expect(backend.events.some((e) => e.includes('"rejected":true'))).toBe(true)
+  })
+
+  it('审批门开着也**不进候选**——含身份字段的提案不该占待批数', () => {
+    const backend = memBackend()
+    const repo = createMemoryRepo(backend, {
+      now: () => FIXED,
+      onWarn: () => {},
+      conversationId: () => 'c1',
+      modelWritesNeedApproval: () => true
+    })
+    const r = repo.save({ name: 'env-user', description: '环境说明', class: 'default', body: PII, origin: 'model' })
+    expect(r.ok).toBe(false)
+    expect(backend.files.size).toBe(0)
+  })
+
+  it('手改的文件同样拦：读侧命中 ⇒ 不注入，且归「未加载」而非「需过目」', () => {
+    const repo = makeRepo({ [`${ROOT}/pii.md`]: fileText({ name: 'pii' }).replace('正文。', PII) })
+    const idx = repo.list()
+    expect(idx.entries).toHaveLength(0)
+    expect(idx.warnings.some((w) => w.includes('pii.md'))).toBe(true)
+    expect(idx.needsReview).toHaveLength(0)
+  })
+
+  it('环境矛盾这一档**只在注入了 hostPlatform 时才生效**（缺省不误伤）', () => {
+    const body = '运行环境为 macOS，长任务结束后再汇报。'
+    const blind = makeRepo().save({ name: 'os', description: '环境', class: 'default', body, origin: 'user' })
+    expect(blind.ok).toBe(true)
+    const seeing = createMemoryRepo(memBackend(), {
+      now: () => FIXED,
+      onWarn: () => {},
+      conversationId: () => 'c1',
+      hostPlatform: 'win32'
+    }).save({ name: 'os', description: '环境', class: 'default', body, origin: 'user' })
+    expect(seeing.ok).toBe(false)
   })
 })

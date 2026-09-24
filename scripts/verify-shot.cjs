@@ -643,7 +643,17 @@ let memoryEntries = [
     file: '/mem/notes/uses-pnpm.md'
   }
 ]
-let memoryWarnings = []
+// K36：两类事各喂一条夹具，判据才分得开"读不出来"与"已生效但要过目"。
+// 以前 `memoryWarnings` 恒空、`warnRows` 只采不判 ⇒ 这块界面上**一条判据都没有**。
+let memoryWarnings = ['/mem/notes/broken-demo.md：这不是 frontmatter']
+// 契约副本（真源 `shared/memory.ts::MemoryReviewItem`）：条目**在 `entries` 里照常生效**，只是守卫要人看一眼
+let memoryReview = [
+  {
+    file: '/mem/notes/review-demo.md',
+    name: 'review-demo',
+    reason: '这条含权限或敏感词，已标记以便巡检'
+  }
+]
 // plan53 片 1：归档区夹具（自动遗忘不再硬删）。文件名口径照 `shared/memory.ts::archivedFileName` ——
 // 时刻里的 `:` 与 `.` 换成 `-`，界面上显示的日期由 `archivedAt`（合法 ISO）取前 10 位
 let memoryArchived = [
@@ -932,6 +942,7 @@ const STUBS = {
       0
     ),
     warnings: memoryWarnings.slice(),
+    needsReview: memoryReview.map((r) => ({ ...r })),
     candidates: memoryCandidates.map((c) => ({ ...c })),
     archived: memoryArchived.map((a) => ({ ...a }))
   }),
@@ -9111,6 +9122,12 @@ app.whenReady().then(async () => {
           names: Array.from(p.querySelectorAll('.mem-row .mem-name')).map((n) => n.textContent.trim()),
           badges: Array.from(p.querySelectorAll('.mem-row .mem-badge')).map((n) => n.textContent.trim()),
           warnRows: p.querySelectorAll('.mem-warn-row').length,
+          // K36：两格必须**各自可数** —— 只采总数就分不出"守卫命中的活条目"被算进了哪一格
+          warnTitles: Array.from(p.querySelectorAll('.mem-warn .mem-warn-title')).map((n) => n.textContent.trim()),
+          reviewRows: Array.from(p.querySelectorAll('.mem-review .mem-warn-row')).map((n) => n.textContent.trim()),
+          unreadableRows: Array.from(
+            p.querySelectorAll('.mem-warn:not(.mem-review) .mem-warn-row')
+          ).map((n) => n.textContent.trim()),
           // plan53 片 1：归档区（默认折起，展开才有行）—— 折叠态与"忘了渲染"必须能区分开
           // plan53 D5 / 片 2：候选区（徽标 + 名字）—— 批准与拒绝两步以前没有一条判据走过界面
           candBadges: Array.from(p.querySelectorAll('.mem-candidate-row .mem-badge')).map((n) => n.textContent.trim()),
@@ -9163,6 +9180,18 @@ app.whenReady().then(async () => {
       memList.inspectRows[0] === 'uses-pnpm' &&
       (memList.inspectTitle || '').includes('1'),
     memList.inspectRows
+  )
+  // K36（plan55 片①-a）：`needsReview` 与 `warnings` 混装时，已生效的条目会被标题说成"未能加载"。
+  // 分家的判据必须**两边各喂一条夹具**——只有一边有数据时，混装也能过。
+  checkTrue(
+    'K36：「需你过目」与「未能加载」是两格，守卫命中的活条目不许被算进"未能加载"',
+    memList.reviewRows.length === 1 &&
+      memList.reviewRows[0].includes('review-demo') &&
+      memList.unreadableRows.length === 1 &&
+      memList.unreadableRows[0].includes('broken-demo') &&
+      memList.warnTitles.some((t) => t.includes('1 条需你过目')) &&
+      memList.warnTitles.some((t) => t.includes('1 条未能加载')),
+    { titles: memList.warnTitles, review: memList.reviewRows, unreadable: memList.unreadableRows }
   )
   // 判据 15 的后半：护栏 2 走面板，**不许**在消息主干里插非消息行
   checkTrue(

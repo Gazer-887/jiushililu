@@ -267,7 +267,7 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
     bytes += lineBytes
     kept.push(entry)
   }
-  // candidates / duplicates 由 list() 填真值；buildIndex 只管索引段，故给空数组占位（类型要它，语义不需要它）
+  // candidates / duplicates / needsReview 由 list() 填真值；buildIndex 只管索引段，故给空数组占位（类型要它，语义不需要它）
   return {
     entries: kept,
     total: entries.length,
@@ -275,6 +275,7 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
     usedBytes: bytes,
     warnings: [],
     duplicates: [],
+    needsReview: [],
     candidates: [],
     archived: []
   }
@@ -282,6 +283,11 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
 
 export interface MemoryRepoOptions {
   onWarn?: (message: string, extra?: Record<string, unknown>) => void
+  /**
+   * 本机平台（`process.platform` 口径），由组合根注入。plan55 片①-b / D-139 R6：
+   * 守卫据此拒掉「运行环境为 X」这类**与本机矛盾的事实断言**。缺省 = 不查这一档（单测与隔离进程走这条）。
+   */
+  hostPlatform?: string
   /** 注入时钟，便于单测钉住 createdAt / updatedAt */
   now?: () => Date
   /**
@@ -355,6 +361,8 @@ export interface MemoryRepo {
 export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions = {}): MemoryRepo {
   const warn = opts.onWarn ?? (() => {})
   const now = opts.now ?? (() => new Date())
+  /** 缺省 = 环境矛盾这一档不查（见 `MemoryRepoOptions.hostPlatform`）*/
+  const hostPlatform = opts.hostPlatform
   /** loadAll 的重复对缓存：签名（name+description 序）不变则不重算 O(n²) 扫描 */
   let dupCache: { sig: string; dups: NonNullable<MemoryIndex['duplicates']> } | null = null
 
@@ -362,9 +370,15 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     entries: MemoryEntry[]
     warnings: string[]
     duplicates: MemoryIndex['duplicates']
+    needsReview: MemoryIndex['needsReview']
   } {
     const entries: MemoryEntry[] = []
     const warnings: string[] = []
+    /**
+     * 「条目已生效，但内容守卫要人过目一眼」（K36）。⚠️ **与 `warnings` 分家** ——
+     * 混进去会被面板显示成"未能加载"，而那些条目其实照常注入、照常显示，用户会以为数据丢了。
+     */
+    const needsReview: MemoryIndex['needsReview'] = []
     /** 两条留痕通道都走：界面看 `MemoryIndex.warnings`，排查看日志 —— 少一条就不叫"绝不静默" */
     const note = (message: string): void => {
       warnings.push(message)
@@ -387,15 +401,18 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         name: p.name,
         description: p.description,
         body: p.body,
-        evidence: p.evidence
+        evidence: p.evidence,
+        hostPlatform
       })
       if (!validation.ok) {
         note(`${file}：${validation.reason}`)
         continue
       }
-      // 手改的文件没经过确认桥 —— 标记档与确认档都要浮出来（否则等于绕过了那一步）
+      // 手改的文件没经过确认桥 —— 标记档与确认档都要浮出来（否则等于绕过了那一步）。
+      // ⚠️ 但它是**已生效**的条目：进 `needsReview`，不进 `warnings`（K36 的分家就在这一条边界上）。
       if (validation.guard.action !== 'allow') {
-        note(`${file}：${validation.guard.reason}`)
+        needsReview.push({ file, name: p.name, reason: validation.guard.reason })
+        warn(`${file}：${validation.guard.reason}`)
       }
       entries.push({ ...p, file })
     }
@@ -433,7 +450,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       }
     }
     const duplicates = dupCache.dups
-    return { entries, warnings, duplicates }
+    return { entries, warnings, duplicates, needsReview }
   }
 
   /** 归档条目（plan53 片 1）：从 archived/ 读，同样**不进注入索引段**（物理隔离在 notes 之外） */
@@ -605,9 +622,16 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     listFiles: () => backend.listFiles(),
 
     list() {
-      const { entries, warnings, duplicates } = loadAll()
+      const { entries, warnings, duplicates, needsReview } = loadAll()
       const candidates = loadCandidates()
-      return { ...buildIndex(entries), warnings, duplicates, candidates, archived: loadArchived() }
+      return {
+        ...buildIndex(entries),
+        warnings,
+        duplicates,
+        needsReview,
+        candidates,
+        archived: loadArchived()
+      }
     },
 
     get(file) {
@@ -631,7 +655,8 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         name: input.name,
         description: input.description,
         body: input.body,
-        evidence: input.evidence ?? null
+        evidence: input.evidence ?? null,
+        hostPlatform
       })
       if (!validation.ok) return refuse(input.name, validation.reason)
 
@@ -812,7 +837,8 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         name: input.name,
         description: input.description,
         body: input.body,
-        evidence: input.evidence ?? null
+        evidence: input.evidence ?? null,
+        hostPlatform
       })
       if (!validation.ok) {
         // 候选不落盘 + 留痕（走 write 事件 rejected 变体，与 refuse 同口径）

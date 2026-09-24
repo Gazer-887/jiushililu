@@ -248,3 +248,104 @@ describe('导入其他记忆：解析器（0.13.41）', () => {
     expect(r.ok === false && r.reason).toContain('分类')
   })
 })
+
+// ── 片①-b（plan55 / D-139 R6）：个人身份字段与环境矛盾断言 ⇒ 硬拒，不入库 ─────────────
+// 样本来自 09-25 真实候选：`user-env-macos-user-gazer`（"运行环境为 macOS，用户名为 Gazer"）
+// —— 既触「个人信息不入门」，又是与本机矛盾的事实断言。
+// ⚠️ 规则一律按**形状**匹配：仓库里不许出现任何具体身份值，否则守卫自己成了泄露面。
+describe('个人身份字段：命中形状即硬拒', () => {
+  const hits = [
+    '运行环境为 macOS，用户名为 Gazer',
+    '我的邮箱是 someone@example.com',
+    '学号：2023010101',
+    '用户的生日是 3 月 5 日',
+    '本人身份证号为 110101199001011234',
+    '主机名为 DESKTOP-7H2K9Q1'
+  ]
+  for (const text of hits) {
+    it(`拒：${text.slice(0, 18)}…`, () => {
+      const v = guardMemoryText(text)
+      expect(v.action).toBe('reject')
+      expect(v.action === 'reject' && v.reason).toContain('个人身份')
+    })
+  }
+})
+
+describe('误伤防线：宁可漏拦，不许把正常偏好拒掉', () => {
+  const misses = [
+    '回答先给结论',
+    '用户偏好中文关键词给本地文件命名',
+    '部署密钥放在 1Password 里',
+    '用户的工作区在 Windows 上，命令由 cmd.exe 执行',
+    '用户名和邮箱都从环境变量读取，不写进代码',
+    '这个项目的 GitHub Actions 权限只读'
+  ]
+  for (const text of misses) {
+    it(`放：${text.slice(0, 18)}…`, () => {
+      expect(guardMemoryText(text).action).not.toBe('reject')
+    })
+  }
+})
+
+describe('环境断言与本机矛盾：真源由调用方注入，不硬编码平台名', () => {
+  it('给了 hostPlatform 且断言的 OS 与本机不符 ⇒ 硬拒，理由指到"与本机不符"', () => {
+    const v = guardMemoryText('运行环境为 macOS，用户偏好简洁段落', 'win32')
+    expect(v.action).toBe('reject')
+    expect(v.action === 'reject' && v.reason).toContain('与本机不符')
+  })
+
+  it('断言与本机一致 ⇒ 不拦（同一条规则不许变成"凡是提平台就拒"）', () => {
+    expect(guardMemoryText('运行环境为 Windows，命令由 cmd.exe 执行', 'win32').action).toBe('allow')
+  })
+
+  it('没给 hostPlatform ⇒ 环境这一档完全不参与判定（纯函数仍可单测）', () => {
+    expect(guardMemoryText('运行环境为 macOS，用户偏好简洁段落').action).not.toBe('reject')
+  })
+
+  it('只有"在 Windows 上"这类地点描述不算环境断言（要的是「运行环境为 X」形状）', () => {
+    expect(guardMemoryText('用户的工作区在 Windows 上，命令由 cmd.exe 执行', 'win32').action).toBe('allow')
+    expect(guardMemoryText('用户的工作区在 Windows 上，命令由 cmd.exe 执行', 'darwin').action).toBe('allow')
+  })
+
+  it('validateMemoryFields 把 hostPlatform 透传给守卫（不传 = 只跑身份与凭据两档）', () => {
+    const bad = validateMemoryFields({
+      name: 'env-os',
+      description: '运行环境记录',
+      body: '运行环境为 Linux，用 bash 跑构建。',
+      hostPlatform: 'win32'
+    })
+    expect(bad.ok).toBe(false)
+    const good = validateMemoryFields({
+      name: 'env-os',
+      description: '运行环境记录',
+      body: '运行环境为 Windows，用 cmd 跑构建。',
+      hostPlatform: 'win32'
+    })
+    expect(good.ok).toBe(true)
+  })
+})
+
+// 装配那一跳只有 1 条判据守着（K15 的教训：接口声明了、界面也建好了，就是没人接）。
+// `index.ts` 挂着 electron 全家桶起不了真进程 ⇒ 照本文件既有做法读源码做结构守卫。
+describe('组合根必须把本机平台交给守卫（缺了它，环境矛盾那一档静默失效）', () => {
+  const src = readFileSync(join(__dirname, '../../src/main/index.ts'), 'utf8')
+
+  it('index.ts 里 createMemoryStore 收到了 hostPlatform: process.platform', () => {
+    expect(/hostPlatform:\s*process\.platform/.test(src)).toBe(true)
+  })
+
+  it('真源只出现在组合根：shared 与 memory-store 两层不许自己读 process.platform', () => {
+    // 只查**真用法**：注释里写"`process.platform` 口径"是说明，不是读取（第一版判据把注释也算了进去 ⇒ 假失败）
+    const codeOnly = (s: string): string =>
+      s
+        .split('\n')
+        .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+        .join('\n')
+    expect(codeOnly(readFileSync(join(__dirname, '../../src/shared/memory.ts'), 'utf8'))).not.toContain(
+      'process.platform'
+    )
+    expect(
+      codeOnly(readFileSync(join(__dirname, '../../src/main/store/memory-store.ts'), 'utf8'))
+    ).not.toContain('process.platform')
+  })
+})

@@ -92,13 +92,19 @@ export interface MemoryIndex {
    * 上限不在这里重复传：界面直接读 `MEMORY_LIMITS.maxIndexBytes`，少一处副本少一处漂移。
    */
   usedBytes: number
-  /** 解析或校验失败被跳过的文件与原因（fail-soft，但绝不静默） */
+  /** 解析或校验失败被跳过的文件与原因（fail-soft，但绝不静默）—— **条目没进库** 才走这里 */
   warnings: string[]
   /**
    * 疑似重复对（plan33 问题四）：loadAll 两两检测的结构化结果。
    * ⚠️ 与 `warnings` 分家 —— 重复不是"加载失败"，之前混在里面被显示成坏档，谁也不会去清。
    */
   duplicates: MemoryDuplicatePair[]
+  /**
+   * 「条目**已生效**，但内容守卫要人过目一眼」（K36）：确认档 / 标记档命中，条目照常注入、照常显示。
+   * ⚠️ 与 `warnings` 分家 —— 混进去会被面板显示成"未能加载"，而那是另一回事（条目根本没进库）。
+   * 用户报的"2 条未能加载"里就有一条同时出现在生效列表里，正是这个混装的形状。
+   */
+  needsReview: MemoryReviewItem[]
   /**
    * 候选条目（批 2）：待批准的反思产出。⚠️ **不进注入段** ——
    * 物理隔离在 `memory/candidates/`，`listFiles()` 只列 `notes/`（审查 A P0）。
@@ -241,6 +247,16 @@ export interface MemoryDuplicatePair {
 }
 
 /**
+ * 「条目已生效，但内容守卫要人过目一眼」（K36）。
+ * `reason` 就是 `guardMemoryText` 给人看的那句话，界面原样显示 —— 不再另造一套措辞，两处各写一份迟早分岔。
+ */
+export interface MemoryReviewItem {
+  file: string
+  name: string
+  reason: string
+}
+
+/**
  * 护栏 2 的推送载荷（D-043 的 `<MemoryNotice />` 面板数据源）。
  * ⚠️ 只带**本轮**写了什么 —— 全量巡检归右抽屉的巡检区，两者按时机分工，不是重复。
  */
@@ -376,10 +392,42 @@ function includesAny(text: string, words: readonly string[]): boolean {
 }
 
 /**
+ * 个人身份字段的**形状**（plan55 片①-b / D-139 R6）。
+ * ⚠️ 只写模式、不写任何具体身份值 —— 守卫自己变成泄露面就本末倒置了。
+ * 要求"字段词 + 系词"紧邻，是在防误伤：「用户名和邮箱都从环境变量读取」是做法约定，不是身份值。
+ */
+const IDENTITY_FIELD_PATTERNS: readonly RegExp[] = [
+  /用户名\s*(?:是|为|[:：])/,
+  /账号名?\s*(?:是|为|[:：])/,
+  /主机名\s*(?:是|为|[:：])/,
+  /(?:我的|本人的|用户的?)\s*(?:邮箱|电子邮件|手机号|电话号码)/,
+  /(?:我的|本人的|用户的?)\s*性别\s*(?:是|为|[:：])/,
+  /学号\s*(?:是|为|[:：])/,
+  /身份证号?\s*(?:是|为|[:：])/,
+  /(?:我的|本人的|用户的?)\s*(?:生日|出生日期)/
+]
+
+/** 「运行环境为 X」这一形状 —— 只认 OS 名，"部署平台为 Vercel" 之类不落入 */
+const OS_ASSERTION =
+  /(?:运行环境|操作系统|开发环境|桌面平台|平台)\s*(?:是|为|[:：])\s*(macOS|Mac OS X|MacOS|Darwin|OSX|Windows|Win32|Linux|Ubuntu|Debian)/i
+
+/** 文本里点名的 OS → 与 `process.platform` 同口径的规范值 */
+function normalizeAssertedOs(name: string): string | null {
+  const n = name.toLowerCase()
+  if (/^(macos|mac os x|darwin|osx)$/.test(n)) return 'darwin'
+  if (/^(windows|win32)$/.test(n)) return 'win32'
+  if (/^(linux|ubuntu|debian)$/.test(n)) return 'linux'
+  return null
+}
+
+/**
  * 对一段文本做写入侧判定。**判定强度取四档里最严重的那个**；
  * `reason` 一律给人看的话（含指路），不许只回一个错误码。
+ *
+ * `hostPlatform`（plan55 片①-b）：由调用方注入的本机平台（`process.platform` 口径）。
+ * **不传 = 环境矛盾这一档完全不参与判定** —— 真源在组合根，纯函数不自己猜，也不硬编码"我们是 Windows"。
  */
-export function guardMemoryText(text: string): MemoryGuardVerdict {
+export function guardMemoryText(text: string, hostPlatform?: string): MemoryGuardVerdict {
   const cred = findCredentialShape(text)
   if (cred && cred.kind === 'known-prefix') {
     return {
@@ -398,6 +446,25 @@ export function guardMemoryText(text: string): MemoryGuardVerdict {
   }
   if (includesAny(text, AUTHORIZATION_NOUNS) || includesAny(text, SENSITIVE_NOUNS)) {
     return { action: 'mark', reason: '这条含权限或敏感词，已标记以便巡检' }
+  }
+  // 个人身份字段：直接拒，不进候选、不占待批数（与「个人信息不入门」同一条方针）
+  if (IDENTITY_FIELD_PATTERNS.some((re) => re.test(text))) {
+    return {
+      action: 'reject',
+      reason: '这条含个人身份字段（用户名 / 邮箱 / 学号 / 生日等）。按约定个人信息不写入记忆'
+    }
+  }
+  // 环境断言与本机矛盾：事实错了的记忆比没有记忆更坏 —— 模型会照着错的那份执行
+  const host = hostPlatform?.toLowerCase()
+  const osHit = OS_ASSERTION.exec(text)
+  if (host && osHit) {
+    const asserted = normalizeAssertedOs(osHit[1] ?? '')
+    if (asserted !== null && asserted !== host) {
+      return {
+        action: 'reject',
+        reason: `这条断言的运行环境与本机不符（本机为 ${host}）。请先核对再记`
+      }
+    }
   }
   return { action: 'allow' }
 }
@@ -454,6 +521,8 @@ export function validateMemoryFields(input: {
   description: string
   body: string
   evidence?: MemoryEvidence | null
+  /** 本机平台（`process.platform` 口径）。缺省 = 不查环境矛盾，见 `guardMemoryText` */
+  hostPlatform?: string
 }): MemoryValidation {
   const name = input.name
   if (name.length === 0) return { ok: false, reason: 'name 缺失' }
@@ -506,9 +575,9 @@ export function validateMemoryFields(input: {
   }
 
   // 四段文本逐段判定，取最严结论
-  let guard = guardMemoryText(name)
+  let guard = guardMemoryText(name, input.hostPlatform)
   for (const text of [desc, body, evidence?.conversationId ?? '']) {
-    guard = worse(guard, guardMemoryText(text))
+    guard = worse(guard, guardMemoryText(text, input.hostPlatform))
   }
   if (guard.action === 'reject') return { ok: false, reason: guard.reason }
   return { ok: true, guard }
