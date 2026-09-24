@@ -2600,8 +2600,8 @@ app.whenReady().then(async () => {
     deView
   )
   // plan43 S3-3：作用域说明必须**逐出口**披露「谁跟随、谁不跟随」。
-  // MCP 连不上只表现为工具列表为空，用户不会联想到"我刚换了 Python"——
-  // 不写出来，这个静默失败就永远查不到根因（见 PLAN/plan43 §8.2b）。
+  // MCP 断连在设置面板里**有**错误态（`state:'error'` + 文案），缺的是**对话现场那一句**——
+  // 用户看到的只是"工具少了几个"，不会联想到"我刚换了 Python"。（见 PLAN/plan43 §8.2b 理由②）
   const deScopeText = await sevalRaw(`
     (() => {
       const el = document.querySelector('.settings-body .de-scope');
