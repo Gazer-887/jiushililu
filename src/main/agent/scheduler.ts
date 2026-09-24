@@ -107,6 +107,10 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           tools: jobTools,
           maxRounds: opts.maxRoundsPerAgent,
           chat: opts.chatFactory(def),
+          // 刻意**不传 `contextWindow`** ⇒ 子代理这条路没有历史折叠与滚动摘要
+          // （`agent/loop.ts · runAgentLoop` 里 `trimOpts` 缺参即整段不启用）。取舍：子代理历史短、
+          // 轮数封顶兜着（`maxRounds` 默认 12），0.75 阈值多半永不触发，补传却要为折叠多花摘要调用。
+          // 护栏仍有两道：轮数上限 + 下面那条 `policy`（工具输出窗口化）。触发条件与完整理由见 `PLAN/plan55` §十（K37）。
           // 子代理跟主代理**同一个档位**：否则用户看到的省钱行为跟自己的设置对不上，最难解释
           ...(opts.policy ? { policy: opts.policy } : {}),
           // plan26 D-077：子代理执行事件标 'sub'（tool_call/tool_result/run_start/run_end 全覆盖）
