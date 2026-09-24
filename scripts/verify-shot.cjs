@@ -827,6 +827,10 @@ const fakeDiff = (rel) =>
     '+另一行新增'
   ].join('\n')
 
+// K13（2026-09-24）：这两条桩要"真办事"——set 之后 get 必须回显，否则界面永远停在初始态。
+let firecrawlHasKeyStub = false
+const memoryAutoStub = { autoMemoryEnabled: undefined, reflectionModel: undefined, reflectionDailyLimit: undefined }
+
 const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
@@ -1814,7 +1818,43 @@ const STUBS = {
   // plan43 S3d（2026-09-19）：终端状态栏「当前生效环境」行的数据源。
   // ⚠️ 桩返回的是**事实层**（命令真的会跑什么），不是设置页的「意向」——两者刻意分开，
   //    见 plan43 §8.3c。用可变量 activeRuntimeStub 驱动三种状态（有/无/失效）。
-  'dev-env:active': () => activeRuntimeStub
+  'dev-env:active': () => activeRuntimeStub,
+  // —— K13（2026-09-24）补 12 条：preload 能 invoke、门禁原先没桩的通道 ——————————————————
+  // 缺桩时的现场是：该调用拿到 undefined，组件靠自己的兜底继续渲染，**判定一条不红** —— 只有 stderr 知道通道断了。
+  // 全枚举那条判据见 tests/unit/no-dead-wiring.test.ts；下面每个返回值都照 `src/shared/ipc.ts` 的真契约，不在这invent 形状。
+  'app:flush-done': () => undefined, // 真契约 Promise<void>
+  'firecrawl:get': () => ({ hasKey: firecrawlHasKeyStub }), // { hasKey: boolean } —— 只报有没有 Key，值永不出主进程
+  'firecrawl:set': (key) => {
+    firecrawlHasKeyStub = typeof key === 'string' && key.length > 0
+    return { hasKey: firecrawlHasKeyStub }
+  },
+  'fs:import': (input) => ({ ok: true, message: `已导入 ${String(input?.rel ?? '')}` }), // FsOpResult
+  'mcp:delete': (name) => {
+    // 状态化照同文件 `mcp:save` 的先例（有失败分支、真改列表）——
+    // 恒真的桩会让未来"点删除→列表没少"的判据红成产品坏了，其实是桩在骗人。
+    const i = mcpStubServers.findIndex((s) => s.name === name)
+    if (i < 0) return { ok: false, reason: `没有名为 ${name} 的服务器` }
+    mcpStubServers.splice(i, 1)
+    return { ok: true }
+  },
+  'mcp:reconnect': (name) =>
+    mcpStubServers.some((s) => s.name === name)
+      ? { ok: true }
+      : { ok: false, reason: `没有名为 ${name} 的服务器` },
+  'memory:get-auto': () => ({ ...memoryAutoStub }), // MemoryAutoSettings：三格都允许 undefined = 未设，走档位默认
+  'memory:set-auto': (patch) => {
+    // 真实现（ipc.ts 那条）是**先落盘再重读返回权威态**，且只认这三格。
+    // 原来这里只返回合并视图、不回写 ⇒ 与上面那条注释自相矛盾，
+    // 且任何"点开关→切走→切回"的判据会看到默认态回跳，红的原因还会被误归给产品。
+    if (patch?.autoMemoryEnabled !== undefined) memoryAutoStub.autoMemoryEnabled = !!patch.autoMemoryEnabled
+    if (typeof patch?.reflectionModel === 'string') memoryAutoStub.reflectionModel = patch.reflectionModel
+    if (typeof patch?.reflectionDailyLimit === 'number') memoryAutoStub.reflectionDailyLimit = patch.reflectionDailyLimit
+    return { ...memoryAutoStub }
+  },
+  'memory:merge': () => ({ ok: true, message: '已合并为一条' }), // { ok, message }
+  'plan:approve-respond': () => true, // boolean；本表不留"只记录、无人读"的状态
+  'skill:save': () => ({ ok: true }), // SkillWriteResult：{ ok: true } | { ok: false; reason }
+  'skill:delete': () => ({ ok: true })
   // 注意：'confirm:respond' 不在这里 —— 需要记录收到的答复，单独注册（见下）
 }
 
@@ -1886,6 +1926,11 @@ app.whenReady().then(async () => {
       const src = raw ? String(raw) : '(来源未知)'
       cspViolations.push(`[${src}] ${msg}`)
     }
+    // ★ 试过在这儿收 `No handler registered` 做运行期兜底，**09-24 实测无效**：
+    //   那行是 Electron 主进程（C++ 层）打的，不经渲染侧 console-message；渲染端又有 `.catch()` 兜底，
+    //   连未处理 rejection 都不产生 —— 变异验证（把 firecrawl:get 桩就地注释掉）跑出来仍 410/0，
+    //   即这条判据**恒绿**。恒绿的判据是负债不是资产，已撤；缺桩一律由
+    //   tests/unit/no-dead-wiring.test.ts 的静态全枚举那条守（同一种变异它能红）。
   })
 
   // ── 设置独立窗口的桩实现（契约副本；真源见 src/main/index.ts openSettingsWindow）──

@@ -117,3 +117,86 @@ describe('#8 新增 IPC 通道必须四处齐（plan53 片 1 立的规矩）', (
     expect(settings).toContain('window.api.setMemoryApprovalGate(')
   })
 })
+// —— K13（plan54 #7 同族）：门禁桩表必须罩住 preload 真会 invoke 的每一个通道 ——————————————————
+// 为什么不是"把缺的那两个桩补上就完事"：本文件其余各条守的是**某一跳**，
+// 而门禁是**第三跳**（隔离验证进程自建 `ipcMain.handle`，不加载 `src/main`）。
+// 缺一个桩的现场形态是：该调用拿到 undefined、组件靠自己的兜底继续渲染、409 项判定一条不红 ——
+// 于是"通道明明断了，只有 stderr 知道"。09-24 实测：`firecrawl:get` / `memory:get-auto` 就这样静默了三天，
+// 且**本文件当时一条都不会红**（它只核 main 有 handler + preload 有引用）。
+// ⇒ 补这两个桩只是治标；这一条把判据改成**从 `IPC` 表全枚举**，让"以后再加通道忘了配桩"结构上不可能再发生。
+//    与 D-134 / D-136「闸装在咽喉点、不靠每个调用点记得判」同口径，只是落在测试层。
+describe('K13 门禁桩覆盖率：preload 能 invoke 到的通道，门禁必须都有桩', () => {
+  const repo = (rel: string): string => readFileSync(join(__dirname, '../..', rel), 'utf8')
+
+  /** `IPC` 常量表：key → 通道串。真源在共享层，别处一律不许写裸字面量（#4 已钉）。 */
+  const channelByKey = new Map<string, string>()
+  for (const m of repo('src/shared/ipc.ts').matchAll(/^ {2}([A-Za-z]\w*): '([^']+)'/gm)) {
+    channelByKey.set(m[1], m[2])
+  }
+
+  /** 渲染层可达面 = preload 真发出去的那些 invoke（`on(...)` 是主→渲推送，不需要 handle 桩） */
+  const invokedChannels = new Set<string>()
+  /** IPC 表里解析不到的键必须**单独收集并断言为空**：否则"表换了缩进/改成双引号/条目跨行"
+   *  会让那些通道**从判据里静默蒸发** —— 前提判据拦不住这种退化（键数掉几十条仍然 >50）。 */
+  const unresolvedInvokeKeys: string[] = []
+  for (const m of repo('src/preload/index.ts').matchAll(/invoke\(\s*IPC\.([A-Za-z]\w*)/g)) {
+    const ch = channelByKey.get(m[1])
+    if (ch === undefined) unresolvedInvokeKeys.push(m[1])
+    else invokedChannels.add(ch)
+  }
+
+  /** 门禁侧：STUBS 表（按花括号配平截块，避免误抓同文件其它对象字面量）+ 少量直接 handle 的裸通道 */
+  const gateStubChannels = new Set<string>()
+  {
+    const gate = repo('scripts/verify-shot.cjs')
+    const start = gate.indexOf('const STUBS = {')
+    if (start < 0) throw new Error('找不到 `const STUBS = {` —— 门禁桩表改名了？这条判据要先跟上')
+    let depth = 0
+    let end = -1
+    for (let i = gate.indexOf('{', start); i < gate.length; i++) {
+      if (gate[i] === '{') depth++
+      else if (gate[i] === '}') {
+        depth--
+        if (depth === 0) {
+          end = i
+          break
+        }
+      }
+    }
+    if (end < 0) throw new Error('STUBS 块花括号不配平 —— 门禁脚本坏了')
+    const block = gate.slice(start, end)
+    // 不按行首匹配：实测有 `'a:1': fn, 'a:2': fn` 挤在同一行的写法（terminal:write / :resize），
+    // 按行首会把它读成"缺桩"—— 那是判据自己的假阳性，不是缺陷。改按"通道名形状"整块扫。
+    // ★ 但必须先**逐行剥掉注释**再扫：本文件是项目里注释最密的地方，
+    //   `// 'skill:save': () => ...` 这种"被注释掉的桩"若算成有桩，就是**当场假绿**
+    //   （09-24 独立复核现场复现过：把桩注释掉，未剥注释的旧写法仍判它"有桩"）。
+    const code = block
+      .split('\n')
+      .map((l) => (l.includes('//') ? l.slice(0, l.indexOf('//')) : l))
+      .join('\n')
+    for (const m of code.matchAll(/'([a-z][\w-]*:[\w:-]+)':/g)) gateStubChannels.add(m[1])
+    for (const m of gate.matchAll(/^\s*ipcMain\.handle\(\s*'([^']+)'/gm)) gateStubChannels.add(m[1])
+  }
+
+  it('前提成立：三张表都真读到了东西（任一为空 ⇒ 下面那条会假绿）', () => {
+    expect(channelByKey.size).toBeGreaterThan(50)
+    expect(invokedChannels.size).toBeGreaterThan(50)
+    expect(gateStubChannels.size).toBeGreaterThan(50)
+    // 第四个前提：一个 invoke 都没"因为解析不到而被静默放过"。
+    expect(unresolvedInvokeKeys).toEqual([])
+  })
+
+  it('preload 能 invoke 的通道，门禁一个都不许缺桩（缺了就是"通道断了但没人知道"）', () => {
+    const missing = [...invokedChannels].filter((ch) => !gateStubChannels.has(ch)).sort()
+    expect(missing).toEqual([])
+  })
+
+  it('阳性对照：门禁里确实存在"只服务门禁"的桩，且被抽样的真通道两边都在', () => {
+    // 反向钉住"为了让判据绿而把 preload 掏空"这种坏法：
+    // 抽三条已知通道，要求它们在**两侧都**出现 —— 少了任何一侧，上面那条就成了空转。
+    for (const ch of ['mcp:artifact-read', 'memory:get-approval-gate', 'settings:get']) {
+      expect(invokedChannels.has(ch), `preload 侧缺 ${ch}`).toBe(true)
+      expect(gateStubChannels.has(ch), `门禁侧缺 ${ch}`).toBe(true)
+    }
+  })
+})
