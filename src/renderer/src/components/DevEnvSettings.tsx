@@ -46,9 +46,12 @@ export default function DevEnvSettings(): React.ReactElement {
       {/* plan43 S3：生效时机要说清。用户改了设置却看不到立刻的反馈，会以为"没生效"——
           而真相是**新任务/新终端才跟随**（已开的不换壳，与 VS Code 同口径）。
           不说清 = 让用户对着旧终端怀疑功能坏了。 */}
+      {/* 不跟随的通路也要逐条说：MCP 断连只有设置面板里有状态，对话现场不说一句，
+          用户不会联想到"我刚换了 Python"。跟随判定表见 PLAN/plan43 §8.2b。 */}
       {anySelected && (
         <p className="hint de-scope">
           已选中的运行时会在<strong>新开的终端</strong>与<strong>下一次任务执行</strong>时生效；已经打开的终端不会被改动。
+          MCP 服务、git 与代码搜索工具始终使用系统环境，不受该选择影响。
         </p>
       )}
       <div className="de-toolbar">

@@ -2599,6 +2599,23 @@ app.whenReady().then(async () => {
       !deView.hasPlus,
     deView
   )
+  // plan43 S3-3：作用域说明必须**逐出口**披露「谁跟随、谁不跟随」。
+  // MCP 连不上只表现为工具列表为空，用户不会联想到"我刚换了 Python"——
+  // 不写出来，这个静默失败就永远查不到根因（见 PLAN/plan43 §8.2b）。
+  const deScopeText = await sevalRaw(`
+    (() => {
+      const el = document.querySelector('.settings-body .de-scope');
+      return el ? el.textContent.trim() : null;
+    })()
+  `)
+  checkTrue(
+    '开发环境区：作用域说明同时写出「生效时机」与「MCP 等工具不跟随该选择」',
+    typeof deScopeText === 'string' &&
+      deScopeText.includes('新开的终端') &&
+      deScopeText.includes('MCP') &&
+      deScopeText.includes('不受该选择影响'),
+    { deScopeText }
+  )
   // 下拉展开：双行（名称+路径）、当前项打勾、「其他」可展开；选中「其他」项 → 落选择并回显
   const dePop = await sevalRaw(`
     (async () => {
