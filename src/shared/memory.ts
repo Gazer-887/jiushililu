@@ -117,7 +117,7 @@ export interface MemoryIndex {
    * 物理隔离在 `memory/candidates/`，`listFiles()` 只列 `notes/`（审查 A P0）。
    * 巡检区用这个字段显示候选 + 批准/拒绝按钮；批准后变成正式条目进 `entries`。
    */
-  candidates: MemoryEntry[]
+  candidates: MemoryCandidateView[]
   /**
    * 归档区（plan53 片 1）：被**自动遗忘**的条目，正文还在、可一键恢复。
    * ⚠️ 与 `candidates` 一样**不进注入段** —— 物理隔离在 `memory/archived/`，`listFiles()` 只列 `notes/`。
@@ -163,6 +163,12 @@ export interface MemorySaveInput {
    * 单独出现不算纠正：必须与 `conflictWith` 同时成立（没有对象就不叫"纠正"，叫新增）。
    */
   fromCorrection?: boolean
+  /**
+   * plan55 片④：模型预筛产出的**合并稿**并掉了哪几条候选（文件路径）。
+   * ⚠️ 候选专用；批准入库时按它逐条删除来源并各记一笔 `delete` —— 不做静默丢。
+   * 正式条目不写这个字段（来源清单以附录形式进正文，见 `prescreen.ts::composeMergedBody`）。
+   */
+  mergeSources?: string[]
 }
 
 /**
@@ -172,6 +178,36 @@ export interface MemorySaveInput {
  * 批准 = 用候选内容覆盖旧记忆 + 删除候选文件（审查 B P1，否则同名双条进索引）。
  */
 export type MemoryCandidate = MemorySaveInput & { conflictWith?: string }
+
+/**
+ * 候选区预筛的结果报告（plan55 片④-a）。
+ * 放 shared：主进程产出、渲染进程显示，两边一份口径（与 `MemoryIndex` 同理由）。
+ */
+export interface PrescreenReport {
+  ok: boolean
+  /** 没跑成的原因（没候选 / 没模型通道 / 模型没答） */
+  reason?: string
+  /** 写进候选区的合并稿条数 */
+  merged: number
+  /** 模型给的簇总数（含单条簇） */
+  clusters: number
+  /** 没被任何簇覆盖、原样留在队列里的候选条数 */
+  uncovered: number
+  /** 被采信层判为不可信而退回的元素与原因（如实上屏，不静默） */
+  rejected: Array<{ name: string; reason: string }>
+  /** 这次调用的真实用量；null = 没调用或厂商没报（**不许写成 0**，同 K15 口径） */
+  usage: import('./usage').TokenUsage | null
+}
+
+/**
+ * 候选在界面上的样子（plan55 片④）：正式条目的形状 + 两条只对候选有意义的指针。
+ * ⚠️ `conflictWith` 必须给到界面（K30）：用户点「批准」时得知道自己**在覆盖哪一条**；
+ *    `mergeSources` 给的是合并稿并掉了哪几条 —— 合并稿旁边要能翻回原文。
+ */
+export interface MemoryCandidateView extends MemoryEntry {
+  conflictWith?: string
+  mergeSources?: string[]
+}
 
 /**
  * 记忆层统计（批 2 §六 · 存活率与使用率）。

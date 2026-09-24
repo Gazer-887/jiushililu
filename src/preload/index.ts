@@ -145,6 +145,8 @@ const api: ApiBridge = {
   // ── 记忆批 2：候选批准/拒绝 + 统计 + 会话切换通知 ──
   approveMemory: (file: string) => ipcRenderer.invoke(IPC.memoryApprove, file),
   rejectMemory: (file: string) => ipcRenderer.invoke(IPC.memoryReject, file),
+  /** 候选区预筛（plan55 片④-a）：手动触发，返回这次的结果报告 */
+  prescreenMemory: () => ipcRenderer.invoke(IPC.memoryPrescreen),
   getMemoryStats: () => ipcRenderer.invoke(IPC.memoryStats),
   flagMemory: (name: string) => ipcRenderer.invoke(IPC.memoryFlag, name),
   getMemoryAuto: () => ipcRenderer.invoke(IPC.memoryGetAuto),

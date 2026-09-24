@@ -411,6 +411,12 @@ export const IPC = {
   memoryGetApprovalGate: 'memory:get-approval-gate',
   memorySetApprovalGate: 'memory:set-approval-gate',
   /**
+   * 候选区预筛（plan55 片④-a）：把同义提案归簇、为每簇写一份合并稿候选。
+   * ⚠️ **手动触发**（面板点「整理」）—— 一次全量约 1.5–2 万 token，自动跑的形状不对（plan55 §五）。
+   * 只写合并稿，不删来源；来源等用户批准合并稿时才收掉。
+   */
+  memoryPrescreen: 'memory:prescreen',
+  /**
    * **电脑控制开关**（2026-09-15 用户需求；plan44 起接 windows-mcp）。关 = 桌面类 MCP 工具整批不下发
    * （消费侧门控，见 `shared/computer-use`）；开关变更自下一轮对话生效。
    */
@@ -826,6 +832,8 @@ export interface ApiBridge {
   approveMemory(file: string): Promise<import('./memory').MemorySaveResult>
   /** 拒绝候选：删候选文件，旧记忆不动 */
   rejectMemory(file: string): Promise<boolean>
+  /** 候选区预筛（plan55 片④-a）：手动触发一次"整理"，返回结果报告 */
+  prescreenMemory(): Promise<import('./memory').PrescreenReport>
   /** 取记忆统计（存活率/使用率）。没事件可算 → 返回 null，界面显示「暂无」 */
   getMemoryStats(): Promise<import('./memory').MemoryStats | null>
   /** 用户手工标记「这条不对」（批 4）：只在事件流落一条 `flag`，**不改条目本身** */

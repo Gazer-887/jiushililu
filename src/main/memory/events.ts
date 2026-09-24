@@ -18,7 +18,18 @@ export type MemoryEventPayload =
     }
   | { kind: 'write'; conversationId: string | null; name: string; rejected: true; reason: string }
   | { kind: 'recall'; conversationId: string | null; name: string; found: boolean }
-  | { kind: 'delete'; conversationId: string | null; name: string; by: 'user' | 'model' | 'system' }
+  | {
+      kind: 'delete'
+      conversationId: string | null
+      name: string
+      by: 'user' | 'model' | 'system'
+      /**
+       * plan55 片④：这条是被**合并稿**吸收掉的（值 = 合并稿的 name）。
+       * 有了它，"存活率掉了一截"才答得出为什么 —— 否则合并看起来就像用户删了一批。
+       * ⚠️ 记 name 不记 file 路径（与 `conflict` 同一理由：路径含用户名）。
+       */
+      mergedInto?: string
+    }
   // plan53 片 1：**自动遗忘 = 可逆归档**。与 `delete` 分家是因为存活率把 delete 记成"丢失"，
   // 而一条还能一键恢复的东西不该进那笔账（R4）。用户手删仍记 `delete`。
   | { kind: 'archive'; conversationId: string | null; name: string; by: 'system' | 'user' }

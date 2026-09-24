@@ -692,6 +692,8 @@ const memoryRestoreCalls = []
 // plan53 D5：候选通路以前**有桩无判据**。加记录器才验得了「点下去真的走了 IPC」这半句
 const memoryApproveCalls = []
 const memoryRejectCalls = []
+// plan55 片④：预筛被点了几次 —— 判据要能区分"按钮存在"与"按钮真的走了 IPC"
+const prescreenCalls = []
 /** 批 4：标记「这条不对」的调用流水 */
 const memoryFlagCalls = []
 // 技能禁用名单（plan34 S2a / K13 补桩）：桩状态**自洽可读**——get 返回当前名单，set 收整份名单并留流水。
@@ -1045,6 +1047,38 @@ const STUBS = {
     const before = memoryCandidates.length
     memoryCandidates = memoryCandidates.filter((c) => c.file !== file)
     return memoryCandidates.length !== before
+  },
+  'memory:prescreen': () => {
+    prescreenCalls += 1
+    // 桩**真改候选夹具**：只回一个数字而界面什么都不变，"整理"这个按钮在门禁里就永远只是被点了一下
+    // （K13 剩下的那半边正是这个形状 —— 桩齐 ≠ 测到）。
+    memoryCandidates = [
+      {
+        name: 'verbatim-output-merged',
+        description: '要求逐字回贴原始 stdout（并自 2 条提案）',
+        class: 'default',
+        origin: 'model',
+        evidence: null,
+        createdAt: '2026-09-25T00:00:00.000Z',
+        updatedAt: '2026-09-25T00:00:00.000Z',
+        body: '用户要求子代理逐字回贴原始 stdout，并严格禁止任务书之外的探测或命令。',
+        file: '/mem/notes/candidates/verbatim-output-merged.md',
+        mergeSources: [
+          '/mem/notes/candidates/verbatim-raw-output.md',
+          '/mem/notes/candidates/verbatim-raw-stdout.md'
+        ]
+      },
+      ...memoryCandidates
+    ]
+    memoryBroadcast()
+    return {
+      ok: true,
+      merged: 1,
+      clusters: 3,
+      uncovered: 1,
+      rejected: [{ name: 'ghost-src', reason: '来源指向不存在的候选' }],
+      usage: { promptTokens: 1200, completionTokens: 180, totalTokens: 1380 }
+    }
   },
   'memory:stats': () => ({ survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }),
   // 批 4：用户标记「这条不对」—— 只落事件 + 统计跟着变（契约副本）

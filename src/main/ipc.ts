@@ -182,7 +182,7 @@ import { composePlaybookBlock, estimatePlaybookTokens } from './memory/playbook-
 import { composeSkillBlock } from '@shared/skills'
 import { composeRulesBlock } from './rules/rules'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
-import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings, MemoryRestoreResult } from '@shared/memory'
+import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings, MemoryRestoreResult, PrescreenReport } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
 import { getWorkspaceInfo, resetWorkspaceRoot, setWorkspaceRoot } from './store/workspace'
@@ -1465,6 +1465,20 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle(IPC.memoryStats, (): MemoryStats | null => deps.memory.getStats())
 
+  // plan55 片④-a：候选区预筛。无入参（"整理当前队列"这一件事不需要参数，也就不有一条可被伪造的输入面）。
+  ipcMain.handle(IPC.memoryPrescreen, async (): Promise<PrescreenReport> => {
+    const report = await deps.memory.runPrescreen()
+    log.info('候选区预筛完成', {
+      ok: report.ok,
+      合并稿: report.merged,
+      簇: report.clusters,
+      未覆盖: report.uncovered,
+      退回: report.rejected.length,
+      ...(report.reason ? { 原因: report.reason } : {})
+    })
+    if (report.ok && report.merged > 0) sendToAll(IPC.memoryChanged)
+    return report
+  })
   /**
    * 用户标记「这条不对」（批 4）。⚠️ **只落一条 `flag` 事件，不改条目本身** ——
    * 用户可能在判断前还要看看，直接改动或删除等于替他做决定。

@@ -4,10 +4,16 @@
 //    这是"记忆改不了权限"那条架构不变量在代码上的落点，由 `architecture.test.ts` 的守卫乙看守。
 
 import type { ChatMessage } from '@shared/ipc'
-import type { MemoryStats } from '@shared/memory'
+import type { MemoryStats, PrescreenReport } from '@shared/memory'
 import type { TokenUsage } from '@shared/usage'
 import { createMemoryRepo, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
 import { createReflectionRunner, type ReflectChat, type ReflectOutput } from '../memory/reflection'
+import {
+  PRESCREEN_SYSTEM_PROMPT,
+  buildPrescreenPrompt,
+  composeMergedBody,
+  parsePrescreenResult
+} from '../memory/prescreen'
 import { nodeFsAdapter, type FsAdapter } from './conversations-fs'
 import {
   createFsMemoryBackend,
@@ -58,12 +64,38 @@ export interface MemoryStore extends MemoryRepo {
   runReflection(conversationId: string): Promise<void>
   /** 取记忆统计。事件流读不出来 → 返回 null（界面显示「暂无」） */
   getStats(): MemoryStats | null
+  /**
+   * 跑一次候选区预筛（plan55 片④-a）：把同义提案归簇、为每簇写一份**合并稿候选**。
+   * ⚠️ 只写合并稿，**不删来源** —— 来源要等用户批准合并稿时才收掉（`absorbMergeSources`）。
+   * ⚠️ 分组质量无判据可测（plan55 §六）：这里只保证形状可信。
+   */
+  runPrescreen(): Promise<PrescreenReport>
 }
+
 
 const DEFAULT_REFLECTION_DAILY_LIMIT = 20
 
 function todayString(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/**
+ * 合并稿的落名（plan55 片④-a）。
+ * ⚠️ 必须避让现有候选：模型给的 name 常常就是它某条来源的名字（"把这三条并成 verbatim-raw-output"），
+ * 而 `saveCandidateFile` 的同名保护（片③ 刚立的）会直接拒掉 —— 不避让的话，合并稿一条都写不进去，
+ * 且失败原因对用户是一句看不懂的"已存在同名提案"。
+ */
+export function uniqueMergedName(
+  base: string,
+  taken: Map<string, { name: string }>
+): string {
+  const names = new Set([...taken.values()].map((c) => c.name))
+  if (!names.has(base)) return base
+  for (let i = 2; i < 100; i++) {
+    const candidate = `${base}-merged-${i}`
+    if (!names.has(candidate)) return candidate
+  }
+  return `${base}-merged`
 }
 
 export function createMemoryStore(
@@ -227,6 +259,69 @@ export function createMemoryStore(
     },
     dequeueReflection: () => dequeueOne(),
     runReflection,
+    /**
+     * plan55 片④-a：候选区预筛。模型通道**复用反思那一条**（`reflectChat`，
+     * 它内部已按「反思模型 → 跟随主对话」解析）—— 不新开设置键：
+     * 加了没人读的开关比不加更坏（`token-tier.ts` 那条自陈），而用户要的是"可自选或跟随主对话"，
+     * 反思那一格已经给了这个能力。代价：两类任务共用一个模型选择，写进 plan55 备查。
+     */
+    runPrescreen: async (): Promise<PrescreenReport> => {
+      const empty: PrescreenReport = {
+        ok: false,
+        merged: 0,
+        clusters: 0,
+        uncovered: 0,
+        rejected: [],
+        usage: null
+      }
+      if (!opts.reflectChat) return { ...empty, reason: '未注入模型通道，无法预筛' }
+      const cands = inner.list().candidates
+      if (cands.length === 0) return { ...empty, reason: '候选区是空的' }
+
+      let content = ''
+      let usage: TokenUsage | null = null
+      try {
+        const res = await opts.reflectChat([
+          { role: 'system', content: PRESCREEN_SYSTEM_PROMPT },
+          { role: 'user', content: buildPrescreenPrompt(cands) }
+        ])
+        content = res.content
+        usage = res.usage ?? null
+      } catch (err) {
+        reflLog('预筛调用失败', { error: err instanceof Error ? err.message : String(err) })
+        return { ...empty, reason: '预筛调用失败（原因见日志）' }
+      }
+      if (content.trim().length === 0) return { ...empty, usage, reason: '模型没给出内容' }
+
+      const byFile = new Map(cands.map((c) => [c.file, c]))
+      const parsed = parsePrescreenResult(content, cands)
+      let merged = 0
+      for (const cluster of parsed.clusters) {
+        // 单条簇不写合并稿 —— 它没有被归并，再抄一份只会让队列更长
+        if (cluster.sources.length < 2) continue
+        const name = uniqueMergedName(cluster.name, byFile)
+        if (inner.saveCandidate(
+          {
+            name,
+            description: cluster.description,
+            class: cluster.class,
+            body: composeMergedBody(cluster, byFile),
+            origin: 'model',
+            mergeSources: cluster.sources
+          }
+        ) !== '') {
+          merged += 1
+        }
+      }
+      return {
+        ok: true,
+        merged,
+        clusters: parsed.clusters.length,
+        uncovered: parsed.uncovered.length,
+        rejected: parsed.rejected,
+        usage
+      }
+    },
     getStats: () => {
       const { events } = backend.readEvents()
       if (events.length === 0) return null

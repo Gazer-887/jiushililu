@@ -13,6 +13,7 @@ import {
   validateMemoryFields,
   type ArchivedEntry,
   type MemoryCandidate,
+  type MemoryCandidateView,
   type MemoryClass,
   type MemoryEntry,
   type MemoryEvidence,
@@ -71,6 +72,12 @@ export interface ParsedMemory {
    * 候选专用标记 —— 正式条目不写（生效条目上没有"待生效的纠正"这回事）。
    */
   fromCorrection?: boolean
+  /**
+   * plan55 片④：合并稿专用 —— 它并掉了哪几条候选（文件路径）。
+   * ⚠️ 候选专用，正式条目不写；批准时按它逐条删除来源并各记一笔 `delete`（不许静默丢）。
+   * 落盘是单行逗号分隔（严格解析器只认单行值）。
+   */
+  mergeSources?: string[]
 }
 
 export type ParseResult = { ok: true; parsed: ParsedMemory } | { ok: false; reason: string }
@@ -91,7 +98,9 @@ const KNOWN_KEYS = new Set([
   // 批 2：候选 frontmatter 才会写它，普通条目不写但解析要认（否则 approve 时读不出旧记忆 file）
   'conflictWith',
   // plan53 R1 v2：候选才写的"这轮用户否过"标记（正式条目不写，但读侧要认，否则未知键直接拒）
-  'fromCorrection'
+  'fromCorrection',
+  // plan55 片④：合并稿的来源指针（候选专用；读侧不认就会把模型预筛的产物整份拒收）
+  'mergeSources'
 ])
 
 const REQUIRED_KEYS = ['name', 'description', 'class', 'origin', 'createdAt', 'updatedAt'] as const
@@ -157,6 +166,13 @@ export function parseMemoryFile(text: string): ParseResult {
     return { ok: false, reason: `fromCorrection 只能是 true / false：${rawFromCorrection.slice(0, 20)}` }
   }
   const fromCorrection = rawFromCorrection === 'true'
+  // plan55 片④：合并稿来源。空值与"没这个键"同处理（整个键不写，不留 `mergeSources: `）
+  const mergeSources = fields['mergeSources']
+    ? fields['mergeSources']
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    : undefined
   return {
     ok: true,
     parsed: {
@@ -169,7 +185,10 @@ export function parseMemoryFile(text: string): ParseResult {
       updatedAt: fields['updatedAt']!,
       body,
       ...(conflictWith === undefined ? {} : { conflictWith }),
-      ...(fromCorrection ? { fromCorrection: true } : {})
+      ...(fromCorrection ? { fromCorrection: true } : {}),
+      ...(mergeSources === undefined || mergeSources.length === 0
+        ? {}
+        : { mergeSources })
     }
   }
 }
@@ -196,6 +215,10 @@ export function serializeMemory(parsed: ParsedMemory): string {
     ...(parsed.conflictWith ? [`conflictWith: ${parsed.conflictWith}`] : []),
     // plan53 R1 v2：候选才写。假值整个键不写（与缺证据同口径 —— 留 `false` 只是多一份要再剥的形态）
     ...(parsed.fromCorrection ? ['fromCorrection: true'] : []),
+    // plan55 片④：合并稿的来源指针（候选专用；单行逗号分隔）
+    ...(parsed.mergeSources && parsed.mergeSources.length > 0
+      ? [`mergeSources: ${parsed.mergeSources.join(', ')}`]
+      : []),
     '---',
     ''
   ]
@@ -475,8 +498,8 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
   }
 
   /** 候选条目（批 2）：从 candidates/ 读，**不进注入索引段**（buildIndex 不见它们） */
-  function loadCandidates(): MemoryEntry[] {
-    const out: MemoryEntry[] = []
+  function loadCandidates(): MemoryCandidateView[] {
+    const out: MemoryCandidateView[] = []
     for (const file of backend.listCandidates()) {
       const text = backend.read(file)
       if (text === null) continue
@@ -649,10 +672,37 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         updatedAt: ts,
         body: input.body,
         ...(conflictWith ? { conflictWith } : {}),
-        ...(input.fromCorrection === true && conflictWith ? { fromCorrection: true } : {})
+        ...(input.fromCorrection === true && conflictWith ? { fromCorrection: true } : {}),
+        ...(input.mergeSources && input.mergeSources.length > 0
+          ? { mergeSources: input.mergeSources }
+          : {})
       })
     )
     return { file }
+  }
+
+  /**
+   * 合并稿批准之后，把它并掉的来源候选收掉（plan55 片④）。
+   * ⚠️ 逐条记 `delete` 事件、`by: 'user'` —— 这是**用户点了批准**导致的消失，
+   *    与自动遗忘的 `archive` 不是一回事（那些曾生效、可恢复；这些从未生效，没什么可恢复）。
+   *    不记这一笔，存活率会被自己的合并功能悄悄改掉（同 K28「清空归档」的口径）。
+   * 只删候选区里的路径：来源指针理论上可被伪造指向 notes ⇒ 走 `insideCandidatesDir` 挡掉。
+   */
+  function absorbMergeSources(sources: string[], intoName: string): void {
+    for (const src of sources) {
+      if (!insideCandidatesDir(src)) continue
+      const raw = backend.read(src)
+      if (raw === null) continue
+      const parsed = parseMemoryFile(raw)
+      backend.remove(src)
+      record({
+        kind: 'delete',
+        conversationId: currentConversation(),
+        name: parsed.ok ? parsed.parsed.name : src,
+        by: 'user',
+        mergedInto: intoName
+      })
+    }
   }
 
   return {
@@ -939,6 +989,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           })
         )
         backend.remove(file)
+        if (p.mergeSources?.length) absorbMergeSources(p.mergeSources, p.name)
         const oldName = oldEntry?.name ?? p.name
         record({
           kind: 'approve',
@@ -983,6 +1034,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       }
       if (saveResult.ok) {
         backend.remove(file)
+        if (p.mergeSources?.length) absorbMergeSources(p.mergeSources, p.name)
         record({
           kind: 'approve',
           conversationId: currentConversation(),
