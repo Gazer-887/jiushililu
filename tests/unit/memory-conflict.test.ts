@@ -415,3 +415,56 @@ describe('computeStats：存活率与使用率从事件流算（判据 6）', ()
     expect(s.alive).toBe(1)
   })
 })
+
+// ── 审查 R-A4：`conflictWith` 是候选 frontmatter 里的外部输入 ────────────────────
+// 「候选自己在候选区」那道闸管不到它指向哪。指 notes 之外时：越界路径会让 fs 适配层直接 throw
+// （界面上是"点了批准毫无反应"），指归档件则是静默覆写一份可恢复数据且不落事件。
+describe('批准时 conflictWith 只认 notes 区（R-A4）', () => {
+  const candWithPointer = (target: string): string =>
+    [
+      '---',
+      'name: evil-pointer',
+      'description: 一条指向别处的候选',
+      'class: default',
+      'origin: model',
+      `createdAt: ${FIXED.toISOString()}`,
+      `updatedAt: ${FIXED.toISOString()}`,
+      `conflictWith: ${target}`,
+      '---',
+      '',
+      '候选正文。'
+    ].join('\n')
+
+  const archivedText = fm({ name: 'archived-thing', description: '归档里的正文', class: 'default' })
+
+  it('指向归档件 ⇒ 不认这个指针，按新条目另存且不碰归档', () => {
+    const { repo, backend } = makeRepo({
+      [`${ROOT}/candidates/evil.md`]: candWithPointer(`${ARCH}/archived-thing.md`),
+      [`${ARCH}/archived-thing.md`]: archivedText
+    })
+    const res = repo.approveCandidate(`${ROOT}/candidates/evil.md`)
+    expect(res.ok).toBe(true)
+    expect(res.ok && res.file).toBe(`${ROOT}/evil-pointer.md`)
+    expect(backend.read(`${ARCH}/archived-thing.md`)).toBe(archivedText)
+  })
+
+  it('指向 notes 之外（含 .. 越界）同样不认（两种坏法走同一条出口）', () => {
+    const { repo, backend } = makeRepo({
+      [`${ROOT}/candidates/evil2.md`]: candWithPointer('/etc/passwd')
+    })
+    const res = repo.approveCandidate(`${ROOT}/candidates/evil2.md`)
+    expect(res.ok).toBe(true)
+    expect(res.ok && res.file).toBe(`${ROOT}/evil-pointer.md`)
+    expect(backend.read('/etc/passwd')).toBeNull()
+  })
+
+  it('指向 notes 区里正常路径时仍走覆盖分支（这条闸不许把纠正本身挡掉）', () => {
+    const { repo, backend } = makeRepo(seedPrefersTables())
+    const file = repo.saveCandidate(
+      { name: 'prefers-tables', description: '改过的说法', class: 'style', body: '新正文。' },
+      `${ROOT}/prefers-tables.md`
+    )
+    expect(repo.approveCandidate(file).ok).toBe(true)
+    expect(backend.read(`${ROOT}/prefers-tables.md`)).toContain('新正文。')
+  })
+})

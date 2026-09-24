@@ -137,6 +137,24 @@ describe('runPrescreen 真的接上了（不是只有纯函数会算）', () => 
     expect(events.some((e) => e.kind === 'archive')).toBe(false)
   })
 
+  // 审查 B2：候选成功落盘**不落 write 事件**（只有批准进库时那条 `save` 才落）。
+  // 于是"批准一条并掉 2 条来源的合并稿"在旧算法里 = written+1 / deleted+2 ⇒ 存活数凭空少 1，
+  // 用户看到的是"我用了一下整理功能，记忆反而更少了"。
+  it('批准合并稿不把存活率算掉一截：被吸收的来源从未计入写入', async () => {
+    writeCandidate('a', 'default', '要求逐字回贴 stdout')
+    writeCandidate('b', 'default', '要求逐字回贴 stdout 输出')
+    const store = storeWith(chatReturning([cluster(['c1', 'c2'])]))
+    await store.runPrescreen()
+    const merged = store.list().candidates.find((c) => c.name === 'verbatim-output')!
+    expect(store.approveCandidate(merged.file).ok).toBe(true)
+
+    const stats = store.getStats()
+    expect(stats).not.toBeNull()
+    expect(stats?.written).toBe(1)
+    expect(stats?.alive).toBe(1)
+    expect(stats?.survivalRate).toBe(1)
+  })
+
   it('模型答非所问 ⇒ 一条不写、一条不丢、如实报原因', async () => {
     writeCandidate('a', 'default', '一条提案')
     const chat = chatReturning('我看看这几条……')
@@ -163,5 +181,36 @@ describe('runPrescreen 真的接上了（不是只有纯函数会算）', () => 
     }))
     const report = await storeWith(chat).runPrescreen()
     expect(report.usage).toBeNull()
+  })
+})
+
+// ── 审查 R-B4 / R-A2：落盘这一跳的两个失败形状 ─────────────────────────────────
+describe('合并稿落盘的两条新判据', () => {
+  it('模型给两个簇起同名 ⇒ 两份都写出（第二份避让），不是静默少一份（R-B4）', async () => {
+    writeCandidate('a', 'default', '要求逐字回贴 stdout')
+    writeCandidate('b', 'default', '要求逐字回贴 stdout 输出')
+    writeCandidate('x', 'default', '测试偶发红先查计时器')
+    writeCandidate('y', 'default', '测试偶发红要先查计时器粒度')
+    const chat = chatReturning([
+      cluster(['c1', 'c2']),
+      cluster(['c3', 'c4'], { description: '测试偶发红要先查计时器粒度' })
+    ])
+    const report = await storeWith(chat).runPrescreen()
+    expect(report.merged).toBe(2)
+    const names = readdirSync(candidatesRoot())
+    expect(names).toContain('verbatim-output.md')
+    expect(names.some((n) => n.startsWith('verbatim-output-merged-')))
+      .toBe(true) // 与 byFile 无关：避让集合必须随每份写成的稿子增长
+  })
+
+  it('合并稿被候选互检挡下 ⇒ 原因进报告，不许只剩"写了 0 份"（R-A2 另一半）', async () => {
+    writeCandidate('a', 'default', '要求逐字回贴 stdout')
+    writeCandidate('b', 'default', '要求逐字回贴 stdout 输出')
+    // 与合并稿摘要同源、但**不在**这一簇的来源里 ⇒ 互检该挡（它不是被并掉的那几条）
+    writeCandidate('c', 'default', '要求逐字回贴原始 stdout')
+    const report = await storeWith(chatReturning([cluster(['c1', 'c2'])]))
+      .runPrescreen()
+    expect(report.merged).toBe(0)
+    expect(report.rejected.some((r) => r.reason.includes('待批准提案'))).toBe(true)
   })
 })

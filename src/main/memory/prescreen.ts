@@ -6,7 +6,7 @@
 //   style/profile 不许被合并、合并稿必须带原文附录。不满足就整份退回，不做"尽力而为的采信"。
 // - ⚠️ **判据只能测形状，测不了"分得对不对"**（plan55 §六）。别拿本文件的用例全绿当"筛得准"。
 
-import { MEMORY_LIMITS, type MemoryEntry } from '@shared/memory'
+import { MEMORY_LIMITS, utf8Bytes, type MemoryEntry } from '@shared/memory'
 
 /** 预筛的 system prompt —— 独立常量，单测断言内容（防悄悄改坏，同 `reflection-prompt.ts` 的理由）*/
 export const PRESCREEN_SYSTEM_PROMPT = [
@@ -118,9 +118,15 @@ export function parsePrescreenResult(
     else if (sources.length !== new Set(sources).size) fail('来源编号有重复')
     else {
       const srcs = sources.map((f) => byFile.get(f)!)
-      // 硬约束 ②：style 与 profile 不许被合并（与 isExemptFromForget 同批理由）
-      if (sources.length > 1 && srcs.some((s) => s.class === 'style' || s.class === 'profile')) {
+      const isSensitive = (c: string): boolean => c === 'style' || c === 'profile'
+      // 硬约束 ②：style 与 profile 不许被**合并**（与 isExemptFromForget 同批理由）。
+      // ⚠️ 只管多来源簇：单条 style 成一簇是 prompt 第 4 条要的结果，把它拒了队列反而清不动。
+      // ⚠️ 来源与**输出**同判（审查 R-B2）—— 只查来源的话，模型可把两条 default 写成 `class: profile`
+      //    的簇稿，而没有 `conflictWith` 的批准走 `save(origin:'user')`，画像来源闸根本不在那条路上。
+      if (sources.length > 1 && (srcs.some((s) => isSensitive(s.class)) || isSensitive(cls))) {
         fail('style / profile 提案不许参与合并')
+      } else if (sources.length > 1 && srcs.some((s) => s.class !== cls)) {
+        fail('合并稿的 class 与来源不一致')
       } else if (sources.length === 1 && srcs[0]!.class !== cls) {
         fail('单条簇的 class 与原提案不一致')
       } else {
@@ -148,6 +154,24 @@ function stripFence(text: string): string {
   return nl >= 0 ? inner.slice(nl + 1) : inner
 }
 
+/** 正文被按上限裁掉时留在稿子里的记号 —— 悄悄裁 = 用户批了一条没人写过的文字 */
+const TRUNC_MARK = '…（正文超出上限，尾部已截断）'
+
+/** 按 **UTF-8 字节** 收长度。按字符截会假通过：`validateMemoryFields` 判的是字节（审查 A2） */
+export function fitUtf8Bytes(text: string, limit: number): string {
+  if (utf8Bytes(text) <= limit) return text
+  let out = ''
+  let bytes = 0
+  for (const ch of text) {
+    // 按码点走，不劈开代理对（半个 surrogate 会让后面整段变乱码）
+    const b = utf8Bytes(ch)
+    if (bytes + b > limit) break
+    out += ch
+    bytes += b
+  }
+  return out
+}
+
 /**
  * 合并稿的候选正文：模型给的 body **原样保留**，另附一节来源摘要。
  * ⚠️ 分隔行**不能是裸 `---`** —— 那会被 `validateMemoryFields` 的"正文不许有一行只写 `---`"
@@ -155,12 +179,21 @@ function stripFence(text: string): string {
  *    表现是"预筛报告一切正常、合并稿一条都没落盘"）。
  * ⚠️ 来源只附 name + description（不附正文）—— 候选正文进 prompt 是片② 就划下的线；
  * 用户要看原文，界面上按 `sources` 展开读原候选（批准前那些候选一直还在）。
+ * ⚠️ 超上限时**裁模型那段、留来源清单**：来源摘要是"这条并了谁"的唯一凭据，
+ *    裁掉它等于让用户盲批；裁到的位置则用 `TRUNC_MARK` 标出来。
  */
 export function composeMergedBody(cluster: PrescreenCluster, byFile: Map<string, MemoryEntry>): string {
-  const lines = [cluster.body, '', '【并自以下提案】']
+  const tailLines = ['', '【并自以下提案】']
   for (const f of cluster.sources) {
     const e = byFile.get(f)
-    if (e) lines.push(`- ${e.name}：${e.description}`)
+    if (e) tailLines.push(`- ${e.name}：${e.description}`)
   }
-  return lines.join('\n').slice(0, MEMORY_LIMITS.maxBodyBytes * 2)
+  const tail = tailLines.join('\n')
+  const limit = MEMORY_LIMITS.maxBodyBytes
+  let head = cluster.body
+  const bodyLimit = limit - utf8Bytes(tail)
+  if (utf8Bytes(head) > Math.max(0, bodyLimit)) {
+    head = fitUtf8Bytes(head, Math.max(0, bodyLimit - utf8Bytes(TRUNC_MARK))) + TRUNC_MARK
+  }
+  return fitUtf8Bytes(head + tail, limit)
 }

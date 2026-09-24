@@ -84,12 +84,10 @@ function todayString(): string {
  * ⚠️ 必须避让现有候选：模型给的 name 常常就是它某条来源的名字（"把这三条并成 verbatim-raw-output"），
  * 而 `saveCandidateFile` 的同名保护（片③ 刚立的）会直接拒掉 —— 不避让的话，合并稿一条都写不进去，
  * 且失败原因对用户是一句看不懂的"已存在同名提案"。
+ * ⚠️ 集合要**随每份写成的稿子增长**（审查 R-B4）：模型给两个簇起同一个名字时，
+ *    第二份若在一份只包含"原有候选"的集合上判重，就会撞在闸上被静默拒掉。
  */
-export function uniqueMergedName(
-  base: string,
-  taken: Map<string, { name: string }>
-): string {
-  const names = new Set([...taken.values()].map((c) => c.name))
+export function uniqueMergedName(base: string, names: Set<string>): string {
   if (!names.has(base)) return base
   for (let i = 2; i < 100; i++) {
     const candidate = `${base}-merged-${i}`
@@ -295,22 +293,29 @@ export function createMemoryStore(
 
       const byFile = new Map(cands.map((c) => [c.file, c]))
       const parsed = parsePrescreenResult(content, cands)
+      // 落盘失败也进这一份清单（审查 R-A2）：模型那关过了不等于用户看得见 ——
+      // 只回"写了 0 份合并稿"，用户既不知道是哪一份、也不知道为什么。
+      const rejected = [...parsed.rejected]
+      // 名字集合随每份写成的稿子增长（R-B4：两簇同名时第二份要避让，不是被闸掉）
+      const usedNames = new Set(cands.map((c) => c.name))
       let merged = 0
       for (const cluster of parsed.clusters) {
         // 单条簇不写合并稿 —— 它没有被归并，再抄一份只会让队列更长
         if (cluster.sources.length < 2) continue
-        const name = uniqueMergedName(cluster.name, byFile)
-        if (inner.saveCandidate(
-          {
-            name,
-            description: cluster.description,
-            class: cluster.class,
-            body: composeMergedBody(cluster, byFile),
-            origin: 'model',
-            mergeSources: cluster.sources
-          }
-        ) !== '') {
+        const name = uniqueMergedName(cluster.name, usedNames)
+        const r = inner.saveCandidateDetailed({
+          name,
+          description: cluster.description,
+          class: cluster.class,
+          body: composeMergedBody(cluster, byFile),
+          origin: 'model',
+          mergeSources: cluster.sources
+        })
+        if (r.file !== '') {
           merged += 1
+          usedNames.add(name)
+        } else {
+          rejected.push({ name, reason: r.reason ?? '合并稿未能落进候选区' })
         }
       }
       return {
@@ -318,7 +323,7 @@ export function createMemoryStore(
         merged,
         clusters: parsed.clusters.length,
         uncovered: parsed.uncovered.length,
-        rejected: parsed.rejected,
+        rejected,
         usage
       }
     },

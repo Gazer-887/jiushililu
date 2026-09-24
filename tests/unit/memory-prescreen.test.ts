@@ -2,11 +2,12 @@
 // ⚠️ 本文件全绿**不等于**筛得准（plan55 §六）：分组质量只能靠人眼，见 plan55 片④ 验收一节。
 
 import { describe, expect, it } from 'vitest'
-import type { MemoryEntry } from '@shared/memory'
+import { MEMORY_LIMITS, utf8Bytes, validateMemoryFields, type MemoryEntry } from '@shared/memory'
 import {
   PRESCREEN_SYSTEM_PROMPT,
   buildPrescreenPrompt,
   composeMergedBody,
+  fitUtf8Bytes,
   parsePrescreenResult
 } from '@main/memory/prescreen'
 
@@ -53,6 +54,26 @@ describe('合格输出：全簇采信、来源可追', () => {
   it('合并稿保留限定条件原文（丢限定 = 得到一条比用户说过的更宽松的规矩）', () => {
     const r = parsePrescreenResult(JSON.stringify([merged(['c1', 'c2'])]), [A, B])
     expect(r.clusters[0]!.body).toContain('严格禁止')
+  })
+
+  // 审查 B2：这一档原来只查**来源**的分类，输出分类是模型自由发挥的 ——
+  // 而"没有 conflictWith 的批准"走 `save(origin:'user')`，画像来源闸根本不在那条路上。
+  it('来源全是 default，模型却把合并稿写成 profile ⇒ 整簇退回', () => {
+    const r = parsePrescreenResult(JSON.stringify([merged(['c1', 'c2'], { class: 'profile' })]), [A, B])
+    expect(r.clusters).toHaveLength(0)
+    expect(r.rejected[0]!.reason).toContain('不许参与合并')
+  })
+
+  it('合并稿 class 与来源不一致（两条 default 写成 knowledge）⇒ 退回', () => {
+    const r = parsePrescreenResult(JSON.stringify([merged(['c1', 'c2'], { class: 'knowledge' })]), [A, B])
+    expect(r.clusters).toHaveLength(0)
+    expect(r.rejected[0]!.reason).toContain('class 与来源不一致')
+  })
+
+  it('同分类的多条照常采信（上面两条不许把合并本身判死）', () => {
+    const r = parsePrescreenResult(JSON.stringify([merged(['c1', 'c2'])]), [A, B])
+    expect(r.clusters).toHaveLength(1)
+    expect(r.rejected).toEqual([])
   })
 })
 
@@ -130,3 +151,55 @@ describe('system prompt 内容（防悄悄改坏，同 reflection-prompt 的理�
     expect(PRESCREEN_SYSTEM_PROMPT).toContain('不许新增')
   })
 })
+
+// ── 审查 R-A2：正文上限是**字节**数，按字符截会假通过 ────────────────────────────
+describe('合并稿正文按 UTF-8 字节收（R-A2）', () => {
+  const byFile = new Map<string, MemoryEntry>([
+    ['/mem/notes/candidates/verbatim-raw-output.md', A],
+    ['/mem/notes/candidates/verbatim-raw-stdout.md', B]
+  ])
+  const sources = ['/mem/notes/candidates/verbatim-raw-output.md', '/mem/notes/candidates/verbatim-raw-stdout.md']
+
+  it('中文正文超上限 ⇒ 裁模型那段、**留来源清单**，整份能过校验（不是整条被拒）', () => {
+    const out = composeMergedBody(
+      { sources, name: 'm', description: '一条合并摘要', class: 'default' as const, body: '要'.repeat(3000) },
+      byFile
+    )
+    expect(utf8Bytes(out)).toBeLessThanOrEqual(MEMORY_LIMITS.maxBodyBytes)
+    expect(out).toContain('【并自以下提案】')
+    expect(out).toContain('尾部已截断')
+    expect(
+      validateMemoryFields({ name: 'm', description: '一条合并摘要', body: out }).ok
+    ).toBe(true)
+  })
+
+  it('没超限时一字不动（截断不许变成常态）', () => {
+    const out = composeMergedBody(
+      { sources, name: 'm', description: '一条合并摘要', class: 'default' as const, body: '短句。' },
+      byFile
+    )
+    expect(out.startsWith('短句。')).toBe(true)
+    expect(out).not.toContain('截断')
+  })
+
+  it('fitUtf8Bytes 按码点收，不劈开代理对（半个 surrogate 会让后面整段变乱码）', () => {
+    const out = fitUtf8Bytes('😀😀😀', 6)
+    expect(out).toBe('😀')
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out)).toBe(false)
+  })
+})
+
+  it('来源清单自己就超上限时也只许裁到上限内（末尾那道兜底不是摆设）', () => {
+    const many = Array.from({ length: 300 }, (_, i) => `c${i}.md`)
+    const bigMap = new Map<string, MemoryEntry>(
+      many.map((f) => [
+        f,
+        { ...A, file: f, name: `n${f}`, description: '一段不短的来源摘要文字，用来把清单本身撑过上限。' }
+      ])
+    )
+    const out = composeMergedBody(
+      { sources: many, name: 'm', description: '一条合并摘要', class: 'default' as const, body: '正文。' },
+      bigMap
+    )
+    expect(utf8Bytes(out)).toBeLessThanOrEqual(MEMORY_LIMITS.maxBodyBytes)
+  })

@@ -745,6 +745,29 @@ describe('computeStats 扩展（批 4 判据 3/4）', () => {
     expect(s.written).toBe(2)
     expect(s.alive).toBe(1)
   })
+
+  // 审查 B2：候选成功落盘不落 write 事件 ⇒ 它离开队列也不许落 delete 账。
+  // 另一面同样要钉：`mergedInto` 只答"为什么走的"，不许被当成免记账的通行证。
+  it('candidate: true 的删除不进存活率账（合并吸收的来源从未被写入过）', () => {
+    const events: MemoryEvent[] = [
+      evt('write', 'merged', { origin: 'user', cls: 'default' }),
+      evt('delete', 'a', { by: 'user', candidate: true, mergedInto: 'merged' }),
+      evt('delete', 'b', { by: 'user', candidate: true, mergedInto: 'merged' })
+    ]
+    const s = computeStats(events)
+    expect(s.written).toBe(1)
+    expect(s.alive).toBe(1)
+    expect(s.survivalRate).toBe(1)
+  })
+
+  it('带 mergedInto 但**没标** candidate 的删除照常算丢失（生效条目被并掉 = 真少了一条）', () => {
+    const events: MemoryEvent[] = [
+      evt('write', 'a', { origin: 'user', cls: 'default' }),
+      evt('write', 'b', { origin: 'user', cls: 'default' }),
+      evt('delete', 'a', { by: 'user', mergedInto: 'b' })
+    ]
+    expect(computeStats(events).alive).toBe(1)
+  })
 })
 
 // ── 描述相似度（plan33 升级：从 warnings 文本分家为结构化 duplicates）──────

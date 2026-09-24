@@ -366,6 +366,14 @@ export interface MemoryRepo {
    */
   saveCandidate(input: MemoryCandidate, conflictWith?: string): string
   /**
+   * `saveCandidate` 的**带原因**版本。预筛必须用它（审查 R-A2）：一份合并稿可以因为正文超限、
+   * 撞名、互检任何一道没落盘，而"写了 0 份合并稿"这句话对用户没有任何操作价值。
+   */
+  saveCandidateDetailed(
+    input: MemoryCandidate,
+    conflictWith?: string
+  ): { file: string; reason?: string }
+  /**
    * 批准候选：若有 conflictWith，用候选内容覆盖旧记忆 + 删候选；否则把候选提升为正式条目。
    * ⚠️ 必须删候选文件（审查 B P1，否则同名双条进索引）。
    */
@@ -498,13 +506,22 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
   }
 
   /** 候选条目（批 2）：从 candidates/ 读，**不进注入索引段**（buildIndex 不见它们） */
-  function loadCandidates(): MemoryCandidateView[] {
+  function loadCandidates(note?: (message: string) => void): MemoryCandidateView[] {
     const out: MemoryCandidateView[] = []
     for (const file of backend.listCandidates()) {
       const text = backend.read(file)
-      if (text === null) continue
+      // ⚠️ 读不出来 / 解析失败**不许只 continue**（审查 R-A1）：候选区没有 `loadAll` 那套双通道留痕时，
+      //    一条手改坏的候选会凭空从待批队列消失，却仍被条数上限按文件数计着 ——
+      //    用户看到的是"待批准少了一条"而队列还报"已满"。
+      if (text === null) {
+        note?.(`${file}：读不出来，已跳过`)
+        continue
+      }
       const result = parseMemoryFile(text)
-      if (!result.ok) continue
+      if (!result.ok) {
+        note?.(`${file}：${result.reason}`)
+        continue
+      }
       out.push({ ...result.parsed, file })
     }
     return out
@@ -552,21 +569,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       }
       const dup = rejectAsSimilar(input, existing)
       if (dup !== null) return dup
-      // ③ **候选之间也要互检**（K29）：候选区刻意不进 `buildIndex`，所以相似闸拿"已生效条目"比时
-      //    完全看不见待批队列 —— 换一个近义 name 就能无限堆提案（09-25 实测 71 条、40+ 条成簇）。
-      // ⚠️ 只在这条**模型通路**上拦，用户手动写不拦：候选还没生效，拿它去挡一次显式写入是错的。
-      //    也**不带 `similar` 指针** —— 那个字段驱动界面给出"更新那条"，而候选不是可编辑的条目。
-      const pendingDup = findSimilarEntry(
-        { name: input.name, description: input.description },
-        loadCandidates()
-      )
-      if (pendingDup !== null) {
-        return refuse(
-          input.name,
-          `已有一条待批准提案「${pendingDup.name}」在说同一件事（摘要：${pendingDup.description}）。` +
-            '请先让用户处理那一条，不要重复提案。'
-        )
-      }
+      // 候选之间的互检（K29）**不在此处** —— 它下沉到 `saveCandidateFile`，与反射链共用同一个口。
     }
     const cand: MemoryCandidate = {
       name: input.name,
@@ -604,6 +607,15 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     return !f.includes('..') && f.startsWith(toPosix(dir))
   }
 
+  /** 同上，判"在不在 notes 区"。`conflictWith` 是候选 frontmatter 里的**外部输入**，只认前缀不认后缀 */
+  function insideNotesDir(file: string): boolean {
+    const probe = backend.pathFor('__probe__')
+    const dir = probe.slice(0, probe.lastIndexOf('/') + 1)
+    const toPosix = (x: string): string => x.split(String.fromCharCode(92)).join('/')
+    const f = toPosix(file)
+    return !f.includes('..') && f.startsWith(toPosix(dir))
+  }
+
   /**
    * 相似闸的拒绝出口 —— 直写与候选**两条通路共用**：少一处留痕，"门开着的时候被相似闸拒了"
    * 在事件流与本轮写入痕迹里就都不存在了；两处各写一份措辞，则迟早漂成两道不同的闸。
@@ -625,7 +637,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
    *
    * 返回 `{ file, reason }` 而不是裸串（plan55 片③）：`queueForApproval` 要把**具体理由**回给模型
    * —— 只回"没写进去"，模型改不出下一条（与 `saveCandidate` 早期那个毛病同族）。
-   * 三道闸都装在这里，不装在各调用点：反射链与模型提案链**共用这一个口**，漏一处就是 K29 的现行形状。
+   * 四道闸都装在这里，不装在各调用点：反射链与模型提案链**共用这一个口**，漏一处就是 K29 的现行形状。
    */
   function saveCandidateFile(input: MemoryCandidate): { file: string; reason?: string } {
     const rejectWith = (reason: string): { file: string; reason: string } => {
@@ -652,11 +664,34 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     }
     // ② 条数上限：超限**报数并拒绝新提案**，不静默丢、也不折进 `archived/`
     //    （归档区是"曾生效、可恢复"的语义，恢复一条从未生效的提案会把它直接推进生效集）。
+    // ⚠️ 合并稿免计上限（审查 R-A3）：片④ 的设计是"批准之前不动来源"，于是队列一满 50 条，
+    //    「整理」就一条稿都写不出 —— 上限会把"清队列的出口"本身锁死。
+    //    代价是峰值可略超上限，超出量 ≤ 簇数，且批准之后净减。
     const pending = backend.listCandidates().length
-    if (pending >= MEMORY_LIMITS.maxCandidates) {
+    if (pending >= MEMORY_LIMITS.maxCandidates && (input.mergeSources?.length ?? 0) === 0) {
       return rejectWith(
         `候选区已满（${pending} / ${MEMORY_LIMITS.maxCandidates} 条）。请先到「记忆」页签批准或拒绝一些，再提新的`
       )
+    }
+    // ③ **候选之间也要互检**（K29）：候选区刻意不进 `buildIndex`，相似闸拿"已生效条目"比时
+    //    完全看不见待批队列 —— 换一个近义 name 就能无限堆提案（09-25 实测 71 条、40+ 条成簇）。
+    //    装在这里而不是装在 `queueForApproval`：那条产线只是提案通路之一，**积压的主产线是反思链**
+    //    （`saveCandidate`）—— 挂在调用点上就等于给最忙的那条留了空档（审查 A3）。
+    // ⚠️ 只拦"没有 `conflictWith` 的新提案"：带冲突指针的那条是在纠正某条旧记忆，
+    //    拿待批队列去挡它会把纠正本身挡掉（与 `queueForApproval` 同一条件）。
+    // ⚠️ 合并稿**不许被自己并掉的来源判成重复**：它按设计就该像那几条，不排除则预筛一条都写不进。
+    if (conflictWith === undefined) {
+      const own = new Set(input.mergeSources ?? [])
+      const pendingDup = findSimilarEntry(
+        { name: input.name, description: input.description },
+        loadCandidates().filter((c) => !own.has(c.file))
+      )
+      if (pendingDup !== null) {
+        return rejectWith(
+          `已有一条待批准提案「${pendingDup.name}」在说同一件事（摘要：${pendingDup.description}）。` +
+            '请先让用户处理那一条，不要重复提案。'
+        )
+      }
     }
 
     const ts = now().toISOString()
@@ -683,9 +718,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
 
   /**
    * 合并稿批准之后，把它并掉的来源候选收掉（plan55 片④）。
-   * ⚠️ 逐条记 `delete` 事件、`by: 'user'` —— 这是**用户点了批准**导致的消失，
-   *    与自动遗忘的 `archive` 不是一回事（那些曾生效、可恢复；这些从未生效，没什么可恢复）。
-   *    不记这一笔，存活率会被自己的合并功能悄悄改掉（同 K28「清空归档」的口径）。
+   * ⚠️ 逐条记 `delete` 事件（带 `candidate: true`）—— 用户点批准导致它们消失，这一笔要能查得到；
+   *    但它们从未生效，故不进存活率那笔账（见下）。与自动遗忘的 `archive` 也不是一回事：
+   *    那些曾生效、可恢复；这些从未生效，没什么可恢复。
    * 只删候选区里的路径：来源指针理论上可被伪造指向 notes ⇒ 走 `insideCandidatesDir` 挡掉。
    */
   function absorbMergeSources(sources: string[], intoName: string): void {
@@ -700,6 +735,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         conversationId: currentConversation(),
         name: parsed.ok ? parsed.parsed.name : src,
         by: 'user',
+        // 候选从未计入 `written`（成功落盘不落 write 事件）⇒ 这里也不许计入 `deleted`，
+        // 否则"批准一条并掉 2 条的合并稿"会让存活数凭空少 1（审查 B2）。留痕照留，账不归账。
+        candidate: true,
         mergedInto: intoName
       })
     }
@@ -710,7 +748,12 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
 
     list() {
       const { entries, warnings, duplicates, needsReview } = loadAll()
-      const candidates = loadCandidates()
+      // 候选读侧的失败与已生效条目走**同一条** warnings 通道（界面那一格叫「N 条未能加载」，
+      // 读不出来就是读不出来，两种都是"这条没进队列"）；日志同步留一笔。
+      const candidates = loadCandidates((m) => {
+        warnings.push(m)
+        warn(m)
+      })
       return {
         ...buildIndex(entries),
         warnings,
@@ -918,6 +961,11 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
     },
 
     saveCandidate(input, conflictWith) {
+      // 公开契约是"成功给路径、失败给空串"（反射链按它计数）；原因在 detailed 那份里
+      return this.saveCandidateDetailed(input, conflictWith).file
+    },
+
+    saveCandidateDetailed(input, conflictWith) {
       // ⚠️ 必须先调 validateMemoryFields（审查 E P0：反思从会话正文提炼，
       //    正文里可能含用户贴过的凭据 —— 候选不能凭"模型说的"就落盘）
       const validation = validateMemoryFields({
@@ -937,10 +985,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           reason: validation.reason
         })
         notify({ name: input.name, ok: false, reason: validation.reason })
-        return ''
+        return { file: '', reason: validation.reason }
       }
-      // 公开契约仍是"成功给路径、失败给空串"（反射链按它计数）；具体理由走事件流与 `notify`
-      return saveCandidateFile({ ...input, ...(conflictWith ? { conflictWith } : {}) }).file
+      return saveCandidateFile({ ...input, ...(conflictWith ? { conflictWith } : {}) })
     },
 
     approveCandidate(file) {
@@ -956,8 +1003,18 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       if (!parsed.ok) return { ok: false, reason: `候选解析失败：${parsed.reason}` }
       const p = parsed.parsed
 
+      // `conflictWith` 来自候选 frontmatter，是**外部输入**：上面那道闸只认过"候选自己在候选区"。
+      // 指向 notes 之外两种坏法都得挡（审查 R-A4）：越界路径 ⇒ `memory-fs` 直接 throw，
+      // 界面表现是"点了批准毫无反应"；指向 `archived/*.md` ⇒ 静默覆写一份可恢复的归档正文且不落事件。
+      // 这里**不认这个指针**而不是拒死：内容可能是好的、用户已经点了批准 ⇒ 按新条目另存，并留一行日志。
+      const conflictWith =
+        p.conflictWith !== undefined && insideNotesDir(p.conflictWith) ? p.conflictWith : undefined
+      if (p.conflictWith !== undefined && conflictWith === undefined) {
+        warn(`${file}：conflictWith 指向候选区之外，该指针已忽略，按新条目保存`)
+      }
+
       // 带冲突：用候选内容覆盖旧记忆 + 删候选（审查 B P1，否则同名双条进索引）
-      if (p.conflictWith) {
+      if (conflictWith) {
         // plan25 D-073 的断言：覆盖分支原本"只允许反思来源"。片 2 起模型提案也是候选来源，
         // 但**画像仍只对反思开放** —— 画像改错的影响面是整份档案，而产品里没有任何一条通路会产出
         // "模型来源的画像候选"（工具 enum 不含 profile、save 层在路由之前就拒），
@@ -970,12 +1027,12 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
             reason: `候选来源异常（画像候选只允许反思来源；其余分类允许反思 / 模型提案），已拒绝覆盖：${p.origin}`
           }
         }
-        const oldEntry = this.get(p.conflictWith)
+        const oldEntry = this.get(conflictWith)
         // 旧记忆可能已被删了 —— origin / createdAt 兜底，不报错（用户删旧记忆后还能批准候选）
         const origin = oldEntry?.origin ?? 'reflection'
         const createdAt = oldEntry?.createdAt ?? now().toISOString()
         backend.write(
-          p.conflictWith,
+          conflictWith,
           serializeMemory({
             name: p.name,
             description: p.description,
@@ -1010,7 +1067,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           })
         }
         notify({ name: p.name, ok: true })
-        return { ok: true, file: p.conflictWith, guard: { action: 'allow' } }
+        return { ok: true, file: conflictWith, guard: { action: 'allow' } }
       }
 
       // 全新候选：调 save 提升为正式条目 + 删候选（save 会自动落 write 事件）。
@@ -1076,6 +1133,9 @@ export function computeStats(events: MemoryEvent[]): MemoryStats {
       const rejected = 'rejected' in e && (e as { rejected?: unknown }).rejected === true
       if (!rejected) written++
     } else if (e.kind === 'delete') {
+      // 候选被合并稿吸收 ⇒ 它从未进过 `written` 这笔账，也不许进 `deleted`（同上面 rejected write 的口径）。
+      // ⚠️ 认 `candidate` 而不是认 `mergedInto`：后者答的是"为什么走的"，已生效条目将来也可能被并掉。
+      if ((e as { candidate?: boolean }).candidate === true) continue
       deleted++
       deletedNames.add((e as { name: string }).name)
     } else if (e.kind === 'recall' && (e as { found?: boolean }).found === true) {

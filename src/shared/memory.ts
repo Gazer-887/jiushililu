@@ -472,6 +472,8 @@ function normalizeAssertedOs(name: string): string | null {
  */
 export function guardMemoryText(text: string, hostPlatform?: string): MemoryGuardVerdict {
   const cred = findCredentialShape(text)
+  // ── 拒写档先判完，再看确认/标记：一条同时命中「权限」与「用户名是 X」的文本若先返回 mark，
+  //    它就照常入库并注入 —— 身份与环境这两档等于没装。
   if (cred && cred.kind === 'known-prefix') {
     return {
       action: 'reject',
@@ -480,15 +482,6 @@ export function guardMemoryText(text: string, hostPlatform?: string): MemoryGuar
   }
   if (includesAny(text, SKIP_CONFIRM_PHRASES)) {
     return { action: 'reject', reason: '这条属于权限设置，请到「设置 → 权限」修改' }
-  }
-  if (cred) {
-    return { action: 'confirm', reason: '文本含疑似长凭据串，需要你确认一次' }
-  }
-  if (includesAny(text, AUTONOMY_PHRASES)) {
-    return { action: 'confirm', reason: '这条涉及"不打断我"的授权口径，需要你确认一次' }
-  }
-  if (includesAny(text, AUTHORIZATION_NOUNS) || includesAny(text, SENSITIVE_NOUNS)) {
-    return { action: 'mark', reason: '这条含权限或敏感词，已标记以便巡检' }
   }
   // 个人身份字段：直接拒，不进候选、不占待批数（与「个人信息不入门」同一条方针）
   if (IDENTITY_FIELD_PATTERNS.some((re) => re.test(text))) {
@@ -508,6 +501,15 @@ export function guardMemoryText(text: string, hostPlatform?: string): MemoryGuar
         reason: `这条断言的运行环境与本机不符（本机为 ${host}）。请先核对再记`
       }
     }
+  }
+  if (cred) {
+    return { action: 'confirm', reason: '文本含疑似长凭据串，需要你确认一次' }
+  }
+  if (includesAny(text, AUTONOMY_PHRASES)) {
+    return { action: 'confirm', reason: '这条涉及"不打断我"的授权口径，需要你确认一次' }
+  }
+  if (includesAny(text, AUTHORIZATION_NOUNS) || includesAny(text, SENSITIVE_NOUNS)) {
+    return { action: 'mark', reason: '这条含权限或敏感词，已标记以便巡检' }
   }
   return { action: 'allow' }
 }

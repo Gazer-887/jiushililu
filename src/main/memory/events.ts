@@ -29,6 +29,12 @@ export type MemoryEventPayload =
        * ⚠️ 记 name 不记 file 路径（与 `conflict` 同一理由：路径含用户名）。
        */
       mergedInto?: string
+      /**
+       * 被删的是**候选**（从未生效、也从未计入 `written`）⇒ 存活率这笔账里它不该出现。
+       * ⚠️ 与 `mergedInto` 分两个字段是有意的：那个答"为什么走的"，这个答"该不该记账"。
+       *    合成一个的话，`merge()` 并掉一条**已生效**旧条目时也想标它，就会把真丢失漏掉。
+       */
+      candidate?: true
     }
   // plan53 片 1：**自动遗忘 = 可逆归档**。与 `delete` 分家是因为存活率把 delete 记成"丢失"，
   // 而一条还能一键恢复的东西不该进那笔账（R4）。用户手删仍记 `delete`。

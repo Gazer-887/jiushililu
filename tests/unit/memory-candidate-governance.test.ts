@@ -103,8 +103,69 @@ describe('候选互检：模型不许把同一件事提第二遍', () => {
   })
 })
 
-describe('同名撞 slug：后写的顶掉前一条 = 静默丢提案', () => {
-  it('第二条同名提案被拒，第一条原文还在', () => {
+// ── 审查 A3：这道闸必须装在**唯一口**上 ────────────────────────────────────────
+// 09-25 那 71 条积压是**反思链**产出来的，而互检当时只挂在模型提案通路上 ——
+// 挂在调用点上看着没错，实际给最忙的那条留了空档。
+describe('互检对两条产线同等生效（反思链才是积压的主产线）', () => {
+  const refl = (name: string, description: string) => ({
+    name,
+    description,
+    class: 'default' as const,
+    body: '反思正文。',
+    origin: 'reflection' as const
+  })
+
+  it('反思链写入与待批候选相似的一条 ⇒ 同样被拒、不落第二条', () => {
+    const { repo, backend } = makeRepo()
+    expect(repo.saveCandidate(refl('verbatim-raw-output', '用户要求子代理逐字回贴原始 stdout'))).not.toBe('')
+    expect(repo.saveCandidate(refl('verbatim-raw-stdout', '用户要求子代理逐字回贴原始 stdout 输出'))).toBe('')
+    expect(backend.listCandidates()).toHaveLength(1)
+  })
+
+  it('带 conflictWith 的纠正候选不被这一道拦：那是在纠正旧记忆，不是堆新提案', () => {
+    const { repo, backend } = makeRepo({
+      [`${ROOT}/prefers-tables.md`]: noteText('prefers-tables', '偏好用表格交付')
+    })
+    expect(repo.saveCandidate(refl('one-shot-delivery', '一次交付不要回头确认，跑完再汇报'))).not.toBe('')
+    expect(
+      repo.saveCandidate(
+        refl('one-shot-delivery-v2', '一次交付不要回头确认，跑完之后再汇报'),
+        `${ROOT}/prefers-tables.md`
+      )
+    ).not.toBe('')
+    expect(backend.listCandidates()).toHaveLength(2)
+  })
+})
+
+describe('合并稿只豁免自己并掉的来源', () => {
+  const merged = (sources: string[]) => ({
+    name: 'verbatim-output-merged',
+    description: '用户要求子代理逐字回贴原始 stdout 输出',
+    class: 'default' as const,
+    body: '合并稿正文。',
+    origin: 'model' as const,
+    mergeSources: sources
+  })
+
+  it('来源那几条再像也不拦 —— 否则预筛一条合并稿都写不进', () => {
+    const { repo } = makeRepo({
+      [`${CAND}/a.md`]: noteText('a', '子代理交付时贴出完整原始输出'),
+      [`${CAND}/b.md`]: noteText('b', '用户要求子代理逐字回贴原始 stdout 输出')
+    })
+    expect(repo.saveCandidate(merged([`${CAND}/a.md`, `${CAND}/b.md`]))).not.toBe('')
+  })
+
+  it('撞上的那条**不在**自己的来源里 ⇒ 这道闸仍然要拦（豁免不许做成整闸关闭）', () => {
+    const { repo, backend } = makeRepo({
+      [`${CAND}/a.md`]: noteText('a', '子代理交付时贴出完整原始输出'),
+      [`${CAND}/b.md`]: noteText('b', '用户要求子代理逐字回贴原始 stdout 输出')
+    })
+    expect(repo.saveCandidate(merged([`${CAND}/a.md`]))).toBe('')
+    expect(backend.listCandidates()).toHaveLength(2)
+  })
+})
+
+describe('同名撞 slug：后写的顶掉前一条 = 静默丢提案', () => {  it('第二条同名提案被拒，第一条原文还在', () => {
     const { repo, backend } = makeRepo()
     expect(repo.save(proposal('dupe', '第一条描述')).ok).toBe(true)
     const before = backend.read(`${CAND}/dupe.md`)
@@ -145,3 +206,57 @@ describe('候选条数上限：满了报数，不静默丢、也不折进归档'
     expect(repo.save(proposal('last-one', '最后一条提案')).ok).toBe(true)
   })
 })
+
+// ── 审查 R-A1 / R-A3：候选读侧与上限的两个坏形状 ────────────────────────────────
+describe('候选读侧不许静默丢（R-A1）', () => {
+  it('解析失败的候选进 warnings（它看不见、但仍占条数名额，不报等于凭空少一条）', () => {
+    const { repo } = makeRepo({ [`${CAND}/broken.md`]: '这不是 frontmatter，也没有正文块' })
+    const view = repo.list()
+    expect(view.candidates.map((c) => c.name)).not.toContain('broken')
+    expect(view.warnings.some((w) => w.includes('broken.md'))).toBe(true)
+  })
+
+  it('读不出来的候选同样要报（与 `loadAll` 的"读不出来，已跳过"同措辞形状）', () => {
+    const backend = memBackend()
+    backend.write(`${CAND}/gone.md`, '占位')
+    const origRead = backend.read.bind(backend)
+    backend.read = (f: string) => (f === `${CAND}/gone.md` ? null : origRead(f))
+    const repo = createMemoryRepo(backend, {
+      now: () => FIXED,
+      onWarn: () => {},
+      conversationId: () => 'c1',
+      modelWritesNeedApproval: () => true
+    })
+    expect(repo.list().warnings.some((w) => w.includes('gone.md') && w.includes('读不出来'))).toBe(true)
+  })
+})
+
+describe('队列满了「整理」还得能跑（R-A3：上限不许锁死清理入口）', () => {
+  const fill = (n: number): Record<string, string> => {
+    const seed: Record<string, string> = {}
+    for (let i = 0; i < n; i++) {
+      seed[`${CAND}/p${i}.md`] = noteText(`p${i}`, `第 ${i} 条提案的摘要说明`)
+    }
+    return seed
+  }
+
+  it('满员时普通新提案仍被拒，但带 mergeSources 的合并稿写得进去', () => {
+    const { repo } = makeRepo(fill(MEMORY_LIMITS.maxCandidates))
+    expect(repo.saveCandidate({ ...reflLike('new-one', '再多一条提案') })).toBe('')
+    const merged = repo.saveCandidate({
+      ...reflLike('merged-one', '两条提案合并后的摘要说明'),
+      mergeSources: [`${CAND}/p0.md`, `${CAND}/p1.md`]
+    })
+    expect(merged).not.toBe('')
+  })
+})
+
+function reflLike(name: string, description: string) {
+  return {
+    name,
+    description,
+    class: 'default' as const,
+    body: '正文。',
+    origin: 'reflection' as const
+  }
+}
