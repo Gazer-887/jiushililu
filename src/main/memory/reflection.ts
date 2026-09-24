@@ -8,6 +8,7 @@ import type { TokenUsage } from '@shared/usage'
 import { MEMORY_CLASSES, type MemoryCandidate, type MemoryClass } from '@shared/memory'
 import { historyForModel } from '../agent/context'
 import type { MemoryRepo } from './memory-core'
+import { composeReflectionContext } from './reflection-prompt'
 
 export interface ReflectChat {
   /**
@@ -57,7 +58,14 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
       // 「反思执行器抛错」永远进不去，净效果是反思失败 = 零候选 + 零日志。
       // 出队发生在调用之前，所以抛出去不会把队列卡住（判据见 `memory-queue.test.ts` 的 R17 组）。
       // 盘上的正文可能带着被中断那一轮留下的空串，出境前整形 —— 反思不经主循环，那道整形罩不到它
-      const result = await chat(historyForModel(input.messages))
+      // 已知记忆数据块（片②）：只有这一层同时拿得到 `input.memory` 与对话历史，所以在此拼；
+      // `REFLECTION_SYSTEM_PROMPT`（角色指令）仍归装配层 —— 两件事各归各处，别混。
+      const view = input.memory.list()
+      const known = composeReflectionContext(view.entries, view.candidates, view.omitted)
+      const history = historyForModel(input.messages)
+      const result = await chat(
+        known === null ? history : [{ role: 'system', content: known }, ...history]
+      )
 
       // **只有这一处仍然咽**：模型没按格式回答不是故障，是它的输出形状问题
       // （返回零候选即可，抛出去会让一次跑偏变成"反思执行器抛错"，把真故障淹在噪音里）

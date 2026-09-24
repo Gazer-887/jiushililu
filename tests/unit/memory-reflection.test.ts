@@ -14,7 +14,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
 import type { MemoryCandidate } from '@shared/memory'
-import { createMemoryRepo } from '@main/memory/memory-core'
+import { createMemoryRepo, serializeMemory } from '@main/memory/memory-core'
 import type { MemoryBackend } from '@main/memory/memory-core'
 import { createReflectionRunner } from '@main/memory/reflection'
 import { createArchiveMock } from '../helpers/memory-archive-mock'
@@ -339,5 +339,91 @@ describe('判据 2：反思产出候选 → list().entries 不含 → 批准后�
     expect(idx2.entries[0]?.name).toBe('brand-new')
     expect(idx2.entries[0]?.origin).toBe('user')
     expect(idx2.candidates).toHaveLength(0)
+  })
+})
+
+// ── 片②（plan55 / K35 扩法）────────────────────────────────────────────────
+// 09-25 实测：候选区**刻意不进 buildIndex** ⇒ 只把"已生效索引"喂给反思挡不住候选间重复
+// （盘上 71 条候选里 40+ 条落在 8 个同义簇，正是这条漏洞的产物）。
+// 所以本组钉的是：**两段都要在**，且**只带 name+description，正文一律不出境**。
+describe('片②：反思请求同时带「已生效索引」与「当前候选清单」', () => {
+  const noteText = (name: string, desc: string, body = '这条的正文内容不应出境。'): string =>
+    serializeMemory({
+      name,
+      description: desc,
+      class: 'default',
+      origin: 'user',
+      evidence: null,
+      createdAt: FIXED.toISOString(),
+      updatedAt: FIXED.toISOString(),
+      body
+    })
+
+  async function sentMessages(seed: Record<string, string>, candidates: Array<[string, string]> = []): Promise<ChatMessage[]> {
+    const { repo } = makeRepo(seed)
+    for (const [name, desc] of candidates) {
+      repo.saveCandidate({ name, description: desc, class: 'default', body: '候选正文也不应出境。' })
+    }
+    const chat = vi.fn(async () => ({ content: '[]' }))
+    await createReflectionRunner({ chat }).reflect({
+      id: 'c1',
+      messages: msgs,
+      bodyBytes: BIG_BYTES,
+      memory: repo
+    })
+    return chat.mock.calls[0][0] as ChatMessage[]
+  }
+
+  const blockOf = (m: ChatMessage[]): string => m.map((x) => x.content).join('\n')
+
+  it('生效条目与候选**都**出现在数据块里（只带索引的旧写法在此红）', async () => {
+    const sent = await sentMessages(
+      { '/mem/notes/prefers-tabs.md': noteText('prefers-tabs', '缩进偏好使用制表符') },
+      [['quiet-mode', '长任务期间不要打断']]
+    )
+    const block = blockOf(sent)
+    expect(block).toContain('prefers-tabs')
+    expect(block).toContain('quiet-mode')
+  })
+
+  it('块里只有 name + description：生效条目正文与候选正文都**不许出境**', async () => {
+    const sent = await sentMessages(
+      { '/mem/notes/a.md': noteText('a', '一条描述') },
+      [['b-cand', '一条候选描述']]
+    )
+    const block = blockOf(sent)
+    expect(block).not.toContain('这条的正文内容不应出境')
+    expect(block).not.toContain('候选正文也不应出境')
+  })
+
+  it('静态性：同一批数据两次调用产出**逐字节相同**（否则前缀缓存每轮失效）', async () => {
+    const seed = { '/mem/notes/a.md': noteText('a', '一条描述') }
+    // ⚠️ 比**整条消息**，不许只截 `<known-memories>` 那一段 —— 第一版判据截了段，
+    // 结果 M8 把变化量塞在闭合标签之后照样全绿（假绿判据，变异替我照出来的）
+    const whole = async (): Promise<string> => {
+      const sent = await sentMessages(seed, [['b-cand', '一条候选描述']])
+      const msg = sent.find((m) => m.content.includes('<known-memories>'))
+      expect(msg, '数据块没进反思请求').toBeTruthy()
+      return msg!.content
+    }
+    expect(await whole()).toBe(await whole())
+  })
+
+  it('空库 + 空候选 ⇒ 不注入空壳（消息条数与旧行为一致）', async () => {
+    const sent = await sentMessages({})
+    expect(blockOf(sent)).not.toContain('<known-memories>')
+    expect(sent).toHaveLength(msgs.length)
+  })
+
+  it('超预算 ⇒ omitted 如实写进块里，且块本身不超上限', async () => {
+    const seed: Record<string, string> = {}
+    for (let i = 0; i < 70; i++) {
+      seed[`/mem/notes/n${i}.md`] = noteText(`note-${i}`, '描述补足长度'.repeat(12))
+    }
+    const sent = await sentMessages(seed)
+    const block = blockOf(sent)
+    expect(block).toContain('未列出')
+    const seg = block.slice(block.indexOf('<known-memories>'), block.indexOf('</known-memories>') + 17)
+    expect(Buffer.byteLength(seg, 'utf8')).toBeLessThanOrEqual(2 * 8 * 1024 + 512)
   })
 })
