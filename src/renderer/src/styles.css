@@ -6374,6 +6374,11 @@ body[data-resizing] {
   background: var(--panel);
 }
 
+/* plan56 片①：已生效列表的折叠入口，与归档区同一标准（同页不该有两套折叠样式） */
+.mem-entries-toggle {
+  align-self: flex-start;
+}
+
 .mem-archived-toggle {
   align-self: flex-start;
 }

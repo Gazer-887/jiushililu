@@ -9258,6 +9258,9 @@ app.whenReady().then(async () => {
           dupNames: Array.from(p.querySelectorAll('.mem-dup-row .mem-name')).map((n) => n.textContent.trim()),
           dupButtons: Array.from(p.querySelectorAll('.mem-dup-actions button')).map((b) => b.textContent.trim()),
           prescreenNote: p.querySelector('.mem-prescreen-note')?.textContent.trim() ?? null,
+          // plan56 片①：折叠态与展开态必须**各自可判** —— 只采行数判不出"折起后还剩什么在屏上"
+          entriesToggle: p.querySelector('.mem-entries-toggle')?.textContent.trim() ?? null,
+          rowCount: p.querySelectorAll('.mem-row').length,
           archivedToggle: p.querySelector('.mem-archived-toggle')?.textContent.trim() ?? null,
           archivedNames: Array.from(p.querySelectorAll('.mem-archived-row .mem-name')).map((n) => n.textContent.trim()),
           archivedDates: Array.from(p.querySelectorAll('.mem-archived-row .mem-archived-at')).map((n) => n.textContent.trim()),
@@ -9269,9 +9272,48 @@ app.whenReady().then(async () => {
       })()
     `)
 
+  /**
+   * plan56 片①：确保已生效列表处于展开态（后面所有读 `.mem-row` 的判据都依赖它）。
+   * ⚠️ **先看状态再决定点不点**，不许无条件点一下：无条件点等于把"默认折起"这条被测行为
+   *    写进助手的前提里 —— 一旦默认值被改坏，助手会反过来把列表点回折叠，
+   *    于是一条变异红出十条，红的是助手不是产品（"校验工具自己坏了比不校验更危险"同族）。
+   */
+  const expandEntries = async () => {
+    const ok = await win.webContents.executeJavaScript(
+      "(() => { const rows = document.querySelectorAll('.mem-row').length; if (rows > 0) return true;" +
+      " const t = document.querySelector('.mem-entries-toggle'); if (!t) return false; t.click(); return true; })()"
+    )
+    await new Promise((r) => setTimeout(r, 400))
+    return ok
+  }
+
   const memReady = await openMemoryPanel()
   await new Promise((r) => setTimeout(r, 700))
+  const memFolded = await readMemoryPanel()
+  console.log('MEMORY_FOLDED=' + JSON.stringify({ toggle: memFolded.entriesToggle, rows: memFolded.rowCount }))
+  checkTrue(
+    'plan56 片①：已生效列表默认折起 —— 一行都不铺，但条数与注入预算照常报出（收起的是列表，不是读数）',
+    memFolded.entriesToggle !== null &&
+      memFolded.entriesToggle.includes('已生效') &&
+      memFolded.entriesToggle.includes(memoryEntries.length + ' 条') &&
+      memFolded.rowCount === 0 &&
+      (memFolded.stat || '').includes('8192'),
+    { toggle: memFolded.entriesToggle, rows: memFolded.rowCount, stat: memFolded.stat }
+  )
+
+  const expanded = await expandEntries()
   const memList = await readMemoryPanel()
+  checkTrue(
+    'plan56 片①：展开后条目与三个动作原样在（折叠不许把能力一起收走）',
+    expanded === true &&
+      memList.rowCount === memoryEntries.length &&
+      memList.names.includes('prefers-tables') &&
+      memList.names.includes('uses-pnpm') &&
+      memList.actions.filter((a) => a === '标记不对').length === memoryEntries.length &&
+      memList.actions.filter((a) => a === '编辑').length === memoryEntries.length &&
+      memList.actions.filter((a) => a === '删除').length === memoryEntries.length,
+    { expanded, rows: memList.rowCount, actions: memList.actions }
+  )
   console.log('MEMORY_LIST=' + JSON.stringify(memList))
   checkTrue(
     '记忆页签：列出条目并给出分类徽标（空态不算通过）',

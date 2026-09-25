@@ -36,6 +36,12 @@ export default function MemoryManager(): JSX.Element {
   const [dismissedDups, setDismissedDups] = useState<Set<string>>(new Set())
   /** 归档区默认折起：它是"出过的事"不是"要办的事"，摊开会把待批准挤下去 */
   const [archivedOpen, setArchivedOpen] = useState(false)
+  /**
+   * 已生效列表同样默认折起（plan56 片① / K42）。
+   * ⚠️ 这一屏的职责是**审批**，不是库浏览器：常驻的 N 行条目把真正要决定的东西
+   *    （待批准、需过目）挤到看不见。收起的是列表，读数与条数必须照常在屏上。
+   */
+  const [entriesOpen, setEntriesOpen] = useState(false)
   /** 预筛（plan55 片④）：手动触发，结果一句话报在上面 —— 它要花 token，不该自动跑 */
   const [prescreening, setPrescreening] = useState(false)
   const [prescreenNote, setPrescreenNote] = useState<string | null>(null)
@@ -428,30 +434,42 @@ export default function MemoryManager(): JSX.Element {
         <div className="mem-empty">还没有记忆。用户在对话里说「记住…」之后，条目会出现在这里。</div>
       ) : null}
 
-      {entries.map((e) => (
-        <div key={e.file} className="mem-row">
-          <div className="mem-row-main">
-            <span className="mem-badge">{CLASS_LABEL[e.class]}</span>
-            <span className="mem-name">{e.name}</span>
-            <span className="mem-desc">{e.description}</span>
-          </div>
-          <div className="mem-row-actions">
-            <button
-              type="button"
-              title="这条记忆不准确？标记一下（只记一笔，不改动它）"
-              onClick={() => void flag(e.name)}
-            >
-              标记不对
-            </button>
-            <button type="button" onClick={() => void openEdit(e)}>
-              编辑
-            </button>
-            <button type="button" onClick={() => void remove(e)}>
-              删除
-            </button>
-          </div>
-        </div>
-      ))}
+      {entries.length > 0 ? (
+        <button
+          type="button"
+          className="mem-entries-toggle"
+          onClick={() => setEntriesOpen((v) => !v)}
+        >
+          已生效 {entries.length} 条 {entriesOpen ? '▴' : '▾'}
+        </button>
+      ) : null}
+
+      {entriesOpen
+        ? entries.map((e) => (
+            <div key={e.file} className="mem-row">
+              <div className="mem-row-main">
+                <span className="mem-badge">{CLASS_LABEL[e.class]}</span>
+                <span className="mem-name">{e.name}</span>
+                <span className="mem-desc">{e.description}</span>
+              </div>
+              <div className="mem-row-actions">
+                <button
+                  type="button"
+                  title="这条记忆不准确？标记一下（只记一笔，不改动它）"
+                  onClick={() => void flag(e.name)}
+                >
+                  标记不对
+                </button>
+                <button type="button" onClick={() => void openEdit(e)}>
+                  编辑
+                </button>
+                <button type="button" onClick={() => void remove(e)}>
+                  删除
+                </button>
+              </div>
+            </div>
+          ))
+        : null}
 
       {notice ? (
         <div className={notice.ok ? 'mem-notice-ok' : 'mem-notice-err'}>{notice.text}</div>
