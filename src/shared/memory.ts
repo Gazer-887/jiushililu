@@ -148,6 +148,15 @@ export type MemoryRestoreResult = { ok: true } | { ok: false; reason: string }
 
 /**
  * 一键拒绝未成簇的结果（plan56 片③）。`file` 只到主进程与日志为止，**不进事件流**（事件里不许出现路径）。
+ * ⚠️ `skipped` 必须带出来：界面靠它解释"为什么我勾了 5 条只走了 3 条"，吞掉就是静默丢。
+ */
+export interface MemoryRejectBatchResult {
+  rejected: string[]
+  skipped: { file: string; reason: string }[]
+}
+
+/**
+ * 一键拒绝未成簇的结果（plan56 片③）。`file` 只到主进程与日志为止，**不进事件流**（事件里不许出现路径）。
  * ⚠️ `skipped` 必须带出来：界面按它解释"为什么我勾了 5 条只走了 3 条"，吞掉就成了静默丢。
  */
 export interface MemoryRejectBatchResult {
@@ -228,6 +237,14 @@ export interface PrescreenReport {
 export interface MemoryCandidateView extends MemoryEntry {
   conflictWith?: string
   mergeSources?: string[]
+}
+
+/**
+ * 回收站里的一条被拒候选（plan56 片③）：frontmatter 与正文**原样保留**，这里只给列表要显示的几项。
+ * `rejectedAt` 沿用归档区那套时间戳文件名编解码（一份编解码，不 fork 第二份）。
+ */
+export interface RejectedCandidateView extends MemoryEntry {
+  rejectedAt: string
 }
 
 /**
@@ -323,19 +340,44 @@ export interface MemoryDuplicatePair {
  * `reason` 就是 `guardMemoryText` 给人看的那句话，界面原样显示 —— 不再另造一套措辞，两处各写一份迟早分岔。
  */
 export interface MemoryReviewItem {
+  /** 定位一律按 file（与 `MemoryEntry` 同口径：文件可被手改，name 与 file 可脱钩） */
   file: string
   name: string
   reason: string
-  /**
-   * 条目的最后修改时刻（plan56 片②）。「看过·留下」按 `(name, updatedAt)` 记，
-   * 正文一改就对不上 ⇒ 提示重新出现。只按 name 记，等于给守卫装了个永久静音键。
-   */
+  /** 条目的最后修改时刻，只供界面显示 */
   updatedAt: string
+  /** 见 `reviewSeenStamp` —— 「看过·留下」按 `(name, stamp)` 记 */
+  stamp: string
 }
 
-/** 「看过·留下」的记账键。分隔符用 NUL：name 里可能出现冒号与空格 */
-export function reviewSeenKey(name: string, updatedAt: string): string {
-  return `${name}\u0000${updatedAt}`
+/**
+ * 「看过·留下」的记账料：**这一条是哪个文件、守卫看见的那几段文本现在长什么样**的指纹。
+ * ⚠️ 不能用 frontmatter 的 `updatedAt` —— 手改 / Agent 改文件都不刷新它，而这一格存在的理由
+ *    恰恰是"文件没经过确认桥"；只按 `updatedAt` 记，凭据被塞进正文也永远不再提示（静音键）。
+ *    `file` 也进料：两条同名同内容的手复制件要能逐条处置。散列值不外泄路径与原文。
+ */
+export function reviewSeenStamp(parts: {
+  file: string
+  name: string
+  description: string
+  body: string
+  evidenceConversationId: string
+}): string {
+  const joined = [parts.file, parts.name, parts.description, parts.body, parts.evidenceConversationId].join(
+    '\u0000'
+  )
+  let h = 0x811c9dc5
+  for (let i = 0; i < joined.length; i++) {
+    h ^= joined.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  // 长度进指纹：32 位散列最容易撞的正是"改完还同长"那一类编辑
+  return (h >>> 0).toString(16).padStart(8, '0') + '-' + joined.length
+}
+
+/** 记账键。分隔符用 NUL：name 里可能出现冒号与空格 */
+export function reviewSeenKey(name: string, stamp: string): string {
+  return `${name}\u0000${stamp}`
 }
 
 /**

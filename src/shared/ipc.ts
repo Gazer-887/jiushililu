@@ -845,8 +845,8 @@ export interface ApiBridge {
   getMemoryStats(): Promise<import('./memory').MemoryStats | null>
   /** 用户手工标记「这条不对」（批 4）：只在事件流落一条 `flag`，**不改条目本身** */
   flagMemory(name: string): Promise<boolean>
-  /** plan56 片②：把某条「需你过目」标成看过（消提示，条目照常生效注入） */
-  dismissMemoryReview(name: string): Promise<boolean>
+  /** plan56 片②：把某条「需你过目」标成看过（消提示，条目照常生效注入）。入参是条目 file */
+  dismissMemoryReview(file: string): Promise<boolean>
   /** 一键全部看过，返回消掉的条数 */
   dismissAllMemoryReview(): Promise<number>
   /**

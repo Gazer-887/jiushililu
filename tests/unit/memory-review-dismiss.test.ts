@@ -15,7 +15,7 @@ import { createMemoryStore, type MemoryStore } from '@main/store/memory-store'
 import { nodeFsAdapter } from '@main/store/conversations-fs'
 import { serializeMemory } from '@main/memory/memory-core'
 import { parseEventLine } from '@main/memory/events'
-import { reviewSeenKey } from '@shared/memory'
+import { reviewSeenKey, reviewSeenStamp } from '@shared/memory'
 
 const T0 = '2026-09-25T00:00:00.000Z'
 const T1 = '2026-09-26T00:00:00.000Z'
@@ -56,6 +56,28 @@ function writeNote(name: string, body: string, updatedAt = T0): string {
   return file
 }
 
+/** 按**指定路径**写一条（同名两条要靠不同文件名区分） */
+function writeNoteAt(file: string, name: string, body: string, updatedAt = T0): string {
+  nodeFsAdapter.mkdirSync(join(root, 'notes'), { recursive: true })
+  nodeFsAdapter.writeFileSync(
+    file,
+    serializeMemory({
+      name,
+      description: `关于 ${name} 的一条经验`,
+      class: 'default',
+      origin: 'model',
+      evidence: null,
+      createdAt: T0,
+      updatedAt,
+      body
+    }),
+    'utf8'
+  )
+  return file
+}
+
+const ioText = (file: string): string => readFileSync(file, 'utf8')
+
 function makeStore(): MemoryStore {
   return createMemoryStore(root, nodeFsAdapter, { onWarn: () => {} })
 }
@@ -71,7 +93,7 @@ describe('「看过·留下」消的是提示，不是记忆', () => {
     expect(reviewNames(store)).toEqual(['vault-hint'])
     expect(store.list().entries.map((e) => e.name)).toEqual(['vault-hint'])
 
-    expect(store.dismissReview('vault-hint')).toBe(true)
+    expect(store.dismissReview(file)).toBe(true)
 
     expect(reviewNames(store)).toEqual([])
     expect(store.list().entries.map((e) => e.name)).toEqual(['vault-hint'])
@@ -83,16 +105,19 @@ describe('「看过·留下」消的是提示，不是记忆', () => {
     const store = makeStore()
     const before = store.backend.readEvents().events.length
 
-    expect(store.dismissReview('vault-hint')).toBe(true)
+    expect(store.dismissReview(noteFile('vault-hint'))).toBe(true)
 
     const kinds = kindsOf(store)
     expect(kinds.length).toBe(before + 1)
     expect(countKind(kinds, 'delete')).toBe(0)
     expect(countKind(kinds, 'archive')).toBe(0)
-    expect(store.backend.readEvents().events.find((e) => e.kind === 'review_dismissed')).toMatchObject({
-      name: 'vault-hint',
-      seenAt: T0
-    })
+    const dismissed = store.backend.readEvents().events.find((e) => e.kind === 'review_dismissed')
+    expect(dismissed).toMatchObject({ name: 'vault-hint' })
+    // ⚠️ 事件里只有 name + 不透明指纹：**路径不许进事件流**（含用户名），指纹也不许是可反读的原文
+    const json = JSON.stringify(dismissed)
+    expect(json).not.toContain(root)
+    expect(json).not.toMatch(/notes|tmp|[A-Za-z]:/)
+    expect(json).not.toContain(MARK_BODY)
   })
 
   it('该条本就不在红块 ⇒ 返回 false 且不落事件（写一笔脏账 = 假成功）', () => {
@@ -101,9 +126,25 @@ describe('「看过·留下」消的是提示，不是记忆', () => {
     expect(store.list().needsReview).toHaveLength(0)
     const before = store.backend.readEvents().events.length
 
-    expect(store.dismissReview('quiet')).toBe(false)
-    expect(store.dismissReview('not-exist')).toBe(false)
+    expect(store.dismissReview(noteFile('quiet'))).toBe(false)
+    expect(store.dismissReview('/no/such/file.md')).toBe(false)
     expect(store.backend.readEvents().events.length).toBe(before)
+  })
+
+  // 入口身份必须是 file：按 name 找的话，同名两条提示会消掉用户**没点**的那一条
+  it('两条同名提示（手复制文件就会这样）⇒ 只消掉被点的那一条', () => {
+    const a = join(root, 'notes', 'a-copy.md')
+    const b = join(root, 'notes', 'b-copy.md')
+    writeNoteAt(a, 'same-name', MARK_BODY)
+    writeNoteAt(b, 'same-name', MARK_BODY)
+    const store = makeStore()
+    expect(store.list().needsReview).toHaveLength(2)
+
+    expect(store.dismissReview(a)).toBe(true)
+
+    const left = store.list().needsReview
+    expect(left).toHaveLength(1)
+    expect(left[0]!.file).toBe(b)
   })
 })
 
@@ -111,7 +152,8 @@ describe('「已看过」住在事件流里，所以重启仍记得', () => {
   it('重建 store（同一数据根）后，看过的那条依旧不在红块、也依旧在生效列表', () => {
     writeNote('vault-hint', MARK_BODY)
     writeNote('confirm-hint', '用户要求长任务期间免打扰，跑完再汇报。')
-    expect(makeStore().dismissReview('vault-hint')).toBe(true)
+    // 上面两行写的文件路径不同、内容不同，所以下面 dismiss 只影响第一条
+    expect(makeStore().dismissReview(noteFile('vault-hint'))).toBe(true)
 
     const second = makeStore()
     expect(reviewNames(second)).toEqual(['confirm-hint'])
@@ -119,20 +161,36 @@ describe('「已看过」住在事件流里，所以重启仍记得', () => {
   })
 })
 
-describe('⚠️ 不是永久豁免：正文一改，提示重新出现', () => {
-  it('按 (name, updatedAt) 记账 ⇒ 改过正文后重新进红块', () => {
-    writeNote('vault-hint', MARK_BODY)
+describe('⚠️ 不是永久豁免：内容一改，提示重新出现', () => {
+  // ★ 独立复查抓到的真缺陷（P1）：这一格存在的理由恰恰是"文件没经过确认桥"，
+  //   而手改 / Agent 改文件**都不刷新 frontmatter 的 `updatedAt`** ⇒ 记账料必须是内容指纹。
+  it('手改正文、`updatedAt` 一个字没动 ⇒ 提示必须重新出现（只认 updatedAt 就会静音守卫）', () => {
+    const file = writeNote('vault-hint', MARK_BODY)
     const store = makeStore()
-    expect(store.dismissReview('vault-hint')).toBe(true)
+    expect(store.dismissReview(file)).toBe(true)
     expect(reviewNames(store)).toEqual([])
 
-    writeNote('vault-hint', MARK_BODY, T1)
+    // 外部改文件：只动正文，updatedAt 保持原值
+    nodeFsAdapter.writeFileSync(
+      file,
+      ioText(file).replace('1Password', 'Keepass'),
+      'utf8'
+    )
+    expect(ioText(file)).toContain('updatedAt: ' + T0)
     expect(reviewNames(makeStore())).toEqual(['vault-hint'])
+  })
+
+  it('只换 `updatedAt` 而正文没动 ⇒ 仍算"同一份内容"，不必再打扰用户', () => {
+    const file = writeNote('vault-hint', MARK_BODY)
+    expect(makeStore().dismissReview(file)).toBe(true)
+
+    writeNote('vault-hint', MARK_BODY, T1)
+    expect(reviewNames(makeStore())).toEqual([])
   })
 
   it('反向：正文改成不再命中守卫 ⇒ 也从红块消失，但与"看过"无关（红块真相源是守卫）', () => {
     writeNote('vault-hint', MARK_BODY)
-    expect(makeStore().dismissReview('vault-hint')).toBe(true)
+    expect(makeStore().dismissReview(noteFile('vault-hint'))).toBe(true)
     writeNote('vault-hint', CLEAN_BODY, T1)
 
     const after = makeStore()
@@ -140,9 +198,28 @@ describe('⚠️ 不是永久豁免：正文一改，提示重新出现', () => 
     expect(after.list().warnings).toHaveLength(0)
   })
 
-  it('键本身：同名不同 updatedAt 必须是两个键，name 里的分隔符不许伪造出同一个键', () => {
-    expect(reviewSeenKey('a', T0)).not.toBe(reviewSeenKey('a', T1))
-    expect(reviewSeenKey('a\u0000' + T1, T0)).not.toBe(reviewSeenKey('a', T1))
+  it('指纹本身：改一个字就换值、长度相同也不撞车；name 里的分隔符不许伪造出同一个键', () => {
+    const base = {
+      file: '/m/n.md',
+      name: 'n',
+      description: 'd',
+      body: '正文一',
+      evidenceConversationId: ''
+    }
+    expect(reviewSeenStamp(base)).toBe(reviewSeenStamp({ ...base }))
+    expect(reviewSeenStamp(base)).not.toBe(reviewSeenStamp({ ...base, body: '正文二' }))
+    // 等长改动是 FNV-1a 最容易撞的那一类，长度进指纹就是为了它
+    expect(reviewSeenStamp({ ...base, body: '正文一' })).not.toBe(reviewSeenStamp({ ...base, body: '正文乙' }))
+    expect(reviewSeenStamp({ ...base, description: '密钥在 1Password' })).not.toBe(
+      reviewSeenStamp({ ...base, description: '密钥在 Keepass' })
+    )
+    // 同名同内容的两份手复制件必须是两个键（否则消一条 = 静音两条）
+    expect(reviewSeenStamp({ ...base, file: '/a/copy-1.md' })).not.toBe(
+      reviewSeenStamp({ ...base, file: '/b/copy-2.md' })
+    )
+    // 指纹本身不外泄原文：定长十六进制 + 长度
+    expect(reviewSeenStamp(base)).toMatch(/^[0-9a-f]{8}-\d+/)
+    expect(reviewSeenKey('a\u0000' + 'b', '1')).not.toBe(reviewSeenKey('a', '\u0000b' + '1'))
   })
 })
 
@@ -178,7 +255,7 @@ describe('「全部看过」= 逐条记一笔，账目与存活率都不动', ()
     writeNote('a-hint', MARK_BODY)
     writeNote('b-hint', '用户要求长任务期间免打扰，跑完再汇报。')
     const store = makeStore()
-    expect(store.dismissReview('a-hint')).toBe(true)
+    expect(store.dismissReview(noteFile('a-hint'))).toBe(true)
 
     // 未按"已看过"筛的话这里返回 2 ⇒ 界面写着「1 条」、实际记 2 笔，且事件流被同一笔刷屏
     expect(store.dismissAllReview()).toBe(1)
@@ -189,7 +266,7 @@ describe('「全部看过」= 逐条记一笔，账目与存活率都不动', ()
     const file = writeNote('vault-hint', MARK_BODY)
     const bytesBefore = readFileSync(file)
     const store = makeStore()
-    expect(store.dismissReview('vault-hint')).toBe(true)
+    expect(store.dismissReview(file)).toBe(true)
     expect(store.dismissAllReview()).toBe(0)
     expect(readFileSync(file).equals(bytesBefore)).toBe(true)
   })
@@ -198,7 +275,7 @@ describe('「全部看过」= 逐条记一笔，账目与存活率都不动', ()
 describe('接线：新 kind 读得回来，装配层真的筛了', () => {
   it('`review_dismissed` 能过 `parseEventLine`（不在 KINDS 白名单里 = 写了读不出，静默丢）', () => {
     writeNote('vault-hint', MARK_BODY)
-    makeStore().dismissReview('vault-hint')
+    makeStore().dismissReview(noteFile('vault-hint'))
     const lines = readFileSync(join(root, 'memory', 'events.jsonl'), 'utf8')
       .split('\n')
       .filter((l) => l.trim() !== '')

@@ -1482,9 +1482,9 @@ export function registerIpcHandlers(deps: {
   // plan56 片②：「看过·留下」。⚠️ 只落一条 `review_dismissed` 事件，**不碰条目本身、不落 delete**
   // ⇒ 存活率与注入都不动；正文改动后 updatedAt 变了会重新出现在这一格（守卫不许被永久静音）。
   ipcMain.handle(IPC.memoryDismissReview, (_e, raw: unknown): boolean => {
-    const name = z.string().min(1).max(200).parse(raw)
-    const ok = deps.memory.dismissReview(name)
-    log.info('记忆提示已被用户标为看过', { name, ok })
+    const file = z.string().min(1).max(1000).parse(raw)
+    const ok = deps.memory.dismissReview(file)
+    log.info('记忆提示已被用户标为看过', { file, ok })
     if (ok) sendToAll(IPC.memoryChanged)
     return ok
   })

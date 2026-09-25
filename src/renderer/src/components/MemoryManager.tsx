@@ -6,6 +6,7 @@ import {
   type ArchivedEntry,
   type MemoryClass,
   type MemoryEntry,
+  type MemoryReviewItem,
   type RejectedCandidateView
 } from '@shared/memory'
 import { useAppStore } from '../store'
@@ -49,9 +50,9 @@ export default function MemoryManager(): JSX.Element {
    *    （待批准、需过目）挤到看不见。收起的是列表，读数与条数必须照常在屏上。
    */
   const [entriesOpen, setEntriesOpen] = useState(false)
-  /** 预筛（plan55 片④）：手动触发，结果一句话报在上面 —— 它要花 token，不该自动跑 */
   /** 回收站默认折起（与归档区同标准）：它是"我放弃过的"，不是"要办的" */
   const [rejectedOpen, setRejectedOpen] = useState(false)
+  /** 预筛（plan55 片④）：手动触发，结果一句话报在上面 —— 它要花 token，不该自动跑 */
   const [prescreening, setPrescreening] = useState(false)
   const [prescreenNote, setPrescreenNote] = useState<string | null>(null)
   /** 展开看来源的合并稿（会话内状态，与「忽略」同档） */
@@ -157,12 +158,19 @@ export default function MemoryManager(): JSX.Element {
   }
 
   /** plan56 片②：消掉一条提示。**不改动条目、不改变它已生效的状态**，话术必须说清这一点 */
-  const dismissReview = async (name: string): Promise<void> => {
-    await window.api.dismissMemoryReview(name)
-    setNotice({
-      ok: true,
-      text: `已记下你看过「${name}」。这条仍照常生效注入；正文再被改动时会重新提示。`
-    })
+  const dismissReview = async (item: MemoryReviewItem): Promise<void> => {
+    const ok = await window.api.dismissMemoryReview(item.file)
+    setNotice(
+      ok
+        ? {
+            ok: true,
+            text: `已记下你看过「${item.name}」。这条仍照常生效注入；正文再被改动时会重新提示。`
+          }
+        : {
+            ok: false,
+            text: `没记下「${item.name}」：它已不在需过目列表里（可能刚被改动或删掉），刷新后重试`
+          }
+    )
     void refresh()
   }
 
@@ -570,7 +578,7 @@ export default function MemoryManager(): JSX.Element {
                   {r.name}：{r.reason}
                 </span>
                 <span className="mem-review-actions">
-                  <button type="button" onClick={() => void dismissReview(r.name)}>
+                  <button type="button" onClick={() => void dismissReview(r)}>
                     看过·留下
                   </button>
                   <button type="button" disabled={!entry} onClick={() => entry && void openEdit(entry)}>

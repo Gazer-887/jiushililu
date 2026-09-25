@@ -1168,10 +1168,12 @@ const STUBS = {
   },
   // plan56 片②：桩**真把那条从 needsReview 里摘掉并广播** —— 只回 true 而界面什么都不变，
   // 「看过·留下」这个按钮在门禁里就永远只是被点了一下（plan55 交叉验证同族教训）。
-  'memory:dismiss-review': (name) => {
-    memoryDismissCalls.push(name)
+  // 契约副本（真源 `memory-store.ts` 的 `dismissReview(file)`）：⚠️ **按 file 定位，不按 name** ——
+  // 同名两条提示时按 name 会消掉用户没点的那一条，桩若也跟着按 name，这条差别在门禁层就永远判不出来。
+  'memory:dismiss-review': (file) => {
+    memoryDismissCalls.push(file)
     const before = memoryReview.length
-    memoryReview = memoryReview.filter((r) => r.name !== name)
+    memoryReview = memoryReview.filter((r) => r.file !== file)
     if (memoryReview.length !== before) memoryBroadcast()
     return memoryReview.length !== before
   },
@@ -1200,7 +1202,17 @@ const STUBS = {
         continue
       }
       memoryCandidates = memoryCandidates.filter((c) => c.file !== f)
-      memoryRejected = memoryRejected.concat([{ ...hit, rejectedAt: '2026-09-26T02:00:00.000Z' }])
+      // 契约副本（真源 `memory-fs.ts` 的 `reject` + `archivedFileName`）：搬进回收站**必换路径**，
+      // 命名是 `<时刻>__<slug>.md`；恢复时目标 slug 从**文件名**反推，不是从 name 字段反推。
+      // 桩若原地保留 `/mem/candidates/...`，`insideRejected` 那道越界闸在门禁层就一步没走。
+      const slug = f.split('/').pop().replace(/\.md$/, '')
+      memoryRejected = memoryRejected.concat([
+        {
+          ...hit,
+          file: '/mem/rejected/2026-09-26T02-00-00-000Z__' + slug + '.md',
+          rejectedAt: '2026-09-26T02:00:00.000Z'
+        }
+      ])
       rejected.push(f)
     }
     if (rejected.length > 0) memoryBroadcast()
@@ -1210,7 +1222,11 @@ const STUBS = {
     memoryRestoreRejectedCalls.push(file)
     const hit = memoryRejected.find((r) => r.file === file)
     if (!hit) return { ok: false, reason: '恢复失败：该件不在回收站，或已被清掉' }
-    const target = `/mem/candidates/${hit.name}.md`
+    // 与真源同口径：只认 `/mem/rejected/` 里的件，slug 从文件名 `<时刻>__<slug>.md` 反推
+    if (!file.startsWith('/mem/rejected/')) return { ok: false, reason: '恢复失败：路径越界' }
+    const slug = /^\d{4}-\d{2}-\d{2}T.+Z__(.+)\.md$/.exec(file.split('/').pop())
+    if (!slug) return { ok: false, reason: '回收站文件名不合规，取不回提案名' }
+    const target = `/mem/candidates/${slug[1]}.md`
     if (memoryCandidates.some((c) => c.file === target)) {
       return { ok: false, reason: `待批队列里已有同名提案「${hit.name}」，请先处理那一条（不覆盖）` }
     }
@@ -9495,7 +9511,7 @@ app.whenReady().then(async () => {
     'plan56 片②：「看过·留下」只消提示、不动记忆 —— 该格整块消失，条目仍留在生效列表',
     clickedSeen === true &&
       memoryDismissCalls.length === 1 &&
-      memoryDismissCalls[0] === 'uses-pnpm' &&
+      memoryDismissCalls[0] === '/mem/notes/uses-pnpm.md' &&
       afterSeen.reviewRows.length === 0 &&
       afterSeen.names.includes('uses-pnpm'),
     { calls: memoryDismissCalls, review: afterSeen.reviewRows, names: afterSeen.names }
@@ -10176,7 +10192,7 @@ app.whenReady().then(async () => {
     '片③：放回待批真的搬回去 —— 那一条回到队列、回收站少一条（不是只改了标题数字）',
     restoredOne === true &&
       memoryRestoreRejectedCalls.length === 1 &&
-      memoryRestoreRejectedCalls[0] === '/mem/candidates/solo-1.md' &&
+      /^\/mem\/rejected\/.+__solo-1\.md$/.test(memoryRestoreRejectedCalls[0]) &&
       afterRestore.candNames.includes('solo-1') &&
       !afterRestore.candNames.includes('solo-2') &&
       afterRestore.rejectedToggle === '最近拒掉 1 条 ▴',

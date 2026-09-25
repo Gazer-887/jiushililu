@@ -41,8 +41,9 @@ export type MemoryEventPayload =
   | { kind: 'archive'; conversationId: string | null; name: string; by: 'system' | 'user' }
   | { kind: 'flag'; conversationId: string | null; name: string }
   // plan56 片②：「看过·留下」——只消提示，**不改动条目、不改变它的生效状态**。
-  // ⚠️ 键是 (name, seenAt)，seenAt 记的是当时条目的 updatedAt：正文一改就对不上 ⇒ 重新冒出来。
-  | { kind: 'review_dismissed'; conversationId: string | null; name: string; seenAt: string }
+  // ⚠️ 键是 (name, stamp)，stamp 见 `@shared/memory` 的 `reviewSeenStamp`：内容一改就对不上 ⇒ 重新冒出来。
+  //    只记 name 不记内容，等于给守卫装永久静音键；记内容而不记指纹会把正文抄进日志。
+  | { kind: 'review_dismissed'; conversationId: string | null; name: string; stamp: string }
   | { kind: 'inject'; conversationId: string | null; names: string[] }
   // 批 2：候选批准（name=新候选 name，oldName=被覆盖的旧记忆 name）
   | { kind: 'approve'; conversationId: string | null; name: string; oldName: string }

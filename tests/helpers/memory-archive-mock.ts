@@ -20,7 +20,8 @@ export interface ArchiveMock {
     archive(file: string): string | null
     listArchived(): string[]
     restoreFrom(archivedFile: string): string | null
-    /** plan56 片③：四个新口子与真后端同口径 —— `read` / `remove` 都够不到回收站那一处 */
+    /** plan56 片③：五个新口子。⚠️ 与真后端同口径的两件事：`read`/`remove` **够不到**回收站；
+     * 边界判定这里是**前缀比对**（真后端用 `relative()`）—— 假后端不测越界，越界判据只在真 fs 那份跑 */
     reject(file: string): string | null
     listRejected(): string[]
     readRejected(rejectedFile: string): string | null
@@ -71,7 +72,6 @@ export function createArchiveMock(opts: {
         return to
       },
       listArchived: () => [...archived.keys()].sort(),
-      rejected,
       reject: (file) => {
         if (!file.startsWith(`${candRoot}/`) || !file.endsWith('.md')) return null
         const text = files.get(file)

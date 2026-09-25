@@ -145,6 +145,13 @@
 合并把较旧那条的正文以引用块并入较新那条再删旧文件，方向在 [[src/main/memory/memory-core.ts#createMemoryRepo]]
 的 `merge` 里按 `createdAt` 重判：调用方传的顺序不可信。
 
+**第四个区**是候选回收站（[[src/main/store/memory-fs.ts#rejectedDir]]，plan56 片③）：一键拒掉的候选**逐字节搬进**这里而不是删掉。
+它刻意**不并入** `insideMemory()` —— 通用的 `read/write/remove`（也就是 `memory:get` / `memory:delete`）因此物理上够不到它，
+进出只走专用口。为什么值得为"够不到"写死一层结构：一条 `delete` 若能落在一个**从未 `write` 过**的东西上，
+存活率就会被自己的安全网凭空压低（与 B2 同一族）。它也不计入 `maxCandidates` —— 计入就等于"清掉的仍占名额"，
+队列永远已满（R-A3 同族）。"未成簇"的判定只算一次（[[src/main/memory/memory-core.ts#pickUnclustered]]）：
+界面上的 N、确认框名单、主进程允许移走的集合必须同源，否则就是"显示 3 条移走 5 条"。
+
 候选的两个终态不对称：批准要么覆盖旧条目（`origin` 沿用旧条目）、要么提升为新条目（`origin` 记 user，
 批准等于用户认可），两种都必须删候选文件，否则同名双条同时进索引；拒绝只删文件。
 批准**合并稿**时还要把它并掉的来源候选一起收掉 —— 那些从未生效，故事件记 `delete` 但带 `candidate: true`：
@@ -159,9 +166,16 @@
 
 「看过·留下」（[[src/main/store/memory-store.ts#createMemoryStore]] 的 `dismissReview`）是第五种，也是最容易被做错的一种：
 它消掉的是**提示**，条目照常生效注入，所以既不能落 `delete` / `archive`、也不能不记账——
-它落一条 `review_dismissed`，键是 `(name, seenAt)` 而 `seenAt` 存的是当时的 `updatedAt`
-（[[src/shared/memory.ts#reviewSeenKey]]）。按 name 记等于给内容守卫装一个永久静音键：改过正文的那条
-本该重新冒出来。反过来说，这份"已看过"只能住在事件流里——另开一份状态文件就会有两个真相源，重启后谁赢不确定。
+它落一条 `review_dismissed`，键是 `(name, 内容指纹)`（[[src/shared/memory.ts#reviewSeenStamp]]）。
+
+三处边界各是一次真踩过的坑，改这一段前先读：
+① **入口按 `file` 而不是 name** —— 手复制出来的文件会同名同内容，按 name 找会消掉用户没点的那一条。
+② **指纹覆盖"守卫看见的那几段文本 + 是哪个文件"，不覆盖 frontmatter 的 `updatedAt`** ——
+这一格存在的理由恰恰是"文件没经过确认桥"，而手改 / Agent 改文件**都不刷新 `updatedAt`**：
+只按它记，把凭据塞进正文也永远不再提示，守卫就成了可关的开关。
+③ **这份状态只住事件流**，不另开文件（两个真相源在重启后谁赢不确定）。
+⚠️ 已知代价：事件流按大小轮转（[[src/main/store/memory-fs.ts#rotateEventsIfNeeded]]），
+被转走的 `review_dismissed` 会让对应的提示**重新出现一次** —— 方向是"多问一句"而非"永久静音"，认了。
 
 ## 手册回注落在哪
 

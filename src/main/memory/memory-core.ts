@@ -3,7 +3,7 @@
 // 分层照项目惯例：领域逻辑住这里，布局与原子写住 `store/memory-fs.ts`，装配住 `store/memory-store.ts`。
 
 import { basename } from 'node:path'
-import { parseArchivedFileName, reviewSeenKey } from '@shared/memory'
+import { parseArchivedFileName, reviewSeenKey, reviewSeenStamp } from '@shared/memory'
 import {
   MEMORY_CLASSES,
   MEMORY_LIMITS,
@@ -355,7 +355,7 @@ export interface MemoryRepoOptions {
 export interface MemoryRepo {
   /**
    * 读全部并建索引。坏文件 fail-soft（跳过 + 留痕），绝不因一条坏数据拖垮整张表。
-   * `reviewSeen`（plan56 片②）：已按「看过·留下」处理过的 `reviewSeenKey(name, updatedAt)` 集合。
+   * `reviewSeen`（plan56 片②）：已按「看过·留下」处理过的 `reviewSeenKey(name, stamp)` 集合。
    * ⚠️ 只筛 `needsReview` 那一格 —— 条目照常进 `entries`、照常注入，消掉的是提示不是记忆。
    */
   list(reviewSeen?: ReadonlySet<string>): MemoryIndex
@@ -480,7 +480,14 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           file,
           name: p.name,
           reason: validation.guard.reason,
-          updatedAt: p.updatedAt
+          updatedAt: p.updatedAt,
+          stamp: reviewSeenStamp({
+            file,
+            name: p.name,
+            description: p.description,
+            body: p.body,
+            evidenceConversationId: p.evidence?.conversationId ?? ''
+          })
         })
         warn(`${file}：${validation.guard.reason}`)
       }
@@ -823,7 +830,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         warnings,
         duplicates,
         needsReview: reviewSeen
-          ? needsReview.filter((r) => !reviewSeen.has(reviewSeenKey(r.name, r.updatedAt)))
+          ? needsReview.filter((r) => !reviewSeen.has(reviewSeenKey(r.name, r.stamp)))
           : needsReview,
         candidates,
         archived: loadArchived(),

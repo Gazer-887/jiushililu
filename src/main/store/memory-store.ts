@@ -67,7 +67,8 @@ export interface MemoryStore extends MemoryRepo {
    * plan56 片②：把某条提示标成「看过·留下」。**只消提示，不改条目、不改生效状态**，
    * 也不落 `delete` 事件（存活率因此不动）。正文改动后 `updatedAt` 变了会重新出现。
    */
-  dismissReview(name: string): boolean
+  /** 消掉一条提示。⚠️ 入参是**条目的 file**，不是 name（同名两条会消错） */
+  dismissReview(file: string): boolean
   /** 一键全部看过，返回消掉的条数（界面前先弹确认，条数由这一格自己数） */
   dismissAllReview(): number
   /** 取记忆统计。事件流读不出来 → 返回 null（界面显示「暂无」） */
@@ -233,7 +234,7 @@ export function createMemoryStore(
   function seenReviewKeys(): Set<string> {
     const out = new Set<string>()
     for (const e of backend.readEvents().events) {
-      if (e.kind === 'review_dismissed') out.add(reviewSeenKey(e.name, e.seenAt))
+      if (e.kind === 'review_dismissed') out.add(reviewSeenKey(e.name, e.stamp))
     }
     return out
   }
@@ -248,14 +249,16 @@ export function createMemoryStore(
     backend,
     // plan56 片②：`list` 要拿"已看过"集去筛提示格 ⇒ 必须在 `...inner` 之后覆盖
     list,
-    dismissReview: (name: string): boolean => {
-      const item = list().needsReview.find((r) => r.name === name)
+    // 入口按 **file** 定位（与全库"读写删一律按 file"同口径）：同名两条提示时，
+     // 按 name 找会消掉用户没点的那一条。事件里仍只记 name + 内容指纹（路径含用户名，不进事件流）。
+    dismissReview: (file: string): boolean => {
+      const item = list().needsReview.find((r) => r.file === file)
       if (!item) return false
       return inner.record({
         kind: 'review_dismissed',
         conversationId: null,
         name: item.name,
-        seenAt: item.updatedAt
+        stamp: item.stamp
       })
     },
     // ⚠️ 取的是**筛过之后**的那一格：拿未筛的全量做批量，界面上写着 N 条、实际记了 M 笔，
@@ -268,7 +271,7 @@ export function createMemoryStore(
             kind: 'review_dismissed',
             conversationId: null,
             name: it.name,
-            seenAt: it.updatedAt
+            stamp: it.stamp
           })
         )
           n++

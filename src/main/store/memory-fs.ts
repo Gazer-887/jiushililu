@@ -157,6 +157,8 @@ export function createFsMemoryBackend(
   const rejected = rejectedDir(root)
   /** D-106：read() 的内容缓存。新鲜度键 (mtimeMs, size)，见 `read` 内注释；容量=记忆文件数，不设上限 */
   const readCache = new Map<string, { m: number; s: number; text: string }>()
+  /** 事件流的同款读缓存：`list()` 每轮要重放它一遍筛「已看过」，不缓存就是每轮全量重解析 */
+  let eventsCache: { k: string; v: { events: MemoryEvent[]; skipped: number } } | null = null
 
   /**
    * `file` 来自渲染进程 —— 必须挡在 `notes/` 之内。
@@ -348,8 +350,13 @@ export function createFsMemoryBackend(
     removeRejected(rejectedFile) {
       if (!insideRejected(rejectedFile)) return false
       if (!fs.existsSync(rejectedFile)) return false
-      fs.rmSync(rejectedFile, { force: true })
-      return true
+      try {
+        // 不递归：清的是回收站，目录不该出现在这里；真出现（手建）就报失败而不是把整棵树端走
+        fs.rmSync(rejectedFile, { force: true })
+        return true
+      } catch {
+        return false
+      }
     },
 
     pathFor(slug) {
@@ -394,6 +401,11 @@ export function createFsMemoryBackend(
     readEvents() {
       const path = eventsPath(root)
       if (!fs.existsSync(path)) return { events: [], skipped: 0 }
+      // 键 (mtimeMs, size)：追加必增 size、轮转必改二者 ⇒ 写完立刻读不会拿到旧副本；
+      // 适配器不提供 mtimeMsBytes 时直接退回每次重解析（语义不变，只是没缓存）
+      const stamp = fs.mtimeMsBytes ? fs.mtimeMsBytes(path) : null
+      const ck = stamp ? stamp.mtimeMs + ':' + stamp.size : null
+      if (ck !== null && eventsCache && eventsCache.k === ck) return eventsCache.v
       let text: string
       try {
         text = fs.readFileSync(path, 'utf8')
@@ -408,7 +420,9 @@ export function createFsMemoryBackend(
         if (parsed === null) skipped += 1
         else events.push(parsed)
       }
-      return { events, skipped }
+      const out = { events, skipped }
+      if (ck !== null) eventsCache = { k: ck, v: out }
+      return out
     },
 
     readMeta() {
