@@ -618,6 +618,27 @@ let memoryCandidates = [
   }
 ]
 const GATE_CLASS_LABELS = { style: '风格', default: '默认', knowledge: '知识', profile: '画像' }
+
+// plan56 片③：回收站与三个出口的调用流水。
+// ⚠️ `memoryRejectUnclusteredCalls` 与已有的 `memoryRejectCalls`（**单条**拒绝 `memory:reject`）是两回事，
+//    混用一个数组会让"一键"与"逐条"两条判据互相顶替。
+let memoryRejected = []
+const memoryRejectUnclusteredCalls = []
+const memoryRestoreRejectedCalls = []
+const memoryClearRejectedCalls = []
+
+/**
+ * 契约副本（真源 `src/main/memory/memory-core.ts` 的 `pickUnclustered`）：
+ * 合并稿本身、以及被任何合并稿并掉的来源都算"成簇"，剩下的才是可一键拒绝的孤条。
+ * 规则改了这里不跟着改，界面测的就是桩的想象 —— 与 R-D1/D2/D3 同族。
+ */
+function gateUnclustered(list) {
+  const absorbed = new Set()
+  for (const c of list) for (const src of c.mergeSources ?? []) absorbed.add(src)
+  return list
+    .filter((c) => (c.mergeSources?.length ?? 0) === 0 && !absorbed.has(c.file))
+    .map((c) => c.file)
+}
 // 契约副本（真源 `MemoryIndex.duplicates`，由 `loadAll()` 现算）：桩里**不给这个字段**，
 // 「疑似重复」那一整段在门禁里就从来没渲染过 —— 桩齐 ≠ 测到的第三种形状（审查 R-D3）。
 let memoryDuplicates = [
@@ -993,7 +1014,10 @@ const STUBS = {
     // 契约副本（R-D3）：真源 `loadAll()` 一直带着 `duplicates`，桩里缺这个字段 ⇒
     // 「疑似重复」整段（含「合并到较新」这个入口）在门禁里**从来没渲染过**。
     duplicates: memoryDuplicates.map((p) => ({ ...p, files: [...p.files], names: [...p.names], descriptions: [...p.descriptions] })),
-    archived: memoryArchived.map((a) => ({ ...a }))
+    archived: memoryArchived.map((a) => ({ ...a })),
+    // plan56 片③：回收站 + 「未成簇」判定（真源同一份规则，见 `gateUnclustered`）
+    rejected: memoryRejected.map((r) => ({ ...r })),
+    unclustered: gateUnclustered(memoryCandidates)
   }),
   'memory:read': (file) => memoryEntries.find((e) => e.file === file) ?? null,
   'memory:save': (input) => {
@@ -1155,6 +1179,50 @@ const STUBS = {
     const n = memoryReview.length
     memoryDismissCalls.push('__all__:' + n)
     memoryReview = []
+    if (n > 0) memoryBroadcast()
+    return n
+  },
+  // plan56 片③：一键拒绝 = 从待批队列**搬进**回收站。桩必须真搬，
+  // 且允许范围按主进程同款规则重算一遍 —— 只回个数字的话，"搬错了对象"门禁看不见。
+  'memory:reject-unclustered': (files) => {
+    memoryRejectUnclusteredCalls.push(files)
+    const allowed = new Set(gateUnclustered(memoryCandidates))
+    const rejected = []
+    const skipped = []
+    for (const f of files) {
+      if (!allowed.has(f)) {
+        skipped.push({ file: f, reason: '不在未成簇名单里（成簇候选与合并稿不经这一刀）' })
+        continue
+      }
+      const hit = memoryCandidates.find((c) => c.file === f)
+      if (!hit) {
+        skipped.push({ file: f, reason: '移进回收站失败：该件不在候选区，或已被别处处理' })
+        continue
+      }
+      memoryCandidates = memoryCandidates.filter((c) => c.file !== f)
+      memoryRejected = memoryRejected.concat([{ ...hit, rejectedAt: '2026-09-26T02:00:00.000Z' }])
+      rejected.push(f)
+    }
+    if (rejected.length > 0) memoryBroadcast()
+    return { rejected, skipped }
+  },
+  'memory:restore-rejected': (file) => {
+    memoryRestoreRejectedCalls.push(file)
+    const hit = memoryRejected.find((r) => r.file === file)
+    if (!hit) return { ok: false, reason: '恢复失败：该件不在回收站，或已被清掉' }
+    const target = `/mem/candidates/${hit.name}.md`
+    if (memoryCandidates.some((c) => c.file === target)) {
+      return { ok: false, reason: `待批队列里已有同名提案「${hit.name}」，请先处理那一条（不覆盖）` }
+    }
+    memoryRejected = memoryRejected.filter((r) => r.file !== file)
+    memoryCandidates = memoryCandidates.concat([{ ...hit, file: target }])
+    memoryBroadcast()
+    return { ok: true }
+  },
+  'memory:clear-rejected': () => {
+    const n = memoryRejected.length
+    memoryClearRejectedCalls.push(n)
+    memoryRejected = []
     if (n > 0) memoryBroadcast()
     return n
   },
@@ -9293,6 +9361,13 @@ app.whenReady().then(async () => {
           entriesToggle: p.querySelector('.mem-entries-toggle')?.textContent.trim() ?? null,
           rowCount: p.querySelectorAll('.mem-row').length,
           archivedToggle: p.querySelector('.mem-archived-toggle')?.textContent.trim() ?? null,
+          // plan56 片③：一键拒绝的口、回收站的折叠标题、展开后的行与按钮，各自可采
+          rejectBulkLabel: p.querySelector('.mem-reject-unclustered')?.textContent.trim() ?? null,
+          rejectedToggle: p.querySelector('.mem-rejected-toggle')?.textContent.trim() ?? null,
+          rejectedNames: Array.from(p.querySelectorAll('.mem-rejected-row .mem-name')).map((n) => n.textContent.trim()),
+          rejectedButtons: Array.from(p.querySelectorAll('.mem-rejected-row button')).map((b) => b.textContent.trim()),
+          rejectedFootButtons: Array.from(p.querySelectorAll('.mem-rejected-foot button')).map((b) => b.textContent.trim()),
+          singleRows: p.querySelectorAll('.mem-candidate-row:not(.mem-cluster) .mem-name').length,
           archivedNames: Array.from(p.querySelectorAll('.mem-archived-row .mem-name')).map((n) => n.textContent.trim()),
           archivedDates: Array.from(p.querySelectorAll('.mem-archived-row .mem-archived-at')).map((n) => n.textContent.trim()),
           actions: Array.from(p.querySelectorAll('.mem-row-actions button')).map((b) => b.textContent.trim()),
@@ -9957,6 +10032,181 @@ app.whenReady().then(async () => {
       preApproved.candNames.includes('uses-pnpm-v2') &&
       preApproved.conflictLabels.length === 1,
     { cand: preApproved.candNames, names: preApproved.names, conflict: preApproved.conflictLabels }
+  )
+
+  // ── plan56 片③：一键拒绝未成簇 + 回收站可反悔 ──────────────────────────
+  // 现场自造，不依赖前面几段留了什么：一份两来源合并稿 + 它的两条来源 + 两条孤条。
+  // 这么摆是为了让"成簇的不许被这一刀碰"在界面上也判得出来 —— 只有孤条的话，
+  // 一键拒绝误伤合并稿与时机正确无法区分。
+  memoryCandidates = [
+    {
+      name: 'merged-draft',
+      description: '两份来源并成一份',
+      class: 'default',
+      origin: 'reflection',
+      mergeSources: ['/mem/candidates/src-a.md', '/mem/candidates/src-b.md'],
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '合并稿正文。',
+      file: '/mem/candidates/merged-draft.md'
+    },
+    {
+      name: 'src-a',
+      description: '来源一',
+      class: 'default',
+      origin: 'reflection',
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '来源一正文。',
+      file: '/mem/candidates/src-a.md'
+    },
+    {
+      name: 'src-b',
+      description: '来源二',
+      class: 'default',
+      origin: 'reflection',
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '来源二正文。',
+      file: '/mem/candidates/src-b.md'
+    },
+    {
+      name: 'solo-1',
+      description: '没人并它的孤条',
+      class: 'default',
+      origin: 'model',
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '孤条一正文。',
+      file: '/mem/candidates/solo-1.md'
+    },
+    {
+      name: 'solo-2',
+      description: '另一条孤条',
+      class: 'style',
+      origin: 'model',
+      createdAt: '2026-09-15T02:00:00.000Z',
+      updatedAt: '2026-09-15T02:00:00.000Z',
+      body: '孤条二正文。',
+      file: '/mem/candidates/solo-2.md'
+    }
+  ]
+  memoryRejected = []
+  memoryBroadcast()
+  await new Promise((r) => setTimeout(r, 800))
+  const preBulk = await readMemoryPanel()
+  // ★ 按钮上那个数与界面上"孤条行数"必须是同一个源 —— 不一致就是"显示 3 条移走 5 条"
+  checkTrue(
+    '片③：「一键拒绝 N 条」的 N 与队列里的孤条行数同源（合并稿与其来源不算孤条）',
+    preBulk.rejectBulkLabel === '一键拒绝 2 条未成簇项' &&
+      preBulk.singleRows === 2 &&
+      preBulk.candNames.includes('solo-1') &&
+      preBulk.candNames.includes('merged-draft'),
+    { label: preBulk.rejectBulkLabel, singleRows: preBulk.singleRows, cand: preBulk.candNames }
+  )
+  const bulkClicked = await win.webContents.executeJavaScript(`
+    (() => {
+      let asked = null;
+      window.confirm = (m) => { asked = m; return true; };
+      const b = document.querySelector('.mem-reject-unclustered');
+      if (!b) return { found: false, asked: null };
+      b.click();
+      return { found: true, asked };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const afterBulk = await readMemoryPanel()
+  console.log('MEMORY_REJECT_BULK=' + JSON.stringify({ clicked: bulkClicked, calls: memoryRejectUnclusteredCalls }))
+  // 确认框必须**点名**：只报个数字就批量放弃，等于让用户给自己没见过的东西签字
+  checkTrue(
+    '片③：一键拒绝前先弹确认，且逐条列出将被移走的名字（含条数与"不动成簇"）',
+    bulkClicked.found === true &&
+      typeof bulkClicked.asked === 'string' &&
+      bulkClicked.asked.includes('2 条') &&
+      bulkClicked.asked.includes('solo-1') &&
+      bulkClicked.asked.includes('solo-2') &&
+      bulkClicked.asked.includes('成簇') &&
+      memoryRejectUnclusteredCalls.length === 1 &&
+      memoryRejectUnclusteredCalls[0].length === 2,
+    { asked: bulkClicked.asked, calls: memoryRejectUnclusteredCalls }
+  )
+  checkTrue(
+    '片③：这一刀只走孤条 —— 合并稿与它的来源原样留在待批队列',
+    !afterBulk.candNames.includes('solo-1') &&
+      !afterBulk.candNames.includes('solo-2') &&
+      afterBulk.candNames.includes('merged-draft') &&
+      // 来源默认收在簇的展开区里（不在 candNames），所以"来源没被动"要看簇徽标那条计数
+      afterBulk.clusterBadges[0] === '合并稿 · 2 条' &&
+      afterBulk.rejectBulkLabel === null &&
+      afterBulk.rejectedToggle === '最近拒掉 2 条 ▾' &&
+      afterBulk.rejectedNames.length === 0,
+    { cand: afterBulk.candNames, toggle: afterBulk.rejectedToggle, bulk: afterBulk.rejectBulkLabel }
+  )
+  // 回收站默认折起（与归档区同标准），展开后才给"放回待批"与清空
+  const rejectedOpened = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.mem-rejected-toggle');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 600))
+  const openedRejected = await readMemoryPanel()
+  checkTrue(
+    '片③：回收站展开后每行给「放回待批」，底部给「清空回收站」',
+    rejectedOpened === true &&
+      openedRejected.rejectedNames.length === 2 &&
+      openedRejected.rejectedButtons.length === 2 &&
+      openedRejected.rejectedButtons.every((t) => t === '放回待批') &&
+      openedRejected.rejectedFootButtons.includes('清空回收站'),
+    { names: openedRejected.rejectedNames, buttons: openedRejected.rejectedButtons, foot: openedRejected.rejectedFootButtons }
+  )
+  const restoredOne = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.mem-rejected-row button');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const afterRestore = await readMemoryPanel()
+  checkTrue(
+    '片③：放回待批真的搬回去 —— 那一条回到队列、回收站少一条（不是只改了标题数字）',
+    restoredOne === true &&
+      memoryRestoreRejectedCalls.length === 1 &&
+      memoryRestoreRejectedCalls[0] === '/mem/candidates/solo-1.md' &&
+      afterRestore.candNames.includes('solo-1') &&
+      !afterRestore.candNames.includes('solo-2') &&
+      afterRestore.rejectedToggle === '最近拒掉 1 条 ▴',
+    { calls: memoryRestoreRejectedCalls, cand: afterRestore.candNames, toggle: afterRestore.rejectedToggle }
+  )
+  const rejectedCleared = await win.webContents.executeJavaScript(`
+    (() => {
+      let asked = null;
+      window.confirm = (m) => { asked = m; return true; };
+      const b = Array.from(document.querySelectorAll('.mem-rejected-foot button'))
+        .find((x) => x.textContent.trim() === '清空回收站');
+      if (!b) return { found: false, asked: null };
+      b.click();
+      return { found: true, asked };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const afterClearRejected = await readMemoryPanel()
+  checkTrue(
+    '片③：清空回收站再确认一次（说清不可恢复），清空不动待批队列',
+    rejectedCleared.found === true &&
+      typeof rejectedCleared.asked === 'string' &&
+      rejectedCleared.asked.includes('1 条') &&
+      rejectedCleared.asked.includes('不可恢复') &&
+      memoryClearRejectedCalls.length === 1 &&
+      memoryClearRejectedCalls[0] === 1 &&
+      afterClearRejected.rejectedToggle === null &&
+      afterClearRejected.candNames.includes('merged-draft') &&
+      afterClearRejected.candNames.includes('solo-1'),
+    { asked: rejectedCleared.asked, calls: memoryClearRejectedCalls, toggle: afterClearRejected.rejectedToggle, cand: afterClearRejected.candNames }
   )
 
   // 护栏 2（D-043）：本轮写入痕迹的面板。面板只显示**当前会话**的痕迹 ——
