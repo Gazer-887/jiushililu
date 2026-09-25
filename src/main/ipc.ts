@@ -1479,6 +1479,21 @@ export function registerIpcHandlers(deps: {
     if (report.ok && report.merged > 0) sendToAll(IPC.memoryChanged)
     return report
   })
+  // plan56 片②：「看过·留下」。⚠️ 只落一条 `review_dismissed` 事件，**不碰条目本身、不落 delete**
+  // ⇒ 存活率与注入都不动；正文改动后 updatedAt 变了会重新出现在这一格（守卫不许被永久静音）。
+  ipcMain.handle(IPC.memoryDismissReview, (_e, raw: unknown): boolean => {
+    const name = z.string().min(1).max(200).parse(raw)
+    const ok = deps.memory.dismissReview(name)
+    log.info('记忆提示已被用户标为看过', { name, ok })
+    if (ok) sendToAll(IPC.memoryChanged)
+    return ok
+  })
+  ipcMain.handle(IPC.memoryDismissAllReview, (): number => {
+    const n = deps.memory.dismissAllReview()
+    log.info('记忆提示已被用户整格标为看过', { 条数: n })
+    if (n > 0) sendToAll(IPC.memoryChanged)
+    return n
+  })
   /**
    * 用户标记「这条不对」（批 4）。⚠️ **只落一条 `flag` 事件，不改条目本身** ——
    * 用户可能在判断前还要看看，直接改动或删除等于替他做决定。

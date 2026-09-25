@@ -4,7 +4,8 @@
 //    这是"记忆改不了权限"那条架构不变量在代码上的落点，由 `architecture.test.ts` 的守卫乙看守。
 
 import type { ChatMessage } from '@shared/ipc'
-import type { MemoryStats, PrescreenReport } from '@shared/memory'
+import { reviewSeenKey } from '@shared/memory'
+import type { MemoryIndex, MemoryStats, PrescreenReport } from '@shared/memory'
 import type { TokenUsage } from '@shared/usage'
 import { createMemoryRepo, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
 import { createReflectionRunner, type ReflectChat, type ReflectOutput } from '../memory/reflection'
@@ -62,6 +63,13 @@ export interface MemoryStore extends MemoryRepo {
    * 候选进 candidates/，不进 notes/；冲突的候选带 conflictWith 指向旧记忆 file。
    */
   runReflection(conversationId: string): Promise<void>
+  /**
+   * plan56 片②：把某条提示标成「看过·留下」。**只消提示，不改条目、不改生效状态**，
+   * 也不落 `delete` 事件（存活率因此不动）。正文改动后 `updatedAt` 变了会重新出现。
+   */
+  dismissReview(name: string): boolean
+  /** 一键全部看过，返回消掉的条数（界面前先弹确认，条数由这一格自己数） */
+  dismissAllReview(): number
   /** 取记忆统计。事件流读不出来 → 返回 null（界面显示「暂无」） */
   getStats(): MemoryStats | null
   /**
@@ -221,9 +229,52 @@ export function createMemoryStore(
     })
   }
 
+  /** 事件流里读"已看过"集（追加型日志，重放即可；不另开一份状态文件） */
+  function seenReviewKeys(): Set<string> {
+    const out = new Set<string>()
+    for (const e of backend.readEvents().events) {
+      if (e.kind === 'review_dismissed') out.add(reviewSeenKey(e.name, e.seenAt))
+    }
+    return out
+  }
+
+  /** 唯一一份"屏幕上那一格有什么"。两个动作与 `list` 必须走它，不能各读各的 */
+  function list(): MemoryIndex {
+    return inner.list(seenReviewKeys())
+  }
+
   return {
     ...inner,
     backend,
+    // plan56 片②：`list` 要拿"已看过"集去筛提示格 ⇒ 必须在 `...inner` 之后覆盖
+    list,
+    dismissReview: (name: string): boolean => {
+      const item = list().needsReview.find((r) => r.name === name)
+      if (!item) return false
+      return inner.record({
+        kind: 'review_dismissed',
+        conversationId: null,
+        name: item.name,
+        seenAt: item.updatedAt
+      })
+    },
+    // ⚠️ 取的是**筛过之后**的那一格：拿未筛的全量做批量，界面上写着 N 条、实际记了 M 笔，
+    //    而且已看过的那几条会被反复追加事件（"显示 3 条移走 5 条"同族）。
+    dismissAllReview: (): number => {
+      let n = 0
+      for (const it of list().needsReview) {
+        if (
+          inner.record({
+            kind: 'review_dismissed',
+            conversationId: null,
+            name: it.name,
+            seenAt: it.updatedAt
+          })
+        )
+          n++
+      }
+      return n
+    },
     beginTurn: () => {
       collecting = { written: [], rejected: [] }
     },

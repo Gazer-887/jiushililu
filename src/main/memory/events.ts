@@ -40,6 +40,9 @@ export type MemoryEventPayload =
   // 而一条还能一键恢复的东西不该进那笔账（R4）。用户手删仍记 `delete`。
   | { kind: 'archive'; conversationId: string | null; name: string; by: 'system' | 'user' }
   | { kind: 'flag'; conversationId: string | null; name: string }
+  // plan56 片②：「看过·留下」——只消提示，**不改动条目、不改变它的生效状态**。
+  // ⚠️ 键是 (name, seenAt)，seenAt 记的是当时条目的 updatedAt：正文一改就对不上 ⇒ 重新冒出来。
+  | { kind: 'review_dismissed'; conversationId: string | null; name: string; seenAt: string }
   | { kind: 'inject'; conversationId: string | null; names: string[] }
   // 批 2：候选批准（name=新候选 name，oldName=被覆盖的旧记忆 name）
   | { kind: 'approve'; conversationId: string | null; name: string; oldName: string }
@@ -68,6 +71,7 @@ export function serializeEvent(event: MemoryEvent): string {
 
 const KINDS = new Set([
   'write', 'recall', 'delete', 'archive', 'flag', 'inject', 'approve', 'conflict',
+  'review_dismissed',
   'playbook_write', 'playbook_recall', 'playbook_inject',
   'correct'
 ])

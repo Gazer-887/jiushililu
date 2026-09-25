@@ -297,6 +297,16 @@ export interface MemoryReviewItem {
   file: string
   name: string
   reason: string
+  /**
+   * 条目的最后修改时刻（plan56 片②）。「看过·留下」按 `(name, updatedAt)` 记，
+   * 正文一改就对不上 ⇒ 提示重新出现。只按 name 记，等于给守卫装了个永久静音键。
+   */
+  updatedAt: string
+}
+
+/** 「看过·留下」的记账键。分隔符用 NUL：name 里可能出现冒号与空格 */
+export function reviewSeenKey(name: string, updatedAt: string): string {
+  return `${name}\u0000${updatedAt}`
 }
 
 /**

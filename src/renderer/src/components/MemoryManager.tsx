@@ -144,6 +144,30 @@ export default function MemoryManager(): JSX.Element {
     setNotice({ ok: true, text: `已标记「${name}」不准确（只记一笔，不改动它）` })
   }
 
+  /** plan56 片②：消掉一条提示。**不改动条目、不改变它已生效的状态**，话术必须说清这一点 */
+  const dismissReview = async (name: string): Promise<void> => {
+    await window.api.dismissMemoryReview(name)
+    setNotice({
+      ok: true,
+      text: `已记下你看过「${name}」。这条仍照常生效注入；正文再被改动时会重新提示。`
+    })
+    void refresh()
+  }
+
+  const dismissAllReviews = async (): Promise<void> => {
+    const n = view?.needsReview.length ?? 0
+    if (n === 0) return
+    if (
+      !window.confirm(
+        `把这 ${n} 条提示全部标为看过？\n\n条目本身不改动、仍照常注入；正文再被改动时会重新出现。`
+      )
+    )
+      return
+    const done = await window.api.dismissAllMemoryReview()
+    setNotice({ ok: true, text: `已消掉 ${done} 条提示（条目未改动，仍照常生效注入）` })
+    void refresh()
+  }
+
   const save = async (): Promise<void> => {
     if (!draft) return
     const res = await window.api.saveMemory({
@@ -408,14 +432,44 @@ export default function MemoryManager(): JSX.Element {
 
       {view && view.needsReview.length > 0 ? (
         /* K36：这些条目**已经生效、正在注入**，只是内容守卫要人过目一眼。
-           以前它们和"真读不出来"共用一个 `warnings`，被标题说成"未能加载" —— 用户据此以为数据丢了。 */
+           以前它们和"真读不出来"共用一个 `warnings`，被标题说成"未能加载" —— 用户据此以为数据丢了。
+           plan56 片②：分家只解决"看得清"，还得给出口 —— 没有处置动作的红块等于把噪声重新包装一遍交回去。 */
         <div className="mem-warn mem-review">
-          <div className="mem-warn-title">{view.needsReview.length} 条需你过目</div>
-          {view.needsReview.map((r) => (
-            <div key={r.file} className="mem-warn-row">
-              {r.name}：{r.reason}
-            </div>
-          ))}
+          <div className="mem-review-head">
+            <div className="mem-warn-title">{view.needsReview.length} 条需你过目</div>
+            <button
+              type="button"
+              className="mem-review-dismiss-all"
+              onClick={() => void dismissAllReviews()}
+            >
+              全部看过
+            </button>
+          </div>
+          <div className="mem-warn-note">
+            这些条目已生效、正在注入。「看过·留下」只消掉这条提示，不改动内容；
+            正文再次被改动时会重新出现在这里。
+          </div>
+          {view.needsReview.map((r) => {
+            const entry = entries.find((e) => e.file === r.file) ?? null
+            return (
+              <div key={r.file} className="mem-warn-row mem-review-row">
+                <span className="mem-review-text">
+                  {r.name}：{r.reason}
+                </span>
+                <span className="mem-review-actions">
+                  <button type="button" onClick={() => void dismissReview(r.name)}>
+                    看过·留下
+                  </button>
+                  <button type="button" disabled={!entry} onClick={() => entry && void openEdit(entry)}>
+                    编辑
+                  </button>
+                  <button type="button" disabled={!entry} onClick={() => entry && void remove(entry)}>
+                    删除
+                  </button>
+                </span>
+              </div>
+            )
+          })}
         </div>
       ) : null}
 

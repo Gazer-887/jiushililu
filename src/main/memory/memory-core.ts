@@ -3,7 +3,7 @@
 // 分层照项目惯例：领域逻辑住这里，布局与原子写住 `store/memory-fs.ts`，装配住 `store/memory-store.ts`。
 
 import { basename } from 'node:path'
-import { parseArchivedFileName } from '@shared/memory'
+import { parseArchivedFileName, reviewSeenKey } from '@shared/memory'
 import {
   MEMORY_CLASSES,
   MEMORY_LIMITS,
@@ -333,8 +333,12 @@ export interface MemoryRepoOptions {
 }
 
 export interface MemoryRepo {
-  /** 读全部并建索引。坏文件 fail-soft（跳过 + 留痕），绝不因一条坏数据拖垮整张表 */
-  list(): MemoryIndex
+  /**
+   * 读全部并建索引。坏文件 fail-soft（跳过 + 留痕），绝不因一条坏数据拖垮整张表。
+   * `reviewSeen`（plan56 片②）：已按「看过·留下」处理过的 `reviewSeenKey(name, updatedAt)` 集合。
+   * ⚠️ 只筛 `needsReview` 那一格 —— 条目照常进 `entries`、照常注入，消掉的是提示不是记忆。
+   */
+  list(reviewSeen?: ReadonlySet<string>): MemoryIndex
   /** plan53 片 1：把归档条目放回生效集合。同名已存在 ⇒ 拒，**绝不覆盖** */
   restoreArchived(file: string): MemoryRestoreResult
   /**
@@ -442,7 +446,12 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       // 手改的文件没经过确认桥 —— 标记档与确认档都要浮出来（否则等于绕过了那一步）。
       // ⚠️ 但它是**已生效**的条目：进 `needsReview`，不进 `warnings`（K36 的分家就在这一条边界上）。
       if (validation.guard.action !== 'allow') {
-        needsReview.push({ file, name: p.name, reason: validation.guard.reason })
+        needsReview.push({
+          file,
+          name: p.name,
+          reason: validation.guard.reason,
+          updatedAt: p.updatedAt
+        })
         warn(`${file}：${validation.guard.reason}`)
       }
       entries.push({ ...p, file })
@@ -747,7 +756,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
   return {
     listFiles: () => backend.listFiles(),
 
-    list() {
+    list(reviewSeen) {
       const { entries, warnings, duplicates, needsReview } = loadAll()
       // 候选读侧的失败与已生效条目走**同一条** warnings 通道（界面那一格叫「N 条未能加载」，
       // 读不出来就是读不出来，两种都是"这条没进队列"）；日志同步留一笔。
@@ -759,7 +768,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         ...buildIndex(entries),
         warnings,
         duplicates,
-        needsReview,
+        needsReview: reviewSeen
+          ? needsReview.filter((r) => !reviewSeen.has(reviewSeenKey(r.name, r.updatedAt)))
+          : needsReview,
         candidates,
         archived: loadArchived()
       }

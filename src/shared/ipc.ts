@@ -393,6 +393,9 @@ export const IPC = {
   memoryStats: 'memory:stats',
   /** 用户手工标记「这条不对」（plan19 批 4）：误伤率的唯一数据来源 */
   memoryFlag: 'memory:flag',
+  // plan56 片②：「需你过目」那一格的处置出口 —— 只消提示，不改条目、不改生效状态
+  memoryDismissReview: 'memory:dismiss-review',
+  memoryDismissAllReview: 'memory:dismiss-all-review',
   // ── 记忆批 2：自动记忆成本设置（开关 + 日上限 + 反思模型）──
   memoryGetAuto: 'memory:get-auto',
   memorySetAuto: 'memory:set-auto',
@@ -838,6 +841,10 @@ export interface ApiBridge {
   getMemoryStats(): Promise<import('./memory').MemoryStats | null>
   /** 用户手工标记「这条不对」（批 4）：只在事件流落一条 `flag`，**不改条目本身** */
   flagMemory(name: string): Promise<boolean>
+  /** plan56 片②：把某条「需你过目」标成看过（消提示，条目照常生效注入） */
+  dismissMemoryReview(name: string): Promise<boolean>
+  /** 一键全部看过，返回消掉的条数 */
+  dismissAllMemoryReview(): Promise<number>
   /**
    * 自动记忆成本设置（批 2）：开关 + 日上限 + 反思模型。
    * ⚠️ `autoMemoryEnabled` 缺省时由档位提供默认值（轻量档关、其余档开）；显式设过不被档位覆盖。

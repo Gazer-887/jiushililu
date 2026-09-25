@@ -149,6 +149,8 @@ const api: ApiBridge = {
   prescreenMemory: () => ipcRenderer.invoke(IPC.memoryPrescreen),
   getMemoryStats: () => ipcRenderer.invoke(IPC.memoryStats),
   flagMemory: (name: string) => ipcRenderer.invoke(IPC.memoryFlag, name),
+  dismissMemoryReview: (name: string) => ipcRenderer.invoke(IPC.memoryDismissReview, name),
+  dismissAllMemoryReview: () => ipcRenderer.invoke(IPC.memoryDismissAllReview),
   getMemoryAuto: () => ipcRenderer.invoke(IPC.memoryGetAuto),
   setMemoryAuto: (patch) => ipcRenderer.invoke(IPC.memorySetAuto, patch),
   // ── Playbook（plan19 批 3，会做线）──

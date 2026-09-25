@@ -6427,6 +6427,39 @@ body[data-resizing] {
   line-height: var(--lh-tight);
 }
 
+/* plan56 片②：「需你过目」要能就地处置 —— 标题行挂一键，每条右侧三个动作。
+   警示色不变：它是"要人处理"，不是"坏档"。 */
+.mem-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mem-warn-note {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+}
+
+.mem-review-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mem-review-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.mem-review-actions {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
 /* 疑似重复区（plan33 问题四）：结构与候选区同族，警示色用 warn 系 —— 是"要人处理"不是"坏档" */
 .mem-dups {
   display: flex;

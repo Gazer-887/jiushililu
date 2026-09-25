@@ -683,11 +683,18 @@ let memoryWarnings = ['/mem/notes/broken-demo.md：这不是 frontmatter']
 // 契约副本（真源 `shared/memory.ts::MemoryReviewItem`）：条目**在 `entries` 里照常生效**，只是守卫要人看一眼
 let memoryReview = [
   {
-    file: '/mem/notes/review-demo.md',
-    name: 'review-demo',
-    reason: '这条含权限或敏感词，已标记以便巡检'
+    // ⚠️ 必须指向**读这段时仍在生效列表里**的那条：`needsReview` 的语义就是"条目已生效、只是要人过目"，
+    //    配一条不存在的 demo 条目，就测不出"消掉提示 ≠ 删掉记忆"这条最要紧的正反对照。
+    //    `uses-pnpm` 在本段之后才被 K35 的删除判据摘走，所以此处正读得到；后面的判据若挪到它之前，
+    //    这条夹具要一起挪。
+    file: '/mem/notes/uses-pnpm.md',
+    name: 'uses-pnpm',
+    reason: '这条含权限或敏感词，已标记以便巡检',
+    // 契约副本（真源 `MemoryReviewItem.updatedAt` + `reviewSeenKey`）：「看过·留下」按 (name, updatedAt) 记
+    updatedAt: '2026-09-15T00:00:00.000Z'
   }
 ]
+const memoryDismissCalls = []
 // plan53 片 1：归档区夹具（自动遗忘不再硬删）。文件名口径照 `shared/memory.ts::archivedFileName` ——
 // 时刻里的 `:` 与 `.` 换成 `-`，界面上显示的日期由 `archivedAt`（合法 ISO）取前 10 位
 let memoryArchived = [
@@ -1134,6 +1141,22 @@ const STUBS = {
       usage: { promptTokens: 1200, completionTokens: 180, totalTokens: 1380 }
     }
     return lastPrescreenReport
+  },
+  // plan56 片②：桩**真把那条从 needsReview 里摘掉并广播** —— 只回 true 而界面什么都不变，
+  // 「看过·留下」这个按钮在门禁里就永远只是被点了一下（plan55 交叉验证同族教训）。
+  'memory:dismiss-review': (name) => {
+    memoryDismissCalls.push(name)
+    const before = memoryReview.length
+    memoryReview = memoryReview.filter((r) => r.name !== name)
+    if (memoryReview.length !== before) memoryBroadcast()
+    return memoryReview.length !== before
+  },
+  'memory:dismiss-all-review': () => {
+    const n = memoryReview.length
+    memoryDismissCalls.push('__all__:' + n)
+    memoryReview = []
+    if (n > 0) memoryBroadcast()
+    return n
   },
   'memory:stats': () => ({ survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }),
   // 批 4：用户标记「这条不对」—— 只落事件 + 统计跟着变（契约副本）
@@ -9240,6 +9263,14 @@ app.whenReady().then(async () => {
           // K36：两格必须**各自可数** —— 只采总数就分不出"守卫命中的活条目"被算进了哪一格
           warnTitles: Array.from(p.querySelectorAll('.mem-warn .mem-warn-title')).map((n) => n.textContent.trim()),
           reviewRows: Array.from(p.querySelectorAll('.mem-review .mem-warn-row')).map((n) => n.textContent.trim()),
+          // plan56 片②：这一格**有没有出口**要单独可采 —— 只采文字行就退回 K36 那个半成品形状
+          reviewButtons: Array.from(p.querySelectorAll('.mem-review-actions button')).map((b) => b.textContent.trim()),
+          reviewDismissAll: Array.from(p.querySelectorAll('.mem-review button')).some((b) => b.textContent.trim() === '全部看过'),
+          // 提示行指向的条目**不在生效列表**时（读侧被跳过/已被删），编辑与删除要禁用：
+          // 一个点了没反应的按钮比没有按钮更坏。禁用数与"看过·留下"是否始终可点，分开采。
+          reviewDisabled: Array.from(p.querySelectorAll('.mem-review-actions button')).filter((b) => b.disabled).length,
+          reviewSeenAllEnabled: Array.from(p.querySelectorAll('.mem-review-actions button'))
+            .filter((b) => b.textContent.trim() === '看过·留下').every((b) => !b.disabled),
           unreadableRows: Array.from(
             p.querySelectorAll('.mem-warn:not(.mem-review) .mem-warn-row')
           ).map((n) => n.textContent.trim()),
@@ -9354,12 +9385,96 @@ app.whenReady().then(async () => {
   checkTrue(
     'K36：「需你过目」与「未能加载」是两格，守卫命中的活条目不许被算进"未能加载"',
     memList.reviewRows.length === 1 &&
-      memList.reviewRows[0].includes('review-demo') &&
+      memList.reviewRows[0].includes('uses-pnpm') &&
       memList.unreadableRows.length === 1 &&
       memList.unreadableRows[0].includes('broken-demo') &&
       memList.warnTitles.some((t) => t.includes('1 条需你过目')) &&
       memList.warnTitles.some((t) => t.includes('1 条未能加载')),
     { titles: memList.warnTitles, review: memList.reviewRows, unreadable: memList.unreadableRows }
+  )
+  // ── plan56 片②：分家只解决"看得清"，这一格还得**有出口**。
+  // K42 根因②：K36 把红块做准了却没给动作 ⇒ 更准也更刺眼。三条判据按用户 09-26 裁定钉住。
+  checkTrue(
+    'plan56 片②：每条提示就地给「看过·留下 / 编辑 / 删除」，标题行给「全部看过」',
+    memList.reviewButtons.length === 3 &&
+      memList.reviewButtons[0] === '看过·留下' &&
+      memList.reviewButtons[1] === '编辑' &&
+      memList.reviewButtons[2] === '删除' &&
+      memList.reviewDismissAll === true,
+    { buttons: memList.reviewButtons, dismissAll: memList.reviewDismissAll }
+  )
+  // ★ 本片最要紧的正反对：「看过·留下」是**提示的出口**，不是记忆的删除键。
+  //   所以必须同时读到"提示没了"与"条目还在"——只判前者，删掉条目也能绿。
+  const clickedSeen = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.mem-review-actions button');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const afterSeen = await readMemoryPanel()
+  console.log('MEMORY_AFTER_SEEN=' + JSON.stringify({ calls: memoryDismissCalls, review: afterSeen.reviewRows }))
+  checkTrue(
+    'plan56 片②：「看过·留下」只消提示、不动记忆 —— 该格整块消失，条目仍留在生效列表',
+    clickedSeen === true &&
+      memoryDismissCalls.length === 1 &&
+      memoryDismissCalls[0] === 'uses-pnpm' &&
+      afterSeen.reviewRows.length === 0 &&
+      afterSeen.names.includes('uses-pnpm'),
+    { calls: memoryDismissCalls, review: afterSeen.reviewRows, names: afterSeen.names }
+  )
+  // 一键看过：多条时一次点掉，且**先弹确认**、确认文案要说清"不改动内容"（否则用户会以为批量=批量删）。
+  // 顺手把"条目不在生效列表"的孤儿提示也喂进来 —— 它的编辑/删除必须禁用。
+  memoryReview = [
+    {
+      file: '/mem/notes/packem-hint.md',
+      name: 'packem-hint',
+      reason: '这条含权限或敏感词，已标记以便巡检',
+      updatedAt: '2026-09-15T00:00:00.000Z'
+    },
+    {
+      file: '/mem/notes/ghost-demo.md',
+      name: 'ghost-demo',
+      reason: '这条已不在生效列表里（读侧被跳过）',
+      updatedAt: '2026-09-15T00:00:00.000Z'
+    }
+  ]
+  memoryBroadcast()
+  await new Promise((r) => setTimeout(r, 800))
+  const reReview = await readMemoryPanel()
+  checkTrue(
+    'plan56 片②：提示行指向的条目找不到时，编辑/删除禁用而「看过·留下」仍可点',
+    reReview.reviewRows.length === 2 &&
+      reReview.reviewDisabled === 2 &&
+      reReview.reviewSeenAllEnabled === true,
+    { rows: reReview.reviewRows, disabled: reReview.reviewDisabled, seenAllEnabled: reReview.reviewSeenAllEnabled }
+  )
+  const clickedSeenAll = await win.webContents.executeJavaScript(`
+    (() => {
+      let asked = null;
+      window.confirm = (m) => { asked = m; return true; };
+      const b = Array.from(document.querySelectorAll('.mem-review button'))
+        .find((x) => x.textContent.trim() === '全部看过');
+      if (!b) return { found: false, asked };
+      b.click();
+      return { found: true, asked };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 800))
+  const afterSeenAll = await readMemoryPanel()
+  console.log('MEMORY_DISMISS_ALL=' + JSON.stringify({ clicked: clickedSeenAll, calls: memoryDismissCalls }))
+  checkTrue(
+    'plan56 片②：「全部看过」先弹确认（文案说清条目仍生效），确认后整格清空且生效条目一条没少',
+    clickedSeenAll.found === true &&
+      typeof clickedSeenAll.asked === 'string' &&
+      clickedSeenAll.asked.includes('2 条') &&
+      clickedSeenAll.asked.includes('仍照常') &&
+      memoryDismissCalls[memoryDismissCalls.length - 1] === '__all__:2' &&
+      afterSeenAll.reviewRows.length === 0 &&
+      afterSeenAll.names.includes('packem-hint'),
+    { clicked: clickedSeenAll, calls: memoryDismissCalls, names: afterSeenAll.names }
   )
   // 判据 15 的后半：护栏 2 走面板，**不许**在消息主干里插非消息行
   checkTrue(
