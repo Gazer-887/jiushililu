@@ -151,6 +151,9 @@ const api: ApiBridge = {
   flagMemory: (name: string) => ipcRenderer.invoke(IPC.memoryFlag, name),
   dismissMemoryReview: (name: string) => ipcRenderer.invoke(IPC.memoryDismissReview, name),
   dismissAllMemoryReview: () => ipcRenderer.invoke(IPC.memoryDismissAllReview),
+  rejectUnclusteredMemory: (files) => ipcRenderer.invoke(IPC.memoryRejectUnclustered, files),
+  restoreRejectedMemory: (file) => ipcRenderer.invoke(IPC.memoryRestoreRejected, file),
+  clearRejectedMemory: () => ipcRenderer.invoke(IPC.memoryClearRejected),
   getMemoryAuto: () => ipcRenderer.invoke(IPC.memoryGetAuto),
   setMemoryAuto: (patch) => ipcRenderer.invoke(IPC.memorySetAuto, patch),
   // ── Playbook（plan19 批 3，会做线）──

@@ -24,7 +24,9 @@ import {
   type MemorySaveResult,
   type MemoryApproveResult,
   type MemoryStats,
-  type MemoryRestoreResult
+  type MemoryRejectBatchResult,
+  type MemoryRestoreResult,
+  type RejectedCandidateView
 } from '@shared/memory'
 import { injectionKey, serializeEvent, type MemoryEvent, type MemoryEventPayload } from './events'
 import { findDuplicatePairs, findSimilarEntry } from './similarity'
@@ -50,6 +52,22 @@ export interface MemoryBackend {
   listArchived(): string[]
   /** 从归档移回 notes；目标已存在则返回 null（**绝不覆盖**，理由由调用方给） */
   restoreFrom(archivedFile: string): string | null
+  /**
+   * plan56 片③：把一条**候选**移进回收站（可逆）。非候选路径 / 文件不在 ⇒ null。
+   * ⚠️ 逐字节搬运：这条内容将来会原样回到待批队列，在这里重写一次就等于改了用户拒掉的东西。
+   */
+  reject(file: string): string | null
+  /** 回收站文件列表（与 `listCandidates()` 互斥 —— 拒掉的既不进注入也不占候选上限） */
+  listRejected(): string[]
+  /**
+   * 读回收站里的一件。⚠️ 只能读那一处 —— 通用的 `read()` **不认**这条路径，
+   * 否则 `memory:get` 之类拿任意路径的口子就能伸进回收站。
+   */
+  readRejected(file: string): string | null
+  /** 从回收站移回候选区；同名候选已存在则返回 null（**绝不覆盖**） */
+  restoreRejectedFrom(rejectedFile: string): string | null
+  /** 永久删掉回收站里的一件（清空动作的唯一通路）。越界 ⇒ false */
+  removeRejected(rejectedFile: string): boolean
 }
 
 /** 解析出来的一条（`file` 由调用方补上） */
@@ -300,7 +318,9 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
     duplicates: [],
     needsReview: [],
     candidates: [],
-    archived: []
+    archived: [],
+    rejected: [],
+    unclustered: []
   }
 }
 
@@ -384,6 +404,16 @@ export interface MemoryRepo {
   approveCandidate(file: string): MemoryApproveResult
   /** 拒绝候选：删候选文件（幂等；不落事件 —— 拒绝是用户行为，不进事件流） */
   rejectCandidate(file: string): boolean
+  /**
+   * 一键拒绝**未成簇**候选（plan56 片③）：移进回收站，不物理删。
+   * ⚠️ 名单虽由渲染进程回传，**允许范围以主进程重算的未成簇集为准** —— 成簇的与合并稿一律不动。
+   * 与单条拒绝同口径：不落事件（拒绝不进统计账），留痕由回收站目录本身承担。
+   */
+  rejectUnclustered(files: string[]): MemoryRejectBatchResult
+  /** 从回收站放回待批队列。同名候选已在队列里 ⇒ 拒，**绝不覆盖** */
+  restoreRejected(file: string): MemoryRestoreResult
+  /** 清空回收站（不可恢复），返回清掉的件数 */
+  clearRejected(): number
   /** 从事件流算统计（存活率 / 使用率）。⚠️ 不读盘 —— 否则"删了又写回"会让数字假性归零 */
   computeStats(events: MemoryEvent[]): MemoryStats
 }
@@ -512,6 +542,30 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       out.push({ ...result.parsed, file, archivedAt: parsedName.archivedAt })
     }
     return out.sort((a, b) => (a.archivedAt < b.archivedAt ? 1 : -1)) // 最近的排前面
+  }
+
+  /**
+   * 回收站（plan56 片③）：被一键拒掉的候选。
+   * ⚠️ 读走 `readRejected` 而不是通用 `read` —— 回收站刻意不在 `insideMemory` 的四区口径里，
+   *    于是 `memory:get` / `memory:delete` 这类拿任意路径的口子也伸不进来（只能走下面三个专用口）。
+   */
+  function loadRejected(): RejectedCandidateView[] {
+    const out: RejectedCandidateView[] = []
+    for (const file of backend.listRejected()) {
+      const parsedName = parseArchivedFileName(basename(file))
+      const text = backend.readRejected(file)
+      if (!parsedName || text === null) {
+        warn('回收站有一个文件认不出命名，已跳过', { file: basename(file) })
+        continue
+      }
+      const result = parseMemoryFile(text)
+      if (!result.ok) {
+        warn('回收站条目解析失败，已跳过', { file: basename(file), reason: result.reason })
+        continue
+      }
+      out.push({ ...result.parsed, file, rejectedAt: parsedName.archivedAt })
+    }
+    return out.sort((a, b) => (a.rejectedAt < b.rejectedAt ? 1 : -1))
   }
 
   /** 候选条目（批 2）：从 candidates/ 读，**不进注入索引段**（buildIndex 不见它们） */
@@ -772,7 +826,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           ? needsReview.filter((r) => !reviewSeen.has(reviewSeenKey(r.name, r.updatedAt)))
           : needsReview,
         candidates,
-        archived: loadArchived()
+        archived: loadArchived(),
+        rejected: loadRejected(),
+        unclustered: pickUnclustered(candidates)
       }
     },
 
@@ -1123,6 +1179,46 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       return backend.remove(file)
     },
 
+    rejectUnclustered(files) {
+      const allowed = new Set(pickUnclustered(loadCandidates()))
+      const rejected: string[] = []
+      const skipped: { file: string; reason: string }[] = []
+      for (const file of files) {
+        if (!allowed.has(file)) {
+          skipped.push({ file, reason: '不在未成簇名单里（成簇候选与合并稿不经这一刀）' })
+          continue
+        }
+        if (backend.reject(file) === null) {
+          skipped.push({ file, reason: '移进回收站失败：该件不在候选区，或已被别处处理' })
+          continue
+        }
+        rejected.push(file)
+      }
+      return { rejected, skipped }
+    },
+
+    restoreRejected(file) {
+      const parsedName = parseArchivedFileName(basename(file))
+      if (!parsedName) return { ok: false, reason: '回收站文件名不合规，取不回提案名' }
+      if (backend.read(backend.candidatePathFor(parsedName.slug)) !== null) {
+        return {
+          ok: false,
+          reason: `待批队列里已有同名提案「${parsedName.slug}」，请先处理那一条（不覆盖）`
+        }
+      }
+      if (backend.restoreRejectedFrom(file) === null) {
+        return { ok: false, reason: '恢复失败：该件不在回收站，或已被清掉' }
+      }
+      // 不落事件：拒掉时本来就没进账，放回队列也不需要补一笔
+      return { ok: true }
+    },
+
+    clearRejected() {
+      let n = 0
+      for (const file of backend.listRejected()) if (backend.removeRejected(file)) n++
+      return n
+    },
+
     computeStats: (events) => computeStats(events)
   }
 }
@@ -1131,6 +1227,19 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
  * 从事件流算记忆统计（批 2 §六 · 存活率与使用率）。
  * ⚠️ 纯逻辑、不读盘 —— "删了又写回"会让盘上条数假性归零，事件流才是历史真相。
  */
+/**
+ * 「未成簇」候选（plan56 片③）：本身不是合并稿、也没被任何合并稿并掉来源的那些孤条。
+ * 这份判定**只算一次** —— 界面上「一键拒绝 N 条」的 N、确认框列的名字、主进程真正允许移走的集合
+ * 三处都取自它；各算一份就会「显示 3 条移走 5 条」，而那是本片判据①点名要防的形状。
+ */
+export function pickUnclustered(candidates: MemoryCandidateView[]): string[] {
+  const absorbed = new Set<string>()
+  for (const c of candidates) for (const src of c.mergeSources ?? []) absorbed.add(src)
+  return candidates
+    .filter((c) => (c.mergeSources?.length ?? 0) === 0 && !absorbed.has(c.file))
+    .map((c) => c.file)
+}
+
 export function computeStats(events: MemoryEvent[]): MemoryStats {
   let written = 0
   let deleted = 0

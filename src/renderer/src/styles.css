@@ -6364,7 +6364,9 @@ body[data-resizing] {
 
 /* 归档区（plan53 片 1）：自动遗忘的条目停在这里等恢复。
    是"已经发生过的事"而不是"要办的事"，所以用中性墨色 + 默认折起，不跟候选/重复那两块抢警示色 */
-.mem-archived {
+/* 回收站与归档区同标准：折叠标题带条数、逐条一行、底部一个清空口（plan56 片③） */
+.mem-archived,
+.mem-rejected {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -6379,29 +6381,34 @@ body[data-resizing] {
   align-self: flex-start;
 }
 
-.mem-archived-toggle {
+.mem-archived-toggle,
+.mem-rejected-toggle {
   align-self: flex-start;
 }
 
-.mem-archived-note {
+.mem-archived-note,
+.mem-rejected-note {
   color: var(--muted);
   font-size: var(--fs-xs);
   line-height: var(--lh-tight);
 }
 
-.mem-archived-row {
+.mem-archived-row,
+.mem-rejected-row {
   display: flex;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
 }
 
-.mem-archived-at {
+.mem-archived-at,
+.mem-rejected-at {
   color: var(--muted);
   font-size: var(--fs-xs);
 }
 
-.mem-archived-foot {
+.mem-archived-foot,
+.mem-rejected-foot {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -6425,6 +6432,11 @@ body[data-resizing] {
   font-size: var(--fs-xs);
   word-break: break-all;
   line-height: var(--lh-tight);
+}
+
+.mem-reject-unclustered {
+  align-self: flex-start;
+  margin-top: 2px;
 }
 
 /* plan56 片②：「需你过目」要能就地处置 —— 标题行挂一键，每条右侧三个动作。

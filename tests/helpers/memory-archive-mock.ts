@@ -1,4 +1,4 @@
-// 内存版**归档区**（plan53 片 1）：给各测试文件的假 backend 共用。
+// 内存版**归档区 + 候选回收站**（plan53 片 1 / plan56 片③）：给各测试文件的假 backend 共用。
 // 命名口径唯一真源是 `@shared/memory` 的 `archivedFileName` / `parseArchivedFileName` ——
 // 假后端自己编一套命名，就等于把真实迁移路径测了个寂寞。
 // 归档正文存在**独立 Map**（真实布局是独立目录，`listFiles()` 天然看不到），`read` 由这里统一兜住。
@@ -20,9 +20,17 @@ export interface ArchiveMock {
     archive(file: string): string | null
     listArchived(): string[]
     restoreFrom(archivedFile: string): string | null
+    /** plan56 片③：四个新口子与真后端同口径 —— `read` / `remove` 都够不到回收站那一处 */
+    reject(file: string): string | null
+    listRejected(): string[]
+    readRejected(rejectedFile: string): string | null
+    restoreRejectedFrom(rejectedFile: string): string | null
+    removeRejected(rejectedFile: string): boolean
   };
   /** 归档区本体，供断言直接看正文 */
   archived: Map<string, string>
+  /** 回收站本体（plan56 片③） */
+  rejected: Map<string, string>
 }
 
 export function createArchiveMock(opts: {
@@ -32,11 +40,19 @@ export function createArchiveMock(opts: {
   /** 假后端自己的其它目录（如 candidates/）—— read 与 remove 在 notes、归档区都够不着时问它 */
   fallback?: (file: string) => string | null
   removeFallback?: (file: string) => boolean
+  /** 候选目录（默认 `<notesRoot>/candidates`，与各文件自带假 backend 的口径一致） */
+  candRoot?: string
+  /** 回收站目录（默认与归档区同级的 `rejected`） */
+  rejectedRoot?: string
 }): ArchiveMock {
   const archived = new Map<string, string>()
+  const rejected = new Map<string, string>()
   const { files, notesRoot, archRoot } = opts
+  const candRoot = opts.candRoot ?? `${notesRoot}/candidates`
+  const rejectedRoot = opts.rejectedRoot ?? `${archRoot.replace(/archived$/, 'rejected')}`
   return {
     archived,
+    rejected,
     backend: {
       read: (file) => files.get(file) ?? archived.get(file) ?? opts.fallback?.(file) ?? null,
       remove: (file) => {
@@ -55,6 +71,32 @@ export function createArchiveMock(opts: {
         return to
       },
       listArchived: () => [...archived.keys()].sort(),
+      rejected,
+      reject: (file) => {
+        if (!file.startsWith(`${candRoot}/`) || !file.endsWith('.md')) return null
+        const text = files.get(file)
+        if (text === undefined) return null
+        const slug = file.slice(candRoot.length + 1, -3)
+        const to = `${rejectedRoot}/${archivedFileName(slug, new Date(Date.now() + tick++))}`
+        files.delete(file)
+        rejected.set(to, text)
+        return to
+      },
+      listRejected: () => [...rejected.keys()].sort(),
+      // ⚠️ 只有这一个读口 —— `read` 故意不覆盖回收站，与真后端"回收站不在 insideMemory"同形
+      readRejected: (rejectedFile) => rejected.get(rejectedFile) ?? null,
+      restoreRejectedFrom: (rejectedFile) => {
+        const parsed = parseArchivedFileName(rejectedFile.split('/').pop() ?? '')
+        if (!parsed) return null
+        const text = rejected.get(rejectedFile)
+        if (text === undefined) return null
+        const to = `${candRoot}/${parsed.slug}.md`
+        if (files.has(to)) return null // 同名已在待批队列 ⇒ 绝不覆盖
+        rejected.delete(rejectedFile)
+        files.set(to, text)
+        return to
+      },
+      removeRejected: (rejectedFile) => rejected.delete(rejectedFile),
       restoreFrom: (archivedFile) => {
         const parsed = parseArchivedFileName(archivedFile.split('/').pop() ?? '')
         if (!parsed) return null

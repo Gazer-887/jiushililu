@@ -182,7 +182,7 @@ import { composePlaybookBlock, estimatePlaybookTokens } from './memory/playbook-
 import { composeSkillBlock } from '@shared/skills'
 import { composeRulesBlock } from './rules/rules'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
-import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings, MemoryRestoreResult, PrescreenReport } from '@shared/memory'
+import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings, MemoryRejectBatchResult, MemoryRestoreResult, PrescreenReport } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
 import { statSync } from 'node:fs'
 import { getWorkspaceInfo, resetWorkspaceRoot, setWorkspaceRoot } from './store/workspace'
@@ -1499,6 +1499,31 @@ export function registerIpcHandlers(deps: {
    * 用户可能在判断前还要看看，直接改动或删除等于替他做决定。
    * 它是 `falsePositiveRate` 的唯一数据来源（在此之前该指标恒为 0，属"算了但算不出东西"）。
    */
+  // plan56 片③：一键拒绝**未成簇**候选。做成"移进回收站"而不是删掉 ——
+  // 用户点批量拒绝时看的是名字，那份提案往往是这条经验**唯一的一份**（原文还在候选里）。
+  // ⚠️ 名单虽由渲染进程回传，允许范围以主进程重算为准：成簇的与合并稿一律不动（判据④）。
+  ipcMain.handle(IPC.memoryRejectUnclustered, (_e, raw: unknown): MemoryRejectBatchResult => {
+    const files = z.array(z.string().min(1).max(1000)).max(500).parse(raw)
+    const res = deps.memory.rejectUnclustered(files)
+    log.info('候选已被用户一键拒掉（移进回收站）', { 移走: res.rejected.length, 跳过: res.skipped.length })
+    if (res.rejected.length > 0) sendToAll(IPC.memoryChanged)
+    return res
+  })
+  ipcMain.handle(IPC.memoryRestoreRejected, (_e, raw: unknown): MemoryRestoreResult => {
+    const file = z.string().min(1).max(1000).parse(raw)
+    const res = deps.memory.restoreRejected(file)
+    log.info('拒掉的候选被放回待批队列', { ok: res.ok, ...(res.ok ? {} : { 理由: res.reason }) })
+    if (res.ok) sendToAll(IPC.memoryChanged)
+    return res
+  })
+  // 清空 = 这一条经验真的没有了。事件流不落笔（与单条拒绝同口径：拒掉的东西不进统计账），
+  // 所以确认框必须说清"不可恢复"，这是用户唯一一次反悔的机会。
+  ipcMain.handle(IPC.memoryClearRejected, (): number => {
+    const n = deps.memory.clearRejected()
+    log.info('候选回收站已被用户清空', { 条数: n })
+    if (n > 0) sendToAll(IPC.memoryChanged)
+    return n
+  })
   ipcMain.handle(IPC.memoryFlag, (_e, raw: unknown): boolean => {
     const name = z.string().min(1).max(200).parse(raw)
     const ok = deps.memory.record({

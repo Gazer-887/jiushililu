@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import FieldNote from './FieldNote'
-import { MEMORY_CLASSES, MEMORY_LIMITS, type ArchivedEntry, type MemoryClass, type MemoryEntry } from '@shared/memory'
+import {
+  MEMORY_CLASSES,
+  MEMORY_LIMITS,
+  type ArchivedEntry,
+  type MemoryClass,
+  type MemoryEntry,
+  type RejectedCandidateView
+} from '@shared/memory'
 import { useAppStore } from '../store'
 
 // 记忆页签（plan19 批 1）：查看 / 编辑 / 删除 + 「本次新增」巡检区。
@@ -43,6 +50,8 @@ export default function MemoryManager(): JSX.Element {
    */
   const [entriesOpen, setEntriesOpen] = useState(false)
   /** 预筛（plan55 片④）：手动触发，结果一句话报在上面 —— 它要花 token，不该自动跑 */
+  /** 回收站默认折起（与归档区同标准）：它是"我放弃过的"，不是"要办的" */
+  const [rejectedOpen, setRejectedOpen] = useState(false)
   const [prescreening, setPrescreening] = useState(false)
   const [prescreenNote, setPrescreenNote] = useState<string | null>(null)
   /** 展开看来源的合并稿（会话内状态，与「忽略」同档） */
@@ -56,6 +65,10 @@ export default function MemoryManager(): JSX.Element {
   const entries = view?.entries ?? []
   const candidates = view?.candidates ?? []
   const archived = view?.archived ?? []
+  const rejected = view?.rejected ?? []
+  // 「未成簇」由主进程判一次（`pickUnclustered`）—— 界面上的 N、确认框名单、允许移走的集合必须同源，
+  // 否则就是"显示 3 条移走 5 条"。
+  const unclustered = candidates.filter((c) => (view?.unclustered ?? []).includes(c.file))
   const inspected = entries.filter((e) => e.origin === 'model')
   // 疑似重复（plan33 问题四）：结构化数据来自主进程 loadAll；忽略掉的本地过滤
   const dupKey = (p: { files: [string, string] }): string => `${p.files[0]}|${p.files[1]}`
@@ -73,15 +86,14 @@ export default function MemoryManager(): JSX.Element {
   //    所以这里只是**收进展开区**，不是把它们藏掉；单独批准某条来源后，合并稿会跳过已不在的那个文件。
   const byFilePath = new Map(candidates.map((c) => [c.file, c]))
   const clusters = candidates
-    .filter((c) => (c.mergeSources?.length ?? 0) > 1)
+    .filter((c) => (c.mergeSources?.length ?? 0) > 0)
     .map((draft) => ({
       draft,
       sources: (draft.mergeSources ?? []).map((f) => byFilePath.get(f)).filter((s) => s !== undefined)
     }))
   const claimed = new Set(clusters.flatMap((g) => g.sources.map((s) => s.file)))
-  // 单条 = 既不是簇稿、也没被任何簇稿收走。⚠️ 不许按"有没有 mergeSources"筛：
-  // 一条只有 1 个来源的稿子会同时落不进 `clusters`（要 ≥2）和这里，而它仍在队列里 ——
-  // 界面上没有那一行 = 没有批准/弃用按钮，用户怎么点都清不掉它。
+  // 单条 = 既不是簇稿、也没被任何簇稿收走 —— 与主进程 `pickUnclustered` 同一条规则，
+  // 所以 `singles.length === view.unclustered.length`（门禁有这条对照判据）。
   const clusterDraftFiles = new Set(clusters.map((g) => g.draft.file))
   const singles = candidates.filter((c) => !claimed.has(c.file) && !clusterDraftFiles.has(c.file))
 
@@ -220,6 +232,60 @@ export default function MemoryManager(): JSX.Element {
   }
 
   // K28：归档区不能只进不出。清空是**不可撤销**的，所以条数、目录、后果都要在确认框里说清
+  /**
+   * plan56 片③：一键拒掉未成簇的孤条。确认框**逐条列名字** ——
+   * 只报个数字就批量放弃，等于让用户对自己没见过的东西签字。
+   */
+  const rejectUnclustered = async (): Promise<void> => {
+    const n = unclustered.length
+    if (n === 0) return
+    const LIMIT = 12
+    const names = unclustered.slice(0, LIMIT).map((c) => `· ${c.name}`)
+    if (n > LIMIT) names.push(`…另有 ${n - LIMIT} 条`)
+    if (
+      !window.confirm(
+        `拒掉这 ${n} 条未成簇提案？\n\n${names.join('\n')}\n\n` +
+          '它们移进回收站，可在「最近拒掉」里逐条放回。成簇的与合并稿不动。'
+      )
+    )
+      return
+    const res = await window.api.rejectUnclusteredMemory(unclustered.map((c) => c.file))
+    setNotice(
+      res.skipped.length > 0
+        ? {
+            ok: false,
+            text: `已移进回收站 ${res.rejected.length} 条，另有 ${res.skipped.length} 条未动（名单与队列已不一致，请刷新后重试）`
+          }
+        : { ok: true, text: `已移进回收站 ${res.rejected.length} 条（成簇与合并稿未动）` }
+    )
+    void refresh()
+  }
+
+  const restoreRejectedItem = async (item: RejectedCandidateView): Promise<void> => {
+    const res = await window.api.restoreRejectedMemory(item.file)
+    setNotice(
+      res.ok ? { ok: true, text: `已把「${item.name}」放回待批队列` } : { ok: false, text: res.reason }
+    )
+    void refresh()
+  }
+
+  // 清空回收站 = 那些提案真的没有了。它与"一键拒绝"不是一回事，所以再确认一次、且说清不可恢复。
+  const clearRejectedAll = async (): Promise<void> => {
+    const n = rejected.length
+    if (n === 0) return
+    if (
+      !window.confirm(`清空 ${n} 条拒掉的提案？\n\n清空后不可恢复：原文将从 memory/rejected/ 删除。`)
+    )
+      return
+    const removed = await window.api.clearRejectedMemory()
+    setNotice(
+      removed > 0
+        ? { ok: true, text: `已清空 ${removed} 条拒掉的提案（不可恢复）` }
+        : { ok: false, text: '回收站已为空，未做改动' }
+    )
+    void refresh()
+  }
+
   const clearAll = async (): Promise<void> => {
     const n = archived.length
     if (!window.confirm(`清空 ${n} 条归档记忆？
@@ -285,6 +351,17 @@ export default function MemoryManager(): JSX.Element {
           <div className="mem-candidates-note">
             反思提炼或模型提案的候选。批准后生效（撞名时覆盖那条旧条目）；不批准不会注入。
           </div>
+          {/* plan56 片③：批量出口只做了一半时，孤条还是得逐条点 —— 这一行收掉剩下那一半。
+              N 取自主进程同一份判定，所以"显示几条"与"实际移走几条"必然是同一个数。 */}
+          {unclustered.length > 0 ? (
+            <button
+              type="button"
+              className="mem-reject-unclustered"
+              onClick={() => void rejectUnclustered()}
+            >
+              一键拒绝 {unclustered.length} 条未成簇项
+            </button>
+          ) : null}
           {prescreenNote ? (
             <div className="mem-prescreen-note" data-probe="prescreen">
               {prescreenNote}
@@ -372,6 +449,42 @@ export default function MemoryManager(): JSX.Element {
                   清空归档
                 </button>
                 <span className="mem-archived-note">清空后不可恢复；只影响归档区，生效中的记忆不受影响。</span>
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {rejected.length > 0 ? (
+        /* plan56 片③：一键拒绝之所以敢给批量，前提是它**反悔得了**。
+           这一格与归档区同标准：默认折起、标题带条数、逐条可放回。 */
+        <div className="mem-rejected">
+          <button type="button" className="mem-rejected-toggle" onClick={() => setRejectedOpen((v) => !v)}>
+            最近拒掉 {rejected.length} 条 {rejectedOpen ? '▴' : '▾'}
+          </button>
+          {rejectedOpen ? (
+            <>
+              <div className="mem-rejected-note">
+                一键拒绝不删原文：这里可逐条放回待批队列。放回时若队列里已有同名提案，需先处理那一条。
+              </div>
+              {rejected.map((r) => (
+                <div key={r.file} className="mem-rejected-row">
+                  <span className="mem-badge">{CLASS_LABEL[r.class]}</span>
+                  <span className="mem-name">{r.name}</span>
+                  <span className="mem-desc">{r.description}</span>
+                  <span className="mem-rejected-at">{r.rejectedAt.slice(0, 10)}</span>
+                  <button type="button" onClick={() => void restoreRejectedItem(r)}>
+                    放回待批
+                  </button>
+                </div>
+              ))}
+              <div className="mem-rejected-foot">
+                <button type="button" onClick={() => void clearRejectedAll()}>
+                  清空回收站
+                </button>
+                <span className="mem-rejected-note">
+                  清空后不可恢复；只影响回收站，待批队列与生效中的记忆不受影响。
+                </span>
               </div>
             </>
           ) : null}

@@ -123,6 +123,18 @@ export interface MemoryIndex {
    * ⚠️ 与 `candidates` 一样**不进注入段** —— 物理隔离在 `memory/archived/`，`listFiles()` 只列 `notes/`。
    */
   archived: ArchivedEntry[]
+  /**
+   * 拒掉的候选（plan56 片③）：一键拒绝不等物理删 —— 原样搬进 `memory/rejected/`，可逐条恢复回待批队列。
+   * ⚠️ 既不进注入段，也**不计入 `maxCandidates` 上限**（它是回收站，不是队列：计入会让"清掉的"继续占位，
+   * 队列永远已满、整理入口死锁，与 R-A3 同一个坑）。
+   */
+  rejected: RejectedCandidateView[]
+  /**
+   * 「未成簇」候选的 file（plan56 片③）：本身不是合并稿、也没被任何合并稿并掉来源的那些孤条。
+   * 界面上「一键拒绝 N 条」的 N、确认框名单、主进程真正允许移走的集合**三处必须同源** ——
+   * 判定只在这里算一次（各算一份就会出"显示 3 条移走 5 条"）。
+   */
+  unclustered: string[]
 }
 
 /** 归档条目：正文原样保留，这里只给列表要显示的几项 */
@@ -133,6 +145,15 @@ export interface ArchivedEntry extends MemoryEntry {
 
 /** 恢复归档条目的结果。失败必须带理由 —— 界面上要能解释"为什么点不动" */
 export type MemoryRestoreResult = { ok: true } | { ok: false; reason: string }
+
+/**
+ * 一键拒绝未成簇的结果（plan56 片③）。`file` 只到主进程与日志为止，**不进事件流**（事件里不许出现路径）。
+ * ⚠️ `skipped` 必须带出来：界面按它解释"为什么我勾了 5 条只走了 3 条"，吞掉就成了静默丢。
+ */
+export interface MemoryRejectBatchResult {
+  rejected: string[]
+  skipped: { file: string; reason: string }[]
+}
 
 /** 保存入参。`file` 缺省 = 新建；带 `file` = 编辑既有条目 */
 export interface MemorySaveInput {
@@ -207,6 +228,14 @@ export interface PrescreenReport {
 export interface MemoryCandidateView extends MemoryEntry {
   conflictWith?: string
   mergeSources?: string[]
+}
+
+/**
+ * 回收站里的一条被拒候选（plan56 片③）：frontmatter 与正文**原样保留**，这里只给列表要显示的几项。
+ * `rejectedAt` 沿用归档区那套时间戳文件名的编解码（一份编解码，不 fork 第二份）。
+ */
+export interface RejectedCandidateView extends MemoryEntry {
+  rejectedAt: string
 }
 
 /**

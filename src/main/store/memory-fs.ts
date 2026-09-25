@@ -65,6 +65,21 @@ export function archivedPathFor(root: string, slug: string, at: Date = new Date(
   return join(archivedDir(root), archivedFileName(slug, at))
 }
 
+/**
+ * 「拒掉的候选」回收站（plan56 片③）：住在 `memory/rejected/`，与 notes / candidates / archived **四处互斥**。
+ * ⚠️ 刻意**不**并入 `insideMemory()` —— 通用的 `read/write/remove` 因此物理上碰不到它：
+ *    一条拒掉的提案若能被 `memory:delete` 顺手删掉，就会给一个从未生效过的东西落一笔 `delete`，
+ *    存活率被凭空压低（与 B2 同族）。进出只能走下面三个专用口。
+ * 文件名沿用归档区那套时间戳编解码（同一份编解码不fork第二份），`archivedAt` 字段在这里读作"拒掉时刻"。
+ */
+export function rejectedDir(root: string): string {
+  return join(memoryDir(root), 'rejected')
+}
+
+export function rejectedPathFor(root: string, slug: string, at: Date = new Date()): string {
+  return join(rejectedDir(root), archivedFileName(slug, at))
+}
+
 export function metaPath(root: string): string {
   return join(memoryDir(root), 'meta.json')
 }
@@ -139,6 +154,7 @@ export function createFsMemoryBackend(
   const notes = notesDir(root)
   const candidates = candidatesDir(root)
   const archived = archivedDir(root)
+  const rejected = rejectedDir(root)
   /** D-106：read() 的内容缓存。新鲜度键 (mtimeMs, size)，见 `read` 内注释；容量=记忆文件数，不设上限 */
   const readCache = new Map<string, { m: number; s: number; text: string }>()
 
@@ -163,6 +179,12 @@ export function createFsMemoryBackend(
 
   function insideArchived(file: string): boolean {
     const rel = relative(resolve(archived), resolve(file))
+    return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
+  }
+
+  /** plan56 片③：回收站自己的边界。⚠️ 刻意**不**并进 `insideMemory()` —— 见 `rejectedDir` 注释 */
+  function insideRejected(file: string): boolean {
+    const rel = relative(resolve(rejected), resolve(file))
     return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
   }
 
@@ -271,6 +293,63 @@ export function createFsMemoryBackend(
       readCache.delete(archivedFile)
       readCache.delete(to)
       return to
+    },
+
+    // ── plan56 片③：拒掉的候选进回收站（可逆）。四处互斥、且不走 `insideMemory`，见 `rejectedDir` 注释 ──
+    reject(file) {
+      // 只收候选：notes 里的是生效条目（那边叫归档），拿"拒绝"去动它是串区
+      if (!insideCandidates(file)) return null
+      if (!fs.existsSync(file)) return null
+      const slug = basename(file, '.md')
+      const to = rejectedPathFor(root, slug)
+      fs.mkdirSync(rejected, { recursive: true })
+      // 读什么写什么。这里"顺手重新序列化"一次，恢复回去的就不是用户拒掉的那一份（判据②）
+      fs.writeFileSync(to, fs.readFileSync(file, 'utf8'), 'utf8')
+      fs.rmSync(file, { force: true })
+      readCache.delete(file)
+      return to
+    },
+
+    listRejected() {
+      if (!fs.existsSync(rejected)) return []
+      try {
+        return fs.readdirSync(rejected).filter((n) => n.endsWith('.md')).map((n) => join(rejected, n))
+      } catch (err) {
+        warn('回收站列不出来，本次按"没有拒掉的候选"处理', {
+          error: err instanceof Error ? err.message : String(err)
+        })
+        return []
+      }
+    },
+
+    readRejected(rejectedFile) {
+      // 只认回收站这一处：`read()` 的 `insideMemory` 不含它，通用口子伸不进来
+      if (!insideRejected(rejectedFile)) return null
+      try {
+        return fs.existsSync(rejectedFile) ? fs.readFileSync(rejectedFile, 'utf8') : null
+      } catch {
+        return null
+      }
+    },
+
+    restoreRejectedFrom(rejectedFile) {
+      const parsed = parseArchivedFileName(basename(rejectedFile))
+      if (!parsed || !insideRejected(rejectedFile)) return null
+      if (!fs.existsSync(rejectedFile)) return null
+      const to = candidatePathFor(root, parsed.slug)
+      if (fs.existsSync(to)) return null // 同名已在待批队列 ⇒ 绝不覆盖
+      fs.mkdirSync(candidates, { recursive: true })
+      fs.writeFileSync(to, fs.readFileSync(rejectedFile, 'utf8'), 'utf8')
+      fs.rmSync(rejectedFile, { force: true })
+      readCache.delete(to)
+      return to
+    },
+
+    removeRejected(rejectedFile) {
+      if (!insideRejected(rejectedFile)) return false
+      if (!fs.existsSync(rejectedFile)) return false
+      fs.rmSync(rejectedFile, { force: true })
+      return true
     },
 
     pathFor(slug) {

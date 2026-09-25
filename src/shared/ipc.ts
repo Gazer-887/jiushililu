@@ -396,6 +396,10 @@ export const IPC = {
   // plan56 片②：「需你过目」那一格的处置出口 —— 只消提示，不改条目、不改生效状态
   memoryDismissReview: 'memory:dismiss-review',
   memoryDismissAllReview: 'memory:dismiss-all-review',
+  // plan56 片③：一键拒绝**未成簇**候选 —— 移进回收站而不是删掉
+  memoryRejectUnclustered: 'memory:reject-unclustered',
+  memoryRestoreRejected: 'memory:restore-rejected',
+  memoryClearRejected: 'memory:clear-rejected',
   // ── 记忆批 2：自动记忆成本设置（开关 + 日上限 + 反思模型）──
   memoryGetAuto: 'memory:get-auto',
   memorySetAuto: 'memory:set-auto',
@@ -845,6 +849,15 @@ export interface ApiBridge {
   dismissMemoryReview(name: string): Promise<boolean>
   /** 一键全部看过，返回消掉的条数 */
   dismissAllMemoryReview(): Promise<number>
+  /**
+   * plan56 片③：一键拒绝未成簇候选（移进回收站，可逐条恢复）。
+   * ⚠️ 传的是界面上那份名单，**允许范围由主进程重算**；不在允许范围内的会进 `skipped` 并带理由。
+   */
+  rejectUnclusteredMemory(files: string[]): Promise<import('./memory').MemoryRejectBatchResult>
+  /** 从回收站放回待批队列 */
+  restoreRejectedMemory(file: string): Promise<import('./memory').MemoryRestoreResult>
+  /** 清空回收站（不可恢复），返回清掉的件数 */
+  clearRejectedMemory(): Promise<number>
   /**
    * 自动记忆成本设置（批 2）：开关 + 日上限 + 反思模型。
    * ⚠️ `autoMemoryEnabled` 缺省时由档位提供默认值（轻量档关、其余档开）；显式设过不被档位覆盖。
