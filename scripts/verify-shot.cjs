@@ -1692,11 +1692,18 @@ const STUBS = {
     // 相对路径仍按工作区根拼（保持本文件其它桩一贯的 Windows 路径形状，不引第二种写法）。
     const abs = isAbsolute(s) ? s : ws + '\\' + s.replace(/\//g, '\\')
     const name = abs.split(/[\\/]/).pop() || 'a.txt'
+    // 二进制闸：真源是 `workspace-fs.readAttachment`（判据 = 前 8KB 有无 NUL + `fs-tree.imageMimeOf`）。
+    // 桩拿不到真文件字节，只能按扩展名镜像同一拒绝行为 ⇒ **改主进程那张表时这里要跟着改**（桩是契约的复制品）。
+    if (/\.(png|jpe?g|gif|webp|bmp|svg|mp4|mov|avi|webm)$/i.test(name)) {
+      throw new Error(`「${name}」看起来是二进制文件（含 NUL 字节），附件只收文本`)
+    }
+    const content = '氧化铈粉 120kg\n碳酸钠 45kg'
     return {
       name,
       path: abs,
-      content: '氧化铈粉 120kg\n碳酸钠 45kg',
+      content,
       truncated: false,
+      bytes: Buffer.byteLength(content, 'utf8'),
       ...(abs.toLowerCase().startsWith(ws.toLowerCase() + '\\') ? {} : { outside: true })
     }
   },
@@ -8525,6 +8532,62 @@ app.whenReady().then(async () => {
     }))()
   `)
   console.log('EDIT_CLOSED=' + JSON.stringify(closed))
+
+  // —— plan57 片②：流式期间的滚动跟随权（K46）——
+  // 原病灶：贴底 effect 盯的是 messages，而流式**每个 chunk 都在改它** ⇒ 每帧 scrollIntoView 到底，
+  // 用户往上滑想读中段会被立刻拽回去。修法是「贴底才跟」+ 一个「回到最新」浮标（判据复用 spy 已有的 scroll 监听）。
+  // ⚠️ 前置断言不可省：内容不可滚时 scrollTop 恒为 0，「上滑后不回弹」会**假绿** —— 本项目栽过无数次的那种绿。
+  const stickBox = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.chat-messages');
+      if (!b) return { ok: false, why: 'no-box' };
+      b.scrollTop = b.scrollHeight;
+      return { ok: true, scrollable: b.scrollHeight - b.clientHeight };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
+  checkTrue(
+    '片② 前置：消息区确实可滚（否则下面两条全是假绿）',
+    stickBox.ok === true && stickBox.scrollable > 200,
+    stickBox
+  )
+
+  const stickProbe = (tag) =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const b = document.querySelector('.chat-messages');
+        if (!b) return null;
+        return { tag: ${JSON.stringify(tag)},
+                 gap: Math.round(b.scrollHeight - b.scrollTop - b.clientHeight),
+                 chip: !!document.querySelector('.chat-jump-latest') };
+      })()
+    `)
+
+  // ① 贴底时该跟：连推三段，视口应仍贴着底部
+  for (const t of ['甲'.repeat(600), '乙'.repeat(600), '丙'.repeat(600)]) {
+    win.webContents.send('chat:chunk', { conversationId: 'c1', payload: t })
+    await new Promise((r) => setTimeout(r, 260))
+  }
+  const atBottom = await stickProbe('at-bottom')
+  checkTrue('片② 贴底时流式照旧跟随（改造不许把正常行为一起砍掉）', (atBottom?.gap ?? 1e9) <= 80, atBottom)
+
+  // ② 用户上滑后该交还滚动权：浮标出现，且再推字也不把视口拽回底部
+  const slid = await win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.chat-messages');
+      if (!b) return null;
+      b.scrollTop = Math.max(0, b.scrollTop - 900);
+      b.dispatchEvent(new Event('scroll'));
+      return { top: b.scrollTop };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '丁'.repeat(900) })
+  await new Promise((r) => setTimeout(r, 500))
+  const afterSlide = await stickProbe('after-slide')
+  checkTrue('片② 上滑后不再抢视口，且给出「回到最新」去处',
+    slid !== null && (afterSlide?.gap ?? 0) > 80 && afterSlide?.chip === true,
+    { slid, afterSlide })
 
   // —— 流式订阅不该跟着视图卸载（会卡死人的 bug）——
   // 现象：流式期间去「设置」页 → 中途吐出来的字全丢；流恰在那一刻跑完时 chat:done 收不到 → streaming 永远停在

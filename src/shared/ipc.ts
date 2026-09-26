@@ -119,6 +119,8 @@ export interface Attachment {
   path: string
   content: string
   truncated: boolean
+  /** 原文件字节数（≠ content 长度 —— content 已被 ATTACH_LIMIT 裁过）。呈现给用户的"多大"以此为准 */
+  bytes: number
   /** 这个文件**不在当前工作区内**（从系统里明确拖/选进来的）：只影响界面标记、不影响能不能读 —— 用户有权知道上下文里混进了"外面的"文件；边界规则见 `workspace-fs.readAttachment`。 */
   outside?: boolean
 }

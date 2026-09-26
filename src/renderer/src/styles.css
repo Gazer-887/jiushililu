@@ -319,6 +319,27 @@ nav {
   position: relative;
 }
 
+/* plan57 片②：用户上滑之后给一个去处，而不是每帧把视口拽回底部。
+   绝对定位挂在 .chat-view（它已是 relative）；下边距要躲开输入控制台，
+   控制台高度随内容浮动 ⇒ 这里取一个够躲开的固定值，不跟着抖。 */
+.chat-jump-latest {
+  position: absolute;
+  right: var(--sp-24);
+  bottom: 88px;
+  z-index: 3;
+  padding: var(--sp-2) var(--sp-6);
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.chat-jump-latest:hover {
+  border-color: var(--text);
+}
+
 /* ── 会话刻度条（plan41 S1/S2，改版自 plan7 批 D 的大纲浮层）────────
    右缘**常驻**竖条：等宽刻度（bar code 式），一根 = 一轮提问，点击定位；
    滚动联动高亮当前轮；激活态横向变长（8→28px）+ 向左浮出预览卡。
@@ -3228,6 +3249,58 @@ label.radio {
 .attach-chip > svg {
   flex-shrink: 0;
   color: var(--muted);
+}
+
+/* plan57 片①：用户气泡里的附件折叠。与输入框 .attach-chip 同族，但只读、可展开看内容。
+   配色只用墨色黑白灰 —— 展开态靠字色与描边区分，不引新色相（水墨主题铁律）。 */
+.msg-attach-question {
+  margin-bottom: var(--sp-2);
+}
+
+.msg-attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.msg-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 260px;
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.msg-attach-chip[aria-expanded='true'] {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.msg-attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-attach-body {
+  margin: var(--sp-2) 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--sp-4);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
 .attach-trunc {

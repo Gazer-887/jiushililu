@@ -157,12 +157,26 @@ export async function readAttachment(
     throw new Error(`无法读取该文件（「${abs}」）：${humanError(err)}`)
   }
 
+  const bytes = buf.byteLength
+  // 二进制闸：**与 agent/tools/file-tools.ts 的 read_file 用同一判据**（前 8KB 有无 NUL）。
+  // 此前附件这条线直接 toString('utf8') ⇒ PNG/JPG 被读成一串 U+FFFD 塞进上下文，
+  // 用户看到的是"截断"，真相是"内容全废"（plan57 病根；三处注释写过这事，只有 read_file 装了闸）。
+  if (buf.subarray(0, 8192).includes(0)) {
+    const name = basename(abs)
+    throw new Error(
+      imageMimeOf(name)
+        ? `图片输入还没接通：「${name}」是二进制图片文件，当前附件只按文本读取，硬读会变成乱码污染上下文`
+        : `「${name}」看起来是二进制文件（含 NUL 字节），附件只收文本`
+    )
+  }
+
   const truncated = buf.byteLength > ATTACH_LIMIT
   return {
     name: basename(abs),
     path: abs,
     content: buf.subarray(0, ATTACH_LIMIT).toString('utf8'),
     truncated,
+    bytes,
     ...(outside ? { outside: true } : {})
   }
 }
