@@ -181,7 +181,9 @@ export async function readAttachment(
       return { name, path: abs, content: '', truncated: false, bytes, image }
     }
     throw new Error(
-      `「${name}」是二进制文件（含 NUL 字节）且不是模型能收的图片类型，附件只收文本与 png/jpg/gif/webp`
+      // ⚠️ 主语必须是**本应用的通路**，不是"模型能收什么"：全模态模型也在收 mp4 被这句挡过，
+      // 用户据此以为模型不支持、回来问了一遍（09-27 装机点验现场）。边界与出路都要说准。
+      `「${name}」是视频或其他二进制文件，当前附件通路只支持文本与图片（png/jpg/gif/webp），视频输入尚未接通`
     )
   }
 

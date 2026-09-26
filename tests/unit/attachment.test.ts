@@ -154,6 +154,10 @@ describe('片③ 图片附件：落盘给引用，绝不把 base64 带回渲染�
     const err = (await readAttachment(root, 'clip.mp4', userData).catch((e) => e)) as Error
     expect(err.message).toContain('clip.mp4')
     expect(err.message).toContain('png/jpg/gif/webp')
+    // ★ 主语必须是**本应用的通路**：09-27 装机点验时全模态模型收 mp4 被这句挡过，
+    //   旧文案写"不是模型能收的图片类型" ⇒ 用户据此以为模型不支持，回来问了一遍。
+    expect(err.message).toContain('尚未接通')
+    expect(err.message).not.toContain('模型')
   })
 
 })

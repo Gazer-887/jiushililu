@@ -1713,7 +1713,8 @@ const STUBS = {
       }
     }
     if (/\.(mp4|mov|avi|webm|bmp|svg)$/i.test(name)) {
-      throw new Error(`「${name}」是二进制文件（含 NUL 字节）且不是模型能收的图片类型，附件只收文本与 png/jpg/gif/webp`)
+      // 文案是 `workspace-fs.readAttachment` 那句的复制品：**主语是本应用通路，不是"模型能收什么"**
+      throw new Error(`「${name}」是视频或其他二进制文件，当前附件通路只支持文本与图片（png/jpg/gif/webp），视频输入尚未接通`)
     }
     const content = '氧化铈粉 120kg\n碳酸钠 45kg'
     return {
