@@ -12,7 +12,7 @@ import type { FsOfficeResult } from './office-preview'
 import type { AskRequest, AskResult } from './ask'
 import type { SystemSettings, SystemView } from './system'
 import type { NetworkPatch, NetworkView } from './network'
-import type { ContentPart, ImageRef } from './content-parts'
+import type { ContentPart, ImageRef, InputModality, VideoRef } from './content-parts'
 import type { SystemFontsResult } from './font-names'
 import type { GitChange } from './git-status'
 
@@ -37,7 +37,12 @@ export interface ModelSettings {
   /** 思考强度；default = 跟随厂商默认（不发任何相关字段） */
   reasoningEffort: ReasoningEffort
   maxToolRounds: number
-  supportsImages: boolean
+  /**
+   * 该模型声明支持的输入模态（plan57 片⑤ / K55），取代旧的 `supportsImages: boolean`。
+   * 布尔装不下「收图不收视频」这类真实差异，而发送前的拦截必须按**本轮实际用到的模态**判。
+   * `text` 恒在；未列出的模态在设置页里不出现 —— 不许放一个「勾了却没有通路」的格子（plan54 #3 同族）。
+   */
+  inputModalities: InputModality[]
 }
 
 /** 设置页看到的视图：Key 永远不明文回传，只给掩码 */
@@ -137,6 +142,8 @@ export interface Attachment {
    * 有它时 `content` 恒为空串 —— 正文里那条 `<file kind="image" …>` marker 才是给模型看的说明。
    */
   image?: ImageRef
+  /** 视频附件（plan57 片⑤ / K54）：与图片同构，只是 MIME 与上限不同；同样只带引用 */
+  video?: VideoRef
 }
 
 export interface GitInfo {

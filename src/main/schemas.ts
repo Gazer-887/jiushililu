@@ -1,9 +1,12 @@
 import { z } from 'zod'
 import {
   ATTACHMENT_REF_RE,
+  INPUT_MODALITIES,
   MAX_IMAGES_PER_TURN,
   MAX_OUTBOUND_IMAGE_BYTES,
-  OUTBOUND_IMAGE_MIMES
+  MAX_OUTBOUND_VIDEO_BYTES,
+  OUTBOUND_IMAGE_MIMES,
+  OUTBOUND_VIDEO_MIMES
 } from '@shared/content-parts'
 
 // 入参 schema 独立成文件：纯 zod、不 import electron，可脱离主进程单测。
@@ -38,7 +41,7 @@ export const settingsSchema = z.object({
   contextWindow: z.number().int().min(1024).max(10_000_000),
   reasoningEffort: z.enum(['default', 'low', 'medium', 'high', 'max']),
   maxToolRounds: z.number().int().min(1).max(10000),
-  supportsImages: z.boolean(),
+  inputModalities: z.array(z.enum(INPUT_MODALITIES)).min(1),
   apiKey: z.string().max(400).optional()
 })
 
@@ -55,6 +58,12 @@ export const contentPartsSchema = z.array(
       mime: z.enum(OUTBOUND_IMAGE_MIMES),
       ref: z.string().regex(ATTACHMENT_REF_RE),
       bytes: z.number().int().nonnegative().max(MAX_OUTBOUND_IMAGE_BYTES)
+    }),
+    z.object({
+      type: z.literal('video'),
+      mime: z.enum(OUTBOUND_VIDEO_MIMES),
+      ref: z.string().regex(ATTACHMENT_REF_RE),
+      bytes: z.number().int().nonnegative().max(MAX_OUTBOUND_VIDEO_BYTES)
     })
   ])
 ).min(1).max(MAX_IMAGES_PER_TURN)
@@ -124,7 +133,7 @@ export const modelSaveSchema = z.object({
             contextWindow: z.number().int().min(1000).max(10_000_000).optional(),
             reasoningEffort: z.enum(['default', 'low', 'medium', 'high']).optional(),
             maxToolRounds: z.number().int().min(1).max(1000).optional(),
-            supportsImages: z.boolean().optional()
+            inputModalities: z.array(z.enum(INPUT_MODALITIES)).min(1).optional()
           })
           .optional()
       })

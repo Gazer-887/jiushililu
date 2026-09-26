@@ -2,6 +2,7 @@ import Store from 'electron-store'
 import { safeStorage } from 'electron'
 import type { ModelSettings, PermissionPreset } from '@shared/ipc'
 import { DEFAULT_TOKEN_TIER, isTokenSaverTier, type TokenSaverTier } from '@shared/token-tier'
+import { modalitiesFromLegacyFlag } from '@shared/content-parts'
 import type { SystemSettings } from '@shared/system'
 import type { NetworkCredentials, NetworkSettings } from '@shared/network'
 import { normalizeNetwork } from '@shared/network'
@@ -10,6 +11,8 @@ import { normalizeNetwork } from '@shared/network'
 // safeStorage 在 Windows 用 DPAPI、macOS 用 Keychain（DIARY 术语词典有词条）。
 
 interface StoredSettings extends ModelSettings {
+  /** ⚠️ **遗留字段**（0.13.92 及以前）：单勾「图片输入支持」。只在读盘时迁移成 `inputModalities`，写盘不再产生它 */
+  supportsImages?: boolean
   /** ⚠️ **遗留字段**：多模型之前"整个应用只有一把 Key"用的就是它。迁移时认领走（见 store/models.ts） */
   apiKeyEncrypted?: string
   /**
@@ -486,7 +489,7 @@ export function readLegacyModelSettings(): ModelSettings {
     contextWindow: s.contextWindow ?? 131072,
     reasoningEffort: s.reasoningEffort ?? 'default',
     maxToolRounds: s.maxToolRounds ?? 200,
-    supportsImages: s.supportsImages ?? false
+    inputModalities: modalitiesFromLegacyFlag(s.supportsImages)
   }
 }
 

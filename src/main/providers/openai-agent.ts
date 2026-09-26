@@ -18,13 +18,17 @@ import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
  */
 export function toOpenAIWireMessage(m: AgentMessage): Record<string, unknown> {
   const { parts, ...rest } = m
-  if (!parts?.some((p) => p.type === 'image')) return rest
+  if (!parts?.some((p) => p.type === 'image' || p.type === 'video')) return rest
   return {
     ...rest,
     content: parts.map((p) =>
       p.type === 'text'
         ? { type: 'text', text: p.text }
-        : { type: 'image_url', image_url: { url: `data:${p.mime};base64,${p.base64}` } }
+        : p.type === 'video'
+          ? // 实测形状（plan57 §八之四）：MiMo token-plan 端点收 `video_url` + base64 data URL，
+            // 且 usage 里单独报 `video_tokens`；`{"type":"video",…}` 那种帧序列形状它回 400
+            { type: 'video_url', video_url: { url: `data:${p.mime};base64,${p.base64}` } }
+          : { type: 'image_url', image_url: { url: `data:${p.mime};base64,${p.base64}` } }
     )
   }
 }

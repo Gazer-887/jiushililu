@@ -34,7 +34,7 @@
 （[[src/shared/tokens.ts#estimateImageTokens]] 就是为最后这条立的，判据反过来钉："把 base64 掏空，读数一字不变"）。
 
 **为什么 `content` 没改成联合类型**：`parts` 是**可选新增字段**，`content` 仍是文本真相，
-不变式 `content === textOfParts(parts)` 由唯一构造点（[[src/shared/attachment-block.ts#userTurnWithImages]]）
+不变式 `content === textOfParts(parts)` 由唯一构造点（[[src/shared/attachment-block.ts#userTurnWithMedia]]）
 与 store 现取两处保证。改成 `string | block[]` 要动几十处消费者，而漏判那一处的坏法是**静默的**
 （`String(块数组)` 变成 `"object Object"` 发给模型，不报错、门禁也不红）。
 代价如实记：图文**交错顺序**没做出来，图恒排在文本块之后。

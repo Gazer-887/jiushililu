@@ -100,6 +100,32 @@ describe('OpenAI agent 线：parts → content 数组，且内部字段不外泄
   })
 })
 
+describe('片⑤ 视频出境：OpenAI 兼容线收 video_url，Anthropic 线必须抛', () => {
+  const vidTurn: AgentMessage = {
+    role: 'user',
+    content: '看这段 <file name="c.mp4" kind="video" ref="r.mp4" bytes="9" />',
+    parts: [
+      { type: 'text', text: '看这段' },
+      { type: 'video', mime: 'video/mp4', base64: B64, ref: 'r.mp4' }
+    ]
+  }
+
+  it('★ 请求体里是 `video_url` + data URL（实测过的那一种；帧序列形状端点回 400）', () => {
+    const msgs = buildToolsBody(settings, [vidTurn], tools, false)['messages'] as Array<{ content: unknown }>
+    expect(msgs[0]!.content).toEqual([
+      { type: 'text', text: '看这段' },
+      { type: 'video_url', video_url: { url: `data:video/mp4;base64,${B64}` } }
+    ])
+    expect(JSON.stringify(msgs)).not.toContain('"parts"')
+  })
+
+  it('★ Anthropic 线收到视频块要**抛**，不是悄悄丢掉那个块（丢了就是"界面有、模型没"）', () => {
+    expect(() => toAnthropicAgentMessages([vidTurn])).toThrow(/视频/)
+    // 图片那条不受影响：同一份映射喂图仍然正常出块
+    expect(() => toAnthropicAgentMessages([turnWithImage])).not.toThrow()
+  })
+})
+
 describe('纯 chat 线（反思 / 摘要）：扩展字段一律不外泄', () => {
   it('parts / segments / createdAt 都不该出现在出境 messages 里', () => {
     const body = buildOpenAIChatBody(

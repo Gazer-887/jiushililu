@@ -29,9 +29,17 @@ type AnthropicBlock =
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: string }
 
-/** 出境块映射：有 `parts` 就以它为准（`content` 那份文本是同源的投影，不重复下发） */
+/**
+ * 出境块映射：有 `parts` 就以它为准（`content` 那份文本是同源的投影，不重复下发）。
+ * ⚠️ 视频到这儿**必须抛错**而不是悄悄丢掉那个块：Anthropic 没有视频块形状，
+ * 而"provider 收到视频块却当没看见"正是本项目最恨的静默形状 —— 上游的模态闸按协议拦，
+ * 这儿再兜一道，免得将来有人绕过闸直接喂。
+ */
 function blocksOfUserTurn(m: AgentMessage): AnthropicBlock[] {
   if (!m.parts) return [{ type: 'text', text: m.content ?? '' }]
+  if (m.parts.some((p) => p.type === 'video')) {
+    throw new Error('Anthropic 协议不支持视频输入块：请改用 OpenAI 兼容端点，或把视频先转成关键帧图片')
+  }
   return m.parts.map((p): AnthropicBlock =>
     p.type === 'text'
       ? { type: 'text', text: p.text }

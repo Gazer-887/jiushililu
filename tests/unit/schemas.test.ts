@@ -43,7 +43,7 @@ describe('settingsSchema（入参闸门）', () => {
     contextWindow: 131072,
     reasoningEffort: 'default',
     maxToolRounds: 200,
-    supportsImages: false
+    inputModalities: ['text']
   }
 
   it('baseURL 不带协议头自动补 https://', () => {
@@ -223,5 +223,31 @@ describe('chatMessagesSchema / storedMessagesSchema：图片引用只认受限�
     expect(chatMessagesSchema.safeParse([{ ...good, parts: [one] }]).success).toBe(false)
     const many = Array.from({ length: 9 }, () => ({ type: 'image' as const, mime: 'image/png', ref: REF, bytes: 8 }))
     expect(chatMessagesSchema.safeParse([{ ...good, parts: many }]).success).toBe(false)
+  })
+})
+
+// plan57 片⑤：视频块进得来、乱格式进不来
+describe('视频块的 schema 闸门（K54）', () => {
+  const VREF = '20260927T010203-0-ab12cd.mp4'
+  const turn = (parts: unknown[]) => [{ role: 'user', content: '看这段', parts }]
+
+  it('mp4 + 合法引用名能过（发送与落盘两条路同一形状规则）', () => {
+    const ok = [{ type: 'text', text: '看这段' }, { type: 'video', mime: 'video/mp4', ref: VREF, bytes: 4096 }]
+    expect(chatMessagesSchema.safeParse(turn(ok)).success).toBe(true)
+    expect(storedMessagesSchema.safeParse(turn(ok)).success).toBe(true)
+  })
+
+  it('★ 未实测的容器（quicktime）与假 MIME 一律拒 —— 猜一个没测过的格式出去只会换来读不懂的错', () => {
+    for (const mime of ['video/quicktime', 'video/webm', 'image/png']) {
+      const parts = [{ type: 'video', mime, ref: VREF, bytes: 4096 }]
+      expect(chatMessagesSchema.safeParse(turn(parts)).success, mime).toBe(false)
+    }
+  })
+
+  it('超单段视频上限拒；引用名不合法（想穿越）拒', () => {
+    const big = [{ type: 'video', mime: 'video/mp4', ref: VREF, bytes: 21 * 1024 * 1024 }]
+    expect(chatMessagesSchema.safeParse(turn(big)).success).toBe(false)
+    const bad = [{ type: 'video', mime: 'video/mp4', ref: '../../etc/passwd', bytes: 4096 }]
+    expect(chatMessagesSchema.safeParse(turn(bad)).success).toBe(false)
   })
 })

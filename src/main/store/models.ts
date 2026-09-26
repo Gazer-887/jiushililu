@@ -69,7 +69,7 @@ const EMPTY: ModelSettings = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 200,
-  supportsImages: false
+  inputModalities: ['text']
 }
 
 let migrated = false
@@ -212,7 +212,7 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
         contextWindow: rest.contextWindow,
         reasoningEffort: rest.reasoningEffort,
         maxToolRounds: rest.maxToolRounds,
-        supportsImages: rest.supportsImages
+        inputModalities: rest.inputModalities
       }
     })
     saveEndpoint({
@@ -238,7 +238,7 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
         contextWindow: rest.contextWindow,
         reasoningEffort: rest.reasoningEffort,
         maxToolRounds: rest.maxToolRounds,
-        supportsImages: rest.supportsImages
+        inputModalities: rest.inputModalities
       }
     })
     const created = createProfile({

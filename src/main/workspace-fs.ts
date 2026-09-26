@@ -1,8 +1,13 @@
 import { open, readdir, readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import type { Attachment } from '@shared/ipc'
-import { MAX_OUTBOUND_IMAGE_BYTES, OUTBOUND_IMAGE_MIMES } from '@shared/content-parts'
-import { saveAttachmentImage } from './attachments-store'
+import {
+  MAX_OUTBOUND_IMAGE_BYTES,
+  MAX_OUTBOUND_VIDEO_BYTES,
+  OUTBOUND_IMAGE_MIMES,
+  outboundVideoMimeOf
+} from '@shared/content-parts'
+import { saveAttachmentImage, saveAttachmentVideo } from './attachments-store'
 import {
   MAX_ENTRIES,
   MAX_IMAGE_BYTES,
@@ -180,10 +185,29 @@ export async function readAttachment(
       if (!image) throw new Error(`「${name}」未能存为图片附件，请重试或改用 png/jpg/gif/webp`)
       return { name, path: abs, content: '', truncated: false, bytes, image }
     }
+    // 视频（plan57 片⑤ / K54）：同一套引用制，只是上限与 MIME 不同。
+    // ⚠️ 容器格式**只放实测过的 mp4**：mov / webm 未实测 ⇒ 不收，别拿"应该差不多"猜一个出去。
+    const videoMime = outboundVideoMimeOf(name)
+    if (videoMime) {
+      if (bytes > MAX_OUTBOUND_VIDEO_BYTES) {
+        throw new Error(
+          `「${name}」约 ${Math.round(bytes / 1024 / 1024)} MB，超过单段视频 ${Math.round(MAX_OUTBOUND_VIDEO_BYTES / 1024 / 1024)} MB 上限（先剪短或降码率后再附）`
+        )
+      }
+      const video = saveAttachmentVideo(userDataDir, {
+        mime: videoMime,
+        buf,
+        index: 0,
+        now: () => new Date(),
+        maxBytes: MAX_OUTBOUND_VIDEO_BYTES
+      })
+      if (!video) throw new Error(`「${name}」未能存为视频附件，请重试或改用 mp4`)
+      return { name, path: abs, content: '', truncated: false, bytes, video }
+    }
     throw new Error(
       // ⚠️ 主语必须是**本应用的通路**，不是"模型能收什么"：全模态模型也在收 mp4 被这句挡过，
       // 用户据此以为模型不支持、回来问了一遍（09-27 装机点验现场）。边界与出路都要说准。
-      `「${name}」是视频或其他二进制文件，当前附件通路只支持文本与图片（png/jpg/gif/webp），视频输入尚未接通`
+      `「${name}」是二进制文件（含 NUL 字节），当前附件通路只支持文本、图片（png/jpg/gif/webp）与视频（mp4）`
     )
   }
 

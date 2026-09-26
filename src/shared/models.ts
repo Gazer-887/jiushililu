@@ -7,6 +7,7 @@
  * ⚠️ API Key 一个字节都不进 `models.json`：仍按"端点 id → 密文"存 settings.json（AGENTS.md / D-013）。
  */
 import type { ModelSettings, ProviderType } from './ipc'
+import { modalitiesFromLegacyFlag, normalizeModalities } from './content-parts'
 
 /** 来源标签：界面显示"内置来源 / 用户自定义"（不参与任何逻辑判断） */
 export type ModelSource = 'deepseek' | 'custom'
@@ -81,7 +82,7 @@ export function settingsOf(profile: ModelProfile, entry: ModelEntry): ModelSetti
     contextWindow: over.contextWindow ?? 131072,
     reasoningEffort: over.reasoningEffort ?? 'default',
     maxToolRounds: over.maxToolRounds ?? 200,
-    supportsImages: over.supportsImages ?? false
+    inputModalities: over.inputModalities ?? ['text']
   }
 }
 
@@ -159,7 +160,7 @@ export function profileOf(
           contextWindow: settings.contextWindow,
           reasoningEffort: settings.reasoningEffort,
           maxToolRounds: settings.maxToolRounds,
-          supportsImages: settings.supportsImages
+          inputModalities: settings.inputModalities
         }
       })
     ],
@@ -315,7 +316,11 @@ function normalizeEntry(raw: unknown, fallbackId: string): ModelEntry | null {
         : 'default'
   }
   if (s.maxToolRounds !== undefined) settings.maxToolRounds = num(s.maxToolRounds, 200)
-  if (s.supportsImages !== undefined) settings.supportsImages = s.supportsImages === true
+  // 新字段优先；只有旧字段时**就地迁移**（0.13.92 及以前的档案里存的是 `supportsImages: boolean`）。
+  // 迁移只发生在读盘这一处，写盘一律只写新字段 ⇒ 不会出现两份真相同时可写。
+  const mods = normalizeModalities(s.inputModalities)
+  if (mods) settings.inputModalities = mods
+  else if (s.supportsImages !== undefined) settings.inputModalities = modalitiesFromLegacyFlag(s.supportsImages === true)
   return {
     id,
     model,
@@ -380,7 +385,8 @@ export function normalizeProfiles(raw: unknown): { profiles: ModelProfile[]; dro
                 ? p.reasoningEffort
                 : 'default',
             maxToolRounds: num(p.maxToolRounds, 200),
-            supportsImages: p.supportsImages === true
+            // 扁平老形状（0.13.16 及以前）没有模态概念：按旧布尔迁移，缺省即「只有文本」
+            inputModalities: modalitiesFromLegacyFlag(p.supportsImages === true)
           },
           createdAt || Date.now(),
           { id, ...(typeof p.name === 'string' && p.name.trim() ? { name: p.name.trim() } : {}) }

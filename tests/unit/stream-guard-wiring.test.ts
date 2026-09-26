@@ -25,7 +25,7 @@ const settings: ModelSettings = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 8,
-  supportsImages: false
+  inputModalities: ['text']
 }
 
 const SHORT = { timeouts: { firstByteMs: 30, idleMs: 30 } }

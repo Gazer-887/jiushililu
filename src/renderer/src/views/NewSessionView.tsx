@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
-import { userTurnWithImages } from '@shared/attachment-block'
+import { userTurnWithMedia } from '@shared/attachment-block'
 import type { Attachment } from '@shared/ipc'
 import InputConsole from '../components/InputConsole'
 
@@ -27,8 +27,8 @@ export default function NewSessionView(): JSX.Element {
     if (busy) return
     const ws = await window.api.getWorkspace()
     if (!ws.path || !model) return
-    // 正文与图片引用一次构造（片③，与对话页同一份 `userTurnWithImages`）
-    const turn = userTurnWithImages(input.trim(), attachments)
+    // 正文与图片引用一次构造（片③，与对话页同一份 `userTurnWithMedia`）
+    const turn = userTurnWithMedia(input.trim(), attachments)
     const text = turn.content
     setBusy(true)
     try {

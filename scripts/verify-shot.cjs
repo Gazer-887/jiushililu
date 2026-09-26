@@ -273,7 +273,7 @@ const FAKE_PROFILE_BASE = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 200,
-  supportsImages: false,
+  inputModalities: ['text'],
   createdAt: Date.now() - 86400000,
   updatedAt: Date.now()
 }
@@ -309,7 +309,7 @@ const settingsView = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 200,
-  supportsImages: false,
+  inputModalities: ['text'],
   hasApiKey: true,
   apiKeyMasked: 'sk-***'
 }
@@ -1712,9 +1712,21 @@ const STUBS = {
         ...(abs.toLowerCase().startsWith(ws.toLowerCase() + '\\') ? {} : { outside: true })
       }
     }
-    if (/\.(mp4|mov|avi|webm|bmp|svg)$/i.test(name)) {
-      // 文案是 `workspace-fs.readAttachment` 那句的复制品：**主语是本应用通路，不是"模型能收什么"**
-      throw new Error(`「${name}」是视频或其他二进制文件，当前附件通路只支持文本与图片（png/jpg/gif/webp），视频输入尚未接通`)
+    if (/\.(mp4)$/i.test(name)) {
+      // 视频（plan57 片⑤）：真源现在同样走引用制 —— 落盘 + 只回引用，桩必须同形状，**不给 base64**
+      return {
+        name,
+        path: abs,
+        content: '',
+        truncated: false,
+        bytes: 40960,
+        video: { type: 'video', mime: 'video/mp4', ref: '20260927T000000-0-cc1122.mp4', bytes: 40960 },
+        ...(abs.toLowerCase().startsWith(ws.toLowerCase() + '\\') ? {} : { outside: true })
+      }
+    }
+    if (/\.(mov|avi|webm|bmp|svg)$/i.test(name)) {
+      // 真源：`workspace-fs.readAttachment`。主语必须是本应用通路，不许甩锅给模型（09-27 装机点验的教训）
+      throw new Error(`「${name}」是二进制文件（含 NUL 字节），当前附件通路只支持文本、图片（png/jpg/gif/webp）与视频（mp4）`)
     }
     const content = '氧化铈粉 120kg\n碳酸钠 45kg'
     return {
@@ -8658,6 +8670,59 @@ app.whenReady().then(async () => {
       imgTurn.parts.some((p) => p.type === 'image' && typeof p.ref === 'string' && p.ref.length > 0) &&
       !JSON.stringify(imgSend).includes('base64'),
     { parts: imgTurn?.parts ?? null }
+  )
+  // 先 settle 上一条（片③ 那次发送还挂在 streaming 上）—— `sendMessage` 遇 streaming 会**软返回**，
+  // 不 settle 就发不出视频那条，下面两条判据会以"载荷没有 parts"的形式红（第一跑就是这么红的，不是产品坏了）
+  win.webContents.send('chat:done', { conversationId: 'c1', payload: null })
+  await new Promise((r) => setTimeout(r, 500))
+
+  // —— plan57 片⑤：视频走同一条引用制，界面上多一枚「视频」chip ——
+  const clipMp4 = join(tmpdir(), 'jsl-verify-clip.mp4')
+  writeFileSync(clipMp4, Buffer.from([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70]))
+  chatSendCalls.length = 0
+  const vidFlow = await win.webContents.executeJavaScript(`
+    (async () => {
+      const box = document.querySelector('.console');
+      if (!box) return { ok: false, why: '没有 .console（当前不在对话页）' };
+      const dt = new DataTransfer();
+      dt.setData('application/x-jiushililu-path', ${JSON.stringify(clipMp4)});
+      box.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      await new Promise((r) => setTimeout(r, 700));
+      const badges = Array.from(document.querySelectorAll('.attach-chip'))
+        .map((c) => Array.from(c.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean).join('/'));
+      const ta = document.querySelector('.console-input');
+      if (!ta) return { ok: false, why: '没有输入框' };
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 700));
+      const bubble = Array.from(document.querySelectorAll('.msg-user')).pop();
+      return {
+        ok: true,
+        badges,
+        // 按**结构**断，不按字：气泡里的角标显示具体类型（mp4 / png），比"视频"更有信息
+        bubbleVideoChip: !!bubble?.querySelector('.msg-attach-video'),
+        bubbleBadge: Array.from(bubble?.querySelectorAll('.msg-attach-kind') ?? [])
+          .map((s) => s.textContent || ''),
+        bubbleLeak: (bubble?.textContent ?? '').includes('AAAA')
+      };
+    })()
+  `)
+  const vidSend = chatSendCalls[chatSendCalls.length - 1]
+  const vidTurn = (vidSend?.messages ?? []).filter((m) => m.role === 'user').pop()
+  checkTrue(
+    '片⑤ 视频附件：输入框与气泡各给一枚「视频」chip，界面上看不到字节',
+    vidFlow.ok === true &&
+      vidFlow.badges.some((b) => b.includes('视频')) &&
+      vidFlow.bubbleVideoChip === true &&
+      vidFlow.bubbleBadge.includes('mp4') &&
+      vidFlow.bubbleLeak === false,
+    vidFlow
+  )
+  checkTrue(
+    '片⑤ 出境载荷带视频引用（ref + video 类型），但不带 base64',
+    Array.isArray(vidTurn?.parts) &&
+      vidTurn.parts.some((p) => p.type === 'video' && typeof p.ref === 'string' && p.ref.endsWith('.mp4')) &&
+      !JSON.stringify(vidSend).includes('base64'),
+    { parts: vidTurn?.parts ?? null }
   )
   // 收尾：这条会话还在 streaming（桩不会自己吐 done），不 settle 会把后面那组"切页不丢流"的判据带成假红
   win.webContents.send('chat:done', { conversationId: 'c1', payload: null })

@@ -3,11 +3,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   IMAGE_TOKEN_CEIL,
+  VIDEO_TOKEN_CEIL,
   estimateImageTokens,
   estimatePayloadTokens,
   estimateTokens
 } from '@shared/tokens'
 import { estimateMessagesTokens } from '@main/agent/context'
+import { estimatePartsTokens } from '@shared/tokens'
 import type { AgentMessage } from '@shared/agent'
 import type { ChatMessage } from '@shared/ipc'
 import { usedTokens } from '../../src/renderer/src/store'
@@ -91,5 +93,17 @@ describe('片⓪ 图片块估算契约（K50 / plan57）', () => {
     // 图确实占预算（不是被忽略成 0），同时又没被按字符放大 —— 两个方向一起钉
     expect(usedTokens([imgTurn])).toBeGreaterThan(usedTokens([{ role: 'user', content: '看图' }]))
     expect(usedTokens([{ role: 'user', content: '早' }])).toBe(estimateTokens('早') + 4)
+  })
+
+  it('⑧ 视频块按定额上界算，绝不被按 base64 字符数放大（K54 同族）', () => {
+    const withVideo = estimatePartsTokens([
+      { type: 'text', text: '看这段' },
+      { type: 'video' }
+    ] as never)
+    expect(withVideo).toBeLessThanOrEqual(VIDEO_TOKEN_CEIL + 40)
+    // 阳性对照：一段 10 MB 视频的 base64 约 1300 万字符 ⇒ 按字符估是 340 万 token，
+    // 是定额上界的 280 倍。谁改成按长度估，这条立刻分家
+    const b64OfVideo = 'A'.repeat(13_000_000)
+    expect(estimateTokens(b64OfVideo)).toBeGreaterThan(withVideo * 100)
   })
 })

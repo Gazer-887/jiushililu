@@ -23,9 +23,17 @@ export function estimateMessageTokens(content: string, extraJson = ''): number {
  */
 export const IMAGE_TOKEN_CEIL = 2000
 
+/**
+ * 单段视频的 token **上界**。⚠️ **未直读任何官方每秒定额** —— 本端只有一个实测样本：
+ * MiMo token-plan 端点对 2 秒 / 480×240 的 mp4 报 `video_tokens: 480`（≈240/秒），
+ * 一个样本不足以定公式 ⇒ 这里只取保守上界，宁可提前裁剪也不撞上下文上限。
+ */
+export const VIDEO_TOKEN_CEIL = 12000
+
 export type TokenPayloadPart =
   | { type: 'text'; text: string }
   | { type: 'image'; data?: string; width?: number; height?: number }
+  | { type: 'video' }
 
 /**
  * 图片块按**几何**估，绝不按 base64 长度估。
@@ -44,22 +52,26 @@ export function estimateImageTokens(width?: number, height?: number): number {
 export function estimatePayloadTokens(parts: TokenPayloadPart[], extraJson = ''): number {
   let sum = 0
   for (const p of parts) {
-    sum += p.type === 'text' ? estimateTokens(p.text) : estimateImageTokens(p.width, p.height)
+    if (p.type === 'text') sum += estimateTokens(p.text)
+    else if (p.type === 'video') sum += VIDEO_TOKEN_CEIL
+    else sum += estimateImageTokens(p.width, p.height)
   }
   return sum + estimateTokens(extraJson) + 4
 }
 
 /** `ContentPart` / `WirePart` 都能进来的最小形状（共享层两侧都不许再各写一份映射） */
-type EstparablePart = { type: 'text'; text: string } | { type: 'image' }
+type EstparablePart = { type: 'text'; text: string } | { type: 'image' } | { type: 'video' }
 
 /**
- * 一轮的估算：带 `parts` 就按块算（图按几何/上界），否则与改造前同一条公式。
- * ⚠️ 判据 K50 的落点：**有图的一轮绝不许走 base64 字符数**，否则一张截图被估成几十万 token，
+ * 一轮的估算：带 `parts` 就按块算（图按几何/上界、视频按定额上界），否则与改造前同一条公式。
+ * ⚠️ 判据 K50 的落点：**有媒体的轮绝不许走 base64 字符数**，否则一张截图被估成几十万 token，
  * 下一轮 `trimMessages` 就把整段历史折进摘要。
  */
 export function estimatePartsTokens(parts: EstparablePart[], extraJson = ''): number {
   return estimatePayloadTokens(
-    parts.map((p): TokenPayloadPart => (p.type === 'text' ? { type: 'text', text: p.text } : { type: 'image' })),
+    parts.map((p): TokenPayloadPart =>
+      p.type === 'text' ? { type: 'text', text: p.text } : { type: p.type }
+    ),
     extraJson
   )
 }

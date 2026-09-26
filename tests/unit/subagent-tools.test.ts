@@ -35,7 +35,7 @@ const settings: ModelSettings = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 8,
-  supportsImages: false
+  inputModalities: ['text']
 }
 
 function makeCtx(): AgentRuntimeContext {

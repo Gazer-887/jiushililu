@@ -40,7 +40,7 @@ const legacySettings = (over: Partial<ModelSettings> = {}): ModelSettings => ({
   contextWindow: 128_000,
   reasoningEffort: 'default',
   maxToolRounds: 12,
-  supportsImages: false,
+  inputModalities: ['text'],
   ...over
 })
 
@@ -110,10 +110,10 @@ describe('有效设置 = 端点默认 ⊕ 该模型的高级设置', () => {
   })
 
   it('**只覆盖写了的字段**，其余仍跟随端点默认（这正是不做全量复制的原因）', () => {
-    const entry = { ...p.models[0], settings: { maxTokens: 8192, supportsImages: true } }
+    const entry = { ...p.models[0], settings: { maxTokens: 8192, inputModalities: ['text', 'image'] } }
     const s = settingsOf(p, entry)
     expect(s.maxTokens).toBe(8192)
-    expect(s.supportsImages).toBe(true)
+    expect(s.inputModalities).toContain('image')
     expect(s.contextWindow).toBe(131072)
     expect(s.timeoutMs).toBe(30_000)
   })
@@ -137,7 +137,7 @@ describe('迁移①：老的"单模型设置" → 端点 + 一条目录（参数
       contextWindow: 384_000,
       reasoningEffort: 'high',
       maxToolRounds: 30,
-      supportsImages: true,
+      inputModalities: ['text', 'image'],
       temperature: 0.7,
       timeoutMs: 90_000,
       stream: false
@@ -180,6 +180,9 @@ describe('迁移②：0.13.16 的"扁平档案" → 新形状（可单测、幂�
       contextWindow: 384_000,
       reasoningEffort: 'high',
       maxToolRounds: 25,
+      // ⚠️ 这是**0.13.16 的老形状输入数据**，故意保留旧字段名：本用例测的就是"老档案里的
+      // `supportsImages` 能不能被迁移成模态集合"。批量改名时这里被一起改成了新字段，
+      // 于是迁移路径看不到旧字段、断言当场红 —— 同名字段在"输入夹具"与"输出断言"里语义相反，不能一把替换。
       supportsImages: true,
       createdAt: 1,
       updatedAt: 2
@@ -200,7 +203,7 @@ describe('迁移②：0.13.16 的"扁平档案" → 新形状（可单测、幂�
     expect(s.contextWindow).toBe(384_000)
     expect(s.reasoningEffort).toBe('high')
     expect(s.maxToolRounds).toBe(25)
-    expect(s.supportsImages).toBe(true)
+    expect(s.inputModalities).toContain('image')
     expect(s.temperature).toBe(0.3)
     expect(s.timeoutMs).toBe(45_000)
   })

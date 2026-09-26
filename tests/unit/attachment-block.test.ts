@@ -7,9 +7,9 @@ import {
   composeWithAttachments,
   splitAttachmentBlocks,
   stripAttachmentBlocks,
-  userTurnWithImages
+  userTurnWithMedia
 } from '@shared/attachment-block'
-import { imageCountOf, textOfParts } from '@shared/content-parts'
+import { imageCountOf, mediaCountOf, textOfParts } from '@shared/content-parts'
 import type { Attachment } from '@shared/ipc'
 
 const att = (over: Partial<Attachment> = {}): Attachment => ({
@@ -133,12 +133,32 @@ describe('片③ 图片附件：正文放 marker，字节走引用', () => {
     expect(got).not.toContain('ab12cd')
   })
 
-  it('★ userTurnWithImages 的不变式：content === textOfParts(parts)，无图时干脆不产出 parts', () => {
-    const withImg = userTurnWithImages('看下', [img()])
+  it('★ 视频 marker（片⑤）：kind=video 能拆回来，strip 折成 [视频]', () => {
+    const vid: Attachment = {
+      name: 'clip.mp4', path: '/ws/clip.mp4', content: '', truncated: false, bytes: 4096,
+      video: { type: 'video', mime: 'video/mp4', ref: '20260927T010203-0-eeeeee.mp4', bytes: 4096 }
+    }
+    const text = composeWithAttachments('看下这段', [att(), vid])
+    expect(text).toContain('<file name="clip.mp4" kind="video" ref="20260927T010203-0-eeeeee.mp4" bytes="4096" />')
+    const { files, body } = splitAttachmentBlocks(text)
+    expect(body).toBe('看下这段')
+    expect(files[1]!.video?.ref).toBe('20260927T010203-0-eeeeee.mp4')
+    expect(files[1]!.image).toBeUndefined()
+    expect(stripAttachmentBlocks(text)).toContain('[视频]')
+    expect(stripAttachmentBlocks(text)).toContain('[附件]')
+    // 一次构造点要同时带上两种媒体（图片 + 视频），顺序与 marker 一致
+    const turn = userTurnWithMedia('看下这段', [vid, att()])
+    expect(imageCountOf(turn.parts)).toBe(0)
+    expect(mediaCountOf(turn.parts)).toEqual({ image: 0, video: 1 })
+    expect(textOfParts(turn.parts!)).toBe(turn.content)
+  })
+
+  it('★ userTurnWithMedia 的不变式：content === textOfParts(parts)，无图时干脆不产出 parts', () => {
+    const withImg = userTurnWithMedia('看下', [img()])
     expect(withImg.content).toBe(composeWithAttachments('看下', [img()]))
     expect(textOfParts(withImg.parts!)).toBe(withImg.content)
     expect(imageCountOf(withImg.parts)).toBe(1)
-    expect(userTurnWithImages('只看字', [att()])).toEqual({ content: composeWithAttachments('只看字', [att()]) })
-    expect(userTurnWithImages('就一句', []).parts).toBeUndefined()
+    expect(userTurnWithMedia('只看字', [att()])).toEqual({ content: composeWithAttachments('只看字', [att()]) })
+    expect(userTurnWithMedia('就一句', []).parts).toBeUndefined()
   })
 })

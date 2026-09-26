@@ -3,7 +3,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_IMAGES_PER_TURN,
-  imageGateError,
+  MAX_VIDEOS_PER_TURN,
+  modalitiesFromLegacyFlag,
+  normalizeModalities,
+  modalityGateError,
   materializeParts,
   materializeHistory,
   missingImageNote,
@@ -143,18 +146,57 @@ describe('materializeHistory：旧图折回 marker，只有最近配额内的轮
   })
 })
 
-describe('能力位闸（D-146 B：发送前拦，不静默降级、不靠解析厂商错误串）', () => {
-  it('没图就放行；带图且模型未标记支持 ⇒ 拦，并说清几张、去哪儿改', () => {
-    expect(imageGateError(false, 0)).toBeNull()
-    expect(imageGateError(true, 3)).toBeNull()
-    const err = imageGateError(false, 2) ?? ''
-    expect(err).toContain('2 张图片')
-    expect(err).toContain('图片输入支持')
+const IMG = { image: 1, video: 0 }
+const VID = { image: 0, video: 1 }
+
+describe('模态闸（D-146 B / K55：发送前按**本轮实际用到的模态**拦）', () => {
+  it('什么都不带就放行；勾了的模态放行', () => {
+    expect(modalityGateError(['text'], { image: 0, video: 0 })).toBeNull()
+    expect(modalityGateError(['text', 'image'], IMG)).toBeNull()
+    expect(modalityGateError(['text', 'image', 'video'], { image: 1, video: 1 })).toBeNull()
   })
 
-  it('★ 超限先于能力位：一条消息最多 8 张，第 9 张报"分几条消息发送"', () => {
-    const err = imageGateError(true, MAX_IMAGES_PER_TURN + 1) ?? ''
-    expect(err).toContain(String(MAX_IMAGES_PER_TURN))
-    expect(err).toContain('分几条消息发送')
+  it('★ 缺哪个模态就报哪个：文案点名模态与去处，不写死"图片"那一种', () => {
+    const e1 = modalityGateError(['text'], IMG) ?? ''
+    expect(e1).toContain('1 张图片')
+    expect(modalityGateError(['text'], VID) ?? '').toContain('1 段视频')
+    expect(e1).toContain('输入模态')
+    const e2 = modalityGateError(['text', 'image'], VID) ?? ''
+    expect(e2).toContain('1 段视频')
+    expect(e2).toContain('勾选「视频」')
+    // 互反：报视频的这条不许同时把图片也扯进来（说明按模态分别判，不是一把闸）
+    expect(e2).not.toContain('图片')
+  })
+
+  it('★ 声明了但这条协议没有通路 ⇒ 照样拦（Anthropic 无视频块，不静默丢）', () => {
+    const err = modalityGateError(['text', 'image', 'video'], VID, 'anthropic') ?? ''
+    expect(err).toContain('Anthropic')
+    expect(err).toContain('关键帧')
+    expect(modalityGateError(['text', 'image', 'video'], VID, 'openai-compatible')).toBeNull()
+  })
+
+  it('超限先于能力判断：图片第 9 张、视频第 3 段各报各的', () => {
+    const e = modalityGateError(['text', 'image'], { image: MAX_IMAGES_PER_TURN + 1, video: 0 }) ?? ''
+    expect(e).toContain('分几条消息发送')
+    const v = modalityGateError(['text', 'image', 'video'], { image: 0, video: MAX_VIDEOS_PER_TURN + 1 }) ?? ''
+    expect(v).toContain(String(MAX_VIDEOS_PER_TURN))
+    expect(v).toContain('视频')
+  })
+})
+
+describe('模态集合的读盘容错（K55 迁移）', () => {
+  it('旧布尔 true → 文本+图片；false → 只有文本', () => {
+    expect(modalitiesFromLegacyFlag(true)).toEqual(['text', 'image'])
+    expect(modalitiesFromLegacyFlag(false)).toEqual(['text'])
+    expect(modalitiesFromLegacyFlag(undefined)).toEqual(['text'])
+  })
+
+  it('★ 新字段：去重、补 text、乱序归一；全不合法返回 null 让调用方走迁移', () => {
+    expect(normalizeModalities(['video', 'image', 'video'])).toEqual(['text', 'image', 'video'])
+    expect(normalizeModalities(['image', 'teleport'])).toEqual(['text', 'image'])
+    expect(normalizeModalities(['teleport'])).toBeNull()
+    expect(normalizeModalities(undefined)).toBeNull()
+    // 空数组不是「没有该字段」，而是「什么都发不出去」⇒ 也走迁移，不能让它静默生效
+    expect(normalizeModalities([])).toBeNull()
   })
 })

@@ -168,8 +168,8 @@ import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } fr
 import { createExecEventRecorder, readExecEvents, sanitizeExecEventQuery, type ExecEventSink } from './agent/exec-events'
 import type { ExecEventListResult } from '@shared/exec-events'
 import type { SubagentJobEvent } from '@shared/agent'
-import { imageCountOf, imageGateError, materializeHistory } from '@shared/content-parts'
-import { readAttachmentImage } from './attachments-store'
+import { materializeHistory, mediaCountOf, modalityGateError } from '@shared/content-parts'
+import { readAttachmentMedia } from './attachments-store'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { sendToAll } from './window-registry'
@@ -278,7 +278,7 @@ const fieldLabels: Record<string, string> = {
   topP: 'Top P（核采样，0~1）',
   topK: 'Top K（候选词数，1~200）',
   maxToolRounds: '工具调用轮数',
-  supportsImages: '图片输入支持',
+  inputModalities: '输入模态',
   maxTokens: 'max_tokens（单次回答上限）',
   timeoutMs: '超时（毫秒）',
   stream: '流式开关',
@@ -644,11 +644,19 @@ export function registerIpcHandlers(deps: {
       return
     }
 
-    // 图片出境的能力位闸（plan57 片③，D-146 B）：**发送前拦**，不是"发出去看厂商怎么报" ——
-    // 错误串会被网关改写（OpenRouter 甚至回 404 看着像模型不存在），且有的端点收了图却忽略它。
-    // 拦的是**整段历史里任意一轮带图**：旧轮折成 marker 后模型仍被告知"这里有过一张图"，
-    // 那正是"界面有图、模型没图"的假成功，不能因为它不带 base64 就放行。
-    const gateErr = imageGateError(settings.supportsImages, messages.reduce((n, m) => n + imageCountOf(m.parts), 0))
+    // 模态闸（plan57 片③⑤ / D-146 B / K55）：**发送前按本轮实际用到的模态拦**，不是"发出去看厂商怎么报" ——
+    // 错误串会被网关改写（OpenRouter 甚至回 404 看着像模型不存在），且有的端点收了媒体却忽略它。
+    // 拦的是**整段历史里任意一轮带媒体**：旧轮折成 marker 后模型仍被告知"这里有过一张图/一段视频"，
+    // 那正是"界面有、模型没"的假成功，不能因为它不带 base64 就放行。
+    const outbound = messages.reduce(
+      (acc, m) => {
+        const c = mediaCountOf(m.parts)
+        return { image: acc.image + c.image, video: acc.video + c.video }
+      },
+      { image: 0, video: 0 }
+    )
+    // 第三个参数是协议：视频只有 OpenAI 兼容线有通路，Anthropic 勾了也发不出去 ⇒ 照样拦，不静默丢块
+    const gateErr = modalityGateError(settings.inputModalities, outbound, settings.providerType)
     if (gateErr) {
       chatGate.end(conversationId)
       emit.error(gateErr)
@@ -701,7 +709,7 @@ export function registerIpcHandlers(deps: {
         // 引用 → base64 只在这一刻发生（plan57 片③）：存档与内存里都只放引用，
         // 旧轮按配额折回正文 marker（D-146 C，一张被清掉的图会降级成一句人话而不是卡死会话）
         history: await materializeHistory(messages, async (ref) =>
-          readAttachmentImage(deps.userDataDir, ref)
+          readAttachmentMedia(deps.userDataDir, ref)
         ),
         // 主 Agent（plan17 G2）：渲染端按会话带上；定义不存在 → runAgent 抛人话错误走下方 catch → emit.error
         agentName: input.agentName,

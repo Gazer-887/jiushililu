@@ -3278,8 +3278,10 @@ label.radio {
   cursor: pointer;
 }
 
-/* 图片 chip：不可展开（没有正文可展），也不给手型 —— 它只是"这张图会随消息发出"的回执 */
-.msg-attach-chip.msg-attach-image {
+/* 媒体 chip（图 / 视频）：不可展开（没有正文可展），也不给手型 ——
+   它只是"这个媒体会随消息发出"的回执 */
+.msg-attach-chip.msg-attach-image,
+.msg-attach-chip.msg-attach-video {
   cursor: default;
 }
 

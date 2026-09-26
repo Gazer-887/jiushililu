@@ -20,8 +20,9 @@ export default function UserMessage({
 }): JSX.Element {
   const { files, body } = splitAttachmentBlocks(text)
   const [open, setOpen] = useState<boolean[]>([])
+  // 引用制下 marker 里没有 MIME：类型角标只从 parts（那份真相）取，取不到就写"图片/视频"不猜
   const mimeByRef = new Map(
-    (parts ?? []).flatMap((p) => (p.type === 'image' ? [[p.ref, p.mime] as const] : []))
+    (parts ?? []).flatMap((p) => (p.type === 'text' ? [] : [[p.ref, p.mime] as const]))
   )
 
   if (files.length === 0) return <>{text}</>
@@ -37,19 +38,28 @@ export default function UserMessage({
     <>
       {body && <div className="msg-attach-question">{body}</div>}
       <div className="msg-attach-list" role="group" aria-label="本条消息附带的文件">
-        {files.map((f, n) =>
-          f.image ? (
-            <span
-              key={`${f.name}-${n}`}
-              className="msg-attach-chip msg-attach-image"
-              title={`图片按引用发送 · 估算约 ${estimateImageTokens()} token`}
-            >
-              <span className="msg-attach-name">{f.name}</span>
-              <span className="msg-attach-kind">
-                {mimeByRef.get(f.image.ref)?.replace('image/', '') ?? '图片'}
+        {files.map((f, n) => {
+          const media = f.image ?? f.video
+          if (media) {
+            const isVideo = media.type === 'video'
+            return (
+              <span
+                key={`${f.name}-${n}`}
+                className={`msg-attach-chip msg-attach-media ${isVideo ? 'msg-attach-video' : 'msg-attach-image'}`}
+                title={
+                  isVideo
+                    ? '视频按引用发送 · 仅 OpenAI 兼容端点支持'
+                    : `图片按引用发送 · 估算约 ${estimateImageTokens()} token`
+                }
+              >
+                <span className="msg-attach-name">{f.name}</span>
+                <span className="msg-attach-kind">
+                  {mimeByRef.get(media.ref)?.replace(`${media.type}/`, '') ?? (isVideo ? '视频' : '图片')}
+                </span>
               </span>
-            </span>
-          ) : (
+            )
+          }
+          return (
             <button
               key={`${f.name}-${n}`}
               className="msg-attach-chip"
@@ -62,10 +72,10 @@ export default function UserMessage({
               <span className="msg-attach-caret">{open[n] ? '▴' : '▾'}</span>
             </button>
           )
-        )}
+        })}
       </div>
       {files.map((f, n) =>
-        !f.image && open[n] === true ? (
+        !f.image && !f.video && open[n] === true ? (
           <pre key={`body-${f.name}-${n}`} className="msg-attach-body">
             {f.content}
           </pre>

@@ -22,7 +22,7 @@ const settings: ModelSettings = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 200,
-  supportsImages: false
+  inputModalities: ['text']
 }
 
 describe('resolveApiUrl（/v1 归一化，头号 404 坑）', () => {

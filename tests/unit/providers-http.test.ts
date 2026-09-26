@@ -29,7 +29,7 @@ const settings: ModelSettings = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 200,
-  supportsImages: false
+  inputModalities: ['text']
 }
 
 const messages: ChatMessage[] = [{ role: 'user', content: 'ping' }]

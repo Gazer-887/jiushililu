@@ -17,7 +17,7 @@ const settings: ModelSettings = {
   contextWindow: 131072,
   reasoningEffort: 'default',
   maxToolRounds: 8,
-  supportsImages: false
+  inputModalities: ['text']
 }
 
 describe('ToolCallAccumulator（流式工具调用累积）', () => {

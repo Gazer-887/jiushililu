@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ATTACH_LIMIT, readAttachment } from '@main/workspace-fs'
-import { attachmentsDir, readAttachmentImage, saveAttachmentImage } from '@main/attachments-store'
+import { attachmentsDir, readAttachmentMedia, saveAttachmentImage } from '@main/attachments-store'
 import { MAX_OUTBOUND_IMAGE_BYTES } from '@shared/content-parts'
 
 // 附件读取（③ 文件拖进会话 / 文件选择框 **共用**这一份；两入口只差"路径从哪来"）
@@ -140,23 +140,43 @@ describe('片③ 图片附件：落盘给引用，绝不把 base64 带回渲染�
     const b = saveAttachmentImage(userData, { mime: 'image/png', buf: Buffer.from([4, 5, 6]), now })
     expect(b!.ref).not.toBe(a!.ref)
     // 覆盖的现场是"两张都在名单上、内容却只剩一份" ⇒ 字节要各自读得回来
-    expect(readAttachmentImage(userData, a!.ref)).toEqual(Buffer.from([1, 2, 3]))
-    expect(readAttachmentImage(userData, b!.ref)).toEqual(Buffer.from([4, 5, 6]))
+    expect(readAttachmentMedia(userData, a!.ref)).toEqual(Buffer.from([1, 2, 3]))
+    expect(readAttachmentMedia(userData, b!.ref)).toEqual(Buffer.from([4, 5, 6]))
   })
 
   it('引用读回：形状不合法（想穿越）与文件已清理，各报各的，都不静默返回空', () => {
-    expect(() => readAttachmentImage(userData, '../../x.png')).toThrow('引用形状不合法')
-    expect(() => readAttachmentImage(userData, 'nope.png')).toThrow('引用形状不合法')
-    expect(() => readAttachmentImage(userData, '20260101T000000-0-abcdef.png')).toThrow('不存在')
+    expect(() => readAttachmentMedia(userData, '../../x.png')).toThrow('引用形状不合法')
+    expect(() => readAttachmentMedia(userData, 'nope.png')).toThrow('引用形状不合法')
+    expect(() => readAttachmentMedia(userData, '20260101T000000-0-abcdef.png')).toThrow('不存在')
   })
 
-  it('非图片的二进制仍拒（判据是 NUL，扩展名表只作补充），理由要说清收哪些类型', async () => {
-    const err = (await readAttachment(root, 'clip.mp4', userData).catch((e) => e)) as Error
-    expect(err.message).toContain('clip.mp4')
+  it('★ 视频（片⑤）：mp4 落盘给 video 引用，正文仍是空串、字节不外泄', async () => {
+    const before = readdirSync(attachmentsDir(userData)).length
+    const a = await readAttachment(root, 'clip.mp4', userData)
+    expect(a.content).toBe('')
+    expect(a.image).toBeUndefined()
+    expect(a.video?.mime).toBe('video/mp4')
+    expect(a.video?.ref.endsWith('.mp4')).toBe(true)
+    expect(readdirSync(attachmentsDir(userData)).length).toBe(before + 1)
+    expect(JSON.stringify(a)).not.toContain(PNG_BYTES.toString('base64'))
+  })
+
+  it('未实测的容器格式（mov）不收：宁缺勿猜，猜错了只会以"模型说没看到视频"暴露', async () => {
+    writeFileSync(join(root, 'clip.mov'), Buffer.concat([PNG_BYTES, PNG_BYTES]))
+    const err = (await readAttachment(root, 'clip.mov', userData).catch((e) => e)) as Error
+    expect(err.message).toContain('clip.mov')
+    expect(err.message).toContain('mp4')
+  })
+
+  it('其他二进制仍拒（判据是 NUL，扩展名表只作补充），理由要说清收哪些类型', async () => {
+    writeFileSync(join(root, 'pack.zip'), Buffer.concat([PNG_BYTES, PNG_BYTES, Buffer.from([7, 7, 7])]))
+    const err = (await readAttachment(root, 'pack.zip', userData).catch((e) => e)) as Error
+    expect(err.message).toContain('pack.zip')
     expect(err.message).toContain('png/jpg/gif/webp')
-    // ★ 主语必须是**本应用的通路**：09-27 装机点验时全模态模型收 mp4 被这句挡过，
-    //   旧文案写"不是模型能收的图片类型" ⇒ 用户据此以为模型不支持，回来问了一遍。
-    expect(err.message).toContain('尚未接通')
+    // ★ 主语必须是**本应用的通路**，不许甩锅给模型：09-27 装机点验时全模态模型收 mp4
+    //   被旧文案（不是模型能收的图片类型）挡过，用户据此以为模型不支持、回来问了一遍。
+    //   视频接通后那句已改形状，但这条判据的方向不能松 —— 以后加模态也不许拿模型当理由。
+    expect(err.message).toContain('当前附件通路只支持')
     expect(err.message).not.toContain('模型')
   })
 

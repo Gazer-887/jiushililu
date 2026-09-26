@@ -1,6 +1,24 @@
 import { useState } from 'react'
 import type { ModelSettings, ReasoningEffort } from '@shared/ipc'
+import {
+  INPUT_MODALITIES,
+  modalityLabel,
+  type InputModality
+} from '@shared/content-parts'
 import { entryLabel, type ModelEntry } from '@shared/models'
+
+/**
+ * **本应用已接通的模态** —— 设置页只列这些。
+ * ⚠️ 加一项之前必须先确认出境通路真的通了（provider 有映射 + 有判据），否则这里出现的就是一个骗人的格子；
+ * 厂商收不收由 `inputModalities` 表达，**我们能不能发**由这张表表达，两者不是一回事。
+ */
+const MODALITY_UI: InputModality[] = ['text', 'image', 'video']
+
+const MODALITY_HINT: Record<InputModality, string> = {
+  text: '文本输入恒开启，不可关闭。',
+  image: '影响：含图片的消息能否发出。未勾选时，含图片的轮次在发送前被拦下并说明原因。',
+  video: '影响：含视频的消息能否发出（仅 OpenAI 兼容端点；Anthropic 协议无视频通路）。未勾选时同样发送前拦下。'
+}
 
 /**
  * **模型目录编辑器**（plan7 F5.1）。行内 `>` 展开 = 该模型自己的高级设置，只存改过的字段。
@@ -86,16 +104,33 @@ function AdvancedPanel({
           onChange={(e) => onChange({ topP: e.target.value.trim() === '' ? null : Number(e.target.value) })}
         />
       </label>
-      {/* 勾选框随 plan57 片③ 回来：现在 providers 有真实消费点（含图的轮次在发送前按它拦），
-          plan54 #3 撤它的理由（"勾了等于骗人"）已随那条前提一起失效。 */}
-      <label className="mc-adv-check" title="影响：含图片的消息能否发出。未勾选时，含图片的轮次在发送前被拦下并说明原因。">
-        <input
-          type="checkbox"
-          checked={s.supportsImages === true}
-          onChange={(e) => onChange({ supportsImages: e.target.checked })}
-        />
-        图片输入支持
-      </label>
+      {/* 输入模态（plan57 片⑤ / K55）：取代旧的单勾「图片输入支持」。两条规矩：
+          ① `text` 恒选且锁死（没有它这条会话根本发不出去）；
+          ② **只列本应用已接通的模态**（`MODALITY_UI` 就是那份名单）—— 未接通的连格子都不出现，
+             因为一个"能勾却没有通路"的格子等于骗人（plan54 #3 撤掉旧勾选框正是这个理由）。 */}
+      <div className="mc-adv-modality">
+        <span className="mc-adv-modality-title">输入模态</span>
+        {MODALITY_UI.map((m) => {
+          const list = s.inputModalities ?? ['text']
+          return (
+            <label key={m} className="mc-adv-check" title={MODALITY_HINT[m]}>
+              <input
+                type="checkbox"
+                disabled={m === 'text'}
+                checked={list.includes(m)}
+                onChange={(e) =>
+                  onChange({
+                    inputModalities: e.target.checked
+                      ? INPUT_MODALITIES.filter((x) => list.includes(x) || x === 'text' || x === m)
+                      : list.filter((x) => x !== m)
+                  })
+                }
+              />
+              {modalityLabel(m)}
+            </label>
+          )
+        })}
+      </div>
       <span className="hint inline-hint">Top K 请使用端点级或厂商默认值：多数端点不支持该参数</span>
     </div>
   )

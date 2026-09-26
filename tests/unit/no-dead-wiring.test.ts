@@ -8,21 +8,36 @@ import { describe, expect, it } from 'vitest'
 
 const src = (rel: string): string => readFileSync(join(__dirname, '../../src', rel), 'utf8')
 
-describe('#3 死开关：supportsImages（plan57 片③ 落地后**两条一起重定**，见 plan57 §四）', () => {
-  // 撤格子的理由是"providers 零消费点，勾了等于骗人"。片③ 把消费点接上了 ⇒ 判据翻向：
-  // 不许格子悄悄消失（那等于把这条能力又变回装饰品），也不许只留格子没有闸（那才是当初的骗人形状）。
-  it('模型档案编辑器里必须有「图片输入支持」勾选框，且真的回写该字段', () => {
+describe('#3 死开关：能力位（片③ 接上消费点 → 片⑤ 改成模态集合，判据第三次重定）', () => {
+  // 演变三站：① 只有字段没消费点 ⇒ 撤格子（plan54 #3）；② 接上图通路 ⇒ 格子必须回来（plan57 §四）；
+  // ③ 布尔装不下「收图不收视频」⇒ 换成模态集合（K55）。**每次都两条一起翻** ——
+  // 只翻第一条会让第二条的阳性对照失去意义，那是本项目最恨的「改一半」。
+  it('设置页必须有「输入模态」勾选组，且真的回写 inputModalities', () => {
     const editor = src('renderer/src/components/ModelCatalogEditor.tsx')
-    expect(editor).toContain('supportsImages')
-    expect(editor).toContain('onChange({ supportsImages:')
+    expect(editor).toContain('inputModalities')
+    expect(editor).toContain('输入模态')
+    // ★ 铁律：只列已接通的模态 —— 未接通的（音频 / PDF / mov）连格子都不许出现
+    expect(editor).toContain('MODALITY_UI')
+    expect(editor).not.toContain("'audio'")
+    expect(editor).not.toContain("'pdf'")
   })
 
-  it('★ 阳性对照：主进程发送前真的按它拦（闸是纯函数，且 `chat:send` 调用在链路上）', () => {
-    expect(src('shared/content-parts.ts')).toContain('export function imageGateError')
-    expect(src('main/ipc.ts')).toContain('imageGateError(')
-    // 字段本身仍要在 schema 与 store 里 —— 少一处就是格子点不动
-    expect(src('main/schemas.ts')).toContain('supportsImages')
-    expect(src('main/store/models.ts')).toContain('supportsImages')
+  it('★ 阳性对照：主进程按模态拦（纯函数 + chat:send 调用 + 协议维度），旧布尔字段已退场', () => {
+    expect(src('shared/content-parts.ts')).toContain('export function modalityGateError')
+    expect(src('main/ipc.ts')).toContain('modalityGateError(')
+    // 协议维度不许漏：Anthropic 没有视频块，漏了就是静默丢块
+    expect(src('main/ipc.ts')).toContain('settings.providerType')
+    expect(src('main/schemas.ts')).toContain('inputModalities')
+    expect(src('main/store/models.ts')).toContain('inputModalities')
+    // 反向哨兵：`supportsImages` 只许留在**读盘迁移**那一处，别处再出现就是两份真相回来了
+    // 只钉「字段声明」这一种形状（行首缩进 + 字段名 + 冒号/问号）—— 注释里提旧字段名是合法的
+    // （它解释迁移来由）。第一版用宽正则把注释也判成违规，那是判据自己的假阳性。
+    const fieldDecl = /^\s+supportsImages[?:]/m
+    for (const f of ['shared/ipc.ts', 'main/schemas.ts', 'renderer/src/components/ModelCatalogEditor.tsx']) {
+      expect(fieldDecl.test(src(f)), f + ' 里不该再有 supportsImages 字段').toBe(false)
+    }
+    // 迁移口只此一处（`normalizeEntry` 读老档案）：多一处就是两份真相同时可写
+    expect(src('shared/models.ts')).toContain('supportsImages')
   })
 })
 

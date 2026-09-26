@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
-import { stripAttachmentBlocks, userTurnWithImages } from '@shared/attachment-block'
+import { stripAttachmentBlocks, userTurnWithMedia } from '@shared/attachment-block'
 import MessageMarkdown from '../components/MessageMarkdown'
 import MessageSegments from '../components/MessageSegments'
 import UserMessage from '../components/UserMessage'
@@ -406,7 +406,7 @@ export default function ChatView() {
     stickBottomRef.current = true
     setShowJumpLatest(false)
     // 正文与图片引用一次构造（片③）：两处分开拼迟早漂出"气泡有图、模型没图"
-    const turn = userTurnWithImages(raw.trim(), attachments)
+    const turn = userTurnWithMedia(raw.trim(), attachments)
     await sendMessage(turn.content, turn.parts ? { parts: turn.parts } : undefined)
   }
 
