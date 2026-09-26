@@ -186,7 +186,8 @@ describe('判据⑤ 回收站不进注入、不占上限，也别的口都伸不
     store.rejectUnclustered(store.list().unclustered)
     const after = makeStore()
 
-    expect(after.listFiles().map((f) => f.split('\\').pop())).toEqual(['live-note.md'])
+    // 分隔符按平台走：CI 在 Linux 上 `listFiles()` 发的是正斜杠，只拆 `\\` 会让整条路径留下（判据照旧，只是不再假设分隔符）
+    expect(after.listFiles().map((f) => f.split(/[\\/]/).pop())).toEqual(['live-note.md'])
     expect(after.list().entries).toHaveLength(1)
     expect(after.list().rejected).toHaveLength(1)
   })
