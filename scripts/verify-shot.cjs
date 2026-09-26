@@ -8535,59 +8535,61 @@ app.whenReady().then(async () => {
 
   // —— plan57 片②：流式期间的滚动跟随权（K46）——
   // 原病灶：贴底 effect 盯的是 messages，而流式**每个 chunk 都在改它** ⇒ 每帧 scrollIntoView 到底，
-  // 用户往上滑想读中段会被立刻拽回去。修法是「贴底才跟」+ 一个「回到最新」浮标（判据复用 spy 已有的 scroll 监听）。
-  // ⚠️ 前置断言不可省：内容不可滚时 scrollTop 恒为 0，「上滑后不回弹」会**假绿** —— 本项目栽过无数次的那种绿。
-  const stickBox = await win.webContents.executeJavaScript(`
-    (() => {
-      const b = document.querySelector('.chat-messages');
-      if (!b) return { ok: false, why: 'no-box' };
-      b.scrollTop = b.scrollHeight;
-      return { ok: true, scrollable: b.scrollHeight - b.clientHeight };
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 300))
-  checkTrue(
-    '片② 前置：消息区确实可滚（否则下面两条全是假绿）',
-    stickBox.ok === true && stickBox.scrollable > 200,
-    stickBox
-  )
-
-  const stickProbe = (tag) =>
-    win.webContents.executeJavaScript(`
-      (() => {
-        const b = document.querySelector('.chat-messages');
-        if (!b) return null;
-        return { tag: ${JSON.stringify(tag)},
-                 gap: Math.round(b.scrollHeight - b.scrollTop - b.clientHeight),
-                 chip: !!document.querySelector('.chat-jump-latest') };
-      })()
-    `)
-
-  // ① 贴底时该跟：连推三段，视口应仍贴着底部
-  for (const t of ['甲'.repeat(600), '乙'.repeat(600), '丙'.repeat(600)]) {
-    win.webContents.send('chat:chunk', { conversationId: 'c1', payload: t })
-    await new Promise((r) => setTimeout(r, 260))
-  }
-  const atBottom = await stickProbe('at-bottom')
-  checkTrue('片② 贴底时流式照旧跟随（改造不许把正常行为一起砍掉）', (atBottom?.gap ?? 1e9) <= 80, atBottom)
-
-  // ② 用户上滑后该交还滚动权：浮标出现，且再推字也不把视口拽回底部
-  const slid = await win.webContents.executeJavaScript(`
+  // 用户往上滑想读中段会被立刻拽回去。修法是「贴底才跟」+「回到最新」浮标（判定复用 spy 已有的 scroll 监听）。
+  //
+  // ⚠️ 本组判据的形状是被 CI 教出来的，不是设计出来的：第一版写「可滚余量 > 200px」+「往上滑 900px」，
+  //    本机 432/432 全绿，Linux runner 上余量只有 **194px** ⇒ 前置判据正确地红
+  //    （滑到 0 就等于"根本没滑动"，后面那条"没被拽回"会假绿）。
+  //    ⇒ 现在改成：**自己把内容撑够**（不依赖环境给的高度）+ **用相对量判定**（上滑完先自证确实离开了底部，
+  //      再看推字之后那个距离有没有被拉回去）。任何窗口高度下都成立。
+  const stickScroll = () => win.webContents.executeJavaScript(`
     (() => {
       const b = document.querySelector('.chat-messages');
       if (!b) return null;
-      b.scrollTop = Math.max(0, b.scrollTop - 900);
-      b.dispatchEvent(new Event('scroll'));
-      return { top: b.scrollTop };
+      return { scrollable: Math.round(b.scrollHeight - b.clientHeight),
+               gap: Math.round(b.scrollHeight - b.scrollTop - b.clientHeight),
+               chip: !!document.querySelector('.chat-jump-latest') };
     })()
   `)
-  await new Promise((r) => setTimeout(r, 400))
-  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '丁'.repeat(900) })
-  await new Promise((r) => setTimeout(r, 500))
-  const afterSlide = await stickProbe('after-slide')
-  checkTrue('片② 上滑后不再抢视口，且给出「回到最新」去处',
-    slid !== null && (afterSlide?.gap ?? 0) > 80 && afterSlide?.chip === true,
-    { slid, afterSlide })
+  const stickSet = (pxFromBottom) => win.webContents.executeJavaScript(`
+    (() => {
+      const b = document.querySelector('.chat-messages');
+      if (!b) return null;
+      b.scrollTop = b.scrollHeight - b.clientHeight - ${pxFromBottom};
+      b.dispatchEvent(new Event('scroll'));
+      return Math.round(b.scrollHeight - b.scrollTop - b.clientHeight);
+    })()
+  `)
+
+  // ① 造前提：推字把内容撑到有余量可滑（不够就继续推），撑不出来直接判 fail
+  let room = null
+  for (let k = 0; k < 8; k++) {
+    win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '撑'.repeat(800) })
+    await new Promise((r) => setTimeout(r, 240))
+    room = await stickScroll()
+    if (room && room.scrollable > 460) break
+  }
+  checkTrue('片② 前置：已把内容撑到可滑（撑不出来则后两条会假绿）', (room?.scrollable ?? 0) > 400, room)
+
+  // ② 贴底时该跟：按到底（并派发 scroll 让"贴底"状态真被组件读到），再推字，距底应仍 ≈0
+  await stickSet(0)
+  await new Promise((r) => setTimeout(r, 280))
+  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '戊'.repeat(800) })
+  await new Promise((r) => setTimeout(r, 460))
+  const atBottom = await stickScroll()
+  checkTrue('片② 贴底时流式照旧跟随（改造不许把正常行为一起砍掉）', (atBottom?.gap ?? 1e9) <= 80, atBottom)
+
+  // ③ 上滑后该交还滚动权：先自证真的离开了底部（距底 > 200），再推字 —— 跟随若还生效，这个距离会被拉回 0
+  const slidGap = await stickSet(320)
+  await new Promise((r) => setTimeout(r, 420))
+  win.webContents.send('chat:chunk', { conversationId: 'c1', payload: '己'.repeat(800) })
+  await new Promise((r) => setTimeout(r, 520))
+  const afterSlide = await stickScroll()
+  checkTrue(
+    '片② 上滑后不再抢视口，且给出「回到最新」去处',
+    slidGap !== null && slidGap > 200 && (afterSlide?.gap ?? 0) > 200 && afterSlide?.chip === true,
+    { slidGap, afterSlide }
+  )
 
   // —— 流式订阅不该跟着视图卸载（会卡死人的 bug）——
   // 现象：流式期间去「设置」页 → 中途吐出来的字全丢；流恰在那一刻跑完时 chat:done 收不到 → streaming 永远停在
