@@ -12,6 +12,11 @@
 
 ## 0.13.90 · 2026-09-26（本机出包，**尚未打 tag、未发 GitHub Release**）
 
+**产物**（09-26 18:31 本机出双包，按包体 mtime）：`Jiushililu-Setup-0.13.90.exe` 109,502,953 B · `Jiushililu-Portable-0.13.90.exe` 109,125,802 B
+出包前置全部满足：**五道闸本机全绿**（单测 2193/1 跳过、真渲染 429/429、`check:docs` ✅）+ **CI run `36235608860` 三 job 全绿**（quality / e2e / gate-render）。
+产物校验按"哪个产物持有它"分开选串：渲染层含「看过·留下」「全部看过」「一键拒绝」「最近拒掉」，preload/main 含通道串 `memory:dismiss-review` · `memory:reject-unclustered` · `memory:restore-rejected`，main 含符号 `reviewSeenStamp`；**反向两条**（「一键批准」「memory:approve-all」零命中）—— plan56 的"全部看过"只消提示、不碰条目，无差别全选批准**没做也不该做**（plan55 R4 继续有效）。
+⚠️ `dist/` 现有两套双包（**90 / 89**）：89 从未发布 ⇒ 是否清掉由用户定，未获指令前**不动**（内容全在 master，复现 0.13.90 = `git checkout 75a328f` 后 `npm run dist`；`75a328f` 才是版本号等于 0.13.90 的那棵树）。
+
 > 定版理由：plan56 三片全部落在 0.13.89 那两枚包（09-25 17:33）之后 ⇒ **推新号**，同号两副内容会让
 > "版本号 = 有一个对应的包"这个约定失效。
 > 提交：`8bc4bfc`（片①）· `468e241`（片②）· `85fc161`（片③）· `8960c4d`（片③ 门禁跟桩与判据）·
