@@ -16,3 +16,35 @@ export function estimateTokens(text: string): number {
 export function estimateMessageTokens(content: string, extraJson = ''): number {
   return estimateTokens(content) + estimateTokens(extraJson) + 4
 }
+
+/**
+ * 单张图的 token **上界**。⚠️ 未直读厂商官方原文：业界两处独立实现取 1568 / 1600，
+ * 按 `(w×h)/750` 公式一屏截图可到 ~1.8k ⇒ 这里取宽上界，**宁可高估也不低估**。
+ */
+export const IMAGE_TOKEN_CEIL = 2000
+
+export type TokenPayloadPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data?: string; width?: number; height?: number }
+
+/**
+ * 图片块按**几何**估，绝不按 base64 长度估。
+ * ⚠️ 回归防线：base64 全是非 CJK，走 `estimateTokens` 会被放大两个数量级
+ * （1568×882 的截图 ≈190 万字符 → 475,000 token，真实约 1.8k），一张就超裁剪触发线。见 plan57 片⓪ / K50。
+ */
+export function estimateImageTokens(width?: number, height?: number): number {
+  if (!width || !height || width < 1 || height < 1) return IMAGE_TOKEN_CEIL
+  const scale = Math.min(1, 1568 / Math.max(width, height))
+  const w = width * scale
+  const h = height * scale
+  return Math.max(1, Math.min(IMAGE_TOKEN_CEIL, Math.ceil((w * h) / 750)))
+}
+
+/** 多模态 payload 的估算（片③ 出境形状扩到 block 后接这里；固定开销与 `estimateMessageTokens` 同口径） */
+export function estimatePayloadTokens(parts: TokenPayloadPart[], extraJson = ''): number {
+  let sum = 0
+  for (const p of parts) {
+    sum += p.type === 'text' ? estimateTokens(p.text) : estimateImageTokens(p.width, p.height)
+  }
+  return sum + estimateTokens(extraJson) + 4
+}
