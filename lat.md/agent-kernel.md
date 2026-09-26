@@ -24,6 +24,30 @@
 空正文助手轮。兜底不等于可以省——[[src/main/memory/reflection.ts#createReflectionRunner]] 这条反思链
 **不经主循环**，罩不到它。
 
+## 多模态出境：引用与物化的分界线
+
+图片走的是**引用制**：盘上放真身（[[src/main/attachments-store.ts#saveAttachmentImage]]），
+消息里只放一条引用（[[src/shared/content-parts.ts#ImageRef]]），
+[[src/shared/content-parts.ts#materializeParts]] 在**出站那一刻**才把引用变成 base64。
+这条界线不许合并成一件事，理由各自独立且都踩过：base64 进消息 ⇒ 每次存档重写一遍图、
+存档预算 `MAX_STORED_CHARS` 被一张截图吃掉、以及 token 估算按字符数放大两个数量级
+（[[src/shared/tokens.ts#estimateImageTokens]] 就是为最后这条立的，判据反过来钉："把 base64 掏空，读数一字不变"）。
+
+**为什么 `content` 没改成联合类型**：`parts` 是**可选新增字段**，`content` 仍是文本真相，
+不变式 `content === textOfParts(parts)` 由唯一构造点（[[src/shared/attachment-block.ts#userTurnWithImages]]）
+与 store 现取两处保证。改成 `string | block[]` 要动几十处消费者，而漏判那一处的坏法是**静默的**
+（`String(块数组)` 变成 `"object Object"` 发给模型，不报错、门禁也不红）。
+代价如实记：图文**交错顺序**没做出来，图恒排在文本块之后。
+
+**读盘侧只认白名单文件名**：[[src/shared/content-parts.ts#isSafeAttachmentRef]] 是全仓唯一放行判据，
+`ref` 从存档一路传到主进程，收路径就是给穿越留门 —— 与 `mcp/artifacts.ts` 同一口径，
+且**两个目录刻意不共用**（MCP 截图是过程资产、随时可清；附件是用户明确发出去的东西）。
+
+**旧轮按配额折回正文 marker**（[[src/shared/content-parts.ts#materializeHistory]]）：
+只物化最近一轮，其余退回 `content` 里那条 `<file kind="image" ref=… />`。
+读不到文件时**降级成一句人话而不是让整轮失败** —— 反面教材是业界那类"一张图卡死整段会话"：
+历史每轮重放，那块图没人清。**已知欠账**：marker 目前只有人能还原，模型没有"再看这张图"的工具通路（K52）。
+
 ## 会话并发闸
 
 [[src/main/agent/concurrency.ts#createChatGate]] 是"这条会话能不能开始跑"的**硬闸**，渲染端的

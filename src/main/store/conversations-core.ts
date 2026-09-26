@@ -222,7 +222,13 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
     createConversation(input) {
       const now = Date.now()
       const messages: ChatMessage[] = input.firstMessage?.trim()
-        ? [{ role: 'user', content: input.firstMessage.trim() }]
+        ? [
+            {
+              role: 'user',
+              content: input.firstMessage.trim(),
+              ...(input.firstParts ? { parts: input.firstParts } : {})
+            }
+          ]
         : []
       const meta: ConversationMeta = {
         id: randomUUID(),

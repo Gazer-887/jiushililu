@@ -1,4 +1,5 @@
 import type { TokenUsage } from './usage'
+import type { WirePart } from './content-parts'
 
 // Agent 内核共享类型（plan6 D1-D8）：工具、消息、循环结果。
 // 协议采用 OpenAI tool-calls 格式（DeepSeek 全系原生兼容）。
@@ -21,6 +22,12 @@ export interface AgentTool {
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | null
+  /**
+   * 出境形态的多模态内容块（plan57 片③）：**base64 已就位**，provider 只认这个、不再碰文件系统。
+   * 有它时 provider 以本字段为准，`content` 那份文本不再重复下发（两者同源，见 `ChatMessage.parts`）。
+   * ⚠️ 存档里放的却是**引用**（`ContentPart`），物化发生在组合根 —— 别把 base64 写进会话存档。
+   */
+  parts?: WirePart[]
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   tool_call_id?: string
 }

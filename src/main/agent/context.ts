@@ -1,5 +1,5 @@
 import type { AgentMessage } from '@shared/agent'
-import { estimateMessageTokens, estimateTokens } from '@shared/tokens'
+import { estimateMessageTokens, estimatePartsTokens, estimateTokens } from '@shared/tokens'
 
 // 上下文管理（P1 收官件之一）：长对话逼近上下文窗口时的历史裁剪。
 // 只裁中段 —— system 与末尾 keepRecent 条永远保留，裁掉的旧消息合成一条[历史摘要]占位（保住要点、释放大头）。
@@ -9,8 +9,10 @@ export { estimateTokens }
 
 export function estimateMessagesTokens(messages: AgentMessage[]): number {
   return messages.reduce((sum, m) => {
-    const content = typeof m.content === 'string' ? m.content : ''
     const callsJson = m.tool_calls ? JSON.stringify(m.tool_calls) : ''
+    // 有 parts 时**只按块算**：content 是同一份文本的投影，再叠一次就是把正文计两遍
+    if (m.parts) return sum + estimatePartsTokens(m.parts, callsJson)
+    const content = typeof m.content === 'string' ? m.content : ''
     return sum + estimateMessageTokens(content, callsJson)
   }, 0)
 }

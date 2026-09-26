@@ -86,10 +86,16 @@ function AdvancedPanel({
           onChange={(e) => onChange({ topP: e.target.value.trim() === '' ? null : Number(e.target.value) })}
         />
       </label>
-      {/* 「支持图片输入」勾选框已撤（plan54 #3）：providers 里没有任何消费点，
-          `ChatMessage.content` 仍是 string —— 勾上去等于同时骗用户和骗模型。
-          字段本身留在 schema 与 store 里（判据见 tests/unit/no-dead-wiring.test.ts 的阳性对照），
-          多模态通路落地时把格子加回来即可。 */}
+      {/* 勾选框随 plan57 片③ 回来：现在 providers 有真实消费点（含图的轮次在发送前按它拦），
+          plan54 #3 撤它的理由（"勾了等于骗人"）已随那条前提一起失效。 */}
+      <label className="mc-adv-check" title="影响：含图片的消息能否发出。未勾选时，含图片的轮次在发送前被拦下并说明原因。">
+        <input
+          type="checkbox"
+          checked={s.supportsImages === true}
+          onChange={(e) => onChange({ supportsImages: e.target.checked })}
+        />
+        图片输入支持
+      </label>
       <span className="hint inline-hint">Top K 请使用端点级或厂商默认值：多数端点不支持该参数</span>
     </div>
   )

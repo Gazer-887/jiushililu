@@ -8,12 +8,19 @@ import { describe, expect, it } from 'vitest'
 
 const src = (rel: string): string => readFileSync(join(__dirname, '../../src', rel), 'utf8')
 
-describe('#3 死开关：supportsImages', () => {
-  it('模型档案编辑器里不许有「支持图片输入」勾选框（providers 零消费点，勾了等于骗人）', () => {
-    expect(src('renderer/src/components/ModelCatalogEditor.tsx')).not.toContain('supportsImages')
+describe('#3 死开关：supportsImages（plan57 片③ 落地后**两条一起重定**，见 plan57 §四）', () => {
+  // 撤格子的理由是"providers 零消费点，勾了等于骗人"。片③ 把消费点接上了 ⇒ 判据翻向：
+  // 不许格子悄悄消失（那等于把这条能力又变回装饰品），也不许只留格子没有闸（那才是当初的骗人形状）。
+  it('模型档案编辑器里必须有「图片输入支持」勾选框，且真的回写该字段', () => {
+    const editor = src('renderer/src/components/ModelCatalogEditor.tsx')
+    expect(editor).toContain('supportsImages')
+    expect(editor).toContain('onChange({ supportsImages:')
   })
 
-  it('阳性对照：撤的是**格子**不是数据 —— 字段仍在 schema 与 store 里（多模态通路落地时直接接上）', () => {
+  it('★ 阳性对照：主进程发送前真的按它拦（闸是纯函数，且 `chat:send` 调用在链路上）', () => {
+    expect(src('shared/content-parts.ts')).toContain('export function imageGateError')
+    expect(src('main/ipc.ts')).toContain('imageGateError(')
+    // 字段本身仍要在 schema 与 store 里 —— 少一处就是格子点不动
     expect(src('main/schemas.ts')).toContain('supportsImages')
     expect(src('main/store/models.ts')).toContain('supportsImages')
   })

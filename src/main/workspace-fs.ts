@@ -1,6 +1,8 @@
 import { open, readdir, readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import type { Attachment } from '@shared/ipc'
+import { MAX_OUTBOUND_IMAGE_BYTES, OUTBOUND_IMAGE_MIMES } from '@shared/content-parts'
+import { saveAttachmentImage } from './attachments-store'
 import {
   MAX_ENTRIES,
   MAX_IMAGE_BYTES,
@@ -135,7 +137,9 @@ export const ATTACH_LIMIT = 64 * 1024
  */
 export async function readAttachment(
   workspaceRoot: string,
-  pathOrRel: string
+  pathOrRel: string,
+  /** 图片落点（`userData`）。没有这条路可走时图片只能被拒 —— 但**不许**退化成"按文本硬读" */
+  userDataDir: string
 ): Promise<Attachment> {
   const isAbs = isAbsolute(pathOrRel)
   const inside = resolveInsideWorkspace(workspaceRoot, pathOrRel)
@@ -158,15 +162,26 @@ export async function readAttachment(
   }
 
   const bytes = buf.byteLength
+  const name = basename(abs)
   // 二进制闸：**与 agent/tools/file-tools.ts 的 read_file 用同一判据**（前 8KB 有无 NUL）。
   // 此前附件这条线直接 toString('utf8') ⇒ PNG/JPG 被读成一串 U+FFFD 塞进上下文，
   // 用户看到的是"截断"，真相是"内容全废"（plan57 病根；三处注释写过这事，只有 read_file 装了闸）。
   if (buf.subarray(0, 8192).includes(0)) {
-    const name = basename(abs)
+    // 图片走引用制（plan57 片③）：落盘 + 只把引用带回去，base64 到出站那一刻才物化。
+    // 扩展名表**只作补充**：真判据仍是上面那次 NUL 探测 —— 改了后缀的 png 也进不来文本这条路。
+    const mime = imageMimeOf(name)
+    if (mime && (OUTBOUND_IMAGE_MIMES as readonly string[]).includes(mime)) {
+      if (bytes > MAX_OUTBOUND_IMAGE_BYTES) {
+        throw new Error(
+          `「${name}」约 ${Math.round(bytes / 1024 / 1024)} MB，超过单张图 ${Math.round(MAX_OUTBOUND_IMAGE_BYTES / 1024 / 1024)} MB 上限（先压缩或裁剪后再附）`
+        )
+      }
+      const image = saveAttachmentImage(userDataDir, { mime, buf, index: 0, now: () => new Date() })
+      if (!image) throw new Error(`「${name}」未能存为图片附件，请重试或改用 png/jpg/gif/webp`)
+      return { name, path: abs, content: '', truncated: false, bytes, image }
+    }
     throw new Error(
-      imageMimeOf(name)
-        ? `图片输入还没接通：「${name}」是二进制图片文件，当前附件只按文本读取，硬读会变成乱码污染上下文`
-        : `「${name}」看起来是二进制文件（含 NUL 字节），附件只收文本`
+      `「${name}」是二进制文件（含 NUL 字节）且不是模型能收的图片类型，附件只收文本与 png/jpg/gif/webp`
     )
   }
 

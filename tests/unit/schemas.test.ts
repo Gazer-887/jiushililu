@@ -190,3 +190,38 @@ describe('chatMessagesSchema：空正文的 assistant 轮（K8）', () => {
     expect(chatMessagesSchema.safeParse([{ role: 'system', content: '' }]).success).toBe(false)
   })
 })
+
+// plan57 片③：`parts` 是**从渲染进程一路传到读盘**的那串字符，schema 是它唯一的形状闸门。
+describe('chatMessagesSchema / storedMessagesSchema：图片引用只认受限文件名', () => {
+  const good = {
+    role: 'user' as const,
+    content: '看图 <file name="a.png" kind="image" ref="R" bytes="8" />',
+    parts: [{ type: 'text' as const, text: '看图' }, { type: 'image' as const, mime: 'image/png', ref: 'R', bytes: 8 }]
+  }
+  const REF = '20260927T010203-0-ab12cd.png'
+
+  it('合法引用能过（发送与落盘两条路同一条形状规则）', () => {
+    const ok = { ...good, parts: [good.parts[0]!, { ...good.parts[1]!, ref: REF }] }
+    expect(chatMessagesSchema.safeParse([ok]).success).toBe(true)
+    expect(storedMessagesSchema.safeParse([ok]).success).toBe(true)
+  })
+
+  it('★ ref 里塞路径（穿越）/ 塞 URL / 只改后缀，一律拒', () => {
+    for (const ref of ['../../etc/passwd', '..\\..\\x.png', 'file:///c:/Windows/x.png', REF + '.png', 'a.png']) {
+      const m = { ...good, parts: [{ type: 'text' as const, text: '看图' }, { type: 'image' as const, mime: 'image/png', ref, bytes: 8 }] }
+      expect(chatMessagesSchema.safeParse([m]).success, ref).toBe(false)
+    }
+  })
+
+  it('SVG 不收（两家模型都不吃，放出去只换来一个读不懂的错误串）', () => {
+    const m = { ...good, parts: [{ type: 'image' as const, mime: 'image/svg+xml', ref: REF, bytes: 8 }] }
+    expect(chatMessagesSchema.safeParse([m]).success).toBe(false)
+  })
+
+  it('超单图上限的 bytes 拒；一条消息超过 8 张也拒', () => {
+    const one = { type: 'image' as const, mime: 'image/png', ref: REF, bytes: 6 * 1024 * 1024 }
+    expect(chatMessagesSchema.safeParse([{ ...good, parts: [one] }]).success).toBe(false)
+    const many = Array.from({ length: 9 }, () => ({ type: 'image' as const, mime: 'image/png', ref: REF, bytes: 8 }))
+    expect(chatMessagesSchema.safeParse([{ ...good, parts: many }]).success).toBe(false)
+  })
+})

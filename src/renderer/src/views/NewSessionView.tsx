@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
-import { composeWithAttachments } from '@shared/attachment-block'
+import { userTurnWithImages } from '@shared/attachment-block'
 import type { Attachment } from '@shared/ipc'
 import InputConsole from '../components/InputConsole'
 
@@ -27,18 +27,22 @@ export default function NewSessionView(): JSX.Element {
     if (busy) return
     const ws = await window.api.getWorkspace()
     if (!ws.path || !model) return
-    const text = composeWithAttachments(input.trim(), attachments)
+    // 正文与图片引用一次构造（片③，与对话页同一份 `userTurnWithImages`）
+    const turn = userTurnWithImages(input.trim(), attachments)
+    const text = turn.content
     setBusy(true)
     try {
       await createConversation({
         workspace: ws.path,
         model,
         ...(agent ? { agentName: agent } : {}),
-        ...(text ? { firstMessage: text } : {})
+        ...(text ? { firstMessage: text } : {}),
+        ...(text && turn.parts ? { firstParts: turn.parts } : {})
       })
       // 首条输入直接发出去（省一次点击）。
       // ⚠️ skipAppend：首条已由 createConversation({ firstMessage }) 存进会话（还承担标题推导），
       //    这里若再追加，界面重复显示、模型收到 [user, user]（0.13.42 反馈实证）
+      // 首条（含图片引用）已由 `createConversation` 落盘，这里只喊一声：`parts` 不再传，免得看着像追加第二条
       if (text) await useAppStore.getState().sendMessage(text, { skipAppend: true })
       setInput('')
     } finally {

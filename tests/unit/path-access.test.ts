@@ -344,7 +344,9 @@ describe('★ 界面线：档位管不着它（判据 3 · 回归闸）', () => 
   it('readAttachment：**相对**越界路径仍抛错（绝对路径放行是拖拽那条线的既定语义，与本档位无关）', async () => {
     const env = makeEnv()
     try {
-      await expect(readAttachment(env.ws, '../out/secret.txt')).rejects.toThrow('越出了工作区')
+      // 越界这一步就抛了，够不到图片落盘 ⇒ 第三参给临时 userData 即可（不许指向工作区，免得看着像在往仓库里写）
+      const userData = join(env.out, 'userData')
+      await expect(readAttachment(env.ws, '../out/secret.txt', userData)).rejects.toThrow('越出了工作区')
     } finally {
       env.cleanup()
     }

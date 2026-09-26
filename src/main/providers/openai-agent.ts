@@ -12,6 +12,23 @@ import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
 // OpenAI tool-calls 适配（plan6 → P1；D-032 增补流式）：主循环的模型通道。
 // DeepSeek / V4 全系原生兼容 OpenAI tool-calls 协议；采样字段与 chat 路径同规则（可空不发）。
 
+/**
+ * 出境形状（plan57 片③）：`parts` 是我们的内部字段，**绝不能原样发出去**（严格端点会按未知字段 400）。
+ * 带图的轮换 OpenAI 视觉那套 content 数组；其余轮把 `parts` 摘掉、形状与改造前逐字节相同。
+ */
+export function toOpenAIWireMessage(m: AgentMessage): Record<string, unknown> {
+  const { parts, ...rest } = m
+  if (!parts?.some((p) => p.type === 'image')) return rest
+  return {
+    ...rest,
+    content: parts.map((p) =>
+      p.type === 'text'
+        ? { type: 'text', text: p.text }
+        : { type: 'image_url', image_url: { url: `data:${p.mime};base64,${p.base64}` } }
+    )
+  }
+}
+
 /** 构造带工具请求体（纯函数，单测覆盖） */
 export function buildToolsBody(
   settings: ModelSettings,
@@ -21,7 +38,7 @@ export function buildToolsBody(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: settings.model,
-    messages,
+    messages: messages.map(toOpenAIWireMessage),
     max_tokens: settings.maxTokens,
     stream,
     tools: tools.map((t) => ({

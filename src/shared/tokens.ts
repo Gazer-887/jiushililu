@@ -48,3 +48,18 @@ export function estimatePayloadTokens(parts: TokenPayloadPart[], extraJson = '')
   }
   return sum + estimateTokens(extraJson) + 4
 }
+
+/** `ContentPart` / `WirePart` 都能进来的最小形状（共享层两侧都不许再各写一份映射） */
+type EstparablePart = { type: 'text'; text: string } | { type: 'image' }
+
+/**
+ * 一轮的估算：带 `parts` 就按块算（图按几何/上界），否则与改造前同一条公式。
+ * ⚠️ 判据 K50 的落点：**有图的一轮绝不许走 base64 字符数**，否则一张截图被估成几十万 token，
+ * 下一轮 `trimMessages` 就把整段历史折进摘要。
+ */
+export function estimatePartsTokens(parts: EstparablePart[], extraJson = ''): number {
+  return estimatePayloadTokens(
+    parts.map((p): TokenPayloadPart => (p.type === 'text' ? { type: 'text', text: p.text } : { type: 'image' })),
+    extraJson
+  )
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
 import type { Attachment } from '@shared/ipc'
-import { composeWithAttachments, stripAttachmentBlocks } from '@shared/attachment-block'
+import { stripAttachmentBlocks, userTurnWithImages } from '@shared/attachment-block'
 import MessageMarkdown from '../components/MessageMarkdown'
 import MessageSegments from '../components/MessageSegments'
 import UserMessage from '../components/UserMessage'
@@ -405,7 +405,9 @@ export default function ChatView() {
     // 自己刚发的这条必须看得见：无条件收回跟随权（片② 的例外 —— 用户主动提交不是"上滑阅读"）
     stickBottomRef.current = true
     setShowJumpLatest(false)
-    await sendMessage(composeWithAttachments(raw, attachments))
+    // 正文与图片引用一次构造（片③）：两处分开拼迟早漂出"气泡有图、模型没图"
+    const turn = userTurnWithImages(raw.trim(), attachments)
+    await sendMessage(turn.content, turn.parts ? { parts: turn.parts } : undefined)
   }
 
   return (
@@ -483,7 +485,7 @@ export default function ChatView() {
                   <MessageMarkdown content={m.content} />
                 ) : m.role === 'user' ? (
                   /* plan57 片①：附件折成 chip，用户那句话放最前 —— 此前 64 KB 全文直接摊在气泡里 */
-                  <UserMessage text={m.content} />
+                  <UserMessage text={m.content} parts={m.parts} />
                 ) : (
                   m.content || (streaming && i === messages.length - 1 ? '…' : '')
                 )}

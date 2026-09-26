@@ -16,8 +16,32 @@ import { createStreamGuard, type StreamGuard, type StreamGuardOptions } from './
 
 type AnthropicBlock =
   | { type: 'text'; text: string }
+  /**
+   * 图片块（plan57 片③）。`transformations.oversized_image` **必须显式给**：
+   * 厂商默认是 `downsize`，SDK 原文写它"改变了模型实际看到的尺寸而不告诉你"（D-146 E）——
+   * 我们宁可收一个点名尺寸的 400，也不要"图发出去了但模型看的是缩过的"这种静默。
+   */
+  | {
+      type: 'image'
+      source: { type: 'base64'; media_type: string; data: string }
+      transformations: { oversized_image: 'error' }
+    }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: string }
+
+/** 出境块映射：有 `parts` 就以它为准（`content` 那份文本是同源的投影，不重复下发） */
+function blocksOfUserTurn(m: AgentMessage): AnthropicBlock[] {
+  if (!m.parts) return [{ type: 'text', text: m.content ?? '' }]
+  return m.parts.map((p): AnthropicBlock =>
+    p.type === 'text'
+      ? { type: 'text', text: p.text }
+      : {
+          type: 'image',
+          source: { type: 'base64', media_type: p.mime, data: p.base64 },
+          transformations: { oversized_image: 'error' }
+        }
+  )
+}
 
 interface AnthropicAgentMessage {
   role: 'user' | 'assistant'
@@ -72,7 +96,7 @@ export function toAnthropicAgentMessages(messages: AgentMessage[]): {
       continue
     }
     if (m.role === 'user') {
-      out.push({ role: 'user', content: [{ type: 'text', text: m.content ?? '' }] })
+      out.push({ role: 'user', content: blocksOfUserTurn(m) })
     }
   }
   flushToolResults()

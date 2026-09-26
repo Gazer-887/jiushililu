@@ -8,6 +8,7 @@ import type {
   SettingsView,
   StreamEnvelope
 } from '@shared/ipc'
+import { textOfParts, type ContentPart } from '@shared/content-parts'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import { applyAssistantChunk, applyAssistantThinking, applyAssistantTool } from '@shared/message-segments'
 import type { AskRequest } from '@shared/ask'
@@ -21,7 +22,7 @@ import {
   type TokenUsage
 } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
-import { estimateMessageTokens } from '@shared/tokens'
+import { estimateMessageTokens, estimatePartsTokens } from '@shared/tokens'
 import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
 import { applyLocale } from './i18n'
 import {
@@ -233,7 +234,7 @@ interface AppState {
   markDone: (e: StreamEnvelope<ChatDonePayload>) => void
   markError: (e: StreamEnvelope<string>) => void
   clearToolEvents: () => void
-  sendMessage: (text: string, opts?: { skipAppend?: boolean }) => Promise<void>
+  sendMessage: (text: string, opts?: { skipAppend?: boolean; parts?: ContentPart[] }) => Promise<void>
   stopStreaming: () => Promise<void>
   persistConversation: (id: string) => Promise<void>
   flushAll: () => Promise<void>
@@ -341,7 +342,12 @@ export interface RuntimeSnapshot {
 }
 
 export function usedTokens(messages: ChatMessage[]): number {
-  return messages.reduce((sum, m) => sum + estimateMessageTokens(m.content), 0)
+  return messages.reduce(
+    (sum, m) =>
+      // 有 parts 只按块算（图按几何上界）：把 base64 当字符数估会把一张截图报成几十万 token（K50）
+      sum + (m.parts ? estimatePartsTokens(m.parts) : estimateMessageTokens(m.content)),
+    0
+  )
 }
 
 /** 一条会话的现场快照（深拷贝一层 —— 存引用的话，切来切去两边会互相改） */
@@ -970,7 +976,9 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 模型收到 `[user, user]` 两条连续同角色消息（部分兼容后端会因此卡住或返回空流，0.13.42 反馈实证）。
    */
   sendMessage: async (text, opts) => {
-    const content = text.trim()
+    // 带 `parts` 时正文从 parts 现取：两者是同一句话的两个视图，**在这里保证一致**比要求
+    // 每个调用点自觉传对更可靠（下面 append 那一处直接用它，`content === textOfParts(parts)` 由此成立）
+    const content = (opts?.parts ? textOfParts(opts.parts) : text).trim()
     const conversationId = get().activeId
     if (!content || get().streaming) return
     if (!conversationId) {
@@ -988,7 +996,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const now = Date.now()
     const payload = skipAppend
       ? [...history]
-      : [...history, { role: 'user' as const, content, createdAt: now }]
+      : [
+          ...history,
+          {
+            role: 'user' as const,
+            content,
+            createdAt: now,
+            // 图片轮才带（引用制，见 `ChatMessage.parts`）；文本部分与 `content` 同源，不另计一次
+            ...(opts?.parts ? { parts: opts.parts } : {})
+          }
+        ]
     set({
       messages: [...payload, { role: 'assistant', content: '', segments: [], createdAt: now }],
       streaming: true,

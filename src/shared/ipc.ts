@@ -12,6 +12,7 @@ import type { FsOfficeResult } from './office-preview'
 import type { AskRequest, AskResult } from './ask'
 import type { SystemSettings, SystemView } from './system'
 import type { NetworkPatch, NetworkView } from './network'
+import type { ContentPart, ImageRef } from './content-parts'
 import type { SystemFontsResult } from './font-names'
 import type { GitChange } from './git-status'
 
@@ -53,6 +54,14 @@ export interface SettingsSaveInput extends ModelSettings {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+  /**
+   * 多模态出境内容（plan57 片③，D-146 A）：**只在含图片时才有**。图按引用存（`ImageRef.ref`
+   * 是 userData/attachments 下的受限文件名），base64 只在出站那一刻物化。
+   *
+   * 不变式：`content === textOfParts(parts)`（两处文本必须同源，构造只经 `userTurnWithImages`）。
+   * ⚠️ 与下面 `segments` 不是一类东西 —— 那些是本地渲染资产，本字段**要发给模型**。
+   */
+  parts?: ContentPart[]
   /** 仅 assistant 可带（plan36）：执行过程按真实顺序的分段，本地渲染与回看用，**不发给模型** */
   segments?: MessageSegment[]
   /**
@@ -123,6 +132,11 @@ export interface Attachment {
   bytes: number
   /** 这个文件**不在当前工作区内**（从系统里明确拖/选进来的）：只影响界面标记、不影响能不能读 —— 用户有权知道上下文里混进了"外面的"文件；边界规则见 `workspace-fs.readAttachment`。 */
   outside?: boolean
+  /**
+   * 图片附件（plan57 片③）：字节已落进 `userData/attachments/`，这里只带引用。
+   * 有它时 `content` 恒为空串 —— 正文里那条 `<file kind="image" …>` marker 才是给模型看的说明。
+   */
+  image?: ImageRef
 }
 
 export interface GitInfo {
@@ -271,6 +285,8 @@ export interface ConversationCreateInput {
   /** 历史遗留（plan17 起 PlusMenu 不再写入）：老入口的技能勾选，保留兼容 */
   skills?: string[]
   firstMessage?: string
+  /** 首条消息的图片引用（plan57 片③）：与 `firstMessage` 同源，纯文本时不带 */
+  firstParts?: ContentPart[]
 }
 
 export interface SkillInfo {

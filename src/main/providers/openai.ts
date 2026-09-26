@@ -7,6 +7,11 @@ import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
 
 // 纯函数：构造请求体（单元测试覆盖）
+/** 只留协议字段：`parts` / `segments` / `createdAt` 是我们的扩展，漏一个给严格端点就是一个未知的 400 */
+function toChatWireMessage(m: ChatMessage): { role: ChatMessage['role']; content: string } {
+  return { role: m.role, content: m.content }
+}
+
 export function buildOpenAIChatBody(
   settings: ModelSettings,
   messages: ChatMessage[],
@@ -14,7 +19,8 @@ export function buildOpenAIChatBody(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: settings.model,
-    messages,
+    // 与 `mapAnthropicMessages` 同口径（那条线是重建对象，天然不外泄）；这条线必须显式挑字段
+    messages: messages.map(toChatWireMessage),
     max_tokens: settings.maxTokens,
     stream
   }

@@ -1692,10 +1692,28 @@ const STUBS = {
     // 相对路径仍按工作区根拼（保持本文件其它桩一贯的 Windows 路径形状，不引第二种写法）。
     const abs = isAbsolute(s) ? s : ws + '\\' + s.replace(/\//g, '\\')
     const name = abs.split(/[\\/]/).pop() || 'a.txt'
-    // 二进制闸：真源是 `workspace-fs.readAttachment`（判据 = 前 8KB 有无 NUL + `fs-tree.imageMimeOf`）。
-    // 桩拿不到真文件字节，只能按扩展名镜像同一拒绝行为 ⇒ **改主进程那张表时这里要跟着改**（桩是契约的复制品）。
-    if (/\.(png|jpe?g|gif|webp|bmp|svg|mp4|mov|avi|webm)$/i.test(name)) {
-      throw new Error(`「${name}」看起来是二进制文件（含 NUL 字节），附件只收文本`)
+    // 二进制闸 + 图片分流：真源是 `workspace-fs.readAttachment`（判据 = 前 8KB 有无 NUL，
+    // 图片类型再走 `content-parts.OUTBOUND_IMAGE_MIMES`）。桩拿不到真文件字节，只能按扩展名镜像
+    // 同一形状 ⇒ **改主进程那两张表时这里要跟着改**（桩是契约的复制品）。
+    // 图片**只回引用**：桩里出现 base64 就等于把"字节不回渲染层"这条契约在门禁里演歪。
+    if (/\.(png|jpe?g|gif|webp)$/i.test(name)) {
+      return {
+        name,
+        path: abs,
+        content: '',
+        truncated: false,
+        bytes: 4096,
+        image: {
+          type: 'image',
+          mime: /\.png$/i.test(name) ? 'image/png' : /\.jpe?g$/i.test(name) ? 'image/jpeg' : 'image/webp',
+          ref: '20260927T000000-0-ab12cd.png',
+          bytes: 4096
+        },
+        ...(abs.toLowerCase().startsWith(ws.toLowerCase() + '\\') ? {} : { outside: true })
+      }
+    }
+    if (/\.(mp4|mov|avi|webm|bmp|svg)$/i.test(name)) {
+      throw new Error(`「${name}」是二进制文件（含 NUL 字节）且不是模型能收的图片类型，附件只收文本与 png/jpg/gif/webp`)
     }
     const content = '氧化铈粉 120kg\n碳酸钠 45kg'
     return {
@@ -8590,6 +8608,59 @@ app.whenReady().then(async () => {
     slidGap !== null && slidGap > 200 && (afterSlide?.gap ?? 0) > 200 && afterSlide?.chip === true,
     { slidGap, afterSlide }
   )
+
+  // —— plan57 片③：图片附件在界面上是**引用**，字节一次都不该露面 ——
+  // 单测罩不到这一段：它测的是 `readAttachment` 与 provider 映射，中间那段
+  // "拖进来 → chip → 提交 → chat:send 载荷" 属于界面接线，只有这里量得到。
+  const shotPng = join(tmpdir(), 'jsl-verify-shot.png')
+  writeFileSync(shotPng, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  chatSendCalls.length = 0
+  const imgFlow = await win.webContents.executeJavaScript(`
+    (async () => {
+      const box = document.querySelector('.console');
+      if (!box) return { ok: false, why: '没有 .console（当前不在对话页）' };
+      const dt = new DataTransfer();
+      dt.setData('application/x-jiushililu-path', ${JSON.stringify(shotPng)});
+      box.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      await new Promise((r) => setTimeout(r, 700));
+      const chips = Array.from(document.querySelectorAll('.attach-chip'));
+      const ta = document.querySelector('.console-input');
+      if (!ta) return { ok: false, why: '没有输入框' };
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 700));
+      const bubble = Array.from(document.querySelectorAll('.msg-user')).pop();
+      return {
+        ok: true,
+        chipBadges: chips.map((c) => Array.from(c.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean).join('/')),
+        // 界面任何一处露出字节 = 引用制破了（chip 的 title 是最容易漏的地方）
+        chipLeak: document.querySelector('.attach-list')?.textContent?.includes('iVBOR') === true,
+        imgChip: !!document.querySelector('.msg-attach-image'),
+        bubbleText: (bubble?.textContent ?? '').trim().slice(0, 120),
+        bubbleLeak: (bubble?.textContent ?? '').includes('iVBOR')
+      };
+    })()
+  `)
+  const imgSend = chatSendCalls[chatSendCalls.length - 1]
+  const imgTurn = (imgSend?.messages ?? []).filter((m) => m.role === 'user').pop()
+  checkTrue(
+    '片③ 图片附件：输入框与气泡各给一枚「图片」chip，且界面上看不到字节',
+    imgFlow.ok === true &&
+      imgFlow.imgChip === true &&
+      imgFlow.chipBadges.some((b) => b.includes('图片')) &&
+      imgFlow.chipLeak === false &&
+      imgFlow.bubbleLeak === false,
+    imgFlow
+  )
+  checkTrue(
+    '片③ 出境载荷带引用（ref + mime），但不带 base64（引用制没被"顺手图方便"破掉）',
+    Array.isArray(imgTurn?.parts) &&
+      imgTurn.parts.some((p) => p.type === 'image' && typeof p.ref === 'string' && p.ref.length > 0) &&
+      !JSON.stringify(imgSend).includes('base64'),
+    { parts: imgTurn?.parts ?? null }
+  )
+  // 收尾：这条会话还在 streaming（桩不会自己吐 done），不 settle 会把后面那组"切页不丢流"的判据带成假红
+  win.webContents.send('chat:done', { conversationId: 'c1', payload: null })
+  await new Promise((r) => setTimeout(r, 500))
 
   // —— 流式订阅不该跟着视图卸载（会卡死人的 bug）——
   // 现象：流式期间去「设置」页 → 中途吐出来的字全丢；流恰在那一刻跑完时 chat:done 收不到 → streaming 永远停在

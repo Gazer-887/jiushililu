@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import {
+  ATTACHMENT_REF_RE,
+  MAX_IMAGES_PER_TURN,
+  MAX_OUTBOUND_IMAGE_BYTES,
+  OUTBOUND_IMAGE_MIMES
+} from '@shared/content-parts'
 
 // 入参 schema 独立成文件：纯 zod、不 import electron，可脱离主进程单测。
 // 所有来自渲染进程的入参一律过这里 —— 坏数据挡在主进程门外。
@@ -37,6 +43,23 @@ export const settingsSchema = z.object({
 })
 
 /**
+ * 存档与出境里的多模态块（plan57 片③）：**只收引用，不收 base64**。
+ * 图片正文走 `userData/attachments/`，这里能出现的只有 `ref`（受限文件名形状）——
+ * 形状校验就够挡路径穿越，**不必在这里读盘**（校验层与文件层不耦合，schema 才能脱离 electron 单测）。
+ */
+export const contentPartsSchema = z.array(
+  z.discriminatedUnion('type', [
+    z.object({ type: z.literal('text'), text: z.string().max(200000) }),
+    z.object({
+      type: z.literal('image'),
+      mime: z.enum(OUTBOUND_IMAGE_MIMES),
+      ref: z.string().regex(ATTACHMENT_REF_RE),
+      bytes: z.number().int().nonnegative().max(MAX_OUTBOUND_IMAGE_BYTES)
+    })
+  ])
+).min(1).max(MAX_IMAGES_PER_TURN)
+
+/**
  * 单条消息（发给模型的通道）：刻意**不含** segments —— 执行分段是本地渲染资产，不随请求出境（plan36 审查坑 2）。
  * 空正文按角色放行（K8）：否则被「停止生成」留下空正文助手轮的那条会话，从此再也发不出消息。
  * 这比落盘侧 `storedMessageSchema` 松一档（segments 到不了这儿），差额由 agent/context `historyForModel` 兜住。
@@ -44,7 +67,8 @@ export const settingsSchema = z.object({
 const messageSchema = z
   .object({
     role: z.enum(['system', 'user', 'assistant']),
-    content: z.string().max(200000)
+    content: z.string().max(200000),
+    parts: contentPartsSchema.optional()
   })
   .superRefine((m, ctx) => {
     if (m.content.trim().length === 0 && m.role !== 'assistant') {
@@ -161,6 +185,7 @@ export const incomingMessagesSchema = z.array(
   z.object({
     role: z.enum(['system', 'user', 'assistant']),
     content: z.string().max(200000),
+    parts: contentPartsSchema.optional(),
     segments: z.array(z.record(z.string(), z.unknown())).max(1000).optional(),
     /** plan46：消息时间戳（可选 —— 旧数据无该字段，渲染层据此决定是否显示时间） */
     createdAt: z.number().int().nonnegative().optional()
@@ -201,6 +226,7 @@ export const storedMessageSchema = z
   .object({
     role: z.enum(['system', 'user', 'assistant']),
     content: z.string().max(200000),
+    parts: contentPartsSchema.optional(),
     segments: z.array(segmentSchema).max(1000).optional(),
     /** plan46：消息时间戳（可选 —— 旧存档无此字段，渲染层无则不显示时间，不编造） */
     createdAt: z.number().int().nonnegative().optional()

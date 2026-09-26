@@ -245,6 +245,7 @@ export default function InputConsole({
                 />
               </svg>
               {a.name}
+              {a.image && <span className="attach-kind">图片</span>}
               {a.outside && <span className="attach-out">工作区外</span>}
               {a.truncated && <span className="attach-trunc">截断</span>}
               <button className="attach-x" title="移除" onClick={() => removeAttachment(a.path)}>

@@ -88,6 +88,7 @@ import type { AskBridge } from './ask'
 import { ASK_MAX_OPTIONS, type AskResult } from '@shared/ask'
 import {
   chatSendInputSchema,
+  contentPartsSchema,
   conversationIdSchema,
   incomingMessagesSchema,
   MAX_STORED_CHARS,
@@ -166,7 +167,9 @@ const netProxySetSchema = networkSetSchema
 import { runAgent, ensureAgentRuntime, listSkills, type AgentRuntimeContext } from './agent/runner'
 import { createExecEventRecorder, readExecEvents, sanitizeExecEventQuery, type ExecEventSink } from './agent/exec-events'
 import type { ExecEventListResult } from '@shared/exec-events'
-import type { AgentMessage, SubagentJobEvent } from '@shared/agent'
+import type { SubagentJobEvent } from '@shared/agent'
+import { imageCountOf, imageGateError, materializeHistory } from '@shared/content-parts'
+import { readAttachmentImage } from './attachments-store'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { sendToAll } from './window-registry'
@@ -641,6 +644,17 @@ export function registerIpcHandlers(deps: {
       return
     }
 
+    // 图片出境的能力位闸（plan57 片③，D-146 B）：**发送前拦**，不是"发出去看厂商怎么报" ——
+    // 错误串会被网关改写（OpenRouter 甚至回 404 看着像模型不存在），且有的端点收了图却忽略它。
+    // 拦的是**整段历史里任意一轮带图**：旧轮折成 marker 后模型仍被告知"这里有过一张图"，
+    // 那正是"界面有图、模型没图"的假成功，不能因为它不带 base64 就放行。
+    const gateErr = imageGateError(settings.supportsImages, messages.reduce((n, m) => n + imageCountOf(m.parts), 0))
+    if (gateErr) {
+      chatGate.end(conversationId)
+      emit.error(gateErr)
+      return
+    }
+
     const apiKey = getDecryptedApiKey()
     // ⚠️ plan29 D-090：这里原来有一层**整轮墙钟**（`setTimeout(() => controller.abort(), settings.timeoutMs)`），
     // 已按用户决议**彻底删除** —— 不保留为「默认关闭的设置项」（保留会多一层误用风险 + 误用后的处理成本）。
@@ -684,7 +698,11 @@ export function registerIpcHandlers(deps: {
       const result = await runAgent(deps.agent, {
         settings: getSettingsView(),
         apiKey,
-        history: messages as AgentMessage[],
+        // 引用 → base64 只在这一刻发生（plan57 片③）：存档与内存里都只放引用，
+        // 旧轮按配额折回正文 marker（D-146 C，一张被清掉的图会降级成一句人话而不是卡死会话）
+        history: await materializeHistory(messages, async (ref) =>
+          readAttachmentImage(deps.userDataDir, ref)
+        ),
         // 主 Agent（plan17 G2）：渲染端按会话带上；定义不存在 → runAgent 抛人话错误走下方 catch → emit.error
         agentName: input.agentName,
         permission: getPermissionPreset(),
@@ -996,7 +1014,8 @@ export function registerIpcHandlers(deps: {
     // 主 Agent（plan17）：可选；老渲染端不传也能过（skills 同理——plan17 起 PlusMenu 不再写入）
     agentName: z.string().max(64).optional(),
     skills: z.array(z.string().max(64)).max(50).optional(),
-    firstMessage: z.string().max(200000).optional()
+    firstMessage: z.string().max(200000).optional(),
+    firstParts: contentPartsSchema.optional()
   })
 
   ipcMain.handle(IPC.convCreate, (_e, raw: unknown): Conversation => {
@@ -1877,7 +1896,7 @@ export function registerIpcHandlers(deps: {
     const opts = { properties: ['openFile' as const], defaultPath: ws }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     if (res.canceled || res.filePaths.length === 0) return null
-    return readAttachment(ws, res.filePaths[0]!)
+    return readAttachment(ws, res.filePaths[0]!, deps.userDataDir)
   })
 
   // 拖拽进来的文件：相对路径来自工作区文件树（必须在工作区内），绝对路径来自系统资源管理器（明确拖入即放行）；边界规则与理由集中在 `workspace-fs.readAttachment`，这里只管留痕。
@@ -1885,7 +1904,7 @@ export function registerIpcHandlers(deps: {
     const pathOrRel = z.string().min(1).max(4096).parse(raw)
     const ws = getWorkspaceInfo(deps.userDataDir).path
     try {
-      return await readAttachment(ws, pathOrRel)
+      return await readAttachment(ws, pathOrRel, deps.userDataDir)
     } catch (err) {
       // **留痕**：附件被拒以前是静默的 —— 界面上看到一句"越界"、日志里什么都没有，事后只能靠猜。带上载荷与边界就够定位了。
       log.warn('附件被拒', {
