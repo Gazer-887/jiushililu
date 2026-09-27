@@ -301,3 +301,40 @@ describe('复制：渲染层只许走主进程那一条路', () => {
     expect(gate).toContain('clipboard.writeText(text)')
   })
 })
+
+// —— 滚动条：全局隐藏与终端例外必须同时在场（2026-09-27 用户裁决「完全隐藏，只留滚轮」）————
+// 为什么单独一条守卫而不只是"改完看一眼"：Electron 33 = Chromium 130，`scrollbar-width` 只要
+// 不是 auto 就**压过** `::-webkit-scrollbar` 那组规则。全局那条写在 `*` 上 ⇒ 终端视口本来靠
+// 更高特异性的伪元素规则保住的滚动条，会被 `*` 的 `scrollbar-width: none` 直接抹掉，
+// **不报错、不红、门禁也看不见**（门禁里没有开终端的那一屏时更是零反应）。
+describe('滚动条：全局隐藏 + 终端有意例外', () => {
+  // 样式表是 CRLF：先归一化行尾。不归一化时，按换行符找的锚点 indexOf 会返回 -1，
+  // slice 就从文件末尾开始 ⇒ 判据恒红（09-27 实测踩到）。
+  const css = src('renderer/src/styles.css').replace(/\r\n/g, '\n')
+
+  it('全局那条在场：`*` 上 scrollbar-width: none + 伪元素 display: none 两条都写', () => {
+    const global = css.slice(css.indexOf('* {\n  box-sizing'), css.indexOf('::-webkit-scrollbar {'))
+    expect(global).toContain('scrollbar-width: none')
+    expect(global).toContain('-ms-overflow-style: none')
+    expect(css.slice(css.indexOf('::-webkit-scrollbar {'))).toMatch(
+      /::-webkit-scrollbar \{\s*width: 0;\s*height: 0;\s*display: none;/
+    )
+  })
+
+  it('★ 终端例外必须**同时**有标准属性与伪元素两份（只留一份就会在某个引擎上静默失效）', () => {
+    const tm = css.slice(css.indexOf('.tm-host .xterm-viewport {'))
+    expect(tm, '缺 scrollbar-width：会被全局 none 抹掉').toContain('scrollbar-width: thin')
+    expect(tm, '缺 scrollbar-color：细条会是默认白，深底上抢戏').toContain('scrollbar-color:')
+    expect(tm, '缺伪元素回退：不支持 scrollbar-width 的引擎会退回全局隐藏').toContain(
+      '.tm-host .xterm-viewport::-webkit-scrollbar'
+    )
+  })
+
+  it('★ 阳性对照：全局规则确实比终端那条"更晚命中"，靠的是特异性而不是书写顺序', () => {
+    // 反向钉住一种坏修法：有人为了"让终端还有滚动条"把全局那条删掉 ⇒ 满屏粗条回来了
+    const starNone = /\*\s*\{[^}]*scrollbar-width:\s*none/.test(css)
+    expect(starNone, '全局 `*` 上的 none 不见了 = 这条守卫被绕开').toBe(true)
+    // 而终端那条的选择器含两个类，特异性 (0,2,0) > `*` 的 (0,0,0)：顺序无关，删全局才有效
+    expect(css).toContain('.tm-host .xterm-viewport {')
+  })
+})

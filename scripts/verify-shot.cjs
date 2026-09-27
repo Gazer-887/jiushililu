@@ -2792,6 +2792,96 @@ app.whenReady().then(async () => {
     copyProbe = { ran: false, why: copyTarget.why || '正文太短，取不到可用的特征串' }
   }
 
+  /*
+   * ── 滚动条：全局隐藏之后，滚轮必须照样能滚（用户 2026-09-27 裁决）────────
+   *
+   * 判据口径**照抄 `.pane-tabs-scroll` 09-17 那次写在注释里的三条**：
+   *   ① 滚动条不可见（不占位） ② 滚轮有效 ③ 触控板原生横划有效
+   * 这里能机器判 ① ②。**③ 要真硬件，机器测不出来 ⇒ 不拿"前两条绿"冒充三条全过**，
+   * 它归装机点验（漏判的代价是"滑条没了 + 横划也失效 = 双重失效"，比不改更糟）。
+   *
+   * ① 为什么用"不占位"而不是"截图上看不见"：截图判不可见要靠像素比对，脆弱且会被
+   *    缩放比骗（本项目实测过截图像素 ≠ 窗口像素）。`offsetWidth - clientWidth === 0`
+   *    是几何读数，直接对应"有没有吃掉内容宽度"。
+   * ② 为什么必须 `sendInputEvent`：合成 `WheelEvent` **不触发原生滚动**，
+   *    用 `dispatchEvent` 测出来的"滚动了"是假的。
+   */
+  const scrollProbe = await win.webContents.executeJavaScript(`
+    (() => {
+      const sels = [
+        '.chat-messages', '.conv-scroll', '.ex-tree', '.dock-body', '.settings-body',
+        '.msg-attach-body', '.reasoning-body', '.todo-list', '.task-output', '.md-pre'
+      ];
+      const seen = [];
+      for (const s of sels) {
+        const el = document.querySelector(s);
+        if (!el) continue;
+        const overY = el.scrollHeight - el.clientHeight;
+        seen.push({
+          sel: s,
+          overY,
+          // 只在**真的纵向溢出**时这条读数才有意义：不溢出的容器本来就不占位，算假绿
+          gutterX: overY > 4 ? el.offsetWidth - el.clientWidth : null,
+          sw: getComputedStyle(el).scrollbarWidth
+        });
+      }
+      // 要求可滚量 > 400：给滚轮留出**不会被上下限夹住**的行程，
+      // 否则"滚不动"可能只是已经到头了（09-27 第一版就是这么假绿的）。
+      const target = seen.find((v) => v.overY > 400) || null;
+      let box = null;
+      if (target) {
+        const el = document.querySelector(target.sel);
+        const r = el.getBoundingClientRect();
+        // ⚠️ 取**上半部**而不是几何中心：chat-messages 平时就停在底部（自动跟随），
+        //    中心点发"向下滚"无处可去 → 只会读到自动落位的那 2px，测不出滚轮（09-27 实测）。
+        //    往上滚才是真判据，且顺带验到 plan57 片② 的"上滑不被拽回底部"。
+        box = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + Math.min(80, r.height / 3)),
+                sel: target.sel, before: Math.round(el.scrollTop) };
+      }
+      return { seen, box, baseline: 400 };
+    })()
+  `)
+  if (scrollProbe.box) {
+    // ⚠️ 这一组**只判到"事件到达 + 容器可滚"为止**，判不了"原生滚动真的发生"。两次实测：
+    //   ① 隐藏窗口里 `wheel` 监听收得到（wheelSeen=1）、程序化 scrollTop 也设得动（progOk=400），
+    //      但滚轮之后 scrollTop 从 400 只到 401 —— **Chromium 在不可见窗口里不执行原生滚动偏移**；
+    //   ② 于是改成"测前 win.show()、测后 win.hide()" ⇒ 整条门禁挂死到 10 分钟看门狗，
+    //      最后 `TypeError: Object has been destroyed`（隐藏回来之后 harness 就废了）。
+    //   ⇒ 原生滚轮这一格**交装机点验**，在这里只留下面这条能证的：滚轮事件确实落到这个容器上、
+    //     且它没被别的东西盖住 —— 这已经能抓住"遮罩吃掉滚轮"和"容器根本不滚"两种真坏法。
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const el = document.querySelector(${JSON.stringify(scrollProbe.box.sel)});
+        window.__wheelSeen = 0;
+        el.addEventListener('wheel', () => { window.__wheelSeen++; }, true);
+        el.scrollTop = ${scrollProbe.baseline};
+        window.__scrollDiag = {
+          progOk: Math.round(el.scrollTop),
+          hitSelf: document.elementFromPoint(${scrollProbe.box.x}, ${scrollProbe.box.y}) === el ||
+            el.contains(document.elementFromPoint(${scrollProbe.box.x}, ${scrollProbe.box.y}))
+        };
+        return true;
+      })()
+    `)
+    await win.webContents.sendInputEvent({
+      type: 'mouseWheel',
+      x: scrollProbe.box.x,
+      y: scrollProbe.box.y,
+      deltaX: 0,
+      deltaY: -400
+    })
+    await new Promise((r) => setTimeout(r, 500))
+    scrollProbe.after = await win.webContents.executeJavaScript(`
+      (() => ({
+        scrollTop: Math.round(document.querySelector(
+          ${JSON.stringify(scrollProbe.box.sel)}).scrollTop),
+        wheelSeen: window.__wheelSeen,
+        progOk: window.__scrollDiag.progOk,
+        hitSelf: window.__scrollDiag.hitSelf
+      }))()
+    `)
+  }
+
   win.setSize(760, 700)
   await new Promise((r) => setTimeout(r, 1200))
   const m2 = await measure()
@@ -9037,6 +9127,29 @@ app.whenReady().then(async () => {
     copyProbe.ran === true && copyProbe.landed === true, copyProbe)
   checkTrue('复制成功时**对勾亮起来**（失败也必须有可见反馈，这条同时钉住"静默失败"那一族）',
     copyProbe.ran === true && copyProbe.on === true, copyProbe)
+  // ── 滚动条三条里的前两条（第三条"触控板横划"要真硬件，归装机点验，不在这里冒充）──
+  checkTrue('抽查的可滚动容器**计算样式都是 scrollbar-width: none**（全局那条真的落到了它们身上）',
+    // 地板值取 2 不取 3：这一刻只有一部分面板挂着（设置页是独立窗口、侧栏要开工作区才有），
+    // 要求 3 个会把"采样少"读成"改动没生效"（09-27 实测：两个采样都判 none，却因数量不够而红）。
+    // 真正防空转的是下面那条"至少量到一个真溢出的容器"。
+    scrollProbe.seen.length >= 2 && scrollProbe.seen.every((v) => v.sw === 'none'), scrollProbe.seen)
+  checkTrue('真纵向溢出的容器**不占内容宽度**（几何读数，不靠"截图上看不见"）',
+    scrollProbe.seen.some((v) => v.gutterX === 0) &&
+      scrollProbe.seen.filter((v) => v.gutterX !== null).every((v) => v.gutterX === 0),
+    scrollProbe.seen)
+  // ★ 断言的起点是**程序化设好的基线 400**，不是页面原本停在的底部位置 ——
+  //   第一版拿 before(529) 比，而我中途自己把 scrollTop 设成了 100，
+  //   于是那 429px 里有一大半是我挪的、不是滚轮挪的 ⇒ **假绿**。
+  //   差值只许归因给滚轮：基线 400 → 滚轮上滚 400 → 应落到 0 附近。
+  // ★ 这条**故意不判"原生滚动发生了多少"** —— harness 造不出那个形状（见上面 ① ② 两次实测）。
+  //   它判三件仍然可证的：滚轮落在这个容器自己身上（不是被遮罩吃掉）、容器确实可滚、
+  //   事件确实送达。"滚起来手感如何"归装机点验，不在这里冒充已测。
+  checkTrue('滚轮**落到这个容器上且它可滚**（原生滚动偏移 harness 测不出 ⇒ 交装机点验）',
+    !!scrollProbe.box &&
+      scrollProbe.after.hitSelf === true &&
+      scrollProbe.after.wheelSeen >= 1 &&
+      scrollProbe.after.progOk === scrollProbe.baseline,
+    { target: scrollProbe.box, baseline: scrollProbe.baseline, after: scrollProbe.after })
   checkTrue('提示条上有个**撤销**入口', rbAfter.hasUndo === true)
   checkTrue('点撤销 → 调了撤销通道，且条数**换回 4 条**（权威正文说了算）',
     convUndoCalls.length === 1 && rbUndone.msgs === 4, { calls: convUndoCalls.length, ...rbUndone })

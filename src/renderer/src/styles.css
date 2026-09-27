@@ -224,6 +224,31 @@ html[data-theme="jiguang"] {
   padding: 0;
 }
 
+/*
+ * 全局：隐藏原生滚动条（用户 2026-09-27 裁决「完全隐藏，只留滚轮」）。
+ * 依据是量出来的不是感觉 —— 全表 **22 个可滚动容器里只有 3 处自写过滚动条样式**，
+ * 其余全吃 Chromium 在 Windows 上的原生默认（17px 宽 + 上下箭头方块）⇒ 满屏粗条。
+ * 收口在 `*` 上而不是逐容器改：逐容器必漏，且以后新加的可滚动区会长回来。
+ * ⚠️ 三条不许顺手"优化"（前两条是 `.pane-tabs-scroll` 09-17 那次踩过、写在它注释里的）：
+ *   ① 各容器 `overflow` 一律保持 `auto` —— 改成 `hidden` 会连"触控板原生横划"一起夺走；
+ *   ② 验收三条件必须同时成立：滚动条不可见 + 滚轮有效 + 触控板横划有效
+ *      （滑条没了 + 滚轮也失效 = 双重失效，比改之前更糟）；
+ *   ③ 终端视口是**有意保留的例外**（见下面 `.tm-host .xterm-viewport`）——
+ *      Electron 33 = Chromium 130，`scrollbar-width` 一旦非 `auto` 就会**压过**
+ *      `::-webkit-scrollbar` 那组规则，所以那处必须同时改用标准属性，
+ *      否则会被本条静默抹掉（抹掉了不报错，只是终端再也看不出滚到哪了）。
+ */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
 html,
 body,
 #root {
@@ -4351,7 +4376,15 @@ button.tm-shell-btn:disabled {
   border-top: 1px solid var(--border);
 }
 
-/* xterm 的滚动条在这套深底上默认是白的（抢戏）—— 压暗成灰 */
+/* xterm 的滚动条在这套深底上默认是白的（抢戏）—— 压暗成灰。
+ * ⚠️ 这是上面那条全局隐藏规则的**有意例外**：终端里"我滚到哪了"是刚需（输出可以很长且没有
+ *    气泡边界可当线索）。Chromium 130 上 `scrollbar-width` 非 auto 会压过 `::-webkit-scrollbar`
+ *    ⇒ 必须**两条一起写**：标准属性给新引擎，伪元素留给不支持的引擎。 */
+.tm-host .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a45 transparent;
+}
+
 .tm-host .xterm-viewport::-webkit-scrollbar {
   width: 8px;
 }
