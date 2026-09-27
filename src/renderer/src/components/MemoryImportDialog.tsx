@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { MemorySaveResult } from '@shared/memory'
 import { MEMORY_IMPORT_PROMPT, parseMemoryImport } from '@shared/memory-import'
+import { copyText } from '../clipboard'
 
 // 「导入其他记忆」对话框（0.13.41 反馈新增，形态照 WorkBuddy 的两步式）。
 // ⚠️ 三条底线：① 导入走与手填**完全相同**的 `saveMemory` —— 撞名/超限/凭据一样被拒，导入无后门；
@@ -16,13 +17,13 @@ export default function MemoryImportDialog(props: {
   const [report, setReport] = useState<string | null>(null)
 
   const copyPrompt = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(MEMORY_IMPORT_PROMPT)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
+    if (!(await copyText(MEMORY_IMPORT_PROMPT))) {
       setReport('复制失败：请手动全选上方文本复制')
+      return
     }
+    setReport(null)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   const run = async (): Promise<void> => {

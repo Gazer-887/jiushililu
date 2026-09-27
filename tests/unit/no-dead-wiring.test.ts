@@ -2,7 +2,7 @@
 //
 // 强度声明（`AGENTS.md` §八）：这些是**结构守卫**，挡的是"改着改着又加回去 / 又漏掉"，
 // 不替代行为测试。每条都配了**阳性对照**，防止有人为了过判据把东西删干净 —— 那等于换了个坏法。
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -220,5 +220,84 @@ describe('K13 门禁桩覆盖率：preload 能 invoke 到的通道，门禁必�
       expect(invokedChannels.has(ch), `preload 侧缺 ${ch}`).toBe(true)
       expect(gateStubChannels.has(ch), `门禁侧缺 ${ch}`).toBe(true)
     }
+  })
+})
+
+// —— 复制的唯一入口（2026-09-27 用户实机报"点复制没反应、对勾不亮"）——————————————————
+// 根因不是没接上，而是**用错了 API**：`navigator.clipboard.writeText` 要求文档有焦点，
+// 窗口不在前台 / 焦点在别的窗口时直接抛 `NotAllowedError`；而当时 `.catch()` 什么都不做
+// ⇒ 用户看到的是"点了没反应"，日志里也查不到（渲染进程的 JS 错误没有任何上报通路，实测 `app.log` 零命中）。
+// 修法是走主进程 `clipboard`（无焦点要求）。本组守卫钉的是**别再长回去**，以及**失败必须看得见**。
+describe('复制：渲染层只许走主进程那一条路', () => {
+  const helper = src('renderer/src/clipboard.ts')
+
+  it('★ 渲染层**整棵树**都不许再出现 navigator.clipboard（不是只盯那三处调用点）', () => {
+    // 09-27 变异时自露的洞：这一条原本只列三个文件名，把 navigator.clipboard 写回
+    // `clipboard.ts` 自己**照样绿**。不变量是"渲染层没有第二把剪贴板通路"，
+    // 那就得按目录扫 —— 点名清单永远追不上人写的新文件。
+    const walk = (dir: string): string[] => {
+      const out: string[] = []
+      for (const e of readdirSync(join(__dirname, '../../src', dir), { withFileTypes: true })) {
+        const rel = `${dir}/${e.name}`
+        if (e.isDirectory()) out.push(...walk(rel))
+        else if (/\.tsx?$/.test(e.name)) out.push(rel)
+      }
+      return out
+    }
+    // ⚠️ **必须先剥注释**：`clipboard.ts` 的文档注释里就写着"为什么不用 navigator.clipboard"，
+    //    不剥注释会把这段**解释为什么不用的文字**判成违规（09-27 变异还原时当场撞到，
+    //    与本仓"反向哨兵正则写太宽把注释判成违规"同一条病）。
+    const stripComments = (s: string): string =>
+      s
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split(String.fromCharCode(10))
+        .map((l) => {
+          const i = l.indexOf('//')
+          // 前一个字符是冒号 ⇒ 那是 `https://` 之类的字符串，不是注释
+          return i > 0 && l[i - 1] !== ':' ? l.slice(0, i) : l
+        })
+        .join(String.fromCharCode(10))
+
+    // ★ 阳性对照：剥注释**不许把代码也剥掉** —— 带行尾注释的那一行，代码部分必须还在
+    expect(
+      stripComments('  await navigator.clipboard.writeText(t) // 这里是不许出现的调用'),
+      '剥注释器自己坏了：它连代码行一起清了 ⇒ 这条判据会永远绿'
+    ).toContain('navigator.clipboard')
+    // 反向：纯注释里的那一句要被剥干净（否则上面那条正向断言毫无意义）
+    expect(stripComments('/* 为什么不用 navigator.clipboard：它要焦点 */')).not.toContain(
+      'navigator.clipboard'
+    )
+
+    const files = walk('renderer/src')
+    expect(files.length, '扫描器一个文件都没找到 = 判据空转').toBeGreaterThan(20)
+    for (const f of files) expect(stripComments(src(f)), f).not.toContain('navigator.clipboard')
+  })
+
+  it('主进程 handler / preload 桥 / 门禁桩 三处齐（常量与被 src() 读的文件同文件，天然在场）', () => {
+    expect(src('main/ipc.ts')).toContain('ipcMain.handle(IPC.clipboardWrite')
+    expect(src('preload/index.ts')).toContain('IPC.clipboardWrite')
+    expect(readFileSync(join(__dirname, '../../scripts/verify-shot.cjs'), 'utf8')).toContain(
+      "'clipboard:write':"
+    )
+  })
+
+  it('helper 真的调桥，且失败回 false 而不是抛（抛出去就没人接得住）', () => {
+    expect(helper).toContain('window.api.copyToClipboard')
+    expect(helper).toContain('catch')
+    expect(helper).toContain('return false')
+  })
+
+  it('复制失败在界面上看得见（当年就是被 .catch() 吞成"没反应"的）', () => {
+    const chat = src('renderer/src/views/ChatView.tsx')
+    expect(chat).toContain('copyFailedIndex')
+    expect(chat).toContain('msg-copy-fail')
+    expect(src('renderer/src/styles.css')).toContain('.msg-copy-fail')
+  })
+
+  it('★ 阳性对照：判据读的是**主进程回读**，不是页面自报（否则等于叫它给自己作证）', () => {
+    const gate = readFileSync(join(__dirname, '../../scripts/verify-shot.cjs'), 'utf8')
+    expect(gate).toContain('clipboard.readText()')
+    // 桩必须真写：只 return true 不落地，那条判据就退化成自报
+    expect(gate).toContain('clipboard.writeText(text)')
   })
 })

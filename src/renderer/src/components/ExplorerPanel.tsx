@@ -9,6 +9,7 @@ import {
 import type { FsEntry } from '@shared/fs-tree'
 import { DRAG_MOVE_MIME, DRAG_PATH_MIME, formatSize } from '@shared/fs-tree'
 import { useAppStore } from '../store'
+import { copyText } from '../clipboard'
 
 // 资源管理器：工作区文件树 + 写操作。
 //
@@ -292,12 +293,11 @@ export default function ExplorerPanel(): JSX.Element {
 
   const copyPath = async (rel: string): Promise<void> => {
     setMenu(null)
-    try {
-      await navigator.clipboard.writeText(rel)
-      setNotice({ ok: true, text: `已复制：${rel}` })
-    } catch {
-      setNotice({ ok: false, text: '复制失败：系统剪贴板不可用' })
-    }
+    setNotice(
+      (await copyText(rel))
+        ? { ok: true, text: `已复制：${rel}` }
+        : { ok: false, text: '复制失败：剪贴板写入未成功，请重试' }
+    )
   }
 
   const editRow = (depth: number): JSX.Element => (

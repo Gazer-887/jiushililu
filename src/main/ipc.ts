@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
+import { ipcMain, dialog, BrowserWindow, shell, clipboard } from 'electron'
 import { z } from 'zod'
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
 import { FONT_SCALE_KEYS, THEME_IDS, UI_FONT_MAX, LOCALE_KEYS } from '@shared/splitter'
@@ -2396,6 +2396,18 @@ export function registerIpcHandlers(deps: {
     const abs = resolveInsideWorkspace(deps.agent.getWorkspaceRoot(), p.data.rel)
     if (abs) shell.showItemInFolder(abs)
     return Promise.resolve()
+  })
+
+  /**
+   * 写系统剪贴板。**为什么要有这条通道**：渲染进程自己的 `navigator.clipboard.writeText`
+   * 要求文档有焦点，窗口不在前台时抛 `NotAllowedError` ⇒ 用户点复制"没反应、对勾也不亮"
+   * （2026-09-27 实机报障）。主进程 `clipboard` 无此约束，且**不要求窗口聚焦**。
+   * 回 `false` 而不是抛：调用方拿到布尔就必须决定怎么告诉用户，静默失败在这一层没有藏身处。
+   */
+  ipcMain.handle(IPC.clipboardWrite, (_e, text: unknown): boolean => {
+    if (typeof text !== 'string') return false
+    clipboard.writeText(text)
+    return true
   })
 
   // 用系统默认程序打开（pptx 等不支持内嵌预览的格式的出口）。与 fsReveal 同一条边界：

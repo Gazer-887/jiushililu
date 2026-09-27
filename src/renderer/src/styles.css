@@ -540,6 +540,13 @@ nav {
   cursor: default;
 }
 
+/* 复制没成功时的就地提示：跟着按钮走，不闪退（一闪而过的报错等于没报） */
+.msg-copy-fail {
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  white-space: nowrap;
+}
+
 .chat-error {
   background: var(--danger-soft);
   color: var(--danger);

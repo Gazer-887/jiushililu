@@ -624,6 +624,12 @@ export const IPC = {
   fsDelete: 'fs:delete',
   fsImport: 'fs:import',
   fsReveal: 'fs:reveal',
+  /**
+   * 写系统剪贴板。**为什么走主进程而不让渲染进程自己写**：`navigator.clipboard.writeText`
+   * 要求文档有焦点，窗口不在前台 / 焦点在别的窗口时直接抛 `NotAllowedError`
+   * （2026-09-27 用户实机报"点复制没反应"的成因）。主进程 `clipboard` 无此约束。
+   */
+  clipboardWrite: 'clipboard:write',
   bgList: 'bg:list',
   bgKill: 'bg:kill',
   bgChanged: 'bg:changed',
@@ -1000,6 +1006,8 @@ export interface ApiBridge {
   /** 把工作区**外**的文件导入进来（拖拽上传） */
   importIntoWorkspace(sourceAbs: string, rel: string): Promise<FsOpResult>
   revealWorkspaceEntry(rel: string): Promise<void>
+  /** 写系统剪贴板；`false` = 没写进去（调用方**必须**把它显示出来，不许静默） */
+  copyToClipboard(text: string): Promise<boolean>
   listBackgroundTasks(): Promise<BackgroundTask[]>
   /** 终止一条后台任务（连带它的子进程） */
   killBackgroundTask(id: string): Promise<boolean>

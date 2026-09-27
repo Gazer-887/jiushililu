@@ -13,6 +13,7 @@ import AskPanel from '../components/AskPanel'
 import MemoryNotice from '../components/MemoryNotice'
 import MemoryCapture from '../components/MemoryCapture'
 import TimelinePanel from '../components/TimelinePanel'
+import { copyText } from '../clipboard'
 
 // 对话页（D-032：单一通道）——用不用工具由模型自己决定，界面只负责让过程可见（工具执行卡片）。
 // 输入框为控制台形态（InputConsole）：模型/权限/进度/拓展/发送全在框内。
@@ -48,11 +49,18 @@ export default function ChatView() {
    * （对勾跑到别的消息上 —— 看着对、逻辑错）。用父级下标 + 消息数变化即复位来兜。
    */
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  /**
+   * 上一条**没复制成功**的消息下标。失败必须看得见：
+   * 原先 `.catch()` 什么都不做，用户看到的是"点了没反应"（2026-09-27 实机报障）。
+   * 与对勾不同，它不自动消失 —— 一闪而过的报错等于没报。
+   */
+  const [copyFailedIndex, setCopyFailedIndex] = useState<number | null>(null)
   const copyTimerRef = useRef<number | null>(null)
 
   /** 消息条数变化（发送 / 回退）→ 对勾立即失效，免得它"留在"已变位的消息上 */
   useEffect(() => {
     setCopiedIndex(null)
+    setCopyFailedIndex(null)
   }, [messages.length])
 
   /** 卸载时清计时器（否则 1.5s 后的 setState 会打在已卸载组件上） */
@@ -64,21 +72,19 @@ export default function ChatView() {
   )
 
   /** 复制该条正文 —— 取 `content` 而非 DOM：plan36 保证它恒等于全部**正文段**拼接（思考/工具段不进它） */
-  const copyMessage = (index: number, text: string): void => {
-    void navigator.clipboard
-      .writeText(text)
-      .then(() => {
-        // 连点两次：先清旧计时器，否则上一次的对勾会被提前掐掉（视觉上闪一下）
-        if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
-        setCopiedIndex(index)
-        copyTimerRef.current = window.setTimeout(() => {
-          setCopiedIndex(null)
-          copyTimerRef.current = null
-        }, 1500)
-      })
-      .catch(() => {
-        // 剪贴板被拒（极少见）：不打扰用户，也不假装成功（对勾不亮）
-      })
+  const copyMessage = async (index: number, text: string): Promise<void> => {
+    if (!(await copyText(text))) {
+      setCopyFailedIndex(index)
+      return
+    }
+    setCopyFailedIndex(null)
+    // 连点两次：先清旧计时器，否则上一次的对勾会被提前掐掉（视觉上闪一下）
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+    setCopiedIndex(index)
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopiedIndex(null)
+      copyTimerRef.current = null
+    }, 1500)
   }
 
   /** 重新生成 = 回退到这条之前 + 用上一条提问重发（用户裁决「等价于回退 + 重发」） */
@@ -514,10 +520,15 @@ export default function ChatView() {
                 className={`msg-act ${copiedIndex === i ? 'on' : ''}`}
                 title={copiedIndex === i ? '已复制' : '复制正文'}
                 aria-label="复制这条消息"
-                onClick={() => copyMessage(i, m.content)}
+                onClick={() => void copyMessage(i, m.content)}
               >
                 {copiedIndex === i ? '✓' : '⧉'}
               </button>
+              {copyFailedIndex === i && (
+                <span className="msg-copy-fail" role="status" title="剪贴板写入未成功，可手动选中正文复制">
+                  未复制成功
+                </span>
+              )}
               {/* 重新生成只给**最后一条** AI 回复；生成中禁用（主进程本来会拒，界面不该让人白点一下） */}
               {m.role === 'assistant' && i === messages.length - 1 && (
                 <button

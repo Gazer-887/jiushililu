@@ -3,7 +3,7 @@
  * 本脚本独立于应用主进程，故自行 stub 全部 IPC handler —— 它验的是布局几何，不是数据流。
  * ⚠️ 嵌入片段（executeJavaScript 的模板字符串）里不许出现反引号，见下面的自检函数。
  */
-const { app, BrowserWindow, ipcMain, protocol } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, clipboard } = require('electron')
 const {
   existsSync,
   mkdirSync,
@@ -1867,6 +1867,16 @@ const STUBS = {
     return { ok: true, message: `已删除 ${payload.rel}（已移入回收站）` }
   },
   'fs:reveal': () => undefined,
+  /**
+   * 写剪贴板的桩**必须真写**（不返回 `undefined` 了事）：判据靠主进程回读系统剪贴板取证，
+   * 桩若只回 true 不落地，那条判据就成了"信页面自报"—— 正是这条链原先的毛病。
+   * 形状与真 handler 一致：非字符串回 false。
+   */
+  'clipboard:write': (text) => {
+    if (typeof text !== 'string') return false
+    clipboard.writeText(text)
+    return true
+  },
   'checkpoint:list': () => [
     {
       runId: 'run-1',
@@ -2689,6 +2699,98 @@ app.whenReady().then(async () => {
 
   const shot1 = await win.webContents.capturePage()
   writeFileSync(join(SHOTS, 'verify-wide.png'), shot1.toPNG())
+
+  /*
+   * ── 复制正文：真点击 → **主进程回读剪贴板**（用户 2026-09-27 实机报障）────────
+   *
+   * 上面那组 msgActions 判据只证明"按钮在不在"，**点下去有没有用是另一件事**。
+   * 报障形状是"点了完全没反应、对勾不亮"⇒ `writeText` 被拒（不是被吞成功），
+   * 根因是 `navigator.clipboard` 要求 **document 有焦点**，而门禁窗口恒为 `show:false`（未聚焦）。
+   *
+   * ⇒ 这条判据钉的不是"能不能复制"，而是**"复制不许依赖窗口焦点状态"**：
+   *   改走主进程 `clipboard` 之后，未聚焦也该能写 —— 那才是修好了的证据。
+   * 回读必须走**主进程**：让页面自己报告"我写成功了"等于叫它给自己作证。
+   */
+  const copyTarget = await win.webContents.executeJavaScript(`
+    (() => {
+      const list = Array.from(document.querySelectorAll('.msg-assistant'));
+      const last = list[list.length - 1];
+      if (!last) return { ok: false, why: '没有助手消息可点' };
+      const btn = Array.from(last.querySelectorAll('.msg-act'))
+        .find((b) => (b.getAttribute('aria-label') || '').includes('复制'));
+      if (!btn) return { ok: false, why: '该条没有复制按钮' };
+      // ★ 必须先滚进视口再量：不滚的话坐标落在视口外，elementFromPoint 返回 null、
+      //   点击谁也点不到 ⇒ 判据会**因为探针自己没打中而红**（红得对、理由错，等于白测）。
+      btn.scrollIntoView({ block: 'center' });
+      const r = btn.getBoundingClientRect();
+      const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+      const body = last.querySelector('.msg-content');
+      const t = body ? body.textContent.trim() : '';
+      // ★ 特征串只能取**同一行内**的一段：剪贴板里放的是 content（原始 Markdown），
+      //   而 DOM 是渲染后的文本 —— 列表在 DOM 里没有那个列表破折号。跨行去比必然对不上
+      //   （09-27 第一跑就是这么红的：写入其实成功了，回读里就是这条正文）。
+      //   行内的粗体/链接标记不影响：被包起来的那段在两种形状里都是连续的。
+      // ⚠️ 本块注释里**不许出现反引号**：整段是模板字符串，一个反引号就把它终结在注释里
+      //    ⇒ 加载期 SyntaxError（09-27 实测）。要指符号名就写裸词或用「」。
+      // ⚠️ 这里**不能写** split 加换行转义那套：整段是模板字符串，反斜杠-n 在外层求值时就变成**真换行**，
+      //    页面收到的是一行没闭合的字符串 ⇒ 加载期 SyntaxError（09-27 实测）。故改用 String.fromCharCode(10)。
+      // ⚠️ 取**最长的那一行**而不是第一行：门禁夹具的正文首行是标题（汇总报告，4 字），
+      //    按"首个 ≥12 字行"筛会一条都不剩 ⇒ ran:false 假失败（09-27 实测）。
+      //    本块注释一律不写反引号：整段是模板字符串，一个反引号就把它终结在注释里。
+      const oneLine = t
+        .split(String.fromCharCode(10)).map((s) => s.trim())
+        .sort((a, b) => b.length - a.length)[0] || '';
+      // domLines 是**诊断字段**：这一族判据红过两次，两次都不是产品坏而是"两边形状不同"，
+      // 而当时只能靠 afterHead 反推。把它一起带出来，下次一次跑就能分家。
+      const domLines = t.split(String.fromCharCode(10)).filter((s) => s.trim().length > 0).length;
+      return {
+        ok: true, x, y, w: Math.round(r.width), h: Math.round(r.height),
+        // 命中测试：按钮中心点上的**最上层元素**必须就是这个按钮本身（DOM 存在 ≠ 点得到）
+        hitSelf: document.elementFromPoint(x, y) === btn,
+        inViewport: y >= 0 && y < innerHeight && x >= 0 && x < innerWidth,
+        domLines,
+        bodyLen: t.length,
+        // 以中点为中心的 12 字窗口（整行不足 12 就取整行）：中点最不容易与别的消息偶然相同，
+        // 而"取整行兜底"才不会让 10 字的短行被长度门槛筛掉（09-27 第一版就栽在中点切只剩 5 字）
+        needle: oneLine.slice(
+          Math.max(0, Math.floor(oneLine.length / 2) - 6),
+          Math.floor(oneLine.length / 2) + 6
+        )
+      };
+    })()
+  `)
+  let copyProbe = { ran: false }
+  if (copyTarget.ok && copyTarget.needle.length >= 6) {
+    clipboard.writeText('GATE-CLIP-BEFORE')
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: copyTarget.x, y: copyTarget.y, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: copyTarget.x, y: copyTarget.y, button: 'left', clickCount: 1 })
+    // 写入落地在 promise **之后**（09-27 实测：立即回读会拿到旧值 ⇒ 假红）⇒ 留足时间再读
+    await new Promise((r) => setTimeout(r, 900))
+    const after = clipboard.readText()
+    const btnState = await win.webContents.executeJavaScript(`
+      (() => {
+        const list = Array.from(document.querySelectorAll('.msg-assistant'));
+        const last = list[list.length - 1];
+        const btn = last && Array.from(last.querySelectorAll('.msg-act'))
+          .find((b) => (b.getAttribute('aria-label') || '').includes('复制'));
+        return { on: !!(btn && btn.classList.contains('on')), title: btn ? btn.title : null };
+      })()
+    `)
+    copyProbe = {
+      ran: true,
+      hitSelf: copyTarget.hitSelf,
+      w: copyTarget.w,
+      h: copyTarget.h,
+      needle: copyTarget.needle,
+      domLines: copyTarget.domLines,
+      landed: after.includes(copyTarget.needle),
+      afterHead: after.slice(0, 24),
+      ...btnState
+    }
+    clipboard.writeText('GATE-CLIP-BEFORE')
+  } else {
+    copyProbe = { ran: false, why: copyTarget.why || '正文太短，取不到可用的特征串' }
+  }
 
   win.setSize(760, 700)
   await new Promise((r) => setTimeout(r, 1200))
@@ -8927,6 +9029,14 @@ app.whenReady().then(async () => {
       textCheck.msgActions.editOnUser === true &&
       textCheck.msgActions.editOnAssistant === false,
     textCheck.msgActions)
+  // 上面三条只管"按钮在不在"；这三条管"点下去有没有用"（用户 09-27 实机报障：点了没反应、对勾不亮）
+  checkTrue('复制按钮**点得到**（中心命中测试就是它自己，且尺寸 ≥ 22×22）',
+    copyProbe.ran === true && copyProbe.hitSelf === true && copyProbe.w >= 22 && copyProbe.h >= 22,
+    copyProbe)
+  checkTrue('点复制 → **系统剪贴板真的拿到这条正文**（主进程回读，不采信页面自报）',
+    copyProbe.ran === true && copyProbe.landed === true, copyProbe)
+  checkTrue('复制成功时**对勾亮起来**（失败也必须有可见反馈，这条同时钉住"静默失败"那一族）',
+    copyProbe.ran === true && copyProbe.on === true, copyProbe)
   checkTrue('提示条上有个**撤销**入口', rbAfter.hasUndo === true)
   checkTrue('点撤销 → 调了撤销通道，且条数**换回 4 条**（权威正文说了算）',
     convUndoCalls.length === 1 && rbUndone.msgs === 4, { calls: convUndoCalls.length, ...rbUndone })
