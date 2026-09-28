@@ -9,13 +9,17 @@
 // 有人把节流窗口改成 0 只会让日志变大，e2e 照样全绿。
 
 import { describe, expect, it } from 'vitest'
+// ⚠️ import 的是 **`-core` 而不是 `renderer-errors`** —— 后者 import electron，
+// 而 CI 的 `quality` job **跳过 electron 二进制下载** ⇒ 从它 import 会让本文件在 CI 上
+// 直接 `Electron failed to install correctly`，**而本机全绿**（09-28 实测，第六次「本地全绿 ≠ 通过」）。
+// 这条约束由 `no-dead-wiring.test.ts` 的「被单测 import 的模块不许碰 electron」守着。
 import {
   createThrottleState,
   isRecordedConsoleLevel,
   oneLine,
   sanitizeReport,
   throttle
-} from '@main/renderer-errors'
+} from '@main/renderer-errors-core'
 
 describe('isRecordedConsoleLevel（只收 warn + error，两种 level 形态都认）', () => {
   it('Electron ≤34 的数字形态：0 verbose / 1 info 不收，2 warning / 3 error 收', () => {

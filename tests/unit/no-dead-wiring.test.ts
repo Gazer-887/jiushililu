@@ -567,20 +567,21 @@ describe('K58 渲染层错误上报：每一环都在场', () => {
     //      提成常量 `RECORDED_LEVELS` 全部**假红**（取舍没变，CI 却红了）；
     //   ② 那条反向断言**零安全收益、纯假红地雷** —— `level >= 2 && level <= 3` 精确等价于
     //      `{2,3}` 且并不收 0/1，它是一个完全正确的实现，却被明文禁止。
-    // ⇒ 改成：判定**必须**是一���可单测的纯函数（`isRecordedConsoleLevel`），
+    // ⇒ 改成：判定**必须**是一个可单测的纯函数（isRecordedConsoleLevel），
     //   语义由 `tests/unit/renderer-errors.test.ts` 的 3 条单测守（含 Electron ≥35 的字符串形态）。
-    const re = src('main/renderer-errors.ts')
-    expect(re, '收档判定必须是导出的纯函数（否则"只收两档"这条取舍没法单测）').toContain(
+    // ⚠️ 09-28 又改了一次指向：那个纯函数搬到了 `renderer-errors-core.ts`
+    //   （本模块 import electron，而 CI 的 `quality` job 没有二进制 ⇒ 单测不能从这儿 import）。
+    const core = src('main/renderer-errors-core.ts')
+    expect(core, '收档判定必须是导出的纯函数（否则"只收两档"这条取舍没法单测）').toContain(
       'export function isRecordedConsoleLevel'
     )
     // 且 console 半边真的用了它（而不是自己另写一份判定 —— 两份判定就会漂）
-    expect(stripComments(re), 'console 半边没用 isRecordedConsoleLevel').toContain(
+    expect(stripComments(src('main/renderer-errors.ts')), 'console 半边没用 isRecordedConsoleLevel').toContain(
       'isRecordedConsoleLevel(level)'
     )
     // 反向锚点：档位常数**只此一处**（散落两处 = 改了一处忘了另一处）
-    expect(stripComments(re).match(/level === 2 \|\| level === 3/g)?.length).toBe(1)
+    expect(stripComments(core).match(/level === 2 \|\| level === 3/g)?.length).toBe(1)
   })
-
   it('★ 覆盖范围：非自家窗口**不挂**监听（第三方页面内容不进日志）', () => {
     // 内置浏览器装的是任意外部网址，远程页面爱用 console.error 打印 URL 与 ?token=…
     // ⇒ 用户在一个站点上看到个报错，那个站点的 token 就进了用户正在教开发者发出去的文件里。
@@ -631,9 +632,11 @@ describe('K58 渲染层错误上报：每一环都在场', () => {
 
   it('★ 时钟必须由调用方注入（否则"60 秒内不重复"这条判据测不了）', () => {
     // 直接 `Date.now()` 的实现，单测只能真等一分钟 —— 等一分钟的测试等于没有测试。
-    const re = src('main/renderer-errors.ts')
-    expect(re).toMatch(/export function throttle\([\s\S]*?now: number/)
-    expect(re).toMatch(/const now = \(\): number => Date\.now\(\)/)
+    const core = src('main/renderer-errors-core.ts')
+    expect(core).toMatch(/export function throttle\([\s\S]*?now: number/)
+    // 取时钟的那一处在 electron 那半（core 里不许有 `Date.now()` 的直接调用）
+    expect(stripComments(core), '纯逻辑里直接读时钟 ⇒ 节流判据又测不了了').not.toMatch(/Date\.now\(\)/)
+    expect(src('main/renderer-errors.ts')).toMatch(/const now = \(\): number => Date\.now\(\)/)
   })
 
   it('★ 渲染层不许有**空 catch 回调**（R18 真根因那一类：抛了不报、也不留痕）', () => {
@@ -655,5 +658,52 @@ describe('K58 渲染层错误上报：每一环都在场', () => {
       // ⚠️ 必须先剥注释：解释"为什么这里 catch 了"的注释里可能写着例子
       expect(stripComments(src(f)), `${f} 里有空的 catch 回调`).not.toMatch(/\.catch\(\s*\(\s*\)\s*=>\s*\{?\s*\}?\s*\)/)
     }
+  })
+})
+
+// —— 「本地全绿 ≠ 通过」的第六次兑现：可单测的模块不许 import electron ———————————————————
+// 现场（2026-09-28）：新写的 `tests/unit/renderer-errors.test.ts` 从 `@main/renderer-errors`
+// import 纯逻辑，而那个模块 `import { app, ipcMain } from 'electron'`。
+// **本机有 electron 二进制 ⇒ 127 个文件全绿**；CI 的 `quality` job 跳过二进制下载
+// （它只要 typecheck / lint / 单测）⇒ 那个文件直接 `Electron failed to install correctly`，
+// CI `quality` ❌ 而 `e2e` / `gate-render` ✅ —— 一个**只有单测文件挑食**的红。
+//
+// `AGENTS.md` §八那条红线原文只说了"渲染进程不得 import electron"，主进程没点名 ——
+// 而这里的真实规则是：**凡是被 `tests/unit` 直接 import 的模块，一律不许 import electron**。
+// 本项目既有先例本来就符合（`main/log.ts` 只 import node:fs/node:path、
+// `main/watchdog.ts` 被三个单测 import 且同样不碰 electron），是我新写文件时没沿用。
+describe('可单测的模块不许 import electron（CI 的 quality job 没有二进制）', () => {
+  const repo = (rel: string): string => readFileSync(join(__dirname, '../..', rel), 'utf8')
+
+  /** 被 `tests/unit` 直接 import 的 `src/main/*` 模块（`@main/x` 与相对路径都算） */
+  const unitImportsMain = (): string[] => {
+    const out = new Set<string>()
+    for (const f of readdirSync(__dirname)) {
+      if (!f.endsWith('.test.ts')) continue
+      for (const m of repo(`tests/unit/${f}`).matchAll(/from '@main\/([\w./-]+)'/g)) out.add(m[1])
+    }
+    return [...out].map((p) => `src/main/${p}.ts`)
+  }
+
+  it('前提成立：真的扫到了一批模块（扫不到 = 这条判据空转）', () => {
+    expect(unitImportsMain().length, '一个 @main 模块都没扫到 ⇒ 扫描范围错了').toBeGreaterThan(3)
+  })
+
+  it('★ 被单测 import 的模块一律不许 import electron', () => {
+    for (const p of unitImportsMain()) {
+      // 逐行剥掉注释再查：解释"为什么这里不能 import electron"的注释里可能就写着这个词
+      const code = stripComments(repo(p))
+      expect(code, `${p} 被 tests/unit import，却 import 了 electron`).not.toMatch(/from\s*'electron'/)
+    }
+  })
+
+  it('★ 阳性对照：electron 那半**确实**在另一个文件里（拆开不是把功能拆没了）', () => {
+    // 反向钉住"干脆什么都不 import"这种坏修法：纯逻辑模块要与 electron 那半**同源**，
+    // 否则两份判定会漂（K58 就是被这么抓出过一个"两份收档规则"的隐患）。
+    const core = stripComments(repo('src/main/renderer-errors-core.ts'))
+    const impl = stripComments(repo('src/main/renderer-errors.ts'))
+    expect(core).not.toMatch(/from\s*'electron'/)
+    expect(impl, 'electron 那半不见了').toMatch(/from\s*'electron'/)
+    expect(impl, '没有从 core 取纯逻辑（那会变成两份实现）').toContain("from './renderer-errors-core'")
   })
 })

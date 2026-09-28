@@ -27,108 +27,21 @@
 import { app, ipcMain, type WebContents } from 'electron'
 import { createLogger } from './log'
 import { getWindow } from './window-registry'
-import { IPC, type RendererErrorReport } from '@shared/ipc'
+import { IPC } from '@shared/ipc'
+import {
+  createThrottleState,
+  isErrorLevel,
+  isRecordedConsoleLevel,
+  oneLine,
+  sanitizeReport,
+  throttle,
+  type ThrottleState
+} from './renderer-errors-core'
 
 const log = createLogger('renderer-error')
 
 /** 幂等标记：**模块级状态**，不用 `app` 单例上猴补属性（同 `watchdog.ts · startWatchdog` / `sync-trace.ts` 的做法） */
 let installed = false
-
-/** 同一条消息在这个窗口期内只记一次；过了就重新记（现场会变） */
-const THROTTLE_MS = 60_000
-/** 单条文本上限：堆栈和 message 都可能很长，全写会挤掉别的现场 */
-const MAX_TEXT = 2000
-/**
- * 去重表的容量上限。**超过就整表清空**（照 `watchdog.ts · noteBlockEnd` 的 `size > 32` 写法）。
- *
- * ⚠️ 为什么必须有上限：键由**消息内容**构成，而只出现一次的消息**永远等不到第二次**去碰它
- * ⇒ 每次都是新键、60 秒节流对高基数 message **一次都不生效**（"AbortError: request 8f3a… cancelled"
- * 这类带 id 的、内置浏览器里嵌着 URL 与轮转 token 的，都是高基数）。
- * 不清扫 ⇒ 主进程内存单调上涨，**与磁盘轮转无关、不会自己停**（09-28 独立审查抓出）。
- */
-const MAX_KEYS = 512
-
-/**
- * 收哪两档：**warning 与 error**。info / verbose / debug 不进。
- *
- * ⚠️ **两种 level 形态都要认**（09-28 查证 Electron 35.0 breaking-changes）：
- * - Electron ≤34 传**数字**：0 verbose / 1 info / 2 warning / 3 error；
- * - Electron **≥35 改传 Event 对象**，`level` 变成**字符串** `'info' / 'warning' / 'error' / 'debug'`。
- * 只认数字的话，升级 Electron 那天这条通路会**静默全灭**（字符串与数字比恒不等，
- * 恒真 → 全部 return），而症状与"没做"一模一样。
- */
-export function isRecordedConsoleLevel(level: unknown): boolean {
-  if (typeof level === 'number') return level === 2 || level === 3
-  if (typeof level === 'string') return level === 'warning' || level === 'error'
-  return false
-}
-
-/**
- * 去重节流（**纯逻辑，时钟由外面注入**）。
- *
- * 为什么要把时钟做成参数：直接用 `Date.now()` 的话，"60 秒内不重复"这条判据**测不了** ——
- * 只能真等一分钟，而真等一分钟的测试等于没有测试。同本仓 `no-dead-wiring` 里
- * "冻结时钟直测落盘函数"是同一条纪律。
- *
- * 返回 `null` 表示"这条该被节流掉"；返回数字表示"距上次多少毫秒"（写进日志便于读）。
- */
-export interface ThrottleState {
-  lastAt: Map<string, number>
-}
-
-export function createThrottleState(): ThrottleState {
-  return { lastAt: new Map() }
-}
-
-export function throttle(
-  state: ThrottleState,
-  key: string,
-  now: number,
-  windowMs: number = THROTTLE_MS
-): { record: true; sinceMs: number; repeat: number } | { record: false } {
-  const counterKey = `${key}#n`
-  const prev = state.lastAt.get(key)
-  if (prev !== undefined && now - prev < windowMs) {
-    const n = (state.lastAt.get(counterKey) ?? 0) + 1
-    state.lastAt.set(counterKey, n)
-    return { record: false }
-  }
-  // 重新计时 ⇒ 把**上一窗口期累计的重复次数**交回给调用方
-  const repeat = state.lastAt.get(counterKey) ?? 0
-  state.lastAt.set(key, now)
-  state.lastAt.delete(counterKey)
-  // ★ 容量上限：整表清空而不是逐个淘汰（照 `watchdog.ts · noteBlockEnd`）。
-  //   逐个淘汰要维护 LRU 序，而这张表的键是"每条只出现一次就再也不碰"的高基数 ⇒
-  //   任何淘汰策略的差别只在多花多少 CPU，清空最省。
-  if (state.lastAt.size > MAX_KEYS) state.lastAt.clear()
-  return { record: true, sinceMs: prev === undefined ? -1 : now - prev, repeat }
-}
-
-/** 截断 + 单行化：日志是一行一条记录，多行会把可读性毁掉 */
-export function oneLine(text: string, max: number = MAX_TEXT): string {
-  const flat = text.replace(/\r?\n/g, ' \\n ').trim()
-  return flat.length > max ? `${flat.slice(0, max)}…(已截断，原长 ${flat.length})` : flat
-}
-
-/** 载荷**逐字段自己定型**（不整体 stringify）——见 `RendererErrorReport` 的注释 */
-export function sanitizeReport(raw: unknown): RendererErrorReport | null {
-  if (!raw || typeof raw !== 'object') return null
-  const r = raw as Record<string, unknown>
-  const kind = r.kind === 'unhandledrejection' ? 'unhandledrejection' : 'error'
-  const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '')
-  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
-  // 拒绝原因是对象（Promise.reject({code:1})）时给一句可读摘要，别直接 "[object Object]"
-  let message = str(r.message).trim()
-  if (!message) message = '(无 message)'
-  return {
-    kind,
-    message: oneLine(message),
-    stack: oneLine(str(r.stack)),
-    source: oneLine(str(r.source), 300),
-    line: num(r.line),
-    column: num(r.column)
-  }
-}
 
 /** 两条来源共用一条记法 —— 拆开写就会漂（"改了一处忘了另一处"是本项目最常见的残片成因） */
 function record(state: ThrottleState, what: string, detail: Record<string, unknown>, now: number): void {
@@ -255,10 +168,6 @@ export function installRendererErrorReporting(): void {
   }
 
   log.info('渲染层错误上报已装载（console-message + renderer:error；仅自家窗口）')
-}
-
-function isErrorLevel(level: unknown): boolean {
-  return level === 3 || level === 'error'
 }
 
 function safeType(contents: WebContents): string {
