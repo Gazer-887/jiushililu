@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+﻿import { describe, expect, it } from 'vitest'
 import { resolveApiUrl } from '@main/providers/url'
 import { buildOpenAIChatBody } from '@main/providers/openai'
 import {
@@ -7,7 +7,7 @@ import {
   thinkingBudgetFor
 } from '@main/providers/anthropic'
 import { maskKey } from '@main/store/mask'
-import { effortToSend } from '@main/providers/effort'
+import { effortToSend } from '@shared/reasoning'
 import type { ChatMessage, ModelSettings } from '@shared/ipc'
 
 const settings: ModelSettings = {

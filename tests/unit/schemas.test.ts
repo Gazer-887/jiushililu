@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+﻿import { describe, expect, it } from 'vitest'
 import { mapHttpError, isAbortError } from '@main/providers/errors'
 import {
   chatMessagesSchema,
@@ -318,7 +318,7 @@ describe('modelSaveSchema：思考档名的逐模型白名单（plan58 R6 / Q6b 
 
   it('R7 三型形态**不再拒档位**（09-28 改判 R11′：存形状只管形状，发不发由出境层裁决）', () => {
     // 改判前的判据是"三型各自拒档位"（none / toggle / budget_tokens 各一句报错）。
-    // 现已撤掉 —— 那些形态下档位是 **inert 数据**：`providers/effort.ts · effortToSend`
+    // 现已撤掉 —— 那些形态下档位是 **inert 数据**：`shared/reasoning.ts · effortToSend`
     // 保证它永不出境，拒它在保存时没有技术道理。
     // ★ 撤掉之后**必须把承重的那半钉在出境层**，否则就是"判据松了但没人接"。
     for (const kind of ['none', 'toggle', 'budget_tokens'] as const) {

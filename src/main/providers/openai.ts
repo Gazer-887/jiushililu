@@ -1,9 +1,9 @@
-import type { ChatMessage, ModelSettings, TestResult } from '@shared/ipc'
+﻿import type { ChatMessage, ModelSettings, TestResult } from '@shared/ipc'
 import { createSSEParser } from './sse'
 import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
 import { resolveApiUrl } from './url'
 import { usageFromOpenAIChunk } from './usage-parsers'
-import { effortToSend } from './effort'
+import { effortToSend } from '@shared/reasoning'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
 

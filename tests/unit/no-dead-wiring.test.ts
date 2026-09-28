@@ -707,3 +707,67 @@ describe('可单测的模块不许 import electron（CI 的 quality job 没有�
     expect(impl, '没有从 core 取纯逻辑（那会变成两份实现）').toContain("from './renderer-errors-core'")
   })
 })
+
+// —— plan58 片①：档位控件的三条形态纪律 + 缺陷 4 已收口 ————————————————————————————
+// 为什么立组：片① 的三条纪律全是**"做错了不会崩、只会变成骗人的东西"**那一类 ——
+// 档位控件摆错了形状，用户看到的是一个"能点但不按他说的生效"的界面。
+describe('推理等级控件：形态纪律（plan58 R7 / R13 / R14）', () => {
+  const ed = src('renderer/src/components/ModelCatalogEditor.tsx')
+
+  it('★ `kind` 决定**控件形状**：`none` ⇒ 整块不出现；非 `effort` ⇒ 只给说明不给控件', () => {
+    // `none` 时摆个下拉 = 骗人的格子（plan54 #3 同族）；`toggle`/`budget_tokens` 的出境形状
+    // 还没实现（缺口 C）⇒ 此时给开关是"勾了但不起作用"的假开关，**比不给更坏**。
+    expect(ed, '推理等级那块没有按 kind 分流').toContain("rc?.kind !== 'none'")
+    expect(ed, '非 effort 形态必须只给说明').toContain("if (kind !== 'effort')")
+  })
+
+  it('★ 档位集合只认模型自己声明的 `levels`（R6），没声明时**如实标未实测**而不是替厂商下结论', () => {
+    // 我们三家端点的档位支持情况一格都没实测过（plan58 §丁 / R9）。
+    expect(ed).toContain('sortEffortLevels(reasoning?.levels ?? [])')
+    expect(ed, '未实测这件事必须说在界面上').toContain('未实测')
+  })
+
+  it('★ 「设了不等于生效」当场说：生效与否走**主进程同一份判定**（`effortToSend`）', () => {
+    // ⚠️ 这条是"单一真相"的可判形态：界面自己另算一套 ⇒ 漂了的症状是
+    // "界面说生效、实际没发"（R5 要防的正是这个）。
+    expect(ed, '界面没有用共享判定').toContain('effortToSend({ reasoningEffort: effort, reasoning })')
+    expect(ed, '界面不许自己判断 level 是否被包含').not.toMatch(/levels\.includes\((s\.)?reasoningEffort/)
+  })
+
+  it('★ 档位控件复用设置页既有形态（`.choice-list` + `.choice-item`），不新造 chip 类名', () => {
+    // `.chip` 这个类名**已被模型切换器占用**（styles.css 1791 行），新造同名样式会两边打架。
+    // 权限档 / Token Saver 档位用的是 `choice-list` + `choice-item`，门禁也认那一套。
+    expect(ed, '推理等级没用既有档位按钮形态').toContain('className="choice-list"')
+    expect(ed).toContain('choice-item')
+    expect(ed, '不许新造 .chip-row 之类').not.toContain('chip-row')
+  })
+
+  it('★ 缺陷 4 已收口：档位选择的两个同义入口不许回来', () => {
+    // 原形状：思考强度那支 `<select value={s.reasoningEffort ?? ''}>` 里有
+    // `<option value="">跟随端点默认</option>` 与 `<option value="default">default</option>`，
+    // 两者走**同一个出境动作**（都存成"不发字段"）⇒ 同一个动作两个入口。
+    //
+    // ⚠️ 两次判据自己先翻车（09-28 现场），两次都是**扫得太宽**：
+    //   ① 按字样扫 `跟随端点默认` → 那是输出上限 / 上下文窗口 / 工具轮数三个输入框的
+    //      placeholder，**当场假红**；
+    //   ② 扫 `<option value="">` → 撞上「+」那个 select 的**占位项**（HTML select 靠它显示
+    //      `＋`，没有它下拉第一项会直接变成第一个候选档名）。
+    // ⇒ 判据改成**认位置不认字面**：档位选择已经不用 select 了（用 `.choice-item`），
+    //   那个带 `reasoningEffort` 的 select 不许回来；`＋` 那个 select 用 aria-label 区分。
+    const code = stripComments(ed)
+    expect(code, '档位选择退回下拉了（两个同义入口就跟着回来）').not.toMatch(
+      /value=\{s\.reasoningEffort\s*\?\?\s*''\}/
+    )
+    expect(code, '"default" 那一项又回来了（与"跟随端点默认"同义）').not.toMatch(/<option\s+value="default"/)
+    // 正向锚点：`＋` 那个 select 必须在，且带自己的 aria-label（否则与档位选择分不开）
+    expect(code).toContain('aria-label="添加推理等级"')
+    // 收口后的唯一入口是「恢复默认」
+    expect(code).toContain('恢复默认（不发送思考字段）')
+  })
+
+  it('★ 强度序与 `+` 候选池来自共享层（界面不许自己写一份档名表）', () => {
+    // 两份档名表会漂 —— 而漂了的症状是"`+` 里能选一个下拉里没有的档"。
+    expect(ed).toContain('ADDABLE_EFFORT_LEVELS')
+    expect(ed).not.toMatch(/const (EFFORT|KNOWN)\w* = \[/)
+  })
+})

@@ -278,8 +278,15 @@ const FAKE_PROFILE_BASE = {
   updatedAt: Date.now()
 }
 
-/** 一条假端点：端点 + 模型目录（一把 Key 能调好几个模型），三条模型只描述一次 */
-function fakeEndpoint(id, name, firstModel, source, hasApiKey) {
+/**
+ * 一条假端点：端点 + 模型目录（一把 Key 能调好几个模型），三条模型只描述一次。
+ *
+ * `settingsByModel`：**可选**，给某条模型挂模型级高级设置（plan58 片① 用它造
+ * "该模型已声明 `reasoning.levels`" 这个形状）。默认不给 ⇒ 那是**存量形态**
+ * （盘上四条模型现在都是这个形态），门禁要**两种都测**：不声明时界面不许空掉，
+ * 声明时下拉只列声明过的那些。
+ */
+function fakeEndpoint(id, name, firstModel, source, hasApiKey, settingsByModel = {}) {
   return {
     ...FAKE_PROFILE_BASE,
     id,
@@ -288,9 +295,18 @@ function fakeEndpoint(id, name, firstModel, source, hasApiKey) {
     hasApiKey,
     apiKeyMasked: hasApiKey ? 'sk-…abcd' : '',
     models: [
-      { id: `${id}-e1`, model: firstModel },
-      { id: `${id}-e2`, model: `${firstModel}-mini`, name: '小号' },
-      { id: `${id}-e3`, model: `${firstModel}-vision` }
+      { id: `${id}-e1`, model: firstModel, ...(settingsByModel.e1 ? { settings: settingsByModel.e1 } : {}) },
+      {
+        id: `${id}-e2`,
+        model: `${firstModel}-mini`,
+        name: '小号',
+        ...(settingsByModel.e2 ? { settings: settingsByModel.e2 } : {})
+      },
+      {
+        id: `${id}-e3`,
+        model: `${firstModel}-vision`,
+        ...(settingsByModel.e3 ? { settings: settingsByModel.e3 } : {})
+      }
     ],
     activeModelId: `${id}-e1`
   }
@@ -1305,7 +1321,13 @@ const STUBS = {
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   'models:list': () => ({
     profiles: [
-      fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true),
+      fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true, {
+        // plan58 片①：**同页**造出"该模型已声明 `reasoning.levels`"的形状 ——
+        // 挂在**第二个**模型上，因为 `AdvancedPanel` 是按模型行展开的（`expanded` 是一个 m.id），
+        // 展开 e1（无 settings = 存量形态）与展开 e2（已声明）不用切端点、不用回列表。
+        // 档位**故意存成非强度序**（high 在前）⇒ 界面必须排成 low→high，否则"从低到高"是假的。
+        e2: { reasoningEffort: 'default', reasoning: { kind: 'effort', levels: ['high', 'low'] } }
+      }),
       fakeEndpoint('m2', 'agnes-2.5-flash', 'agnes-2.5-flash', 'custom', false),
       fakeEndpoint('m3', 'deepseek-flash', 'deepseek-flash', 'custom', false)
     ],
@@ -3469,6 +3491,99 @@ app.whenReady().then(async () => {
       `)
       console.log('MODEL_CATALOG=' + JSON.stringify({ ...catalog, adv }))
       modelCatalog = { ...catalog, adv }
+
+      // ── plan58 片①：推理等级控件的**形状**（不验数值，只验"控件长成该长的样子"）──────
+      // 三种形态各造一次，全部读 DOM：
+      //   ① 存量形态（本例这条没声明 `reasoning`）⇒ 档位卡片**一片都没有**、但 `＋` 在
+      //      （不许因为"用户还没声明"就把这一块做成空的死界面）
+      //   ② 已声明 `levels: ['high','low']`（m3）⇒ 只列声明过的两档，且**按强度序排成 low→high**
+      //   ③ `kind:'none'` ⇒ 整块不出现（该模型不支持思考，摆个控件是骗人的格子）
+      const advShape = async () =>
+        sevalRaw(`
+        (() => {
+          const adv = document.querySelector('.mc-adv');
+          if (!adv) return { panel: false };
+          const group = adv.querySelector('[aria-label="推理等级"]');
+          return {
+            panel: true,
+            hasBlock: !!adv.querySelector('.field-label-with-note'),
+            // 卡片文本按 DOM 顺序取 —— 顺序本身就是被测物（"从低到高"那句话）
+            cards: group ? Array.from(group.querySelectorAll('.choice-name')).map((n) => n.textContent.trim()) : null,
+            addSelect: !!adv.querySelector('[aria-label="添加推理等级"]'),
+            addOptions: adv.querySelector('[aria-label="添加推理等级"]')
+              ? Array.from(adv.querySelector('[aria-label="添加推理等级"]').options).map((o) => o.value).filter(Boolean)
+              : null,
+            // 缺陷 4 收口：只留「恢复默认」一个入口，没有那两支同义 option
+            hasRestoreDefault: !!(Array.from(adv.querySelectorAll('button')).find((b) => (b.textContent || '').includes('恢复默认（不发送思考字段）'))),
+            // "设了不等于生效"的实时状态行
+            trouble: Array.from(adv.querySelectorAll('.hint')).map((p) => (p.textContent || '').trim()).find((t) => t.includes('未实测') || t.includes('不会发往厂商')) || null
+          };
+        })()
+      `)
+      const advStock = await advShape()
+      checkTrue('推理等级：存量模型（没声明 levels）下不空掉 —— `＋` 可用、档位卡片零张',
+        advStock.panel === true && advStock.addSelect === true && Array.isArray(advStock.cards) && advStock.cards.length === 0,
+        JSON.stringify(advStock))
+      checkTrue('推理等级：没声明档位时**不出现**「恢复默认」（没有档位可恢复；缺陷 4 收口后的入口只在有档位时给）',
+        advStock.hasRestoreDefault === false,
+        JSON.stringify(advStock.hasRestoreDefault))
+
+      // 展开**第二个**模型行（桩里它带 `reasoning.levels`）。
+      // ⚠️ 「收起第一个」与「展开第二个」必须**分两次**且中间等一帧 ——
+      //   同一个 `seval` 里连点两次时 React 还没重渲染，第二次点到的 `rows[1]` 是旧 DOM，
+      //   读回来的形状是第一个模型的（09-28 现场：`cards:[]` 而 `open.ok===true`，看着像通了其实没通）。
+      const collapseFirst = await sevalRaw(`
+        (() => {
+          const on = document.querySelector('.mc-row.on .mc-icon');
+          if (on) on.click();
+          return !!on;
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 400))
+      const secondOpened = await sevalRaw(`
+        (() => {
+          const rows = Array.from(document.querySelectorAll('.mc-row'));
+          if (rows.length < 2) return { ok: false, why: 'rows<2' };
+          const icon = rows[1].querySelector('.mc-icon');
+          if (!icon) return { ok: false, why: 'no-icon' };
+          icon.click();
+          return { ok: true };
+        })()
+      `)
+      await new Promise((r) => setTimeout(r, 600))
+      const advDeclared = await advShape()
+      const whichRow = await sevalRaw(`
+        (() => {
+          const rows = Array.from(document.querySelectorAll('.mc-row'));
+          const on = document.querySelector('.mc-row.on');
+          const adv = document.querySelector('.mc-adv');
+          // 顺带读一个**别的** settings 字段：分辨"settings 根本没到"与"只有 reasoning 被洗掉"
+          const nums = adv ? Array.from(adv.querySelectorAll('input[type=number]')).map((i) => i.value) : [];
+          return {
+            total: rows.length,
+            onIndex: on ? rows.indexOf(on) : -1,
+            models: rows.map((r) => (r.querySelector('.mc-model') || {}).value),
+            nums
+          };
+        })()
+      `)
+      checkTrue('推理等级：已声明 levels 的模型 —— 只列声明过的档，且**按强度序 low→high**（桩里故意存成 high,low）',
+        secondOpened.ok === true && advDeclared.panel === true &&
+        Array.isArray(advDeclared.cards) && advDeclared.cards.join(',') === 'low,high',
+        `rows=${JSON.stringify(whichRow)} adv=${JSON.stringify(advDeclared)}`)
+      checkTrue('推理等级：已声明时 `＋` 池里不再出现已声明的档（不能挑一个下拉里没有的档）',
+        Array.isArray(advDeclared.addOptions) && !advDeclared.addOptions.includes('low') && !advDeclared.addOptions.includes('high'),
+        JSON.stringify(advDeclared.addOptions))
+      checkTrue('推理等级：已声明时「恢复默认」在（缺陷 4 收口后的唯一入口）',
+        advDeclared.hasRestoreDefault === true,
+        JSON.stringify(advDeclared.hasRestoreDefault))
+      // 选一档（`high`）⇒ 生效判定走共享的 effortToSend：它**在声明的 levels 里** ⇒ 不出 trouble
+      await sevalRaw(`(() => { const g = document.querySelector('[aria-label="推理等级"]'); const b = g && Array.from(g.querySelectorAll('.choice-item')).find((x) => (x.textContent || '').trim() === 'high'); if (b) b.click(); return !!b })()`)
+      await new Promise((r) => setTimeout(r, 300))
+      const advPicked = await advShape()
+      checkTrue('推理等级：选了 levels 内的档 ⇒ 不出「未生效」提示（意图与生效一致）',
+        advPicked.trouble === null,
+        JSON.stringify(advPicked.trouble))
 
       // ── plan47 S1 免保存拉取：新建端点（未入库、无 id）也应能拉，破「先保存才能拉」死循环 ──
       // 点「添加模型」进空白表单 → 填 baseURL → 点「获取可用模型」→ 断言真的发起了 models:fetch-available

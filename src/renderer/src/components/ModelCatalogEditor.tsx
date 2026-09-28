@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import type { ModelSettings, ReasoningEffort } from '@shared/ipc'
+import type { ModelSettings, ReasoningConfig, ReasoningEffort } from '@shared/ipc'
 import {
   INPUT_MODALITIES,
   modalityLabel,
   type InputModality
 } from '@shared/content-parts'
 import { entryLabel, type ModelEntry } from '@shared/models'
+import { ADDABLE_EFFORT_LEVELS, effortToSend, sortEffortLevels } from '@shared/reasoning'
+import FieldNote from './FieldNote'
 
 /**
  * **本应用已接通的模态** —— 设置页只列这些。
@@ -13,6 +15,115 @@ import { entryLabel, type ModelEntry } from '@shared/models'
  * 厂商收不收由 `inputModalities` 表达，**我们能不能发**由这张表表达，两者不是一回事。
  */
 const MODALITY_UI: InputModality[] = ['text', 'image', 'video']
+
+/**
+ * 推理等级那一块（plan58 R14 · 形态照 Zcode：chips + `+`，`levels` 收**有序**数组）。
+ *
+ * 三条形态纪律：
+ * ① **`kind !== 'effort'` 时只给说明、不给控件** —— `toggle` / `budget_tokens` 的出境形状
+ *    还没实现（缺口 C：Zcode 那边要按 `reasoningDisableMode` 显式发"关闭"信号，我们还没做），
+ *    此时摆一个开关是**"勾了但不起作用"的假开关**，比不摆更坏（plan54 #3 同族）。
+ * ② **档位集合只认模型自己声明的 `levels`**（R6）。没声明时列我们的已知词表并**如实标「未实测」** ——
+ *    我们三家端点的档位支持情况一格都没实测过（plan58 §丁 / R9），不许替厂商下结论。
+ * ③ **"设了不等于生效"当场说**（R5）：意图 = 用户选了该档；生效 = `effortToSend` 判定它真会出境。
+ *    两者不一致时用 `hint` 直显（照 `SettingsView` 里 trouble 行的既有形态：实时状态不是注释）。
+ */
+function ReasoningLevels({
+  reasoning,
+  effort,
+  onChangeReasoning,
+  onChangeEffort
+}: {
+  reasoning: ReasoningConfig | undefined
+  effort: ReasoningEffort
+  onChangeReasoning: (next: ReasoningConfig | undefined) => void
+  onChangeEffort: (eff: ReasoningEffort) => void
+}): JSX.Element {
+  const kind = reasoning?.kind ?? 'effort'
+  const levels = sortEffortLevels(reasoning?.levels ?? [])
+  const declared = levels.length > 0
+  // 未声明时的候选池：已知词表（+ 用户已经存下来的、强度表里的其它官方档）
+  const pool = ADDABLE_EFFORT_LEVELS.filter((l) => !levels.includes(l))
+  const unused = effort !== 'default' && !levels.includes(effort)
+  // 意图 vs 生效：生效与否走**主进程同一份判定**（`shared/reasoning.ts`），不是界面另算一套
+  const effective = effortToSend({ reasoningEffort: effort, reasoning }) !== null
+  const wantsThinking = effort !== 'default'
+
+  if (kind !== 'effort') {
+    return (
+      <>
+        <p className="hint">
+          {kind === 'none'
+            ? '该模型已声明不支持思考。'
+            : '该模型声明为「开关型」或「预算型」，其控制项尚未接入 —— 现在改档位不会发往厂商。'}
+        </p>
+      </>
+    )
+  }
+
+  const setLevels = (next: string[]): void => {
+    onChangeReasoning(next.length > 0 ? { kind: 'effort', levels: next } : { kind: 'effort' })
+  }
+
+  return (
+    <>
+      {/* 卡片组复用设置页既有形态（`.choice-list` + `.choice-item`：访问权限档 / Token Saver 档位
+          用的是同一套，门禁也认）—— 不新造 `.chip`（那个类名已被模型切换器占用）。 */}
+      <div className="choice-list" role="radiogroup" aria-label="推理等级">
+        {levels.map((l) => (
+          <button
+            key={l}
+            type="button"
+            className={`choice-item${effort === l ? ' is-on' : ''}`}
+            role="radio"
+            aria-checked={effort === l}
+            onClick={() => onChangeEffort(l)}
+          >
+            <span className="choice-name">{l}</span>
+          </button>
+        ))}
+        {pool.length > 0 && (
+          <select
+            className="choice-item"
+            value=""
+            aria-label="添加推理等级"
+            onChange={(e) => {
+              if (!e.target.value) return
+              setLevels(sortEffortLevels([...levels, e.target.value]))
+              e.target.value = ''
+            }}
+          >
+            <option value="">＋</option>
+            {pool.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {/* 缺陷 4 收口（plan58）：原先"跟随端点默认"与"default"是**两个入口、一个动作**
+          （都存成"不发字段"）⇒ 这里只留「恢复默认」一个，且它与上面的档位互斥。
+          `default` 是**哨兵不是厂商档**（R8），所以它不进 chips 那一排。 */}
+      {declared && (
+        <p className="hint">
+          <button type="button" className="mc-link" onClick={() => onChangeEffort('default')}>
+            恢复默认（不发送思考字段）
+          </button>
+        </p>
+      )}
+      {/* 意图 vs 生效：这一行是"设了不等于生效"的实时状态 ⇒ 直显，不收进 ⓘ
+          （同 `SettingsView` 里 trouble 行的既有纪律：注释收进 ⓘ，实时状态保留）。 */}
+      {wantsThinking && !effective && (
+        <p className="hint">
+          {unused
+            ? `已选 ${effort}，但它不在本模型声明的等级里（${levels.join('、') || '尚未声明'}）—— 不会发往厂商。`
+            : '该等级在本模型上未实测：已保存，但厂商是否接受未经逐档验证。'}
+        </p>
+      )}
+    </>
+  )
+}
 
 const MODALITY_HINT: Record<InputModality, string> = {
   text: '文本输入恒开启，不可关闭。',
@@ -36,6 +147,7 @@ function AdvancedPanel({
   onChange: (patch: Partial<ModelSettings>) => void
 }): JSX.Element {
   const s = entry.settings ?? {}
+  const rc = s.reasoning
   return (
     <div className="mc-adv">
       <p className="hint">仅影响该模型。</p>
@@ -59,21 +171,28 @@ function AdvancedPanel({
           onChange={(e) => onChange({ contextWindow: e.target.value === '' ? undefined : num(e.target.value) })}
         />
       </label>
-      <label>
-        思考强度
-        <select
-          value={s.reasoningEffort ?? ''}
-          onChange={(e) =>
-            onChange({ reasoningEffort: e.target.value === '' ? undefined : (e.target.value as ReasoningEffort) })
-          }
-        >
-          <option value="">跟随端点默认</option>
-          <option value="default">default</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-        </select>
-      </label>
+      {/* 思考能力（plan58 R7/R13/R14）。`kind` 决定**这一块的形态**，而不是统一给一个下拉：
+          `none` ⇒ 整块不出现（该模型不支持思考，摆个下拉是骗人的格子，plan54 #3 同族）。 */}
+      {rc?.kind !== 'none' && (
+        <>
+          <div className="field-label field-label-with-note">
+            推理等级
+            <FieldNote
+              text={[
+                '按从低到高排列；档位名取自各厂商官方文档，**同一档名在不同端点上的实际效果我们未逐档实测**。',
+                '用「+」添加本模型实际支持的档位，保存后下拉只列你声明过的那些。',
+                'Anthropic 端点在带工具调用的轮次不启用思考（该限制来自厂商协议，无法绕开）。'
+              ]}
+            />
+          </div>
+          <ReasoningLevels
+            reasoning={rc}
+            effort={s.reasoningEffort ?? 'default'}
+            onChangeReasoning={(next) => onChange({ reasoning: next })}
+            onChangeEffort={(eff) => onChange({ reasoningEffort: eff })}
+          />
+        </>
+      )}
       <label>
         工具调用轮数
         <input
