@@ -8,9 +8,33 @@ import {
   OUTBOUND_IMAGE_MIMES,
   OUTBOUND_VIDEO_MIMES
 } from '@shared/content-parts'
+import { REASONING_KINDS } from '@shared/ipc'
 
 // 入参 schema 独立成文件：纯 zod、不 import electron，可脱离主进程单测。
 // 所有来自渲染进程的入参一律过这里 —— 坏数据挡在主进程门外。
+
+/**
+ * 思考档名（plan58 R6）：**不再枚举**。官方词表逐厂商不同（OpenAI 有 `xhigh`/`minimal`、
+ * Anthropic 有 `xhigh`，DeepSeek 与 Kimi / GLM **没有 `medium`**），全线通用子集只有
+ * `{low, high}` —— 一张应用级枚举表必然给某些端点摆出它吃不下的值。
+ * 合法性改由**该模型自己声明的** `reasoning.levels` 判（`modelSaveSchema` 的 `superRefine` 逐条核）。
+ * 这里的 32 字符上限只为挡手误与脏数据，不替厂商定集合。
+ */
+const effortNameSchema = z.string().min(1).max(32)
+
+/**
+ * 逐模型声明的思考能力（plan58 R6/R7）。`kind` 决定**控件形状**（R7）：
+ * `effort` 读 `levels`；`toggle` 读 `enabled`；`budget_tokens` 读 `budget`；`none` 两者都不读。
+ * `levels` 是**人工填的**（能力发现接口只有 Anthropic 与 OpenRouter 两处有，我们三家
+ * 端点全在"没有发现接口"的那一堆里，见 plan58 §丙）—— 所以它必须能原样存下一个我们
+ * 没见过的官方值，否则连"标未实测"的资格都没有。
+ */
+const reasoningConfigSchema = z.object({
+  kind: z.enum(REASONING_KINDS),
+  levels: z.array(effortNameSchema).min(1).max(12).optional(),
+  enabled: z.boolean().optional(),
+  budget: z.number().int().min(0).max(1_000_000).optional()
+})
 
 export const settingsSchema = z.object({
   providerType: z.enum(['openai-compatible', 'anthropic']),
@@ -39,7 +63,8 @@ export const settingsSchema = z.object({
   stream: z.boolean(),
   // 上下文窗口是客户端元数据（不发给模型），封顶 1000 万同样只防手误
   contextWindow: z.number().int().min(1024).max(10_000_000),
-  reasoningEffort: z.enum(['default', 'low', 'medium', 'high', 'max']),
+  reasoningEffort: effortNameSchema,
+  reasoning: reasoningConfigSchema.optional(),
   maxToolRounds: z.number().int().min(1).max(10000),
   inputModalities: z.array(z.enum(INPUT_MODALITIES)).min(1),
   apiKey: z.string().max(400).optional()
@@ -131,7 +156,8 @@ export const modelSaveSchema = z.object({
             topK: z.number().int().min(1).max(200).nullable().optional(),
             maxTokens: z.number().int().min(1).max(1_000_000).optional(),
             contextWindow: z.number().int().min(1000).max(10_000_000).optional(),
-            reasoningEffort: z.enum(['default', 'low', 'medium', 'high']).optional(),
+            reasoningEffort: effortNameSchema.optional(),
+            reasoning: reasoningConfigSchema.optional(),
             maxToolRounds: z.number().int().min(1).max(1000).optional(),
             inputModalities: z.array(z.enum(INPUT_MODALITIES)).min(1).optional()
           })
@@ -143,7 +169,77 @@ export const modelSaveSchema = z.object({
   activeModelId: z.string().max(64).optional(),
   apiKey: z.string().max(500),
   source: z.enum(['deepseek', 'custom']).optional()
-})
+}).superRefine(reasoningLevelsGuard)
+
+/**
+ * 逐模型白名单校验（plan58 R6 的落点，Q13 / Q6b 都落在这一条）。
+ *
+ * ⚠️ **三条判定必须分清，混起来就会把存量档案全拒掉**：
+ * 1. `reasoning` 没填 ⇒ **不判**。存量档案（盘上 `deepseek-flash` / `mimo-*` 都存着 `high`）
+ *    没有 `reasoning` 字段，若这里也判，用户下次点保存就被拒 ⇒ 那是拿新校验打断老数据，
+ *    正是"演进限制"要防的事。R6 修法第 3 条同源：不给老档案凭空造档。
+ * 2. `reasoning` 填了但 `levels` 没填 ⇒ **不判**，但界面须标「未实测」（R9）。
+ *    我们三家端点全是 openai-compatible 代理，档名吃得对不对**一格都没实测过**，
+ *    自动探测也覆盖不到（能力发现接口只有 Anthropic / OpenRouter 有）⇒ 白名单只能人工填，
+ *    没填就不许替它下结论。
+ * 3. `levels` 填了 ⇒ **它就是唯一合法性来源**。同一个档名在声明了的模型上放行、
+ *    没声明的模型上拒绝（Q13 两向都测），拒绝时带上已声明的档位，让界面能说清为什么。
+ *
+ * `'default'` 是**哨兵不是厂商档**（R8）⇒ 任何 kind 下都放行，用户随时能切回"不发字段"。
+ */
+/** 守卫的入参只声明**读得到的那两个字段**，其余结构 zod 会自己补 —— 手写 `Record<string, unknown>` 会让值退成 `unknown`。 */
+type ReasoningGuardShape = {
+  models: Array<{
+    settings?: {
+      reasoningEffort?: string
+      reasoning?: { kind?: string; levels?: string[] }
+    }
+  }>
+}
+
+function reasoningLevelsGuard(val: ReasoningGuardShape, ctx: z.RefinementCtx): void {
+  val.models.forEach((m, i) => {
+    const s = m.settings
+    if (!s) return
+    const effort = s.reasoningEffort
+    if (effort === undefined || effort === 'default') return
+    const cfg = s.reasoning as { kind?: string; levels?: string[] } | undefined
+
+    if (cfg?.kind === 'none') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['models', i, 'settings', 'reasoningEffort'],
+        message: '该模型已声明不支持思考，不接受思考档位'
+      })
+      return
+    }
+    if (cfg?.kind === 'toggle') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['models', i, 'settings', 'reasoningEffort'],
+        message: '该模型只支持开/关两种状态，不接受思考档位'
+      })
+      return
+    }
+    if (cfg?.kind === 'budget_tokens') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['models', i, 'settings', 'reasoningEffort'],
+        message: '该模型接受思考预算（Token 数），不接受思考档位'
+      })
+      return
+    }
+    if (cfg?.kind !== 'effort') return
+    const levels = cfg.levels
+    if (!levels || levels.length === 0) return // 见判定 2
+    if (levels.includes(effort)) return
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['models', i, 'settings', 'reasoningEffort'],
+      message: `档位不在该模型声明的支持列表内（已声明：${levels.join('、')}）`
+    })
+  })
+}
 
 /** 切"端点内的当前模型" */
 export const modelEntryPickSchema = z.object({

@@ -305,13 +305,114 @@ describe('读盘容错：坏条目丢掉并计数，绝不整表崩', () => {
         id: 'a',
         providerType: 'openai-compatible',
         baseURL: 'https://x',
-        models: [{ id: 'e', model: 'm', settings: { temperature: 'NaN', maxTokens: 'huge', reasoningEffort: '外星' } }]
+        models: [{ id: 'e', model: 'm', settings: { temperature: 'NaN', maxTokens: 'huge' } }]
       }
     ])
     const s = res.profiles[0].models[0].settings
     expect(s?.temperature).toBeNull()
     expect(s?.maxTokens).toBe(4096)
-    expect(s?.reasoningEffort).toBe('default')
+  })
+
+  it('★ 档名不再被洗（plan58 R6 + 用户 09-27 裁定「读盘不洗，原值保留」）', () => {
+    // 这一条是**改判**：原断言是"`reasoningEffort` 不在 {low,medium,high} 里 ⇒ 洗成 default"，
+    // 上面那条因此在 09-27 之前顺带塞了 `reasoningEffort:'外星'`。
+    // 改判理由三条，缺一条都不足以推翻原判据：
+    //   ① 官方档名**逐厂商不同**（OpenAI 有 xhigh/minimal，DeepSeek 与 Kimi/GLM 没有 medium），
+    //      拿应用级词表洗档 = 替厂商下结论；
+    //   ② 我们三家端点**一格都没实测过**（plan58 §丁），照别家文档洗就是拿文档值冒充实测值；
+    //   ③ 洗 = 静默改掉用户填的值且无处可查。合法性改由保存时的 schema 按该模型
+    //      自己声明的 `reasoning.levels` 判（见 schemas.test.ts 的白名单组）。
+    // 后果链：未知档名现在会一路走到 provider ⇒ 那侧**必须**显式降级
+    // （`thinkingBudgetFor` 的 undefined 兜底就是为此立的，见 providers.test.ts）。
+    const res = normalizeProfiles([
+      {
+        id: 'a',
+        providerType: 'openai-compatible',
+        baseURL: 'https://x',
+        models: [{ id: 'e', model: 'm', settings: { reasoningEffort: 'xhigh' } }]
+      }
+    ])
+    expect(res.profiles[0].models[0].settings?.reasoningEffort).toBe('xhigh')
+  })
+
+  it('档名仍做**形状**容错：空串 / 纯空白 / 非字符串一律当"没填"，不占位', () => {
+    const res = normalizeProfiles([
+      {
+        id: 'a',
+        providerType: 'openai-compatible',
+        baseURL: 'https://x',
+        models: [
+          { id: 'e1', model: 'm', settings: { reasoningEffort: '   ' } },
+          { id: 'e2', model: 'm', settings: { reasoningEffort: 42 } },
+          { id: 'e3', model: 'm', settings: { reasoningEffort: '' } }
+        ]
+      }
+    ])
+    for (const e of res.profiles[0].models) {
+      // 形状坏掉 ⇒ 字段整个不出现（"跟随端点默认"），而不是存一个空串当档名
+      expect(Object.keys(e.settings ?? {}), e.id).not.toContain('reasoningEffort')
+    }
+  })
+
+  it('★ `reasoning` 声明必须能穿过读盘（normalizeEntry 是白名单重建，不加容错就整段丢）', () => {
+    // 这条专打"字段在类型里、用户填得进去、读一次就没了"（no-dead-wiring 同族）。
+    // 反向哨兵：`kind` 是四个已知值之外的 ⇒ 整个丢掉（宁可不许有，不许存半截配置）。
+    const res = normalizeProfiles([
+      {
+        id: 'a',
+        providerType: 'openai-compatible',
+        baseURL: 'https://x',
+        models: [
+          { id: 'e1', model: 'm', settings: { reasoning: { kind: 'effort', levels: ['low', 'high', 'low'] } } },
+          { id: 'e2', model: 'm', settings: { reasoning: { kind: '外星' } } },
+          { id: 'e3', model: 'm', settings: { reasoning: { kind: 'toggle', enabled: true } } }
+        ]
+      }
+    ])
+    const [e1, e2, e3] = res.profiles[0].models
+    expect(e1.settings?.reasoning).toEqual({ kind: 'effort', levels: ['low', 'high'] }) // 顺带去重
+    expect(e2.settings?.reasoning).toBeUndefined()
+    expect(e3.settings?.reasoning).toEqual({ kind: 'toggle', enabled: true })
+  })
+
+  it('Q12 存量档案不动：没填 `reasoning` 的模型，有效设置逐字段不变（reasoning 键整个不存在）', () => {
+    // 防"加了字段就顺手给老档案补默认"：盘上三家端点的档案都没有 reasoning，
+    // 若这里凭空补一个 `kind:'none'`，出境行为虽不变，落盘却会多出一段用户没填过的东西。
+    const res = normalizeProfiles([
+      {
+        id: 'a',
+        providerType: 'openai-compatible',
+        baseURL: 'https://x',
+        models: [{ id: 'e', model: 'm', settings: { reasoningEffort: 'high' } }]
+      }
+    ])
+    const s = settingsOf(res.profiles[0], res.profiles[0].models[0])
+    expect(s.reasoningEffort).toBe('high')
+    expect('reasoning' in s).toBe(false)
+  })
+
+  it('★ 填了 `reasoning` 的模型，有效设置里**必须原样透传**（这条是补洞补出来的）', () => {
+    // 09-27 变异自检当场露的洞：上面那条只钉住"没填的不许凭空补"，却没钉"填了的不许丢" ——
+    // 把 `settingsOf` 里的透传删掉，34 条**照样全绿**。这正是 no-dead-wiring 那个形状：
+    // 字段在类型里、用户填得进去、合成时没人读，于是**声明等于没写**，而没有一道闸会红。
+    // 读盘容错（`normalizeReasoning`）与合成透传是**两跳**，两条都得有判据。
+    const res = normalizeProfiles([
+      {
+        id: 'a',
+        providerType: 'openai-compatible',
+        baseURL: 'https://x',
+        models: [
+          { id: 'e1', model: 'm', settings: { reasoningEffort: 'xhigh', reasoning: { kind: 'effort', levels: ['low', 'high', 'xhigh'] } } },
+          { id: 'e2', model: 'm', settings: { reasoning: { kind: 'toggle', enabled: true } } },
+          { id: 'e3', model: 'm', settings: { reasoning: { kind: 'budget_tokens', budget: 4096 } } }
+        ]
+      }
+    ])
+    const [e1, e2, e3] = res.profiles[0].models.map((e) => settingsOf(res.profiles[0], e))
+    expect(e1.reasoning).toEqual({ kind: 'effort', levels: ['low', 'high', 'xhigh'] })
+    expect(e1.reasoningEffort).toBe('xhigh')
+    expect(e2.reasoning).toEqual({ kind: 'toggle', enabled: true })
+    expect(e3.reasoning).toEqual({ kind: 'budget_tokens', budget: 4096 })
   })
 
   it('`activeModelId` 指向不存在的条目 → 修正成第一条', () => {

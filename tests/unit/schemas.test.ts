@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { mapHttpError, isAbortError } from '@main/providers/errors'
-import { chatMessagesSchema, chatSendInputSchema, settingsSchema, storedMessagesSchema } from '@main/schemas'
+import {
+  chatMessagesSchema,
+  chatSendInputSchema,
+  modelSaveSchema,
+  settingsSchema,
+  storedMessagesSchema
+} from '@main/schemas'
 import { normalizeHistory } from '@main/store/conversations-core'
 
 describe('mapHttpError（HTTP 错误翻译成人话）', () => {
@@ -249,5 +255,110 @@ describe('视频块的 schema 闸门（K54）', () => {
     expect(chatMessagesSchema.safeParse(turn(big)).success).toBe(false)
     const bad = [{ type: 'video', mime: 'video/mp4', ref: '../../etc/passwd', bytes: 4096 }]
     expect(chatMessagesSchema.safeParse(turn(bad)).success).toBe(false)
+  })
+})
+
+// plan58 片⓪：思考档名改成**逐模型白名单**（R6），校验落在这里。
+// 强度声明：这一组全在**校验层**，它管的是"什么进得来盘"；至于"出站时那个值对不对"
+// 是 provider 层的事（`thinkingBudgetFor` 的 undefined 兜底），两组缺一不可 ——
+// 只有校验层而 provider 不兜底 = NaN 出境；只有 provider 兜底而校验层放行 = 用户存了个永远不生效的值。
+describe('modelSaveSchema：思考档名的逐模型白名单（plan58 R6 / Q6b / Q13）', () => {
+  const save = (settings: Record<string, unknown>) => ({
+    name: '端点',
+    providerType: 'openai-compatible',
+    baseURL: 'https://api.deepseek.com',
+    apiKey: 'k',
+    models: [{ id: 'e1', model: 'deepseek-flash', ...(settings ? { settings } : {}) }]
+  })
+
+  it('Q13 正向：白名单内的档放行（`max` / `xhigh` 这类官方值都收）', () => {
+    for (const eff of ['low', 'high', 'max', 'xhigh', 'minimal']) {
+      const r = modelSaveSchema.safeParse(
+        save({ reasoningEffort: eff, reasoning: { kind: 'effort', levels: ['low', 'high', 'max', 'xhigh', 'minimal'] } })
+      )
+      expect(r.success, eff).toBe(true)
+    }
+  })
+
+  it('★ Q13 反向：同一个值在**没声明该档**的模型上拒绝（白名单是唯一合法性来源）', () => {
+    // 这一条是本组的核心：同一个 `max`，上面放行、这里拒绝 ⇒ 判据不可能撞在别处蒙对。
+    const r = modelSaveSchema.safeParse(
+      save({ reasoningEffort: 'max', reasoning: { kind: 'effort', levels: ['low', 'high'] } })
+    )
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      const msg = r.error.issues.map((i) => i.message).join(' | ')
+      expect(msg).toContain('支持列表')
+      // 报错要说清"已经声明了什么"，否则用户在界面上只看到一句"不合法"无从改
+      expect(msg).toContain('low')
+      expect(msg).toContain('high')
+    }
+  })
+
+  it('★ 存量兼容：没填 `reasoning` 的模型**不判**（盘上三家端点的档案都没有它）', () => {
+    // 反向钉住"把新校验打到老数据上"这个坏修法：一条判据写成"必须有 levels"，
+    // 用户下次点保存就被拒 ⇒ 拿新规则打断没升级过的档案。
+    for (const eff of ['high', 'xhigh', '外星']) {
+      expect(modelSaveSchema.safeParse(save({ reasoningEffort: eff })).success, eff).toBe(true)
+    }
+  })
+
+  it('填了 `reasoning` 但没填 `levels` ⇒ 也不判（白名单是人工填的，没填就不许替它下结论）', () => {
+    expect(modelSaveSchema.safeParse(save({ reasoningEffort: 'medium', reasoning: { kind: 'effort' } })).success).toBe(
+      true
+    )
+  })
+
+  it("R8：`default` 是'不发字段'的哨兵，任何 kind 下都放行（用户随时能切回去）", () => {
+    for (const kind of ['effort', 'toggle', 'budget_tokens', 'none'] as const) {
+      const r = modelSaveSchema.safeParse(save({ reasoningEffort: 'default', reasoning: { kind } }))
+      expect(r.success, kind).toBe(true)
+    }
+  })
+
+  it('R7：三型形态各自拒档位（toggle 无强度概念、budget 只收预算、none 不支持思考）', () => {
+    const cases: Array<[string, string]> = [
+      ['toggle', '该模型只支持开/关两种状态'],
+      ['budget_tokens', '该模型接受思考预算'],
+      ['none', '该模型已声明不支持思考']
+    ]
+    for (const [kind, want] of cases) {
+      const r = modelSaveSchema.safeParse(save({ reasoningEffort: 'high', reasoning: { kind } }))
+      expect(r.success, kind).toBe(false)
+      if (!r.success) expect(r.error.issues.map((i) => i.message).join(), kind).toContain(want)
+    }
+  })
+
+  it('`kind` 不在四个已知值里 ⇒ 拒；`levels` 空数组拒（空的白名单等于宣称"什么都不支持"，那该用 kind:none）', () => {
+    expect(modelSaveSchema.safeParse(save({ reasoning: { kind: '外星' } })).success).toBe(false)
+    expect(
+      modelSaveSchema.safeParse(save({ reasoning: { kind: 'effort', levels: [] } })).success
+    ).toBe(false)
+  })
+
+  it('档名本身仍要过形状闸：超长 / 空串拒（32 字符上限只为挡手误与脏数据）', () => {
+    expect(modelSaveSchema.safeParse(save({ reasoningEffort: 'x'.repeat(33) })).success).toBe(false)
+    expect(modelSaveSchema.safeParse(save({ reasoningEffort: '' })).success).toBe(false)
+  })
+
+  it('★ 阳性对照：白名单是**逐条**判的 —— 一个端点里两条模型，一条合规一条不合规时，红的必须是那一条', () => {
+    // 防"整表一票否决"那种坏法：一条模型配错就把整个端点拒掉，用户连改都改不了。
+    const r = modelSaveSchema.safeParse({
+      name: '端点',
+      providerType: 'openai-compatible',
+      baseURL: 'https://api.deepseek.com',
+      apiKey: 'k',
+      models: [
+        { id: 'ok', model: 'a', settings: { reasoningEffort: 'high', reasoning: { kind: 'effort', levels: ['low', 'high'] } } },
+        { id: 'bad', model: 'b', settings: { reasoningEffort: 'max', reasoning: { kind: 'effort', levels: ['low', 'high'] } } }
+      ]
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      // path 是**索引**不是条目 id —— 这里判"红的是第 1 条（下标 1）、不是第 0 条"
+      const paths = r.error.issues.map((i) => i.path.join('.'))
+      expect(paths).toContain('models.1.settings.reasoningEffort')
+      expect(paths.some((p) => p.startsWith('models.0.'))).toBe(false)
+    }
   })
 })

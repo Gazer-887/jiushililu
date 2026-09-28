@@ -226,6 +226,19 @@ describe('thinkingBudgetFor（思考预算方言映射）', () => {
     expect(thinkingBudgetFor('high', 2000)).toBe(null)
     expect(thinkingBudgetFor('max', 1024)).toBe(null)
   })
+
+  it('★ 官方有而我们没登记的档 ⇒ 显式不开思考，**绝不发 NaN**（plan58 片⓪ 必修项）', () => {
+    // 成因链：`ReasoningEffort` 按 R6 改成开放字符串后，`EFFORT_BUDGET[effort]` 对
+    // `xhigh` / `minimal` 这类官方值返回 undefined；而 `Math.min(undefined, ceiling)`
+    // 是 **NaN** —— 会被原样写进 `thinking.budget_tokens` 发出去。编译不报错、类型不报错、
+    // 门禁不红，只有真发一次请求才看得见（与 09-25 那次 `?? 0` 三元同族）。
+    // 兜底选"不开思考"而不是"猜一个预算"：猜错等于让用户拿到一个他没要的思考量。
+    for (const eff of ['xhigh', 'minimal', 'none', '外星']) {
+      const got = thinkingBudgetFor(eff, 65536)
+      expect(got, eff).toBe(null)
+      expect(Number.isNaN(got as unknown as number), `${eff} 算出了 NaN`).toBe(false)
+    }
+  })
 })
 
 describe('maskKey（Key 掩码，日志防泄露）', () => {

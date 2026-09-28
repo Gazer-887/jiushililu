@@ -7,7 +7,10 @@ import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
 
 // 思考强度 → Anthropic extended thinking 预算（方言映射）
-const EFFORT_BUDGET: Record<Exclude<ReasoningEffort, 'default'>, number> = {
+// ⚠️ 键**不再穷举** `ReasoningEffort`：plan58 R6 把它改成开放字符串后，官方值
+// （`xhigh` / `minimal` …）查不到就是 `undefined`。这里的索引类型因此放宽成 `string`，
+// 配套的兜底在 `thinkingBudgetFor` —— 查不到**显式降级**，绝不把 undefined 送进 Math.min。
+const EFFORT_BUDGET: Record<string, number> = {
   low: 8192,
   medium: 16384,
   high: 32768,
@@ -18,9 +21,15 @@ const EFFORT_BUDGET: Record<Exclude<ReasoningEffort, 'default'>, number> = {
 // Anthropic 硬性要求 max_tokens > budget_tokens：空间不足 2048 时空间不够，干脆不开思考。
 export function thinkingBudgetFor(effort: ReasoningEffort, maxTokens: number): number | null {
   if (effort === 'default') return null
+  const budget = EFFORT_BUDGET[effort]
+  // 官方有而我们没登记的档（`xhigh` / `minimal` …）⇒ 不知道该换算成多少预算就不发，
+  // 与 `default` 同一条出境路径。⚠️ 这里**必须显式判 undefined**：直接
+  // `Math.min(EFFORT_BUDGET[effort], ceiling)` 会算出 NaN 并把它发进 `thinking.budget_tokens`
+  // —— 编译不报错、门禁不红，故列成本批必修项。
+  if (budget === undefined) return null
   const ceiling = maxTokens - 1024
   if (ceiling < 1024) return null
-  return Math.min(EFFORT_BUDGET[effort], ceiling)
+  return Math.min(budget, ceiling)
 }
 
 // 纯函数：Anthropic 的 system 是顶层字段，不走 messages 数组（单元测试覆盖）

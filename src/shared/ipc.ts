@@ -18,8 +18,47 @@ import type { GitChange } from './git-status'
 
 export type ProviderType = 'openai-compatible' | 'anthropic'
 
-/** 思考强度：统一词表，由适配层翻译成各厂商方言（reasoning_effort 档位 / Anthropic thinking 预算） */
-export type ReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'max'
+/**
+ * 思考强度档名（plan58 R6）。
+ *
+ * ⚠️ **它不再是封闭枚举** —— 官方词表逐厂商不同（OpenAI 有 `xhigh`/`minimal`、Anthropic 有
+ * `xhigh`、DeepSeek 与 Kimi / GLM **没有 `medium`**），全线通用子集只有 `{low, high}`。
+ * 一张应用级枚举表无论含不含某个值，都必然给某些端点摆出它吃不下的值。
+ * 合法性改由**该模型自己声明的** `ModelSettings.reasoning.levels` 判（`modelSaveSchema` 的
+ * `superRefine` 逐条核），本类型只负责"这是个非空短字符串"。
+ *
+ * `'default'` 是**哨兵而非厂商值**：它表示"不发任何思考字段"，适配层见它即跳过。
+ * 写成 `string & {}` 而不是纯 `string` —— 后者会把这个字面量并进 `string`，
+ * 于是 `effort === 'default'` 那种判断失去类型意义（`exclude` / `Record` 也会跟着塌）。
+ */
+export type ReasoningEffort = 'default' | (string & {})
+
+/**
+ * 思考控制的形态（plan58 R7，形状取自 OpenCode 的三型）：`kind` 决定**控件长什么样**，
+ * 而不是把各家方言硬塞进一个下拉。
+ *
+ * - `effort` —— 档名单元，白名单 = `levels`
+ * - `toggle` —— 只有开关、**没有强度概念**（如 `enable_thinking`），二态即可
+ * - `budget_tokens` —— 整数预算
+ * - `none` —— 该模型不支持思考，**控件根本不出现**（`levels` 也不读）
+ */
+/** 四种形态；顺序即界面渲染的判定顺序，**新增值要一并想好控件长什么样** */
+export const REASONING_KINDS = ['effort', 'toggle', 'budget_tokens', 'none'] as const
+export type ReasoningKind = (typeof REASONING_KINDS)[number]
+
+/**
+ * 逐模型声明的思考能力（plan58 R6）。未填的存量档案一律按 `kind:'none'` 处理 ——
+ * 不给老档案凭空造档，出境行为**逐字节不变**。
+ */
+export interface ReasoningConfig {
+  kind: ReasoningKind
+  /** `kind:'effort'` 时该模型**官方支持**的档名白名单；其余 kind 不读它。⚠️ 人工填，不是探出来的 —— 能力发现接口只有 Anthropic 与 OpenRouter 两处有。 */
+  levels?: string[]
+  /** `kind:'toggle'` 时的开关值 */
+  enabled?: boolean
+  /** `kind:'budget_tokens'` 时的预算（token 数） */
+  budget?: number
+}
 
 export interface ModelSettings {
   providerType: ProviderType
@@ -34,8 +73,14 @@ export interface ModelSettings {
   stream: boolean
   /** 上下文窗口：仅客户端元数据（不发厂商），历史裁剪 / 压缩与成本估算的依据 */
   contextWindow: number
-  /** 思考强度；default = 跟随厂商默认（不发任何相关字段） */
+  /** 思考强度；default = 跟随厂商默认（不发任何相关字段）。⚠️ 取值合法性由 `reasoning.levels` 判，不由本字段自己判。 */
   reasoningEffort: ReasoningEffort
+  /**
+   * 该模型声明的思考能力（plan58 R6）。**可选 = 未声明 = 不支持思考**，控件不出现；
+   * 存了 `effort` 档却不填它 ⇒ 界面按"未实测"披露（我们三家端点全是 openai-compatible
+   * 代理，档名吃得对不对没有一手依据，不许拿别家文档数字当承诺，见 R9）。
+   */
+  reasoning?: ReasoningConfig
   maxToolRounds: number
   /**
    * 该模型声明支持的输入模态（plan57 片⑤ / K55），取代旧的 `supportsImages: boolean`。

@@ -8,6 +8,25 @@ import { describe, expect, it } from 'vitest'
 
 const src = (rel: string): string => readFileSync(join(__dirname, '../../src', rel), 'utf8')
 
+/**
+ * 剥掉注释再扫（多处守卫共用）。
+ *
+ * ⚠️ 本仓是项目里注释最密的地方，而本文件好几条判据恰恰要靠**注释里写着"为什么不用 X"**
+ * 才能读懂 —— 不剥注释会把这些解释判成违规（09-27 变异还原时在 `clipboard` 那组当场撞到，
+ * 与"反向哨兵正则写太宽把注释判成违规"同一条病）。反过来，**阳性对照也在这里**：
+ * 剥注释器不许把代码一起剥掉。
+ */
+const stripComments = (s: string): string =>
+  s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split(String.fromCharCode(10))
+    .map((l) => {
+      const i = l.indexOf('//')
+      // 前一个字符是冒号 ⇒ 那是 `https://` 之类的字符串，不是注释
+      return i > 0 && l[i - 1] !== ':' ? l.slice(0, i) : l
+    })
+    .join(String.fromCharCode(10))
+
 describe('#3 死开关：能力位（片③ 接上消费点 → 片⑤ 改成模态集合，判据第三次重定）', () => {
   // 演变三站：① 只有字段没消费点 ⇒ 撤格子（plan54 #3）；② 接上图通路 ⇒ 格子必须回来（plan57 §四）；
   // ③ 布尔装不下「收图不收视频」⇒ 换成模态集合（K55）。**每次都两条一起翻** ——
@@ -244,20 +263,7 @@ describe('复制：渲染层只许走主进程那一条路', () => {
       }
       return out
     }
-    // ⚠️ **必须先剥注释**：`clipboard.ts` 的文档注释里就写着"为什么不用 navigator.clipboard"，
-    //    不剥注释会把这段**解释为什么不用的文字**判成违规（09-27 变异还原时当场撞到，
-    //    与本仓"反向哨兵正则写太宽把注释判成违规"同一条病）。
-    const stripComments = (s: string): string =>
-      s
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .split(String.fromCharCode(10))
-        .map((l) => {
-          const i = l.indexOf('//')
-          // 前一个字符是冒号 ⇒ 那是 `https://` 之类的字符串，不是注释
-          return i > 0 && l[i - 1] !== ':' ? l.slice(0, i) : l
-        })
-        .join(String.fromCharCode(10))
-
+    // `stripComments` 已提到文件顶层（本文件另两组守卫也要用同一份，避免"每组各剥一次、剥法还不一样"）。
     // ★ 阳性对照：剥注释**不许把代码也剥掉** —— 带行尾注释的那一行，代码部分必须还在
     expect(
       stripComments('  await navigator.clipboard.writeText(t) // 这里是不许出现的调用'),
@@ -336,5 +342,76 @@ describe('滚动条：全局隐藏 + 终端有意例外', () => {
     expect(starNone, '全局 `*` 上的 none 不见了 = 这条守卫被绕开').toBe(true)
     // 而终端那条的选择器含两个类，特异性 (0,2,0) > `*` 的 (0,0,0)：顺序无关，删全局才有效
     expect(css).toContain('.tm-host .xterm-viewport {')
+  })
+})
+
+// —— 思考档名：按模型存，不许退回"应用级词表"（plan58 片⓪ / R6）———————————————————
+// 为什么值得单独立一组守卫：R6 是一句**改判** —— 09-26 原判是"三头补齐 `max`"，
+// 09-27 查了三路官方文档后推翻为"取消应用级档名表，档名按模型档案存"（R4/R6）。
+// 推翻性决策最典型的失效形态不是被改回去，而是**残片**：另一个文件里按旧写法加了一行，
+// 全库没有一道闸会红（AGENTS.md §四 规律 4：残片常长在最像"现行有效内容"的位置）。
+// ⇒ 所以这一组扫的是**旧写法的所有同义形状**，不是只盯我改过的那两行。
+describe('思考档名：档名按模型存，不许退回应用级词表（plan58 R6）', () => {
+  it('读盘不许再按词表洗档（旧写法的两种形状：条目容错 / 扁平老形状升级）', () => {
+    const code = stripComments(src('shared/models.ts'))
+    // 旧形状 ①：新条目的 `settings.reasoningEffort === 'low' || …` 比较链
+    // 旧形状 ②：扁平老形状的 `p.reasoningEffort === 'low' || …` 同一条链
+    // 两条都被这一条正则罩住（差别只在 `s.` / `p.` 前缀，链本身一模一样）
+    expect(code, 'shared/models.ts 里又出现了按词表比较洗档的链').not.toMatch(
+      /reasoningEffort\s*===\s*'low'\s*\|\|/
+    )
+    // 旧形状 ③：三元兜底 `? x : 'default'`（万一有人换种写法再写一遍）
+    expect(code, '又出现了"不认识的档一律洗成 default"的三元').not.toMatch(
+      /reasoningEffort[\s\S]{0,160}?\?\s*\w+\s*:\s*'default'/
+    )
+  })
+
+  it('★ 阳性对照：上两条扫的文件里确实有这段逻辑（否则是判据空转，不是代码干净）', () => {
+    // 洗档的**新**写法必须是"只做形状容错、原值保留" —— 认它而不是认"没有这段逻辑"
+    const code = stripComments(src('shared/models.ts'))
+    expect(code).toContain('reasoningEffort')
+    expect(code).toMatch(/typeof\s+\w+\.reasoningEffort\s*===\s*'string'/)
+  })
+
+  it('`reasoning` 声明必须过读盘容错与合成透传**两跳**（缺一跳就是"填了等于没写"）', () => {
+    const code = stripComments(src('shared/models.ts'))
+    expect(code, 'normalizeReasoning 不见了 ⇒ 用户填的 reasoning 每次读盘都会被丢掉').toContain(
+      'function normalizeReasoning'
+    )
+    expect(code, '读盘容错没有把 reasoning 接进 settings').toMatch(/settings\.reasoning\s*=\s*reasoning/)
+    // 09-27 变异自检露的洞：第一版只钉了读盘那一跳，删掉 `settingsOf` 里的透传**照样全绿**。
+    // 两跳都在守卫里，缺一条就有一半的洞重新打开。
+    expect(code, 'settingsOf 没有透传 reasoning ⇒ 声明存得进、合成时没人读').toMatch(
+      /over\.reasoning\s*\?\s*\{\s*reasoning:\s*over\.reasoning\s*\}/
+    )
+  })
+
+  it('未知档名不许被送进 Math.min（那是 NaN 出境，编译与门禁都不报）', () => {
+    const code = stripComments(src('main/providers/anthropic.ts'))
+    // 危险形状：查表结果直接进 Math.min —— `EFFORT_BUDGET` 现在是 `Record<string, number>`，
+    // 未登记的官方档（xhigh / minimal）取到 undefined，Math.min(undefined, n) 是 NaN。
+    expect(code, '查表结果又直接进了 Math.min ⇒ 未知档会算出 NaN').not.toMatch(
+      /Math\.min\(\s*EFFORT_BUDGET\[/
+    )
+    // 兜底必须显式判 undefined 并降级成"不开思考"
+    expect(code, '未知档名没有显式降级').toMatch(/budget\s*===\s*undefined\s*\)\s*return null/)
+  })
+
+  it('`REASONING_KINDS` 只有一份真相：形状校验读常量，不许写字面量数组', () => {
+    expect(src('shared/ipc.ts')).toContain("export const REASONING_KINDS = ['effort', 'toggle', 'budget_tokens', 'none']")
+    expect(src('main/schemas.ts')).toContain('z.enum(REASONING_KINDS)')
+    // 抄一份字面量就是两份真相：加一种形态时只改了一处，另一处静默过期
+    expect(stripComments(src('main/schemas.ts'))).not.toMatch(
+      /z\.enum\(\s*\[\s*'effort'\s*,\s*'toggle'/
+    )
+  })
+
+  it('★ 阳性对照：逐模型白名单校验确实落在保存那道闸门上（校验层与出境层各有一半，缺一不可）', () => {
+    const schemas = src('main/schemas.ts')
+    expect(schemas).toContain('superRefine(reasoningLevelsGuard)')
+    // 且它在**模型条目**那一层逐条判，不是整表一票否决
+    expect(schemas).toContain("path: ['models', i, 'settings', 'reasoningEffort']")
+    // `ReasoningEffort` 必须还是**开放**的：退回封闭枚举 = 这次改判等于没做
+    expect(src('shared/ipc.ts')).toContain("export type ReasoningEffort = 'default' | (string & {})")
   })
 })

@@ -6,7 +6,8 @@
  * 纯逻辑（不 import electron / 不碰 IO / 不认识 Key 密文，落盘见 `main/store/models.ts`）。
  * ⚠️ API Key 一个字节都不进 `models.json`：仍按"端点 id → 密文"存 settings.json（AGENTS.md / D-013）。
  */
-import type { ModelSettings, ProviderType } from './ipc'
+import type { ModelSettings, ProviderType, ReasoningConfig } from './ipc'
+import { REASONING_KINDS } from './ipc'
 import { modalitiesFromLegacyFlag, normalizeModalities } from './content-parts'
 
 /** 来源标签：界面显示"内置来源 / 用户自定义"（不参与任何逻辑判断） */
@@ -81,6 +82,9 @@ export function settingsOf(profile: ModelProfile, entry: ModelEntry): ModelSetti
     maxTokens: over.maxTokens ?? 4096,
     contextWindow: over.contextWindow ?? 131072,
     reasoningEffort: over.reasoningEffort ?? 'default',
+    // 思考能力**只存模型级**（没有端点默认这层）：档位白名单是"这个模型支持什么"的事实，
+    // 端点级的默认值没有意义 —— 同一个端点下不同模型能吃的档不一样。
+    ...(over.reasoning ? { reasoning: over.reasoning } : {}),
     maxToolRounds: over.maxToolRounds ?? 200,
     inputModalities: over.inputModalities ?? ['text']
   }
@@ -294,6 +298,30 @@ const num = (v: unknown, fallback: number): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback
 const nullable = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 
+/**
+ * `reasoning` 的读盘容错（plan58 片⓪）。
+ *
+ * ⚠️ 这个函数**必须存在**，否则 `normalizeEntry` 那个"从空对象白名单重建 settings"的写法
+ * 会把 `reasoning` 整段丢掉 —— 字段在类型里、用户填得进去、读一次就没了（`no-dead-wiring` 同族）。
+ * `kind` 认不出就整个丢掉（宁可不许有，不许存一个界面会照着渲染的半截配置）。
+ */
+function normalizeReasoning(raw: unknown): ReasoningConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const r = raw as Record<string, unknown>
+  if (!REASONING_KINDS.includes(r.kind as (typeof REASONING_KINDS)[number])) return undefined
+  const out: ReasoningConfig = { kind: r.kind as ReasoningConfig['kind'] }
+  if (Array.isArray(r.levels)) {
+    // 去重保序：同一档名填两次不该让界面出现两个同名选项
+    const levels = [
+      ...new Set(r.levels.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map((v) => v.trim()))
+    ]
+    if (levels.length > 0) out.levels = levels
+  }
+  if (typeof r.enabled === 'boolean') out.enabled = r.enabled
+  if (typeof r.budget === 'number' && Number.isFinite(r.budget)) out.budget = r.budget
+  return out
+}
+
 /** 单条模型条目的容错：坏条目丢掉（返回 null） */
 function normalizeEntry(raw: unknown, fallbackId: string): ModelEntry | null {
   if (!raw || typeof raw !== 'object') return null
@@ -309,12 +337,15 @@ function normalizeEntry(raw: unknown, fallbackId: string): ModelEntry | null {
   if (s.topK !== undefined) settings.topK = nullable(s.topK)
   if (s.maxTokens !== undefined) settings.maxTokens = num(s.maxTokens, 4096)
   if (s.contextWindow !== undefined) settings.contextWindow = num(s.contextWindow, 131072)
-  if (s.reasoningEffort !== undefined) {
-    settings.reasoningEffort =
-      s.reasoningEffort === 'low' || s.reasoningEffort === 'medium' || s.reasoningEffort === 'high'
-        ? s.reasoningEffort
-        : 'default'
+  // ⚠️ 档名**只做形状容错，不按词表洗**（plan58 R6 + 用户 09-27 裁定「读盘不洗，原值保留」）。
+  // 合法性由保存时的 `modelSaveSchema.superRefine` 按该模型自己声明的 `reasoning.levels` 判 ——
+  // 洗在这里等于**静默改掉用户填的值**且无处可查，而我们三家端点的档名**一格都没实测过**
+  // （plan58 §丁），照着别家文档洗等于拿文档值冒充实测值。
+  if (typeof s.reasoningEffort === 'string' && s.reasoningEffort.trim()) {
+    settings.reasoningEffort = s.reasoningEffort
   }
+  const reasoning = normalizeReasoning(s.reasoning)
+  if (reasoning) settings.reasoning = reasoning
   if (s.maxToolRounds !== undefined) settings.maxToolRounds = num(s.maxToolRounds, 200)
   // 新字段优先；只有旧字段时**就地迁移**（0.13.92 及以前的档案里存的是 `supportsImages: boolean`）。
   // 迁移只发生在读盘这一处，写盘一律只写新字段 ⇒ 不会出现两份真相同时可写。
@@ -380,8 +411,9 @@ export function normalizeProfiles(raw: unknown): { profiles: ModelProfile[]; dro
             timeoutMs: num(p.timeoutMs, 120000),
             stream: p.stream !== false,
             contextWindow: num(p.contextWindow, 131072),
+            // 扁平老形状（0.13.16 及以前）：档名同样只做形状容错，不按词表洗（同 `normalizeEntry`）
             reasoningEffort:
-              p.reasoningEffort === 'low' || p.reasoningEffort === 'medium' || p.reasoningEffort === 'high'
+              typeof p.reasoningEffort === 'string' && p.reasoningEffort.trim()
                 ? p.reasoningEffort
                 : 'default',
             maxToolRounds: num(p.maxToolRounds, 200),
