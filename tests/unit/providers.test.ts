@@ -268,9 +268,22 @@ describe('effortToSend（openai 侧出境判定，与 Anthropic 同一条降级�
     expect(effortToSend({ reasoningEffort: 'high', reasoning: cfg })).toBe(null)
   })
 
-  it('非 effort 形态（toggle / budget_tokens / none）不吃档名这条路，按已知词表发', () => {
-    // 这几形态的出境形状还没定（见 plan58 片②）；今天别把它们误当成"只支持开关"就静默吞掉档名
-    expect(effortToSend({ reasoningEffort: 'high', reasoning: { kind: 'toggle', enabled: true } })).toBe('high')
+  it('★ 缺口 A 收口：非 `effort` 形态一律**不发**，且存得进（守卫不再拒，承重挪到这里）', () => {
+    // 这条是 09-28 改判 R11′ 的**承重半边**：守卫里"形态与档位矛盾 ⇒ 拒"那三条已撤掉
+    // （它们制造了一个用户解不开的死结：存量 `high` 的模型第一次标"不支持思考"会被拒，
+    //  而要把档位改回 default 得先能操作那个下拉）。⇒ 出境层接手"这个形态吃不吃档位"。
+    // 存量模型存着 `high` + 用户把 kind 标成 none ⇒ **两端都不拦**：存得进、发不出。
+    for (const kind of ['none', 'toggle', 'budget_tokens'] as const) {
+      expect(effortToSend({ reasoningEffort: 'high', reasoning: { kind } }), kind).toBe(null)
+      // 且**改了档位也还是不发** —— inert 数据的定义就是"改不改都不出境"
+      expect(effortToSend({ reasoningEffort: 'low', reasoning: { kind } }), kind).toBe(null)
+    }
+  })
+
+  it('没声明 `reasoning` 的存量档案仍按已知词表发（不因这次改判改变任何现有行为）', () => {
+    for (const eff of ['low', 'medium', 'high', 'max']) {
+      expect(effortToSend({ reasoningEffort: eff }), eff).toBe(eff)
+    }
   })
 })
 

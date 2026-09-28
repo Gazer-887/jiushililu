@@ -205,30 +205,13 @@ function reasoningLevelsGuard(val: ReasoningGuardShape, ctx: z.RefinementCtx): v
     if (effort === undefined || effort === 'default') return
     const cfg = s.reasoning as { kind?: string; levels?: string[] } | undefined
 
-    if (cfg?.kind === 'none') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['models', i, 'settings', 'reasoningEffort'],
-        message: '该模型已声明不支持思考，不接受思考档位'
-      })
-      return
-    }
-    if (cfg?.kind === 'toggle') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['models', i, 'settings', 'reasoningEffort'],
-        message: '该模型只支持开/关两种状态，不接受思考档位'
-      })
-      return
-    }
-    if (cfg?.kind === 'budget_tokens') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['models', i, 'settings', 'reasoningEffort'],
-        message: '该模型接受思考预算（Token 数），不接受思考档位'
-      })
-      return
-    }
+    // ★ 这里**只判一条**：声明了 `kind:'effort'` 且填了 `levels` 时，它就是唯一合法性来源。
+    //   09-28 改判（R11′，用户裁定「出境层统一裁决」）：原先这里还有三条"形态与档位矛盾 ⇒ 拒"
+    //   （`none` / `toggle` / `budget_tokens` 各一条），现已撤掉 —— 那些形态下档位是
+    //   **inert 数据**（`providers/effort.ts · effortToSend` 第 2 条保证它永不出境），
+    //   拒它没有技术道理，只制造一个**用户解不开的死结**：存量模型存着 `high` 时，
+    //   用户第一次把该模型标为"不支持思考"会被拒，而要把档位改回 `default` 得先能操作那个下拉。
+    //   ⇒ 存形状只管形状；**发不发一律由出境层裁决**。
     if (cfg?.kind !== 'effort') return
     const levels = cfg.levels
     if (!levels || levels.length === 0) return // 见判定 2

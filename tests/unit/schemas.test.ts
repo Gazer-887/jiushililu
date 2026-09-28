@@ -316,17 +316,28 @@ describe('modelSaveSchema：思考档名的逐模型白名单（plan58 R6 / Q6b 
     }
   })
 
-  it('R7：三型形态各自拒档位（toggle 无强度概念、budget 只收预算、none 不支持思考）', () => {
-    const cases: Array<[string, string]> = [
-      ['toggle', '该模型只支持开/关两种状态'],
-      ['budget_tokens', '该模型接受思考预算'],
-      ['none', '该模型已声明不支持思考']
-    ]
-    for (const [kind, want] of cases) {
+  it('R7 三型形态**不再拒档位**（09-28 改判 R11′：存形状只管形状，发不发由出境层裁决）', () => {
+    // 改判前的判据是"三型各自拒档位"（none / toggle / budget_tokens 各一句报错）。
+    // 现已撤掉 —— 那些形态下档位是 **inert 数据**：`providers/effort.ts · effortToSend`
+    // 保证它永不出境，拒它在保存时没有技术道理。
+    // ★ 撤掉之后**必须把承重的那半钉在出境层**，否则就是"判据松了但没人接"。
+    for (const kind of ['none', 'toggle', 'budget_tokens'] as const) {
       const r = modelSaveSchema.safeParse(save({ reasoningEffort: 'high', reasoning: { kind } }))
-      expect(r.success, kind).toBe(false)
-      if (!r.success) expect(r.error.issues.map((i) => i.message).join(), kind).toContain(want)
+      expect(r.success, `${kind} 形态不该再因为档位被拒`).toBe(true)
     }
+    // 边界仍在：`kind` 不在四个已知值里照样拒（那是**形状**问题，不是形态与档位矛盾）
+    expect(modelSaveSchema.safeParse(save({ reasoningEffort: 'high', reasoning: { kind: '外星' } })).success).toBe(
+      false
+    )
+  })
+
+  it('★ 但 kind 为 effort 且填了 levels 时，白名单**仍然**拒（本组唯一剩下的守卫）', () => {
+    // 反向哨兵：防止"为了让 kind=none 那条绿，把整个守卫删了"这种坏修法。
+    const r = modelSaveSchema.safeParse(
+      save({ reasoningEffort: 'max', reasoning: { kind: 'effort', levels: ['low', 'high'] } })
+    )
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues.map((i) => i.message).join()).toContain('支持列表')
   })
 
   it('`kind` 不在四个已知值里 ⇒ 拒；`levels` 空数组拒（空的白名单等于宣称"什么都不支持"，那该用 kind:none）', () => {
