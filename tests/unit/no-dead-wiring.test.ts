@@ -486,3 +486,120 @@ describe('思考档名：档名按模型存，不许退回应用级词表（plan
     }
   })
 })
+
+// —— K58：渲染层错误上报通路（plan8 R18 的"可排查性那一半"）——————————————————————
+// 为什么值得立一组守卫：这条通路的**每一条链路上少一环，症状都是同一个** ——
+// "界面没反应 + 日志里什么都没有"，而 09-27 那次就是这样查了三轮。
+// ⇒ 少一环不会让任何现有测试红，只会**回到出故障前的那个状态**。
+describe('K58 渲染层错误上报：每一环都在场', () => {
+  it('★ 两个监听必须装在**页面入口**（不是 preload）—— 实测装在 preload 收不到事件', () => {
+    // **这条判据的来源是一次失败**（09-28 真机 e2e）：原实现把监听装在 preload，
+    // 跑出来 K1/K2 全红而 K3/K4（console 那半）全绿。诊断用两枚标记分辨：
+    // preload **安装监听时**打的标记进了 app.log（说明 preload 的 console 确实被转发，
+    // 不是"转发不到"造成的假象），而监听器**触发时**打的标记**零命中**。
+    // ⇒ 结论：`contextIsolation:true` + `sandbox:true` 下，sandboxed preload 在隔离世界
+    // 注册的 `window.addEventListener('error'/'unhandledrejection')` **收不到主世界的事件**。
+    //    监听必须装在页面（`renderer/src/main.tsx`）。
+    // 为什么值得立判据：下一个人看到"preload 更早、更难被绕过"很可能想搬回去 ——
+    // 而搬回去的后果是**症状与没做一模一样**（那条通路静默失灵，没有任何闸会响）。
+    const main = src('renderer/src/main.tsx')
+    expect(main, '页面入口没装 error 监听 ⇒ 未捕获异常只剩 console 那半（没有堆栈）').toContain(
+      "addEventListener('error'"
+    )
+    expect(main, '页面入口没装 unhandledrejection 监听').toContain("addEventListener('unhandledrejection'")
+    // 入口是唯一合适的位置：两个窗口都经过它，且它在 React 挂载**之前**（否则首屏就崩的异常会漏）
+    // ⚠️ 找的是 `createRoot(root).render` 这个**调用**形态 —— 裸 `indexOf('createRoot')`
+    //   会撞上第 2 行的 `import { createRoot }`，判据自己先翻车（09-28 现场）。
+    const at = main.indexOf("addEventListener('error'")
+    const mount = main.indexOf('createRoot(root).render')
+    expect(at, '监听必须在 React 挂载之前装（否则首屏就崩的异常会漏）').toBeGreaterThan(-1)
+    expect(mount, '判据坏了：找不到 createRoot(root).render 的调用').toBeGreaterThan(-1)
+    expect(at, '监听必须在 React 挂载之前装（否则首屏就崩的异常会漏）').toBeLessThan(mount)
+    // 反向哨兵：preload 里**不许**再装这两个监听（那是实测不工作的那一版）
+    const preload = stripComments(src('preload/index.ts'))
+    expect(preload, 'preload 里的监听实测收不到事件，别搬回来').not.toMatch(
+      /addEventListener\(\s*'(error|unhandledrejection)'/
+    )
+    // ⚠️ **强度声明（09-28 变异实测出来的边界，别夸大）**：本条是**文本层**判据，只认字面。
+    //   变异证据：把监听包成 `if (false) window.addEventListener('unhandledrejection', …)` ——
+    //   字面还在，**本组 50 条全绿**。⇒ 它防的是"整体删掉 / 换地方挂 / 挂到 preload"，
+    //   **防不住"包在一个永不成立的分支里"**。那一档由 `tests/e2e/renderer-error.spec.ts`
+    //   的 K2 承担（真起进程触发 → 撤掉监听即红，本批已实测）。
+    //   ⇒ 两层分工：结构层管"挪位"，行为层管"失效"。缺 e2e 那一层就有真漏洞。
+  })
+
+  it('上报桥在 preload 上（页面零直连 ipcRenderer）且真的发出去了', () => {
+    // 本项目口径：渲染进程不碰 ipcRenderer，系统能力一律经 preload 暴露的 `window.api`
+    const preload = src('preload/index.ts')
+    expect(preload).toContain('ipcRenderer.send(IPC.rendererError')
+    expect(preload).toContain('reportRendererError: (report) => sendErrorReport(report)')
+    expect(src('shared/ipc.ts')).toContain('reportRendererError(report: RendererErrorReport): void')
+    // 页面只能调桥
+    expect(src('renderer/src/main.tsx')).toContain('window.api.reportRendererError')
+  })
+
+  it('★ 挂载点必须是 web-contents-created，不许去每个 createWindow 里加一行', () => {
+    // 逐个 createWindow 加 = "多接一处必然漏"（D-134/D-136 的原话）；
+    // 而漏掉的那一处症状与没做一模一样：那个窗口的日志永远是空的。
+    // ⚠️ 判的是**调用形态**（`app.on('web-contents-created'`）而不是字样 ——
+    //   `index.ts` 的注释里就会提到这个名字（说明为什么这么挂），按字样判会假红。
+    const index = src('main/index.ts')
+    expect(index, '钩子被写进 index.ts 了 ⇒ 将来新开的窗口不在覆盖范围内').not.toMatch(
+      /app\.on\(\s*'web-contents-created'/
+    )
+    expect(src('main/renderer-errors.ts')).toMatch(/app\.on\(\s*'web-contents-created'/)
+    expect(index, 'index.ts 没有装它').toContain('installRendererErrorReporting()')
+  })
+
+  it('主进程侧两半都要在：console-message（抓 console.error/warn）+ ipcMain.on（抓真异常）', () => {
+    const re = src('main/renderer-errors.ts')
+    expect(re, '渲染层 console.error/warn 没有通路').toContain("contents.on('console-message'")
+    expect(re, 'preload 上报的真异常没有 handler').toContain('ipcMain.on(IPC.rendererError')
+  })
+
+  it('★ 取舍必须钉住：不收 info 档（用户正文最可能出现在 console.log 里）', () => {
+    // 这条是**取舍的判据**。有人为了"排障方便"把 level 判定放宽成全收，
+    // 于是用户消息正文被写进日志文件、app.log 被刷爆 —— 两个后果都不可逆。
+    const re = src('main/renderer-errors.ts')
+    expect(re, 'console 的收档判定不见了').toMatch(/if \(level !== 2 && level !== 3\) return/)
+    // 反向锚点：注释里必须留着"为什么不收"，否则下次有人看不懂为什么只有两档
+    expect(stripComments(re)).not.toMatch(/if \(level >= 2 && level <= 3\)/) // 不能只写上界
+  })
+
+  it('★ 两条来源共用一条记法（拆开写就会漂：改了一处忘了另一处）', () => {
+    const re = stripComments(src('main/renderer-errors.ts'))
+    // record() 是唯一出口：console-message 与 renderer:error 都调它
+    const calls = re.match(/record\(/g) ?? []
+    // 定义 1 处 + 两个来源各 1 处
+    expect(calls.length).toBe(3)
+    expect(re).toMatch(/function record\([\s\S]*?\n\}/)
+  })
+
+  it('★ 时钟必须由调用方注入（否则"60 秒内不重复"这条判据测不了）', () => {
+    // 直接 `Date.now()` 的实现，单测只能真等一分钟 —— 等一分钟的测试等于没有测试。
+    const re = src('main/renderer-errors.ts')
+    expect(re).toMatch(/export function throttle\([\s\S]*?now: number/)
+    expect(re).toMatch(/const now = \(\): number => Date\.now\(\)/)
+  })
+
+  it('★ 渲染层不许有**空 catch 回调**（R18 真根因那一类：抛了不报、也不留痕）', () => {
+    // 2026-09-27 的根因是 `.catch(() => {})`：不复制、不提示、不记日志，三件坏事同时成立。
+    // 它**抓不到也测不到**（没抛错就没有 onerror 可抓）⇒ 只能靠静态闸在它长出来时就拦。
+    // 实测当前渲染层**零命中**，所以这条一加就是绿的 —— 它是预防闸不是返工闸。
+    const walk = (dir: string): string[] => {
+      const out: string[] = []
+      for (const e of readdirSync(join(__dirname, '../../src', dir), { withFileTypes: true })) {
+        const rel = `${dir}/${e.name}`
+        if (e.isDirectory()) out.push(...walk(rel))
+        else if (/\.tsx?$/.test(e.name)) out.push(rel)
+      }
+      return out
+    }
+    const files = walk('renderer/src')
+    expect(files.length, '扫描器一个文件都没找到 = 判据空转').toBeGreaterThan(20)
+    for (const f of files) {
+      // ⚠️ 必须先剥注释：解释"为什么这里 catch 了"的注释里可能写着例子
+      expect(stripComments(src(f)), `${f} 里有空的 catch 回调`).not.toMatch(/\.catch\(\s*\(\s*\)\s*=>\s*\{?\s*\}?\s*\)/)
+    }
+  })
+})

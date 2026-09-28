@@ -675,6 +675,17 @@ export const IPC = {
    * （2026-09-27 用户实机报"点复制没反应"的成因）。主进程 `clipboard` 无此约束。
    */
   clipboardWrite: 'clipboard:write',
+  /**
+   * 渲染进程上报自己的未捕获异常（K58 / plan8 R18 的"可排查性那一半"）。
+   *
+   * **为什么是 `send` 而不是 `invoke`**：这是**单向告警**，渲染层不需要主进程的回执；
+   * 用 `invoke` 会让"上报失败"变成一次要处理的 Promise 拒绝 —— 而渲染层异常时
+   * 再抛一次拒绝是雪上加霜。⇒ 走 `ipcMain.on`，主进程记一条日志就算完。
+   *
+   * ⚠️ 这条通道**不在** `no-dead-wiring.test.ts · #8` 的桩覆盖范围内（那条枚举的是
+   * preload 的 `invoke` 通道）—— `send` 没有 handler 时不报错，门禁里不会缺桩。
+   */
+  rendererError: 'renderer:error',
   bgList: 'bg:list',
   bgKill: 'bg:kill',
   bgChanged: 'bg:changed',
@@ -692,6 +703,26 @@ export const IPC = {
 } as const
 
 export type { UIPrefs } from './splitter'
+
+/**
+ * 渲染进程未捕获异常的载荷（K58）。
+ *
+ * ⚠️ **全部字段都当不可信输入**：它来自一个刚抛了异常的上下文，可能是半个对象、可能是
+ * 循环引用、可能根本不是 Error（`throw '字符串'` 合法）。主进程侧**必须**逐字段自己定型，
+ * 不许直接 `JSON.stringify` 整个载荷（那是拿日志文件当 `JSON.stringify` 的试错场）。
+ */
+export interface RendererErrorReport {
+  /** `error` = 未捕获异常；`unhandledrejection` = 没人接的 Promise 拒绝 */
+  kind: 'error' | 'unhandledrejection'
+  message: string
+  /** 堆栈 / 拒绝原因，都没有就空串（别写 undefined —— 那在日志里读起来像"没查"） */
+  stack: string
+  /** 报错处的脚本 URL（dev 态是 http://localhost:xxx，生产是 file://…） */
+  source: string
+  line: number
+  column: number
+}
+
 
 export type { FsEntry, FsBinaryResult, FsListResult, FsReadResult, FsOpenResult } from './fs-tree'
 
@@ -1053,6 +1084,16 @@ export interface ApiBridge {
   revealWorkspaceEntry(rel: string): Promise<void>
   /** 写系统剪贴板；`false` = 没写进去（调用方**必须**把它显示出来，不许静默） */
   copyToClipboard(text: string): Promise<boolean>
+  /**
+   * 渲染层上报自己的未捕获异常（K58）。**单向、无回执** ⇒ 返回 `void` 不是 `Promise`。
+   *
+   * ⚠️ **为什么由页面调而不是 preload 自己监听**（实测结论，09-28）：
+   * 本项目窗口是 `contextIsolation:true` + `sandbox:true`，**sandboxed preload 在隔离世界
+   * 注册的 `window.addEventListener('error' / 'unhandledrejection')` 收不到主世界的事件** ——
+   * 现场：preload 里安装监听时打的标记进了 `app.log`（说明 preload 的 console 确实被转发），
+   * 而监听器触发时打的标记**零命中**。⇒ 监听必须装在页面里（本就在主世界），走这个桥上报。
+   */
+  reportRendererError(report: RendererErrorReport): void
   listBackgroundTasks(): Promise<BackgroundTask[]>
   /** 终止一条后台任务（连带它的子进程） */
   killBackgroundTask(id: string): Promise<boolean>

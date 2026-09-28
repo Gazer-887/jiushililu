@@ -11,6 +11,7 @@ import { initLogger, createLogger } from './log'
 import { startWatchdog, breadcrumb } from './watchdog'
 import { installFsSyncTrace } from './sync-trace'
 import { installCrashGuards } from './crash-guard'
+import { installRendererErrorReporting } from './renderer-errors'
 import { createConfirmBridge } from './confirm'
 import { createPlanApprovalBridge } from './agent/plan-approval'
 import { createExecEventRecorder, createFsExecEventSink } from './agent/exec-events'
@@ -431,6 +432,10 @@ app.whenReady().then(async () => {
   initLogger(join(userDataDir, 'logs'), app.isPackaged ? 'info' : 'debug')
   // ② 异常兜底（plan8 R1）：依赖日志，故紧随其后
   installCrashGuards()
+  // ②′ 渲染层错误上报（K58 = R18 的"可排查性那一半"）：依赖日志；
+  //     挂在 web-contents-created 上，**所有**窗口（含设置窗、含将来新开的）自动在内 ——
+  //     不去每个 createWindow 里加一行，"多接一处必然漏"是本项目反复吃过的亏。
+  installRendererErrorReporting()
   // ③ 事件循环看门狗（plan37 S0）：冻结只有带探针才留痕——5s 一次 tick、
   //    停滞 >1s 才写一条 WARN，常开成本可忽略。归因靠各长任务入口的阶段标记。
   startWatchdog()

@@ -3,7 +3,7 @@ import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { AgentSaveInput } from '@shared/agents'
 import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
 import type { PlaybookSaveInput } from '@shared/playbook'
-import type { ChatDonePayload, SettingsChangedKind, StreamEnvelope } from '@shared/ipc'
+import type { ChatDonePayload, RendererErrorReport, SettingsChangedKind, StreamEnvelope } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { FetchAvailableInput, ModelSaveInput } from '@shared/models'
 import type { Goal, GoalAction } from '@shared/goal'
@@ -41,6 +41,27 @@ function subscribe(channel: string, cb: (...args: unknown[]) => void): () => voi
   ipcRenderer.on(channel, listener)
   return () => {
     ipcRenderer.removeListener(channel, listener)
+  }
+}
+
+/**
+ * 渲染层未捕获异常的上报**桥**（K58）。
+ *
+ * ⚠️ **监听不在这里装** —— 原本装在 preload，实测装不上（09-28 现场）：
+ * 本项目窗口是 `contextIsolation:true` + `sandbox:true`，**sandboxed preload 在隔离世界
+ * 注册的 `window.addEventListener('error'/'unhandledrejection')` 收不到主世界的事件**。
+ * 判据：preload 安装监听时打的标记进了 `app.log`（说明 preload 的 console 确实被转发、
+ * 不是"转发不到"造成的假象），而监听器**触发**时打的标记零命中。
+ * ⇒ 监听装在 `renderer/src/main.tsx`（主世界），通过这里这个方法上报。
+ *
+ * 为什么用 `send` 而不是 `invoke`：单向告警不需要回执；`invoke` 在主进程无 handler 时会 reject，
+ * 而渲染层已经抛过一次异常，再叠一次拒绝是雪上加霜。
+ */
+function sendErrorReport(report: RendererErrorReport): void {
+  try {
+    ipcRenderer.send(IPC.rendererError, report)
+  } catch {
+    // 上报失败不能反过来让页面再炸一次 —— 这里必须是最后一个 catch
   }
 }
 
@@ -258,6 +279,7 @@ const api: ApiBridge = {
   importIntoWorkspace: (sourceAbs, rel) => ipcRenderer.invoke(IPC.fsImport, { sourceAbs, rel }),
   revealWorkspaceEntry: (rel) => ipcRenderer.invoke(IPC.fsReveal, { rel }),
   copyToClipboard: (text: string) => ipcRenderer.invoke(IPC.clipboardWrite, text),
+  reportRendererError: (report) => sendErrorReport(report),
   // 拖入的文件对象 → 磁盘绝对路径。Electron 32+ 起 File.path 已移除，
   // 只能在 preload 里用 webUtils（渲染进程够不到这个能力）
   getPathForFile: (file) => webUtils.getPathForFile(file as File),
