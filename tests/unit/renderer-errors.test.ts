@@ -1,4 +1,4 @@
-// K58 · 渲染层错误通路的**纯逻辑**部分（去重节流 / 截断 / 载荷定型）。
+// K58 · 渲染层错误通路的**纯逻辑**部分（收档判定 / 去重节流 / 截断 / 载荷定型）。
 //
 // 为什么这些能单测而 `console-message` 挂载不能：挂载那半在 electron 运行时里
 // （`app` / `ipcMain` / `WebContents`），单测环境起不来；而这半是纯函数 ——
@@ -11,26 +11,56 @@
 import { describe, expect, it } from 'vitest'
 import {
   createThrottleState,
+  isRecordedConsoleLevel,
   oneLine,
   sanitizeReport,
   throttle
 } from '@main/renderer-errors'
 
-describe('throttle（同一条渲染层错误不该把日志刷爆）', () => {
-  it('窗口期内只记一次，第二次起只回重复计数', () => {
-    const s = createThrottleState()
-    expect(throttle(s, 'k', 1000)).toEqual({ record: true, sinceMs: -1 })
-    expect(throttle(s, 'k', 2000)).toEqual({ record: false, repeat: 1 })
-    expect(throttle(s, 'k', 3000)).toEqual({ record: false, repeat: 2 })
-    expect(throttle(s, 'k', 4000)).toEqual({ record: false, repeat: 3 })
+describe('isRecordedConsoleLevel（只收 warn + error，两种 level 形态都认）', () => {
+  it('Electron ≤34 的数字形态：0 verbose / 1 info 不收，2 warning / 3 error 收', () => {
+    expect(isRecordedConsoleLevel(0)).toBe(false)
+    expect(isRecordedConsoleLevel(1)).toBe(false)
+    expect(isRecordedConsoleLevel(2)).toBe(true)
+    expect(isRecordedConsoleLevel(3)).toBe(true)
   })
 
-  it('★ 过了窗口期重新记，并带上"距上次多少毫秒"', () => {
-    // 没有 `sinceMs` 的话，日志里就是两条孤立的记录，读者得自己算间隔 ——
-    // 而"这条每 5 秒来一次"正是最该被一眼看出的那种现场。
+  it('★ Electron ≥35 的字符串形态**同样收**（查证 35.0 breaking-changes）', () => {
+    // 只认数字的话，升级 Electron 那天这条通路会**静默全灭**（字符串与数字比恒不等，
+    // `level !== 2 && level !== 3` 恒真 → 全部 return），而症状与"没做"一模一样。
+    // ⇒ 双形态是硬要求，不是兼容包袱。
+    expect(isRecordedConsoleLevel('warning')).toBe(true)
+    expect(isRecordedConsoleLevel('error')).toBe(true)
+    expect(isRecordedConsoleLevel('info')).toBe(false)
+    expect(isRecordedConsoleLevel('debug')).toBe(false)
+  })
+
+  it('认不出来的形态一律不收（宁可不收，也不要把"存疑"当"错误"写进日志）', () => {
+    for (const v of [undefined, null, {}, 'WARN', 4, -1, 'verbose']) {
+      expect(isRecordedConsoleLevel(v), String(v)).toBe(false)
+    }
+  })
+})
+
+describe('throttle（同一条渲染层错误不该把日志刷爆）', () => {
+  it('窗口期内只记一次（第二次起**一个字都不写**）', () => {
+    const s = createThrottleState()
+    expect(throttle(s, 'k', 1000)).toEqual({ record: true, sinceMs: -1, repeat: 0 })
+    expect(throttle(s, 'k', 2000)).toEqual({ record: false })
+    expect(throttle(s, 'k', 3000)).toEqual({ record: false })
+  })
+
+  it('★ 累计次数在**下一条真记录**上带出（"这条每分钟炸 60 回"是读者要的信息）', () => {
+    // 每次重复都写一条"已节流"是另一种刷屏；且打包版 `minLevel='info'`，
+    // `log.debug` 那一档**根本不落盘**（`log.ts · write` 第一行就过滤掉）
+    // ⇒ 把计数挂在下一条真记录上，是唯一在生产里看得见的形式。
     const s = createThrottleState()
     throttle(s, 'k', 1000)
-    expect(throttle(s, 'k', 1000 + 60_000)).toEqual({ record: true, sinceMs: 60_000 })
+    throttle(s, 'k', 2000)
+    throttle(s, 'k', 3000)
+    // `sinceMs` 是"距**上次记**"而不是"距首次记" —— 节流期内**故意不更新时间戳**，
+    // 否则窗口会被无限延长（每来一次就往后推 60 秒 ⇒ 永远记不下来）
+    expect(throttle(s, 'k', 3000 + 60_000)).toEqual({ record: true, sinceMs: 62_000, repeat: 2 })
   })
 
   it('不同的 key 互不影响（去重不能跨消息，否则两条不同的错只剩一条）', () => {
@@ -43,17 +73,31 @@ describe('throttle（同一条渲染层错误不该把日志刷爆）', () => {
     const s = createThrottleState()
     throttle(s, 'k', 1000)
     throttle(s, 'k', 2000)
-    throttle(s, 'k', 3000) // 连续第 3 次 ⇒ 计数 2
-    // 窗口过了，重新记 ⇒ 计数作废
-    expect(throttle(s, 'k', 3000 + 60_000).record).toBe(true)
-    expect(throttle(s, 'k', 3000 + 60_001)).toEqual({ record: false, repeat: 1 })
+    expect(throttle(s, 'k', 2000 + 60_000)).toEqual({ record: true, sinceMs: 61_000, repeat: 1 })
   })
 
-  it('★ 连续 100 次只占一个"计数槽"（否则 map 会被同一条撑爆 —— 那是另一种刷屏）', () => {
+  it('★ 高基数消息下去重表也**有上限**（否则是内存泄漏）', () => {
+    // 09-28 独立审查抓出：键由**消息内容**构成，而只出现一次的消息**永远等不到第二次**
+    // 去碰它 ⇒ 每次都是新键、60 秒节流对高基数 message 一次都不生效
+    //（"AbortError: request 8f3a… cancelled" 这类带 id 的就是高基数）。
+    // 不清扫 ⇒ 主进程内存单调上涨，**与磁盘轮转无关、不会自己停**。
+    const s = createThrottleState()
+    for (let i = 0; i < 5000; i++) throttle(s, `err-${i}`, i)
+    expect(s.lastAt.size, '去重表无界增长 = 内存泄漏').toBeLessThanOrEqual(1024)
+  })
+
+  it('★ 上限触发后**老键被清掉**（否则上限只是把泄漏换成"不再更新"）', () => {
+    const s = createThrottleState()
+    throttle(s, '老键', 1)
+    for (let i = 0; i < 2000; i++) throttle(s, `err-${i}`, 100 + i)
+    // 整表清空后老键不再被记得 ⇒ 记一次（表若没清，它会被节流）
+    expect(throttle(s, '老键', 200).record, '上限触发后应当整表清空').toBe(true)
+  })
+
+  it('同一个 key 连来 100 次也只占两个项（主项 + 计数项）', () => {
     const s = createThrottleState()
     throttle(s, 'k', 1000)
     for (let i = 1; i < 100; i++) throttle(s, 'k', 1000 + i)
-    // 计数存在 `${key}#n` 一个键里，不随次数增长
     expect([...s.lastAt.keys()].filter((k) => k.startsWith('k#n')).length).toBe(1)
   })
 })
@@ -81,7 +125,9 @@ describe('sanitizeReport（载荷来自一个刚抛了异常的上下文，全�
     expect(r).toEqual({ kind: 'error', message: 'boom', stack: 'at foo', source: 'app.js', line: 12, column: 3 })
   })
 
-  it('★ 非对象载荷直接拒（宁可不记，也不要拿半截东西写进日志）', () => {
+  it('★ 非对象载荷返回 null（**调用方必须留痕**，静默丢弃就是这条通路要消灭的形态）', () => {
+    // 上游发错形状时若零记录，现场会重演一次"app.log 什么都没有"——
+    // 而那正是这条通路的立项原因。判据钉住"返回 null"，留痕由调用方的判据钉。
     expect(sanitizeReport(null)).toBeNull()
     expect(sanitizeReport('字符串')).toBeNull()
     expect(sanitizeReport(undefined)).toBeNull()

@@ -23,6 +23,12 @@ function appLog(dataDir: string): string {
   return existsSync(p) ? readFileSync(p, 'utf8') : ''
 }
 
+/** ★ 取出**含该关键字的那一行**（不是对整份文件做正则）：断言要对着被测的那条记录，
+ *  否则上层任何一行带同样形状的日志都会让断言"顶绿"，而它与被测物已脱钩。 */
+function findLine(log: string, needle: string): string {
+  return log.split('\n').find((l) => l.includes(needle)) ?? ''
+}
+
 test.describe('K58 · 渲染层错误进得了 app.log', () => {
   let h: E2EApp
 
@@ -48,13 +54,16 @@ test.describe('K58 · 渲染层错误进得了 app.log', () => {
       .poll(() => appLog(h.dataDir).includes(MARK), { timeout: 20_000, message: 'app.log 里没等到探针标记' })
       .toBe(true)
 
-    const log = appLog(h.dataDir)
     // 顺带证明**走的是哪条通路**：preload 装的 error 监听（不是 console-message 顺带收的）
-    expect(log, '走的是哪条通路？（应含 preload 那条的特征行）').toContain('渲染进程未捕获异常')
-    // 堆栈是排查的命根子 —— 只记 message 等于只记"错了"不记"错在哪"
-    expect(log, '缺堆栈：只留 message 等于把排查难度原样送回给用户').toMatch(/at\s+\S/)
+    const line = findLine(appLog(h.dataDir), '渲染进程未捕获异常')
+    expect(line, 'app.log 里没有"渲染进程未捕获异常"这一行').toBeTruthy()
+    expect(line).toContain(MARK)
+    // ★ 堆栈断言**只对这一行**，不是对整份 app.log（09-28 独立审查指出）：
+    //   全文件正则今天有效只因为"运气"——本机 app.log 3005 行里 `/at\s+\S/` 零命中，
+    //   哪天上层加了一行带堆栈的日志，这条断言就与被测物**脱钩**了。
+    expect(line, '这一行缺堆栈：只留 message 等于把排查难度原样送回给用户').toMatch(/at\s+\S/)
     // 窗口身份要能看出来是哪个窗口（多窗口下这条日志得能定位）
-    expect(log).toMatch(/主窗口|设置窗口|内置浏览器/)
+    expect(appLog(h.dataDir)).toMatch(/主窗口|设置窗口|其他窗口/)
   })
 
   test('K2 未处理的 Promise 拒绝 ⇒ 进得了日志，且原因不是 Error 也认', async () => {
@@ -87,11 +96,25 @@ test.describe('K58 · 渲染层错误进得了 app.log', () => {
   test('K4 ★ 反向：console.log（info 档）不进日志 —— 用户正文最可能出现在那里', async () => {
     // 这条是**取舍的判据**，不是"功能"：全收会把 app.log 变成应用自己的输出流水，
     // 还会把用户消息正文写进日志文件（K48 的 828 条重复 WARN 教训：记录手段本身不能是故障放大器）。
-    await h.page.evaluate((mark) => {
-      setTimeout(() => console.log(`${mark}: 渲染层的普通输出`), 0)
-    }, MARK)
-    // ���反的是"不该进" ⇒ 必须**等够时间**再断言没进（立刻断言会假绿）
+    //
+    // ★ **同一条用例里先做阳性对照**（09-28 独立审查指出它原本是"在功能缺席时也通过"的负向判据）：
+    //   整个 console 半边彻底死掉时，纯粹的"不进去"断言照样绿。所以先用 error 档确认
+    //   **此刻 console 半边是活的**，再断言 info 档没进来。
+    const ALIVE = `${MARK}-ALIVE`
+    const SILENT = `${MARK}-SILENT`
+    await h.page.evaluate(
+      ([alive, silent]) => {
+        setTimeout(() => console.error(`${alive}: 阳性对照`), 0)
+        setTimeout(() => console.log(`${silent}: 渲染层的普通输出`), 0)
+      },
+      [ALIVE, SILENT]
+    )
+    // 先等活的那条落盘（阳性对照没过就没必要谈负向了）
+    await expect
+      .poll(() => appLog(h.dataDir).includes(ALIVE), { timeout: 20_000, message: '阳性对照没落盘 ⇒ console 半边此刻不活，后面的负向断言无意义' })
+      .toBe(true)
+    // 断言的是"负的反面"必须是**反的**：反的判据在"什么都收"时红，在"只收两档"时绿
     await h.page.waitForTimeout(3000)
-    expect(appLog(h.dataDir), 'info 档被收进 app.log 了 ⇒ 隐私与刷屏两头都开口子').not.toContain(MARK)
+    expect(appLog(h.dataDir), 'info 档被收进 app.log 了 ⇒ 隐私与刷屏两头都开口子').not.toContain(SILENT)
   })
 })

@@ -558,21 +558,75 @@ describe('K58 渲染层错误上报：每一环都在场', () => {
   })
 
   it('★ 取舍必须钉住：不收 info 档（用户正文最可能出现在 console.log 里）', () => {
-    // 这条是**取舍的判据**。有人为了"排障方便"把 level 判定放宽成全收，
+    // 这条是**取舍的判据**。有人为了"排障方便"把收档放宽成全收，
     // 于是用户消息正文被写进日志文件、app.log 被刷爆 —— 两个后果都不可逆。
+    //
+    // ⚠️ **09-28 改判**：原来这里断言的是**源码文本** `/if \(level !== 2 && level !== 3\) return/`，
+    //   连带一条 `not.toMatch(/if \(level >= 2 && level <= 3\)/)`。两处都是坏判据：
+    //   ① 逐字锚定（含空格与括号）—— 语义等价的 `level < 2` / `[2,3].includes(level)` /
+    //      提成常量 `RECORDED_LEVELS` 全部**假红**（取舍没变，CI 却红了）；
+    //   ② 那条反向断言**零安全收益、纯假红地雷** —— `level >= 2 && level <= 3` 精确等价于
+    //      `{2,3}` 且并不收 0/1，它是一个完全正确的实现，却被明文禁止。
+    // ⇒ 改成：判定**必须**是一���可单测的纯函数（`isRecordedConsoleLevel`），
+    //   语义由 `tests/unit/renderer-errors.test.ts` 的 3 条单测守（含 Electron ≥35 的字符串形态）。
     const re = src('main/renderer-errors.ts')
-    expect(re, 'console 的收档判定不见了').toMatch(/if \(level !== 2 && level !== 3\) return/)
-    // 反向锚点：注释里必须留着"为什么不收"，否则下次有人看不懂为什么只有两档
-    expect(stripComments(re)).not.toMatch(/if \(level >= 2 && level <= 3\)/) // 不能只写上界
+    expect(re, '收档判定必须是导出的纯函数（否则"只收两档"这条取舍没法单测）').toContain(
+      'export function isRecordedConsoleLevel'
+    )
+    // 且 console 半边真的用了它（而不是自己另写一份判定 —— 两份判定就会漂）
+    expect(stripComments(re), 'console 半边没用 isRecordedConsoleLevel').toContain(
+      'isRecordedConsoleLevel(level)'
+    )
+    // 反向锚点：档位常数**只此一处**（散落两处 = 改了一处忘了另一处）
+    expect(stripComments(re).match(/level === 2 \|\| level === 3/g)?.length).toBe(1)
+  })
+
+  it('★ 覆盖范围：非自家窗口**不挂**监听（第三方页面内容不进日志）', () => {
+    // 内置浏览器装的是任意外部网址，远程页面爱用 console.error 打印 URL 与 ?token=…
+    // ⇒ 用户在一个站点上看到个报错，那个站点的 token 就进了用户正在教开发者发出去的文件里。
+    // 判据钉的是**结构化判据**（`getType() === 'window'`）：`WebContentsView` 的 type 是
+    // `'browserView'`（查证 Electron 文档 `contents.getType()`），而 URL 猜法对它是失效的 ——
+    // 独立审查实测过 `about:blank` 与 `https://github.com/…` 都不含 'browser' 子串。
+    const re = stripComments(src('main/renderer-errors.ts'))
+    expect(re, '来源过滤不见了').toContain("contents.getType() === 'window'")
+    // 排除的那次必须**留痕**（否则下一个人会以为是漏挂了）
+    expect(re, '排除非自家窗口要留一行日志（否则取舍不可见）').toContain('非自家窗口不挂渲染层错误监听')
+    // 且 IPC 侧也要过同一道（第三方网页拿不到 preload 的桥，但校验零成本）
+    expect(src('main/renderer-errors.ts')).toMatch(/ipcMain\.on\([\s\S]*?isAppWindow\(sender\)/)
+  })
+
+  it('★ 身份按 registry 登记的角色比，不靠 URL 子串猜（多窗口铁律）', () => {
+    // 旧写法用 `url.includes('browser')` 认内置浏览器 —— 那是 `window-registry.ts`
+    // 文件头写着要消灭的那类做法，且对 WebContentsView 事实上不可达。
+    const re = stripComments(src('main/renderer-errors.ts'))
+    expect(re, '窗口身份没有走 registry').toContain("getWindow('main')?.webContents === contents")
+    expect(re, '窗口身份没有走 registry').toContain("getWindow('settings')?.webContents === contents")
+    expect(re, '不该再用 URL 子串猜角色').not.toMatch(/url\.includes\('browser'\)/)
+  })
+
+  it('★ 丢弃也必须留痕（静默丢弃 = 这条通路立项要消灭的形态原样复现）', () => {
+    const re = src('main/renderer-errors.ts')
+    expect(re, '解析不出来的上报被静默丢掉了').toContain('丢弃了一条无法解析的渲染层上报')
+    expect(re, '来源不明的上报被静默丢掉了').toContain('丢弃一条来源不明窗口的渲染层上报')
   })
 
   it('★ 两条来源共用一条记法（拆开写就会漂：改了一处忘了另一处）', () => {
     const re = stripComments(src('main/renderer-errors.ts'))
-    // record() 是唯一出口：console-message 与 renderer:error 都调它
-    const calls = re.match(/record\(/g) ?? []
-    // 定义 1 处 + 两个来源各 1 处
-    expect(calls.length).toBe(3)
-    expect(re).toMatch(/function record\([\s\S]*?\n\}/)
+    // ⚠️ **09-28 改判**：原来这里断言 `record(` 出现**恰好 3 次** —— 双向都错：
+    //   加第三个来源（`did-fail-load` 之类）走 record ⇒ 计数 4 ⇒ **假红**，而那正是这条守卫
+    //   鼓励的行为；反过来在 handler 里**绕过** record 直接内联 `log.error` 而两条 record
+    //   都留着 ⇒ 计数仍是 3 ⇒ **假绿**，"共用一条记法"的承诺破了它看不见。
+    // ⇒ 改成"**渲染层错误**只经 record"这个可判的命题：两个 handler 里都不许出现裸 `log.error`。
+    //   判据只禁 `log.error`、**放行 `log.warn`**：后者是**通路自身的诊断**
+    //   （"丢弃了一条无法解析的上报" / "非自家窗口不挂"）—— 它们不是渲染层错误，
+    //   没有 message/stack 可节流，走 record 反而会拿空键去占去重表。
+    //   （09-28：这两条守卫第一版把 `log.warn` 也禁了，与"丢弃也必须留痕"那条直接打架。）
+    const handlerRegion = re.slice(re.indexOf('ipcMain.on(IPC.rendererError'), re.indexOf('function attach'))
+    expect(handlerRegion, 'IPC handler 绕过了 record（节流与字段定型都会失效）').not.toMatch(/log\.error\(/)
+    const consoleRegion = re.slice(re.indexOf('function attach'), re.indexOf('log.info('))
+    expect(consoleRegion, 'console handler 绕过了 record').not.toMatch(/log\.error\(/)
+    // 且 record 真的存在（正向）
+    expect(re).toMatch(/function record\(/)
   })
 
   it('★ 时钟必须由调用方注入（否则"60 秒内不重复"这条判据测不了）', () => {
