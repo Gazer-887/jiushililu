@@ -341,6 +341,26 @@ describe('modelSaveSchema：思考档名的逐模型白名单（plan58 R6 / Q6b 
     expect(modelSaveSchema.safeParse(save({ reasoningEffort: '' })).success).toBe(false)
   })
 
+  it('边界值双向都测：档名 32 字符**放行** / 33 拒；`levels` 12 项放行 / 13 项拒', () => {
+    // 为什么单列：魔数（32 / 12）改了**没有判据会提醒**，只会变成"某天闸忽然红了，
+    // 报错却指向'档名超长'而实际是上限改了"。双向都要，缺一半就钉不住魔数。
+    const eff32 = 'x'.repeat(32)
+    expect(modelSaveSchema.safeParse(save({ reasoningEffort: eff32 })).success).toBe(true)
+    const lv = (n: number) => Array.from({ length: n }, (_, i) => `lv${i}`)
+    const twelve = lv(12)
+    // ⚠️ 档名必须取白名单**里**的那一个 —— 第一版这里写死 `'low'` 而 levels 是 `lv0..lv11`，
+    // 于是被 Q13 那条正确地拒了，判据自己先翻车。两条判据的取值域必须对齐。
+    const ok = (levels: string[]) =>
+      modelSaveSchema.safeParse(save({ reasoningEffort: levels[0], reasoning: { kind: 'effort', levels } })).success
+    expect(ok(twelve)).toBe(true)
+    expect(ok(lv(13))).toBe(false)
+  })
+
+  it('`reasoning` 整体类型不符（塞了个字符串而非对象）⇒ 拒', () => {
+    expect(modelSaveSchema.safeParse(save({ reasoning: 'effort' })).success).toBe(false)
+    expect(modelSaveSchema.safeParse(save({ reasoning: { kind: 'effort', levels: 'low' } })).success).toBe(false)
+  })
+
   it('★ 阳性对照：白名单是**逐条**判的 —— 一个端点里两条模型，一条合规一条不合规时，红的必须是那一条', () => {
     // 防"整表一票否决"那种坏法：一条模型配错就把整个端点拒掉，用户连改都改不了。
     const r = modelSaveSchema.safeParse({

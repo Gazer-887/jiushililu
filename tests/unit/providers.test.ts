@@ -7,6 +7,7 @@ import {
   thinkingBudgetFor
 } from '@main/providers/anthropic'
 import { maskKey } from '@main/store/mask'
+import { effortToSend } from '@main/providers/effort'
 import type { ChatMessage, ModelSettings } from '@shared/ipc'
 
 const settings: ModelSettings = {
@@ -238,6 +239,38 @@ describe('thinkingBudgetFor（思考预算方言映射）', () => {
       expect(got, eff).toBe(null)
       expect(Number.isNaN(got as unknown as number), `${eff} 算出了 NaN`).toBe(false)
     }
+  })
+})
+
+// openai 侧是**另一条**出境路径，且是 Agent 主循环唯一花钱的那条 —— 它一度无条件直发
+// 开放字符串里的任意值。09-28 独立审查抓到的口，与 Anthropic 侧同族：打错的档名
+// （`hihg`）会原样进 `reasoning_effort`，严格端点回 400 且每一次请求都失败。
+describe('effortToSend（openai 侧出境判定，与 Anthropic 同一条降级路径）', () => {
+  it('`default` 哨兵不发字段（R8）', () => {
+    expect(effortToSend({ reasoningEffort: 'default' })).toBe(null)
+  })
+
+  it('没声明 levels 时按我们的已知词表发 —— 存量档案的值全在词表内，现有行为逐字节不变', () => {
+    for (const eff of ['low', 'medium', 'high', 'max']) {
+      expect(effortToSend({ reasoningEffort: eff }), eff).toBe(eff)
+    }
+  })
+
+  it('★ 没声明 levels 且档名不认识 ⇒ 不发（否则 400 打到底）', () => {
+    for (const eff of ['hihg', 'xhigh', 'minimal', '']) {
+      expect(effortToSend({ reasoningEffort: eff }), eff).toBe(null)
+    }
+  })
+
+  it('★ 声明了 levels 就以它为准 —— 含我们没登记的官方值，用户声明支持就发', () => {
+    const cfg = { kind: 'effort' as const, levels: ['low', 'xhigh'] }
+    expect(effortToSend({ reasoningEffort: 'xhigh', reasoning: cfg })).toBe('xhigh')
+    expect(effortToSend({ reasoningEffort: 'high', reasoning: cfg })).toBe(null)
+  })
+
+  it('非 effort 形态（toggle / budget_tokens / none）不吃档名这条路，按已知词表发', () => {
+    // 这几形态的出境形状还没定（见 plan58 片②）；今天别把它们误当成"只支持开关"就静默吞掉档名
+    expect(effortToSend({ reasoningEffort: 'high', reasoning: { kind: 'toggle', enabled: true } })).toBe('high')
   })
 })
 

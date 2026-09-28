@@ -22,8 +22,14 @@ const stripComments = (s: string): string =>
     .split(String.fromCharCode(10))
     .map((l) => {
       const i = l.indexOf('//')
-      // 前一个字符是冒号 ⇒ 那是 `https://` 之类的字符串，不是注释
-      return i > 0 && l[i - 1] !== ':' ? l.slice(0, i) : l
+      // ⚠️ 判据必须是 `i >= 0` 而不是 `i > 0`：**列 0 的 `//` 注释同样要剥**。
+      //   写成 `i > 0` 时，列 0 注释剥不掉 ⇒ 一条"不许出现 X"的守卫会把**注释里那句
+      //   "为什么不能这么写"**判成违规（`anthropic.ts` 里就有：注释中写着
+      //   `Math.min(EFFORT_BUDGET[effort], ceiling)`，不剥就红）。09-28 独立审查实测：
+      //   把那些注释整体顶到列 0（代码一个 token 不动）守卫立刻红 —— 与本仓 09-27 在
+      //   clipboard 那组犯过的病同一条，此处是它的潜伏版。
+      //   `l[-1]` 在 i=0 时是 undefined，`!== ':'` 成立 ⇒ 列 0 会被正确剥掉。
+      return i >= 0 && l[i - 1] !== ':' ? l.slice(0, i) : l
     })
     .join(String.fromCharCode(10))
 
@@ -345,6 +351,31 @@ describe('滚动条：全局隐藏 + 终端有意例外', () => {
   })
 })
 
+// —— 剥注释器自身的自检（独立成条，**不许挂在任何会先失败的 it 里面**）—————————————————
+// 09-28 现场：这些断言最初写在"渲染层不许出现 navigator.clipboard"那条 `it` 的末尾。
+// 而那条 `it` 的前半段（整棵树扫描）一旦失败就先抛异常，**后面的断言根本不执行** ⇒
+// 变异时"改回 `i > 0` ⇒ 39 条全绿"就是这么骗过去的。
+// ⇒ 判据的**执行顺序**也是判据强度的一部分：自检必须能在任何路径上独立跑到。
+describe('剥注释器自检（三条，缺一条就有守卫开始默默失效）', () => {
+  // ★ 列 0 的注释也必须被剥 —— 这是 `i >= 0` 而不是 `i > 0` 的唯一理由。
+  // 写 `i > 0` 时列 0 注释剥不掉，于是一条"不许出现 X"的守卫会把**注释里那句
+  // "为什么不能这么写"**判成违规（`anthropic.ts` 的注释里正写着
+  // `Math.min(EFFORT_BUDGET[effort], ceiling)`）。这是本仓 09-27 在 clipboard 那组
+  // 犯过的病的潜伏版：注释解释"为什么不用"却被判成违规。
+  it('列 0 注释被剥干净，行尾注释保留代码', () => {
+    expect(stripComments('// 整行都在列 0 的注释'), '列 0 注释没被剥 ⇒ i >= 0 退回了 i > 0').toBe('')
+    expect(stripComments('const a = 1 // 行尾注释').trim()).toBe('const a = 1')
+  })
+
+  it('不许把 `https://` 这类字符串里的 `//` 当注释剥掉', () => {
+    expect(stripComments('const u = "https://x"')).toContain('https://x')
+  })
+
+  it('块注释也剥，且剥注释器不许把代码一起清掉', () => {
+    expect(stripComments('/* 为什么不这么写 */\nconst a = 1')).toBe('\nconst a = 1')
+  })
+})
+
 // —— 思考档名：按模型存，不许退回"应用级词表"（plan58 片⓪ / R6）———————————————————
 // 为什么值得单独立一组守卫：R6 是一句**改判** —— 09-26 原判是"三头补齐 `max`"，
 // 09-27 查了三路官方文档后推翻为"取消应用级档名表，档名按模型档案存"（R4/R6）。
@@ -360,9 +391,13 @@ describe('思考档名：档名按模型存，不许退回应用级词表（plan
     expect(code, 'shared/models.ts 里又出现了按词表比较洗档的链').not.toMatch(
       /reasoningEffort\s*===\s*'low'\s*\|\|/
     )
-    // 旧形状 ③：三元兜底 `? x : 'default'`（万一有人换种写法再写一遍）
+    // 旧形状 ③：三元兜底 `? x : 'default'`（万一有人换种写法再写一遍）。
+    // ⚠️ consequent 必须允许**属性访问**：`\w+` 罩不住 `m.reasoningEffort`，
+    //   而那是最自然的写法（09-28 独立审查实测四种写法，两道守卫都漏掉了属性三元那一支）。
+    //   窗口也从 160 字缩到**同一个表达式内**（`[^;\n]*`）—— 跨 160 字既漏又可能误伤
+    //   一段合法的 `??` 手写展开。
     expect(code, '又出现了"不认识的档一律洗成 default"的三元').not.toMatch(
-      /reasoningEffort[\s\S]{0,160}?\?\s*\w+\s*:\s*'default'/
+      /reasoningEffort\s*=\s*[^;\n]*\?\s*[\w.]{1,60}\s*:\s*'default'/
     )
   })
 
@@ -409,9 +444,45 @@ describe('思考档名：档名按模型存，不许退回应用级词表（plan
   it('★ 阳性对照：逐模型白名单校验确实落在保存那道闸门上（校验层与出境层各有一半，缺一不可）', () => {
     const schemas = src('main/schemas.ts')
     expect(schemas).toContain('superRefine(reasoningLevelsGuard)')
-    // 且它在**模型条目**那一层逐条判，不是整表一票否决
-    expect(schemas).toContain("path: ['models', i, 'settings', 'reasoningEffort']")
+    // 且它在**模型条目**那一层逐条判，不是整表一票否决（`schemas.test.ts` 有行为级对应用例，
+    // 断言渲染后的 path 是 `models.1.settings.reasoningEffort` 且不含 `models.0.` ——
+    // 这里只钉"逐条判这件事写在闸门上"，path 字面量留给行为测试，结构层不跟它抢）
+    expect(schemas).toMatch(/path:\s*\[\s*'models',\s*i,/)
     // `ReasoningEffort` 必须还是**开放**的：退回封闭枚举 = 这次改判等于没做
     expect(src('shared/ipc.ts')).toContain("export type ReasoningEffort = 'default' | (string & {})")
+  })
+
+  it('★ 请求体构造器不许把 settings 整体展开（`reasoning` / `contextWindow` 是客户端元数据）', () => {
+    // 为什么盯整棵 provider 树而不是点名四个构造器：点名的清单追不上人新写的构造器
+    // （与"navigator.clipboard 按目录扫"那条同一条理由）。现状四个构造器全是**显式挑字段**。
+    // 一旦有人图省事写 `...settings`，`reasoning` 与 `contextWindow` 会一起漏进请求体。
+    const walk = (dir: string): string[] => {
+      const out: string[] = []
+      for (const e of readdirSync(join(__dirname, '../../src', dir), { withFileTypes: true })) {
+        const rel = `${dir}/${e.name}`
+        if (e.isDirectory()) out.push(...walk(rel))
+        else if (/\.tsx?$/.test(e.name)) out.push(rel)
+      }
+      return out
+    }
+    const files = walk('main/providers')
+    expect(files.length, '扫描器一个文件都没找到 = 判据空转').toBeGreaterThan(5)
+    for (const f of files) {
+      const code = stripComments(src(f))
+      expect(code, `${f} 把 settings 整个展开进请求体了`).not.toMatch(/\.\.\.\s*settings\b/)
+      expect(code, `${f} 把 settings 序列化进请求体了`).not.toMatch(/JSON\.stringify\(\s*settings\b/)
+    }
+    // 阳性对照：请求体里**确实**有 reasoning 的正确归宿（显式赋给 reasoning_effort）
+    expect(stripComments(src('main/providers/openai.ts'))).toContain("body['reasoning_effort']")
+  })
+
+  it('★ openai 侧不许再无条件直发开放字符串（那条 400 打到底的路径，09-28 独立审查抓到的口）', () => {
+    for (const f of ['main/providers/openai.ts', 'main/providers/openai-agent.ts']) {
+      const code = stripComments(src(f))
+      expect(code, `${f} 还在用"不是 default 就发"这条旧判定`).not.toMatch(
+        /reasoningEffort\s*!==\s*'default'\s*\)\s*body\[[^\]]*reasoning_effort/
+      )
+      expect(code, `${f} 没走 effortToSend`).toContain('effortToSend')
+    }
   })
 })

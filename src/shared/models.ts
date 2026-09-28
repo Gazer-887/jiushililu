@@ -163,6 +163,10 @@ export function profileOf(
           maxTokens: settings.maxTokens,
           contextWindow: settings.contextWindow,
           reasoningEffort: settings.reasoningEffort,
+          // 同 `settingsOf`：**白名单重建**，漏一个字段它就在这条路上蒸发。
+          // 今天两个调用方（扁平老形状升级 / 遗留单模型设置）手里都没有 `reasoning` 所以丢不了，
+          // 但签名收的是 `ModelSettings` —— 将来谁传一个带 `reasoning` 的进来就静默丢。
+          ...(settings.reasoning ? { reasoning: settings.reasoning } : {}),
           maxToolRounds: settings.maxToolRounds,
           inputModalities: settings.inputModalities
         }

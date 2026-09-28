@@ -5,6 +5,7 @@ import { usageFromOpenAIChunk } from './usage-parsers'
 import type { TokenUsage } from '@shared/usage'
 import { ProviderError, mapHttpError } from './errors'
 import { createSSEParser } from './sse'
+import { effortToSend } from './effort'
 import { ToolCallAccumulator } from './tool-accumulator'
 import { httpFetch } from './http-client'
 import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
@@ -53,7 +54,8 @@ export function buildToolsBody(
   if (settings.temperature !== null) body['temperature'] = settings.temperature
   if (settings.topP !== null) body['top_p'] = settings.topP
   if (settings.topK !== null) body['top_k'] = settings.topK
-  if (settings.reasoningEffort !== 'default') body['reasoning_effort'] = settings.reasoningEffort
+  const effort = effortToSend(settings)
+  if (effort !== null) body['reasoning_effort'] = effort
   return body
 }
 

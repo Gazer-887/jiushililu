@@ -211,6 +211,10 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
         maxTokens: rest.maxTokens,
         contextWindow: rest.contextWindow,
         reasoningEffort: rest.reasoningEffort,
+        // ⚠️ 这两处 `settings` 是**白名单重建**（不是展开合并），漏一个字段它就在这条路上蒸发
+        // —— 而 `settingsSchema` 已经把 `reasoning` 收下验过了，验完再丢是更差的形状。
+        // 与 plan58 片⓪ 变异自检抓到的 `settingsOf` 漏透传同族（读盘一 hop / 写盘一 hop）。
+        ...(rest.reasoning ? { reasoning: rest.reasoning } : {}),
         maxToolRounds: rest.maxToolRounds,
         inputModalities: rest.inputModalities
       }
@@ -237,6 +241,7 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
         maxTokens: rest.maxTokens,
         contextWindow: rest.contextWindow,
         reasoningEffort: rest.reasoningEffort,
+        ...(rest.reasoning ? { reasoning: rest.reasoning } : {}), // 同上：白名单重建，必须显式带
         maxToolRounds: rest.maxToolRounds,
         inputModalities: rest.inputModalities
       }

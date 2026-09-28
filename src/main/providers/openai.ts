@@ -3,6 +3,7 @@ import { createSSEParser } from './sse'
 import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
 import { resolveApiUrl } from './url'
 import { usageFromOpenAIChunk } from './usage-parsers'
+import { effortToSend } from './effort'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
 
@@ -31,9 +32,10 @@ export function buildOpenAIChatBody(
   if (settings.topP != null) body['top_p'] = settings.topP
   // top_k：官方 OpenAI 忽略未知参数；多家兼容端点（智谱/GLM 等）支持，按需填
   if (settings.topK != null) body['top_k'] = settings.topK
-  // 思考强度方言：OpenAI 系叫 reasoning_effort（low/medium/high），DeepSeek 同名兼容；'max' 是 DeepSeek 词表，
-  // 发给 OpenAI 可能 400 —— 取值依厂商支持
-  if (settings.reasoningEffort !== 'default') body['reasoning_effort'] = settings.reasoningEffort
+  // 思考强度方言：OpenAI 系叫 reasoning_effort；取值依厂商支持，判定收在 `effortToSend`
+  // —— 开放字符串之后"不是 default"已不等于"该发"（见该函数的注释与 plan58 R6）
+  const effort = effortToSend(settings)
+  if (effort !== null) body['reasoning_effort'] = effort
   return body
 }
 

@@ -375,6 +375,42 @@ describe('读盘容错：坏条目丢掉并计数，绝不整表崩', () => {
     expect(e3.settings?.reasoning).toEqual({ kind: 'toggle', enabled: true })
   })
 
+  it('★ falsy 值必须活下来：`enabled:false` 与 `budget:0`（`if (r.enabled)` 那种写法会静默丢）', () => {
+    // 09-28 独立审查指出：schema 明确允许 `enabled:false`（z.boolean().optional()）与
+    // `budget:0`（z.number().int().min(0)），而容错里若写成 `if (r.enabled)` / `if (r.budget)`
+    // 就会把它们**静默丢掉**。对 toggle 来说"丢 false"方向完全相反：界面按缺省渲染成**开**。
+    const res = normalizeProfiles([
+      {
+        id: 'a',
+        providerType: 'openai-compatible',
+        baseURL: 'https://x',
+        models: [
+          { id: 'e1', model: 'm', settings: { reasoning: { kind: 'toggle', enabled: false } } },
+          { id: 'e2', model: 'm', settings: { reasoning: { kind: 'budget_tokens', budget: 0 } } }
+        ]
+      }
+    ])
+    expect(res.profiles[0].models[0].settings?.reasoning).toEqual({ kind: 'toggle', enabled: false })
+    expect(res.profiles[0].models[1].settings?.reasoning).toEqual({ kind: 'budget_tokens', budget: 0 })
+  })
+
+  it('扁平老形状升级分支同样**不洗档**（那份拷贝只有文本守卫罩着，行为层此前无覆盖）', () => {
+    // `normalizeProfiles` 的"0.13.16 扁平档案"分支是同一段逻辑的**第二份拷贝**。
+    // 既有用例只喂词表内的 `'high'` —— 洗与不洗对它没差别，于是那半边只有 no-dead-wiring
+    // 的文本扫描守着（而文本扫描有它自己的覆盖边界，见该守卫的说明）。
+    const res = normalizeProfiles([
+      {
+        id: 'old',
+        providerType: 'openai-compatible',
+        baseURL: 'https://x',
+        model: 'deepseek-flash',
+        reasoningEffort: 'xhigh'
+      }
+    ])
+    const entry = res.profiles[0].models[0]
+    expect(entry.settings?.reasoningEffort).toBe('xhigh')
+  })
+
   it('Q12 存量档案不动：没填 `reasoning` 的模型，有效设置逐字段不变（reasoning 键整个不存在）', () => {
     // 防"加了字段就顺手给老档案补默认"：盘上三家端点的档案都没有 reasoning，
     // 若这里凭空补一个 `kind:'none'`，出境行为虽不变，落盘却会多出一段用户没填过的东西。
