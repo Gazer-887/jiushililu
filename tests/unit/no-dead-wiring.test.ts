@@ -2,7 +2,7 @@
 //
 // 强度声明（`AGENTS.md` §八）：这些是**结构守卫**，挡的是"改着改着又加回去 / 又漏掉"，
 // 不替代行为测试。每条都配了**阳性对照**，防止有人为了过判据把东西删干净 —— 那等于换了个坏法。
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -682,7 +682,13 @@ describe('可单测的模块不许 import electron（CI 的 quality job 没有�
       if (!f.endsWith('.test.ts')) continue
       for (const m of repo(`tests/unit/${f}`).matchAll(/from '@main\/([\w./-]+)'/g)) out.add(m[1])
     }
-    return [...out].map((p) => `src/main/${p}.ts`)
+    return [...out].map((p) => {
+      const direct = `src/main/${p}.ts`
+      const asIndex = `src/main/${p}/index.ts`
+      // 目录型模块（`@main/providers` → providers/index.ts）：直连文件不存在时回退 index ——
+      // 两处都不存在则保留 direct，让 readFileSync 的 ENOENT 继续响（解析失败不许静默吞）
+      return existsSync(join(__dirname, '../..', asIndex)) ? asIndex : direct
+    })
   }
 
   it('前提成立：真的扫到了一批模块（扫不到 = 这条判据空转）', () => {
