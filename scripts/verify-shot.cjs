@@ -2497,18 +2497,27 @@ app.whenReady().then(async () => {
     })()
   `)
   await new Promise((r) => setTimeout(r, 400))
-  await win.webContents.executeJavaScript(`
+  const imageCell = await win.webContents.executeJavaScript(`
     (() => {
       const item = Array.from(document.querySelectorAll('.plus-menu .plus-item'))
         .find((i) => i.querySelector('.plus-name')?.textContent?.trim() === '图片');
+      // 事前告知那一半要在**点下去之前**量：菜单一关就取不到了
+      const fileItem = Array.from(document.querySelectorAll('.plus-menu .plus-item'))
+        .find((i) => i.querySelector('.plus-name')?.textContent?.trim() === '文件');
+      const desc = (n) => (n?.querySelector('.plus-desc')?.textContent ?? '').trim();
+      const found = !!item;
       if (item) item.click();
-      return { found: !!item, isDisabled: item?.classList.contains('disabled') ?? null };
+      return { found, isDisabled: item?.classList.contains('disabled') ?? null, fileDesc: desc(fileItem) };
     })()
   `)
   await new Promise((r) => setTimeout(r, 300))
   checkTrue('「＋」菜单图片格：点得动且真走 attach:file（入参带 image 过滤提示）',
     attachFileCalls.length === 1 && attachFileCalls[0] === 'image',
     attachFileCalls)
+  // plan57 片④：拒绝原因在**被拒之后**才说 = 用户仍要撞一次；通用格事前把收哪三类写清
+  checkTrue('「＋」文件格**事前**就说清收文本/图片/视频三类（不等到被拒才知道）',
+    imageCell.fileDesc.includes('文本') && imageCell.fileDesc.includes('图片') &&
+    imageCell.fileDesc.includes('视频'), imageCell)
 
   // —— 过程可见：工具调用详情 + 思考流（推送 → preload → store → 组件 这段是真实链路，只有数据由这里伪造）——
   win.webContents.send('chat:tool', {
@@ -5498,6 +5507,48 @@ app.whenReady().then(async () => {
   }
   console.log('DRAG_OS_FILE=' + JSON.stringify(osDrag))
 
+  // —— ③-2b 从系统拖入**会被拒的二进制**（plan57 片④ P10 / K46 剩那半的判据）——
+  // 要钉的是两件事：① 拒绝原因真的**上屏**（只在日志里说 = 用户还是不知道）
+  // ② **不产生附件** —— 这条是本 plan 的病根：以前是"静默接受再变乱码"，比拒绝坏得多。
+  // 载荷写真 NUL 字节：真源按 NUL 判、桩按后缀判，这一颗文件上两条判据重合
+  // （只拿一个空壳 .mov 去拖，测的就只是桩的形状，不是产品的形状）。
+  const rejectFile = join(process.env.TEMP || tmpdir(), 'jsl-verify-reject.mov')
+  writeFileSync(rejectFile, Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(64, 0), Buffer.from('movi')]))
+  const readChips = () =>
+    win.webContents.executeJavaScript(
+      `(() => Array.from(document.querySelectorAll('.attach-chip')).map((c) => c.title || ''))()`
+    )
+  const chipsBeforeReject = await readChips()
+  attachPathCalls.length = 0
+  let rejectDrag = { attempted: false }
+  if (dragGestureReady && dragPre.box) {
+    const t = dragPre.box
+    const filesPayload = { items: [], files: [rejectFile], dragOperationsMask: 1 }
+    await dbg.sendCommand('Input.dispatchDragEvent', { type: 'dragEnter', x: t.x, y: t.y, data: filesPayload })
+    await new Promise((r) => setTimeout(r, 200))
+    await dbg.sendCommand('Input.dispatchDragEvent', { type: 'drop', x: t.x, y: t.y, data: filesPayload })
+    // 必须早于 `attachError` 的 4 秒自动消失（InputConsole 那条定时器）读数
+    await new Promise((r) => setTimeout(r, 600))
+    const [chipsAfterReject, rejectState] = await Promise.all([
+      readChips(),
+      win.webContents.executeJavaScript(
+        `(() => ({ text: (document.querySelector('.console-error')?.textContent ?? '').trim(), ` +
+          `hasBox: !!document.querySelector('.console-error') }))()`
+      )
+    ])
+    rejectDrag = {
+      attempted: true,
+      // 探针自证：拒绝得是**真走通了通路**（handler 收到这个绝对路径）才叫被测到
+      reachedHandler: attachPathCalls.some((p) => String(p).includes('jsl-verify-reject.mov')),
+      errorText: rejectState.text,
+      errorShown: rejectState.hasBox,
+      chipsBefore: chipsBeforeReject.length,
+      chipsAfter: chipsAfterReject.length,
+      newTitles: chipsAfterReject.filter((x) => !chipsBeforeReject.includes(x))
+    }
+  }
+  console.log('DRAG_REJECT=' + JSON.stringify(rejectDrag))
+
   // —— ③-3 认出是文件拖拽、却一个可用路径都没拿到 → 必须说话（以前什么都不做 = 静默失败，最糟的失败方式）——
   const silentCase = await win.webContents.executeJavaScript(`
     (() => {
@@ -7764,6 +7815,14 @@ app.whenReady().then(async () => {
     osDrag.gotAbsolute === true, osDrag.payloads)
   checkTrue('工作区外的附件会在 chip 上**标出来**（主人有权知道上下文里混进了外面的文件）',
     (osDrag.badges ?? []).includes('工作区外'), osDrag.badges)
+  // —— ③-2b 的断言（plan57 片④ P10 / K46 剩那半）——
+  checkTrue('拖入被拒的二进制：`attach:path` **真收到**了那颗文件（handler 没被绕过 = 判据没空转）',
+    rejectDrag.attempted === true && rejectDrag.reachedHandler === true, rejectDrag)
+  checkTrue('拖入被拒的二进制：**拒绝原因上了屏**（含文件名与"二进制"，不是只在日志里说）',
+    rejectDrag.errorShown === true && (rejectDrag.errorText ?? '').includes('jsl-verify-reject.mov') &&
+    (rejectDrag.errorText ?? '').includes('二进制'), rejectDrag)
+  checkTrue('拖入被拒的二进制：**一个附件都没多**（病根是"静默接受再变乱码"，那比拒绝坏得多）',
+    (rejectDrag.newTitles ?? []).length === 0 && rejectDrag.chipsAfter === rejectDrag.chipsBefore, rejectDrag)
   checkTrue('载荷丢了会**说话**（以前是什么都不做 = 静默失败）',
     silentState.text.includes('没收到文件路径'), { ...silentCase, ...silentState })
 

@@ -100,7 +100,7 @@ export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: Plu
             >
               <span className="plus-check" />
               <span className="plus-name">文件</span>
-              <span className="plus-desc">上限 64KB</span>
+              <span className="plus-desc">文本 ≤64KB · 图片 ≤5MB · 视频 mp4 ≤20MB</span>
             </button>
             <button
               className="plus-item"
