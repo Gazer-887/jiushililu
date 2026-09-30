@@ -41,8 +41,17 @@ mimo-v2.6-flash / pro 只吃 low / medium / high（minimal / xhigh / max 真 400
 **已知边界（照实）**：Anthropic 端点带工具的轮次不开思考（协议限制，chip 上有标注）；
 「未实测」标注只对没实测过的「端点 × 档名」组合出现，不该出现的多说了等于替厂商下结论。
 
-**产物**：出包后回填。
-**验证**：出包后回填。
+**产物**（09-30 13:40，按包体 mtime 现取）：`Jiushililu-Setup-0.13.96.exe` 109,513,944 B ·
+`Jiushililu-Portable-0.13.96.exe` 109,136,795 B。随包 ripgrep 可执行核过（ripgrep 15.0.0）。
+出包链：build ✅ → CI 三 job 全绿（run `36673697504`）→ `npm run dist` exit 0 → **asar 正反 9 条 + 原生解包 5 件通过**。
+★ 正向按"哪个产物持有它"分选：`models:patch-entry`（通道串在 preload 与 main）、
+`rs-toggle` / `ctx-chip` / `rs-budget-row`（chip 类名，渲染 chunk + CSS）、`思考预算值`（渲染层独有文案）、
+`offEncoding`（schema 枚举）；版本串 `"version": "0.13.96"` 带缩进核过。
+★ 反向两条（`suppressWhenOff` / `effortMap`）是**结构性不该出现**的词——那是 Zcode 的内部字段名，
+R12 已裁定不抄它的命名，产物零命中证明裁定落地；两词不在"本批顶掉"之列，无需旧包对照。
+
+**验证**：typecheck 0 · lint 0 · 单测 **2389 通过 / 1 跳过（129 文件）** · build ✅ ·
+真渲染 **464/0**（`FRESH_CHECK=ok`，旧 461，本批 +3 条 Q8）· `check:docs` ✅（汇表 / README 均标 0.13.96）。
 
 ## 0.13.95 · 2026-09-27 19:33（定版，本机出包；tag / Release 待授权）
 
