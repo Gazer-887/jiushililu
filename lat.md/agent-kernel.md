@@ -48,6 +48,34 @@
 读不到文件时**降级成一句人话而不是让整轮失败** —— 反面教材是业界那类"一张图卡死整段会话"：
 历史每轮重放，那块图没人清。**已知欠账**：marker 目前只有人能还原，模型没有"再看这张图"的工具通路（K52）。
 
+## 思考档位的出境契约：三型一条裁决线，编码逐模型声明
+
+思考控制有三种互斥形态（[[src/shared/ipc.ts#ReasoningConfig]] 的 `kind`：`effort` 档位 / `toggle` 开关 / `budget_tokens` 预算 / `none` 不支持），
+但出境判定**只有一条线**：[[src/shared/reasoning.ts#effortToSend]]（档位吃不吃）+
+[[src/shared/reasoning.ts#openaiReasoningFields]]（toggle / 预算发什么字段）+
+[[src/shared/reasoning.ts#anthropicThinkingBudget]]（anthropic 通路的 kind 感知预算）。
+**切错的下场**：主进程发不发与界面披露各判各的 ⇒ 漂移的症状是"界面说生效、实际没发"——
+假开关里最难查的一类，因为两条判定单看都对。
+
+**能力声明住在模型身上，不住在应用里**：`levels` / `offEncoding` / `budgetEncoding` 全是逐模型字段
+（[[src/main/schemas.ts#reasoningConfigSchema]]），应用层**不猜厂商方言**——openai-compatible 通路上
+"关闭思考怎么说""预算写哪个键"没有统一答案（Qwen / Z.AI / OpenRouter 各不同）。
+未声明 ⇒ 一律不发 + 界面照实披露。猜一个字段名，错的坏法是**静默**：端点忽略未知字段返回 200，
+用户以为关掉了其实没关。
+
+**「inert 数据永不出境」必须在两条协议上同时成立**：`kind:'none'` 的模型即便存着 `reasoningEffort:'high'`，
+openai 侧（`effortToSend` 对非 effort 形态返 null）与 anthropic 侧（[[src/shared/reasoning.ts#anthropicThinkingBudget]] 对 none/toggle 返 null）
+都发不出去。实测踩过的洞：anthropic 侧旧判定只看档名不看 `kind`，none 模型照发思考——
+R11′ 在 openai 侧收口时，**另一条协议上的同一不变量是漏的**。同类切分切一半，等于没切。
+
+**单字段落盘走 `models:patch-entry` 不走整表保存**：输入框 chip 改一个旋钮，
+若复用 `models:save`（整表提交），主窗与设置窗两个渲染进程并发下互相覆盖。
+handler 把补丁合进现存档案**合成整表过同一道 `modelSaveSchema`**（[[src/main/schemas.ts#modelPatchEntrySchema]]）
+——patch 与 save 的合法性口径必须一致，两道闸各判各的迟早漂成两个口径。
+
+**已知欠账**：anthropic 侧仍是旧预算契约（`EFFORT_BUDGET` 自定四档，官方已转 `output_config.effort`，K59）；
+`toggle` 形态眼下没有真实消费者（三家端点全走档位通道）——机制先立，字段留给第一个开关型端点。
+
 ## 会话并发闸
 
 [[src/main/agent/concurrency.ts#createChatGate]] 是"这条会话能不能开始跑"的**硬闸**，渲染端的
