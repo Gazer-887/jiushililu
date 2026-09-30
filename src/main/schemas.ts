@@ -208,7 +208,8 @@ function reasoningLevelsGuard(val: ReasoningGuardShape, ctx: z.RefinementCtx): v
     // ★ 这里**只判一条**：声明了 `kind:'effort'` 且填了 `levels` 时，它就是唯一合法性来源。
     //   09-28 改判（R11′，用户裁定「出境层统一裁决」）：原先这里还有三条"形态与档位矛盾 ⇒ 拒"
     //   （`none` / `toggle` / `budget_tokens` 各一条），现已撤掉 —— 那些形态下档位是
-    //   **inert 数据**（`providers/effort.ts · effortToSend` 第 2 条保证它永不出境），
+    //   **inert 数据**（`shared/reasoning.ts · effortToSend` 第 2 条保证它永不出境；该判定
+    //   09-29 从 `main/providers/effort.ts` 搬进 `shared/`，好让界面用同一份判"设了没生效"），
     //   拒它没有技术道理，只制造一个**用户解不开的死结**：存量模型存着 `high` 时，
     //   用户第一次把该模型标为"不支持思考"会被拒，而要把档位改回 `default` 得先能操作那个下拉。
     //   ⇒ 存形状只管形状；**发不发一律由出境层裁决**。
