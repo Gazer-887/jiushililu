@@ -3645,6 +3645,12 @@ label.radio {
   border-color: var(--accent-border);
 }
 
+/* 常用值选中态（上下文窗口 chip 的预设排） */
+.rs-budget-row button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .rs-note {
   color: var(--muted);
   font-size: var(--fs-xs);

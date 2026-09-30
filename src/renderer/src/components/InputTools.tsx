@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
-import { activeEntry, entryLabel, sourceLabel, type ModelsView } from '@shared/models'
+import { activeEntry, entryLabel, sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import { cacheHitRate, formatRate, formatTokens, reasoningShare, totalTokens } from '@shared/usage'
 import { tierLabel } from '@shared/token-tier'
 import type { GitInfo, PermissionPreset, ReasoningConfig } from '@shared/ipc'
@@ -23,7 +23,7 @@ export function ContextRing({ used }: { used: number }): JSX.Element {
   return (
     <span
       className={`ctx-ring ctx-${level}`}
-      title={limit > 0 ? `上下文用量约 ${used} / ${limit} tokens` : '上下文窗口未设置（请在设置页填写）'}
+      title={limit > 0 ? `上下文用量约 ${used} / ${limit} tokens` : '上下文窗口未设置（可在输入框「窗口」芯片或设置页调整）'}
     >
       <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
         <circle cx="10" cy="10" r={R} fill="none" stroke="var(--border)" strokeWidth="2.5" />
@@ -290,29 +290,42 @@ export function PermissionChip(): JSX.Element {
 }
 
 /**
- * 思考强度 chip（plan58 片② R7）：一个位置，形状随 `reasoning.kind` 变 ——
- * `effort` 档名单元 / `toggle` 二态开关 / `budget_tokens` 预算框 / `none` 与未声明**不出现**（Q12，
- * 不给存量档案凭空造档）。回显纪律同 PermissionChip（R1）：**读主进程真值** ——
- * patch 的返回值就是最新视图，不本地自说自话；广播来了重读，不搬变更内容（多窗口铁律）。
+ * 模型 chip 共用的数据机（plan58 R1「回显主进程真值」纪律的实现处）：
+ * 拉 `models:list` 找激活条目，广播来了重读 —— 两枚 chip（思考 / 窗口）共用，
+ * **重读而不是搬变更内容**（多窗口铁律）。
  */
-export function ReasoningChip(): JSX.Element | null {
+function useActiveModelEntry(): {
+  setModels: (v: ModelsView | null) => void
+  active: ModelProfileView | null
+  entry: ModelEntry | null
+} {
   const [models, setModels] = useState<ModelsView | null>(null)
-  const [open, setOpen] = useState(false)
-  const [draftBudget, setDraftBudget] = useState('')
-  const boxRef = useRef<HTMLDivElement>(null)
-
   const reload = useCallback((): void => {
     void window.api
       .listModels()
       .then(setModels)
       .catch(() => setModels(null))
   }, [])
-
   useEffect(() => {
     reload()
   }, [reload])
-
   useEffect(() => window.api.onSettingsChanged(() => reload()), [reload])
+  const active = models?.profiles.find((p) => p.id === models.activeId) ?? null
+  const entry = active ? activeEntry(active) : null
+  return { setModels, active, entry }
+}
+
+/**
+ * 思考强度 chip（plan58 片② R7）：一个位置，形状随 `reasoning.kind` 变 ——
+ * `effort` 档名单元 / `toggle` 二态开关 / `budget_tokens` 预算框 / `none` 与未声明**不出现**（Q12，
+ * 不给存量档案凭空造档）。回显纪律同 PermissionChip（R1）：**读主进程真值** ——
+ * patch 的返回值就是最新视图，不本地自说自话；广播来了重读，不搬变更内容（多窗口铁律）。
+ */
+export function ReasoningChip(): JSX.Element | null {
+  const { setModels, active, entry } = useActiveModelEntry()
+  const [open, setOpen] = useState(false)
+  const [draftBudget, setDraftBudget] = useState('')
+  const boxRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -323,8 +336,6 @@ export function ReasoningChip(): JSX.Element | null {
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  const active = models?.profiles.find((p) => p.id === models.activeId) ?? null
-  const entry = active ? activeEntry(active) : null
   const rs = entry?.settings?.reasoning
   if (!active || !entry || !rs || rs.kind === 'none') return null
 
@@ -468,6 +479,100 @@ export function ReasoningChip(): JSX.Element | null {
               <span className="tb-menu-title">{l}</span>
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 上下文窗口常用值（R3）。「填个大概」走这里；精确值走自定义输入。 */
+const CONTEXT_WINDOW_PRESETS: ReadonlyArray<{ label: string; value: number }> = [
+  { label: '32k', value: 32768 },
+  { label: '64k', value: 65536 },
+  { label: '128k', value: 131072 },
+  { label: '256k', value: 262144 },
+  { label: '1M', value: 1048576 }
+]
+
+/**
+ * 上下文窗口 chip（plan58 片③ R3）：已用 / 窗口两数 + 几档常用值 + 自定义。
+ * ⚠️ 窗口是**客户端元数据**（不发厂商）—— 改它只影响 ContextRing 的分母与裁剪阈值，
+ * 与缺陷 3 那四套「上下文长度」语义里的②③④无关，不许塞进同一个控件。
+ */
+export function ContextChip({ used }: { used: number }): JSX.Element | null {
+  const { setModels, active, entry } = useActiveModelEntry()
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent): void => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  // 条目没单独设过 ⇒ 回落到 settings 视图（getSettingsView 合成的那份）。⚠️ hook 必须在早退之前
+  const storeWindow = useAppStore((s) => s.settings?.contextWindow)
+  if (!active || !entry) return null
+  const window_ = entry.settings?.contextWindow
+  const current = window_ ?? storeWindow ?? 0
+
+  const apply = async (value: number): Promise<void> => {
+    if (!Number.isFinite(value) || value <= 0) return
+    const view = await window.api.patchModelEntry({
+      profileId: active.id,
+      entryId: entry.id,
+      patch: { contextWindow: value }
+    })
+    setModels(view)
+    setOpen(false)
+  }
+
+  return (
+    <div className="rs-wrap" ref={boxRef}>
+      <button
+        className="tb-btn tb-reasoning ctx-chip"
+        aria-label="上下文窗口"
+        title={`上下文窗口：${current > 0 ? formatTokens(current) : '未设置'}。影响本地裁剪与压缩阈值，不发送厂商。`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        窗口 {current > 0 ? formatTokens(current) : '未设'}
+        <span className="tb-caret">▾</span>
+      </button>
+      {open && (
+        <div className="tb-menu">
+          <p className="rs-note">
+            本会话已用约 {formatTokens(used)} tokens；窗口为本地元数据，不发送厂商。
+          </p>
+          <div className="rs-budget-row ctx-presets">
+            {CONTEXT_WINDOW_PRESETS.map((p) => (
+              <button
+                key={p.value}
+                className={current === p.value ? 'active' : ''}
+                aria-label={`窗口 ${p.label}`}
+                onClick={() => void apply(p.value)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className="rs-budget-row">
+            <input
+              type="number"
+              min="1000"
+              aria-label="上下文窗口值"
+              value={draft}
+              placeholder="自定义 Token 数"
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void apply(Number(draft))
+              }}
+            />
+            <button onClick={() => void apply(Number(draft))}>应用</button>
+          </div>
         </div>
       )}
     </div>

@@ -1370,6 +1370,12 @@ const STUBS = {
     if (input?.entryId === 'm1-e2') {
       if (input.patch?.reasoningEffort !== undefined) stubE2Settings.reasoningEffort = input.patch.reasoningEffort
       if (input.patch?.reasoning !== undefined) stubE2Settings.reasoning = input.patch.reasoning
+      // 片③（Q8）：窗口是 settings 视图的字段 —— 桩里两处（条目 + settings 视图）一起变，
+      // ContextRing 的分母才跟得上（真源 getSettingsView 读的就是激活条目）。
+      if (input.patch?.contextWindow !== undefined) {
+        stubE2Settings.contextWindow = input.patch.contextWindow
+        settingsView.contextWindow = input.patch.contextWindow
+      }
     }
     modelBroadcast()
     return {
@@ -9540,7 +9546,8 @@ app.whenReady().then(async () => {
   const chipProbe = async () =>
     win.webContents.executeJavaScript(`
       (() => {
-        const btn = document.querySelector('.tb-reasoning')
+        // 只认思考 chip 的三种形态类 —— tb-reasoning 会摸到片③ 的窗口 chip（它也带这个类）
+        const btn = document.querySelector('.rs-effort, .rs-toggle, .rs-budget')
         if (!btn) return { exists: false }
         return {
           exists: true,
@@ -9574,7 +9581,7 @@ app.whenReady().then(async () => {
     chipEffort.title)
 
   // 打开菜单：首项「默认」，档位按强度序 low→high（桩里故意存反序 high,low）
-  await win.webContents.executeJavaScript(`document.querySelector('.tb-reasoning').click()`)
+  await win.webContents.executeJavaScript(`document.querySelector('.rs-effort').click()`)
   await new Promise((r) => setTimeout(r, 300))
   const chipMenu = await win.webContents.executeJavaScript(`
     (() => ({
@@ -9658,6 +9665,43 @@ app.whenReady().then(async () => {
   checkTrue('Q12：激活条目未声明 reasoning ⇒ chip 不出现（存量档案不被动）',
     chipStock.exists === false,
     chipStock)
+
+  // Q8（片③）：窗口 chip 点常用值 ⇒ ContextRing 分母跟着变（两处读同一真值，不许各算一套）
+  stubActiveModelId = 'm1-e2'
+  delete stubE2Settings.contextWindow
+  settingsView.contextWindow = 131072
+  modelBroadcast()
+  await new Promise((r) => setTimeout(r, 500))
+  const ringBefore = await win.webContents.executeJavaScript(
+    `document.querySelector('.ctx-ring')?.getAttribute('title') ?? ''`
+  )
+  await win.webContents.executeJavaScript(`document.querySelector('.ctx-chip').click()`)
+  await new Promise((r) => setTimeout(r, 300))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const b = Array.from(document.querySelectorAll('.ctx-presets button')).find(
+        (x) => (x.textContent || '').trim() === '64k'
+      )
+      if (b) b.click()
+      return !!b
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 500))
+  const ringAfter = await win.webContents.executeJavaScript(
+    `document.querySelector('.ctx-ring')?.getAttribute('title') ?? ''`
+  )
+  const ctxPatch = modelPatchCalls[modelPatchCalls.length - 1]
+  checkTrue('Q8：点常用值真走 patch（contextWindow=65536）',
+    ctxPatch?.patch?.contextWindow === 65536,
+    ctxPatch)
+  checkTrue('Q8：ContextRing 分母跟着变（title 从 131072 变 65536，两处读同一真值）',
+    ringBefore.includes('131072') && ringAfter.includes('65536'),
+    { ringBefore, ringAfter })
+  checkTrue('Q8：settings 视图同源更新（桩侧契约副本）', settingsView.contextWindow === 65536, settingsView.contextWindow)
+
+  // 还原桩（后续探针按原始形状跑）
+  delete stubE2Settings.contextWindow
+  settingsView.contextWindow = 131072
   stubActiveModelId = 'm1-e1'
   modelBroadcast()
   await new Promise((r) => setTimeout(r, 300))

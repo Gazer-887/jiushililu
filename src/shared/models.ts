@@ -268,6 +268,7 @@ export interface ModelSaveInput {
 /**
  * 输入框 chip 的**单字段补丁**（plan58 R2）。只收白名单字段：
  * 合法性（白名单判档）由主进程合成整表过 `modelSaveSchema` —— 与整表保存同一道闸。
+ * 片③ 起 `contextWindow` 也走这里（上下文窗口 chip）。
  */
 export interface ModelPatchEntryInput {
   profileId: string
@@ -275,6 +276,7 @@ export interface ModelPatchEntryInput {
   patch: {
     reasoningEffort?: string
     reasoning?: ReasoningConfig
+    contextWindow?: number
   }
 }
 
@@ -285,7 +287,7 @@ export interface ModelPatchEntryInput {
  */
 export function mergeEntrySettings(
   settings: Partial<ModelSettings> | undefined,
-  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig }
+  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig; contextWindow?: number }
 ): Partial<ModelSettings> {
   return { ...(settings ?? {}), ...patch }
 }

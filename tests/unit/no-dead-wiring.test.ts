@@ -843,4 +843,19 @@ describe('片② 缺口 C：出境接线 + patch 全链每一环都在场', () =
     expect(ed, '设置页声明下拉没用共享文案').toContain('OFF_ENCODING_LABELS')
     expect(ed).toContain('BUDGET_ENCODING_LABELS')
   })
+
+  it('★ 片③：上下文窗口 chip 同走 patch 通道（Q8 两处读同一真值的链路在场）', () => {
+    // patch schema 收 contextWindow（边界与整表保存同一档，行为级在 schemas.test.ts）
+    const schemas = stripComments(src('main/schemas.ts'))
+    expect(schemas, 'patch 形状闸没收 contextWindow').toMatch(
+      /contextWindow:\s*z\.number\(\)\.int\(\)\.min\(1000\)/
+    )
+    const chip = stripComments(src('renderer/src/components/InputTools.tsx'))
+    expect(chip, '窗口 chip 不存在（R3 的就近入口没落地）').toContain('aria-label="上下文窗口"')
+    expect(chip, '窗口 chip 没走 patch 通道').toContain('patch: { contextWindow: value }')
+    // 指路口径同步（§四 连带清单）：入口搬进输入框后，圆环的指路不许再只指向设置页
+    expect(chip, 'ContextRing 的指路句还在把人往设置页指（入口已在输入框）').toContain(
+      '可在输入框「窗口」芯片或设置页调整'
+    )
+  })
 })

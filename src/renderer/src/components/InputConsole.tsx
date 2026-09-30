@@ -3,7 +3,7 @@ import type { Attachment, SkillInfo } from '@shared/ipc'
 import { DRAG_PATH_MIME } from '@shared/fs-tree'
 import PlusMenu from './PlusMenu'
 import WorkspaceChip from './WorkspaceChip'
-import { BranchChip, ContextRing, ModelSwitcher, PermissionChip, ReasoningChip, PolishButton, SendButton, UsageChip } from './InputTools'
+import { BranchChip, ContextChip, ContextRing, ModelSwitcher, PermissionChip, ReasoningChip, PolishButton, SendButton, UsageChip } from './InputTools'
 import VoiceButton from './VoiceButton'
 
 // 输入控制台（P2，D-032）：与「这一次请求」有关的设置都收在这里 —— 视线不用来回跑。
@@ -327,6 +327,7 @@ export default function InputConsole({
         </div>
 
         <div className="tb-group tb-right">
+          <ContextChip used={usedTokens} />
           <ContextRing used={usedTokens} />
           <UsageChip />
           <VoiceButton textareaEl={() => taRef.current} getText={() => value} onInsert={(next) => onChange(next)} />

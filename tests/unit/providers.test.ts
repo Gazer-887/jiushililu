@@ -398,3 +398,14 @@ describe('buildAnthropicBody · kind 感知（片② 暗病修）', () => {
     expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 32768 })
   })
 })
+
+describe('buildOpenAIChatBody / buildAnthropicBody · 上下文窗口不发厂商（Q9，片③）', () => {
+  it('★ Q9：contextWindow 是客户端元数据，两个协议的请求体都不出现它', () => {
+    const openai = buildOpenAIChatBody({ ...settings, contextWindow: 262144 }, [], false)
+    expect('context_window' in openai).toBe(false)
+    expect('contextWindow' in openai).toBe(false)
+    const anthropic = buildAnthropicBody({ ...settings, contextWindow: 262144 }, [], false)
+    expect('context_window' in anthropic).toBe(false)
+    expect('contextWindow' in anthropic).toBe(false)
+  })
+})

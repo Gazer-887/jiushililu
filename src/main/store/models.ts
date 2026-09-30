@@ -378,7 +378,7 @@ export function setActiveEntry(profileId: string, entryId: string): void {
 export function patchEntrySettings(
   profileId: string,
   entryId: string,
-  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig }
+  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig; contextWindow?: number }
 ): void {
   const { profiles } = listProfiles()
   const profile = profiles.find((p) => p.id === profileId)

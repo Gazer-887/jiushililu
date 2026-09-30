@@ -186,11 +186,14 @@ export const modelPatchEntrySchema = z.object({
   patch: z
     .object({
       reasoningEffort: effortNameSchema.optional(),
-      reasoning: reasoningConfigSchema.optional()
+      reasoning: reasoningConfigSchema.optional(),
+      // 片③：上下文窗口（客户端元数据，不发厂商）—— 边界与整表保存同一档
+      contextWindow: z.number().int().min(1000).max(10_000_000).optional()
     })
-    .refine((p) => p.reasoningEffort !== undefined || p.reasoning !== undefined, {
-      message: '补丁为空：至少要带一个要改的字段'
-    })
+    .refine(
+      (p) => p.reasoningEffort !== undefined || p.reasoning !== undefined || p.contextWindow !== undefined,
+      { message: '补丁为空：至少要带一个要改的字段' }
+    )
 })
 
 /**

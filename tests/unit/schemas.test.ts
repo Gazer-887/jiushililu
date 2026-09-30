@@ -477,4 +477,15 @@ describe('modelPatchEntrySchema（chip 的单字段补丁，plan58 R2）', () =>
     }
     expect(modelSaveSchema.safeParse(ok).success).toBe(true)
   })
+
+  it('片③：contextWindow 也可作补丁单字段（边界与整表保存同一档）', () => {
+    expect(
+      modelPatchEntrySchema.safeParse({ profileId: 'p1', entryId: 'e1', patch: { contextWindow: 262144 } })
+        .success
+    ).toBe(true)
+    // 低于整表保存下限（1000）同样被拒 —— 两条路的边界必须一致
+    expect(
+      modelPatchEntrySchema.safeParse({ profileId: 'p1', entryId: 'e1', patch: { contextWindow: 999 } }).success
+    ).toBe(false)
+  })
 })
