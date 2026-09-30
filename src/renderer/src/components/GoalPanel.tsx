@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../store'
 
 /**
- * **进行中的目标**（plan12）—— 输入框上方一条，形态对齐 DSH：图标 + 目标文字 + 暂停/继续 · 编辑 · 完成 · 删除。
+ * **进行中的目标**（plan12）—— 输入框上方一条，形态对齐 DSH：图标 + 目标文字 + 暂停/继续 · 编辑 · 完成 · 放弃 · 删除。
  * 与待办（TodoPanel）的分界：待办答"**这一轮**干什么"、一轮跑完即清、由 Agent 刷；目标答"我要**持续**达成什么"、
  * 跨轮次跨重启、用户可手建且 **Agent 可自建**、**显式**完成并带"怎么算做到"的判据 —— 待办是过程，目标是意图。
- * 界面纪律：只显示进行中/暂停（完成与放弃进历史）；最多 3 条，多的折成"N 条更多"（不许把输入框顶走）；
+ * 界面纪律：只显示进行中/暂停（完成与放弃**折叠**在计数里，展开后可重开 —— 状态机六种动作都要有入口）；
+ * 最多 3 条，多的折成"N 条更多"（不许把输入框顶走）；
  * 没有目标时整条不占位 —— 空着也要占一行是最招人烦的那种设计。
  */
 export default function GoalPanel(): JSX.Element | null {
@@ -21,6 +22,7 @@ export default function GoalPanel(): JSX.Element | null {
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
+  const [showEnded, setShowEnded] = useState(false)
 
   // 目标是**会话的属性**：切会话就跟着换，与 messages 同一条规矩
   useEffect(() => {
@@ -29,6 +31,7 @@ export default function GoalPanel(): JSX.Element | null {
     setAdding(false)
     setEditing(null)
     setShowAll(false)
+    setShowEnded(false)
   }, [activeId, loadGoals])
 
   if (!activeId) return null
@@ -85,9 +88,13 @@ export default function GoalPanel(): JSX.Element | null {
           </button>
         )}
         {done.length > 0 && (
-          <span className="goal-done-count" title="已完成 / 已放弃的目标">
-            已完成 {done.length}
-          </span>
+          <button
+            className="goal-add goal-done-count"
+            title={showEnded ? '收起已完成与已放弃的目标' : '查看已完成 / 已放弃的目标（可重开）'}
+            onClick={() => setShowEnded((v) => !v)}
+          >
+            已完成 {done.length} {showEnded ? '▴' : '▾'}
+          </button>
         )}
       </div>
 
@@ -172,6 +179,13 @@ export default function GoalPanel(): JSX.Element | null {
                   完成
                 </button>
                 <button
+                  className="goal-btn"
+                  title="放弃（保留记录，可从「已完成」里重开）"
+                  onClick={() => void run(() => actOnGoal(g.id, 'drop'))}
+                >
+                  放弃
+                </button>
+                <button
                   className="goal-btn goal-btn-del"
                   title="彻底删除（「放弃」保留记录，删除不保留）"
                   onClick={() => void run(() => deleteGoal(g.id))}
@@ -183,6 +197,28 @@ export default function GoalPanel(): JSX.Element | null {
           </span>
         </div>
       ))}
+
+      {showEnded &&
+        done.map((g) => (
+          <div key={g.id} className="goal-row ended">
+            <span className="goal-state" title={g.status === 'done' ? '已完成' : '已放弃'}>
+              {g.status === 'done' ? '✓' : '×'}
+            </span>
+            <span className="goal-text" title={g.doneWhen ? `完成判据：${g.doneWhen}` : g.text}>
+              {g.text}
+              {g.createdBy !== 'user' && <span className="goal-by">（由 {g.createdBy} 创建）</span>}
+            </span>
+            <span className="goal-actions">
+              <button
+                className="goal-btn goal-btn-go"
+                title="重开（回到进行中）"
+                onClick={() => void run(() => actOnGoal(g.id, 'reopen'))}
+              >
+                重开
+              </button>
+            </span>
+          </div>
+        ))}
 
       {notice && <div className="goal-notice">{notice}</div>}
     </div>

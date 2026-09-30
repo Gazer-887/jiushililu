@@ -965,10 +965,11 @@ const STUBS = {
     const g = goalState.find((x) => x.id === input?.id)
     // 真源同句：`goal-core` 里找不到就抛这条（界面据此说人话，不是静默不动）
     if (!g) throw new Error('该目标不存在（可能已被删除）')
-    // ⚠️ 桩的边界（写死，别两边沉默）：这里**不复制状态机** —— 真源 `goal-core.ts` 会拒非法转移并给理由，
-    // 桩对任意状态一律接受，且 `reopen` 不在表里（真源是 done/dropped → active）。
-    // ⇒ 「非法转移」「重开」两格只有单测与 e2e 两层，**门禁给不出这两条证据**。
-    const TO = { pause: 'paused', resume: 'active', complete: 'done', drop: 'dropped' }
+    // ⚠️ 桩的边界（写死，别两边沉默）：这里**只搬状态、不判能不能搬** —— 真源 `goal-core.ts` 会拒非法转移
+    // 并给人话理由（如「已结束的要先重开才能再次完成」），桩对任意状态一律接受。
+    // ⇒ 「非法转移带理由」只有 `goal-store.test.ts` 与 e2e 两层，**门禁给不出这条证据**；
+    //   六种动作的**入口可达性**（点得到、点了真变）才是这一层测的东西，`reopen` 也在表里了。
+    const TO = { pause: 'paused', resume: 'active', complete: 'done', drop: 'dropped', reopen: 'active' }
     if (input?.action === 'edit') g.text = input?.patch?.text ?? g.text
     else if (TO[input?.action]) g.status = TO[input?.action]
     g.updatedAt = Date.now()
@@ -9599,6 +9600,107 @@ app.whenReady().then(async () => {
       !goalAfterComplete.texts.some((x) => x.includes(FAKE_GOALS[0].text)) &&
       goalAfterComplete.paused === 1,
     { before: goalPanel?.rows, after: goalAfterComplete })
+
+  // —— 六种动作的**入口可达性**（plan12 步 4 的界面半边；「放弃 / 重开」2026-10-01 补）——
+  // 判据只管"点得到、点了真变、变完真重读"，**不管能不能非法转**（那是 core 单测与 e2e 那两层）。
+  goalListCalls.length = 0
+  const goalDropClick = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.goal-row'));
+      const hit = rows.find((r) => (r.querySelector('.goal-text')?.textContent ?? '').includes(${JSON.stringify(
+        FAKE_GOALS[1].text
+      )}));
+      const btn = hit ? Array.from(hit.querySelectorAll('.goal-btn')).find((b) => b.textContent.trim() === '放弃') : null;
+      if (btn) btn.click();
+      return { rowFound: !!hit, btnFound: !!btn };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400)) // 动作后要等两趟 IPC（actOnGoal → loadGoals），读早了看到的是飞行中的 DOM
+  const goalAfterDrop = {
+    ...(await win.webContents.executeJavaScript(`
+      (() => {
+        const live = Array.from(document.querySelectorAll('.goal-row')).filter((r) => !r.classList.contains('ended'));
+        const count = document.querySelector('.goal-done-count');
+        return {
+          liveRows: live.length,
+          liveTexts: live.map((r) => r.querySelector('.goal-text')?.textContent?.trim() ?? ''),
+          countText: count ? count.textContent.trim() : null
+        };
+      })()
+    `)),
+    // refound 走 Node 侧变量（同"完成后消失"那条的教训：拼进渲染端字符串就恒 undefined）
+    refound: goalListCalls.length
+  }
+  console.log('GOAL_AFTER_DROP=' + JSON.stringify(goalAfterDrop))
+  checkTrue('「放弃」按钮真在剩下那条行上（前置自证，探针没打空）',
+    goalDropClick.rowFound === true && goalDropClick.btnFound === true, goalDropClick)
+  checkTrue('点「放弃」→ 该行从进行中消失、终态计数升到 2，且动作后真重读过',
+    goalAfterDrop.liveRows === 0 && goalAfterDrop.countText?.includes('2') === true && goalAfterDrop.refound >= 1,
+    goalAfterDrop)
+
+  const goalEndedExpand = await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.goal-add.goal-done-count');
+      if (btn) btn.click();
+      return { toggleFound: !!btn };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400)) // 动作后要等两趟 IPC（actOnGoal → loadGoals），读早了看到的是飞行中的 DOM
+  const goalEndedRows = await win.webContents.executeJavaScript(`
+    (() => {
+      const ended = Array.from(document.querySelectorAll('.goal-row.ended'));
+      return {
+        endedRows: ended.length,
+        endedTexts: ended.map((r) => r.querySelector('.goal-text')?.textContent?.trim() ?? ''),
+        reopenBtns: ended.filter((r) =>
+          Array.from(r.querySelectorAll('.goal-btn')).some((b) => b.textContent.trim() === '重开')).length
+      };
+    })()
+  `)
+  console.log('GOAL_ENDED_EXPAND=' + JSON.stringify({ goalEndedExpand, goalEndedRows }))
+  checkTrue('「已完成 N」不再只是死计数 —— 点得开，展开后两条终态各自带「重开」',
+    goalEndedExpand.toggleFound === true && goalEndedRows.endedRows === 2 && goalEndedRows.reopenBtns === 2,
+    { goalEndedExpand, goalEndedRows })
+
+  goalListCalls.length = 0
+  const goalReopenClick = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.goal-row.ended'));
+      const hit = rows.find((r) => (r.querySelector('.goal-text')?.textContent ?? '').includes(${JSON.stringify(
+        FAKE_GOALS[0].text
+      )}));
+      const btn = hit ? Array.from(hit.querySelectorAll('.goal-btn')).find((b) => b.textContent.trim() === '重开') : null;
+      if (btn) btn.click();
+      return { rowFound: !!hit, btnFound: !!btn };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400)) // 动作后要等两趟 IPC（actOnGoal → loadGoals），读早了看到的是飞行中的 DOM
+  const goalAfterReopen = {
+    ...(await win.webContents.executeJavaScript(`
+      (() => {
+        const live = Array.from(document.querySelectorAll('.goal-row')).filter((r) => !r.classList.contains('ended'));
+        const count = document.querySelector('.goal-done-count');
+        return {
+          liveRows: live.length,
+          liveTexts: live.map((r) => r.querySelector('.goal-text')?.textContent?.trim() ?? ''),
+          livePaused: live.filter((r) => r.classList.contains('paused')).length,
+          countText: count ? count.textContent.trim() : null
+        };
+      })()
+    `)),
+    refound: goalListCalls.length
+  }
+  console.log('GOAL_AFTER_REOPEN=' + JSON.stringify(goalAfterReopen))
+  checkTrue('「重开」的前置自证：终态那行与那颗按钮都打到了',
+    goalReopenClick.rowFound === true && goalReopenClick.btnFound === true, goalReopenClick)
+  checkTrue('点「重开」→ 那条回到进行中（1 条活、终态计数回 1、真重读过）',
+    goalAfterReopen.liveRows === 1 &&
+      goalAfterReopen.liveTexts.some((x) => x.includes(FAKE_GOALS[0].text)) === true &&
+      // 「回到 active」而不是「回到 paused」—— 少了这一格，`reopen` 错接成 `pause` 也照样绿
+      goalAfterReopen.livePaused === 0 &&
+      goalAfterReopen.countText?.includes('1') === true &&
+      goalAfterReopen.refound >= 1,
+    goalAfterReopen)
 
   // ⚠️ “目标摆在待办上面”这条没写成断言：待办面板“没有待办”时自己不占位，探针跑到那一刻它根本不在
   //    DOM 里 → 几何对比无从判；写成“todo 为 null 就放行”只会得到一条永远绿的假断言。顺序目前由 JSX

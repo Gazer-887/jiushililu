@@ -4765,6 +4765,14 @@ button.tm-shell-btn:disabled {
   color: var(--muted);
 }
 
+.goal-row.ended {
+  color: var(--muted);
+}
+
+.goal-row.ended .goal-state {
+  color: var(--muted);
+}
+
 .goal-state {
   width: 12px;
   flex-shrink: 0;
