@@ -153,3 +153,24 @@ electron-store 只支持"整个对象一把写"，与分层不可兼得；它又
 
 ⚠️ 后果四：分组规则在渲染端**另有一份**（渲染层不 import `src/main`）。两份的排序与取末段口径必须同步改，
 而有单测钉着的是主进程这一份——只改渲染端那份不会红，正是"看着像改了"。
+
+## 目标（goal）也走同一刀：core 收接缝，薄壳只装配
+
+长期意图的落盘原先把五个入口直接挂在模块级 `new Store()` 上，于是这段真实行为在单测层是黑的。
+
+切法与会话那把刀同一条：语义进 [[src/main/store/goal-core.ts#createGoalRepo]]，
+接缝是 [[src/main/store/goal-core.ts#GoalBackend]]（只有 `readRaw` / `writeRaw`），
+留痕通道是 [[src/main/store/goal-core.ts#GoalLog]]；装配留在薄壳 [[src/main/store/goal.ts#listGoals]]，
+它只允许"造 Store + 转发"。黑的原因写在 [[tests/unit/architecture.test.ts#BANNED]] ——
+单测 import 图里不许出现 electron / electron-store，直接测旧形状就会把架构守卫打红。
+
+为什么切错了会贵：
+
+- 接缝一旦变成"可选参数注入 logger"这种松形状，生产走 Store、测试走另一套默认值，
+  **两条路径会各自长出自己的行为**，测过的不再是跑着的那条。
+- 薄壳里一旦重新出现判断（哪怕只是一句"没有匹配就不写盘"），那段行为立刻回到测不到的地方 ——
+  [[src/main/store/goal-core.ts#createGoalRepo]] 里 `removeGoalsOf` 的"没匹配不落盘、不落 info"就是这条纪律的具体形状。
+- 主进程那份账与渲染端那份视图是两件事：会话归属由渲染端 store 的 `applyAgentGoal`
+  （挂在 [[src/renderer/src/store.ts#useAppStore]] 上）比一次 `conversationId` 守住，
+  主进程那边靠过滤守住。两侧各有判据（`goal-agent-apply.test.ts` / `goal-store.test.ts`），**互不替代**：
+  门禁的 `goal:list` 是单会话桩，给不出"两条会话"这个形状，所以那条判据只能在单测或真入口里成立。

@@ -351,6 +351,12 @@ const FAKE_GOALS = [
   }
 ]
 
+// 目标桩的**可变状态**：`goal:action` 真的改它、`goal:list` 真的回它 ——
+// 面板点「完成」后要看到那条从进行中消失，桩必须会记事（固定返回值 = 这条判据永远造不出形状）
+const goalState = FAKE_GOALS.map((g) => ({ ...g }))
+/** `goal:list` 被谁在什么时候拉过（判据用它证明"动作后真重读"，而不是界面自己本地改了一下） */
+const goalListCalls = []
+
 const FAKE_TODOS = [
   { id: 't1', text: '读取工作区里的紫水晶采购清单', status: 'completed' },
   { id: 't2', text: '汇总各品类数量并核对单位', status: 'completed' },
@@ -937,10 +943,38 @@ const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
   // 目标（plan12）：契约副本 —— 一条进行中 + 一条暂停（覆盖两种状态的行内外观）
-  'goal:list': () => [FAKE_GOALS[0], FAKE_GOALS[1]],
-  'goal:create': (input) => ({ ...FAKE_GOALS[0], id: 'g-new', text: input?.text ?? '新目标' }),
-  'goal:action': (input) => ({ ...FAKE_GOALS[0], id: input?.id ?? 'g1', status: 'done' }),
-  'goal:delete': () => undefined,
+  // ⚠️ 桩必须**真办事**（plan57 片④ 同一条纪律）：目标面板在动作后会 `loadGoals` 重读，
+  // 桩若固定回两条，"完成后从进行中消失"这条判据在门禁里根本造不出形状（读到的永远是初始态）。
+  'goal:list': (cid) => {
+    goalListCalls.push(typeof cid === 'string' ? cid : null)
+    return goalState.filter((g) => g.conversationId === cid).map((g) => ({ ...g }))
+  },
+  'goal:create': (input) => {
+    const g = {
+      ...FAKE_GOALS[0],
+      id: 'g-new',
+      conversationId: input?.conversationId ?? 'c1',
+      text: input?.text ?? '新目标',
+      status: 'active',
+      updatedAt: Date.now()
+    }
+    goalState.push(g)
+    return { ...g }
+  },
+  'goal:action': (input) => {
+    const g = goalState.find((x) => x.id === input?.id)
+    // 真源同句：`goal-core` 里找不到就抛这条（界面据此说人话，不是静默不动）
+    if (!g) throw new Error('该目标不存在（可能已被删除）')
+    const TO = { pause: 'paused', resume: 'active', complete: 'done', drop: 'dropped' }
+    if (input?.action === 'edit') g.text = input?.patch?.text ?? g.text
+    else if (TO[input?.action]) g.status = TO[input?.action]
+    g.updatedAt = Date.now()
+    return { ...g }
+  },
+  'goal:delete': (id) => {
+    const i = goalState.findIndex((x) => x.id === id)
+    if (i >= 0) goalState.splice(i, 1)
+  },
   // 子代理运行记录（plan7 批 D）：同上，覆盖 start / end / error 三种渲染分支
   'subagent:get': () => FAKE_SUBAGENTS,
   'bg:list': () => FAKE_BG_TASKS,
@@ -9520,6 +9554,46 @@ app.whenReady().then(async () => {
       (goalPanel?.btnTexts ?? []).some((s) => s.includes('暂停') && s.includes('完成') && s.includes('删除')) &&
       (goalPanel?.btnTexts ?? []).some((s) => s.includes('继续') && s.includes('完成')),
     goalPanel?.btnTexts)
+  // —— plan12 §三 步 4 的出口欠账之一：完成后必须**从进行中那一条消失**（2026-10-01 补）——
+  // 桩会记事，所以这里能造出"点完成 → 重读 → 少一条"的真形状；
+  // ⚠️ 这条只在门禁层成立的前提是 GoalPanel 重读 —— 落盘侧的 done 状态见 goal-store.test.ts，两层不互换。
+  // ⚠️ `goalListCalls` 是**验证进程（Node 侧）**的变量，渲染端脚本里根本没有它 ——
+  // 把它写进 executeJavaScript 里会得到一个 ReferenceError，而这里整批判据会一起崩
+  //（实测：CHECKS total 356 / failed 357 = "脚本内部异常"那种整红，不是某条判据红）。重置只能在 Node 侧做。
+  goalListCalls.length = 0
+  const goalCompleteClick = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.goal-row'));
+      const hit = rows.find((r) => (r.querySelector('.goal-text')?.textContent ?? '').includes(${JSON.stringify(FAKE_GOALS[0].text)}));
+      const btn = hit ? Array.from(hit.querySelectorAll('.goal-btn')).find((b) => b.textContent.trim() === '完成') : null;
+      if (btn) btn.click();
+      return { rowFound: !!hit, btnFound: !!btn };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  const goalRowsAfter = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.goal-row'));
+      return {
+        rows: rows.length,
+        texts: rows.map((r) => r.querySelector('.goal-text')?.textContent?.trim() ?? ''),
+        paused: rows.filter((r) => r.classList.contains('paused')).length
+      };
+    })()
+  `)
+  // refound 必须在**变量里**带上：第一版把它只拼进 console.log，断言读 `goalAfterComplete.refound` 恒 undefined
+  const goalAfterComplete = { ...goalRowsAfter, refound: goalListCalls.length }
+  console.log('GOAL_AFTER_COMPLETE=' + JSON.stringify(goalAfterComplete))
+  checkTrue('前置：那行与「完成」按钮都点得到（探针自证 —— 没点着后面全红说明不了产品）',
+    goalCompleteClick.rowFound === true && goalCompleteClick.btnFound === true, goalCompleteClick)
+  checkTrue('点「完成」后面板**重读过一次目标列表**（不是本地把行抹掉就算数）',
+    goalAfterComplete.refound >= 1, goalAfterComplete)
+  checkTrue('完成的那条**从进行中消失**（两行 → 一行，且剩的是暂停那条）',
+    goalPanel?.rows === 2 && goalAfterComplete.rows === 1 &&
+      !goalAfterComplete.texts.some((x) => x.includes(FAKE_GOALS[0].text)) &&
+      goalAfterComplete.paused === 1,
+    { before: goalPanel?.rows, after: goalAfterComplete })
+
   // ⚠️ “目标摆在待办上面”这条没写成断言：待办面板“没有待办”时自己不占位，探针跑到那一刻它根本不在
   //    DOM 里 → 几何对比无从判；写成“todo 为 null 就放行”只会得到一条永远绿的假断言。顺序目前由 JSX
   //    结构保证（GoalPanel 在 TodoPanel 之前）。TODO：等有稳定的“待办非空”场景时补上真判据。
