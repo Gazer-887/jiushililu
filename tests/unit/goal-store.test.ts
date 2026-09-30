@@ -115,14 +115,27 @@ describe('goal 落盘往返（写→读回一致）', () => {
   })
 
   it('时间戳是数字毫秒：过一遍真文件不许变成字符串（排序会静默失效）', () => {
+    // 播种两份**显式 createdAt** 的目标，而不是连建两条再断言顺序 ——
+    // 第一版写成"建两条 ⇒ 新的在前"，在 CI（Linux）上红：两条落在同一毫秒时
+    // `sortGoals` 的 `b.createdAt - a.createdAt` 为 0，稳定排序保留插入序 ⇒ 判据依赖墙钟边界，是错的判据。
     const file = join(dir, 'goals.json')
-    const repo = createGoalRepo(fsBackend(file), collectingLog().log)
-    repo.createGoalFor({ conversationId: 'c1', text: '一', createdBy: 'user' })
-    repo.createGoalFor({ conversationId: 'c1', text: '二', createdBy: 'user' })
+    const seed = (n: number, at: number): Goal => ({
+      id: `g-seed-${n}`,
+      conversationId: 'c1',
+      text: `第 ${n} 条`,
+      status: 'active',
+      createdBy: 'user',
+      createdAt: at,
+      updatedAt: at
+    })
+    const seeded = [seed(1, 1000), seed(2, 2000)]
+    // 按**创建序（升序）**落盘：正确的排序必须把它翻成降序 —— 若磁盘已是降序，这条断言就成空转了
+    writeFileSync(file, JSON.stringify({ goals: seeded }), 'utf8')
+
     const back = createGoalRepo(fsBackend(file), collectingLog().log).listGoals('c1')
     expect(back.every((g) => typeof g.createdAt === 'number' && typeof g.updatedAt === 'number')).toBe(true)
-    // sortGoals：同组新的在前
-    expect(back[0]!.text).toBe('二')
+    // 新的在前（createdAt 2000 排第一）—— 这里比的是显式时间戳，不比"过了几毫秒"
+    expect(back.map((g) => g.createdAt)).toEqual([2000, 1000])
   })
 })
 
