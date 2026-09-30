@@ -425,6 +425,17 @@ export interface MemoryRepo {
  */
 export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions = {}): MemoryRepo {
   const warn = opts.onWarn ?? (() => {})
+  /**
+   * 日志侧去重（K48）：`loadAll` 每次都跑，同一文件的同一守卫警告曾在日志里攒 1071 条
+   * （09-20 → 09-28，`app.log` 实测）。同一条消息进程内只落一次日志；
+   * 界面通道（`warnings` / `needsReview`）是现算视图，照旧每次给。
+   */
+  const loggedOnce = new Set<string>()
+  const warnOnce = (message: string, extra?: Record<string, unknown>): void => {
+    if (loggedOnce.has(message)) return
+    loggedOnce.add(message)
+    warn(message, extra)
+  }
   const now = opts.now ?? (() => new Date())
   /** 缺省 = 环境矛盾这一档不查（见 `MemoryRepoOptions.hostPlatform`）*/
   const hostPlatform = opts.hostPlatform
@@ -444,10 +455,9 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
      * 混进去会被面板显示成"未能加载"，而那些条目其实照常注入、照常显示，用户会以为数据丢了。
      */
     const needsReview: MemoryIndex['needsReview'] = []
-    /** 两条留痕通道都走：界面看 `MemoryIndex.warnings`，排查看日志 —— 少一条就不叫"绝不静默" */
     const note = (message: string): void => {
       warnings.push(message)
-      warn(message)
+      warnOnce(message)
     }
 
     for (const file of backend.listFiles()) {
@@ -489,7 +499,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
             evidenceConversationId: p.evidence?.conversationId ?? ''
           })
         })
-        warn(`${file}：${validation.guard.reason}`)
+        warnOnce(`${file}：${validation.guard.reason}`)
       }
       entries.push({ ...p, file })
     }
@@ -538,12 +548,12 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       const text = backend.read(file)
       if (!parsedName || text === null) {
         // 文件名不合规或读不出来：跳过但留痕，不许静默当成"没有归档"
-        warn('归档区有一个文件认不出命名，已跳过', { file: basename(file) })
+        warnOnce('归档区有一个文件认不出命名，已跳过', { file: basename(file) })
         continue
       }
       const result = parseMemoryFile(text)
       if (!result.ok) {
-        warn('归档条目解析失败，已跳过', { file: basename(file), reason: result.reason })
+        warnOnce('归档条目解析失败，已跳过', { file: basename(file), reason: result.reason })
         continue
       }
       out.push({ ...result.parsed, file, archivedAt: parsedName.archivedAt })
@@ -562,12 +572,12 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       const parsedName = parseArchivedFileName(basename(file))
       const text = backend.readRejected(file)
       if (!parsedName || text === null) {
-        warn('回收站有一个文件认不出命名，已跳过', { file: basename(file) })
+        warnOnce('回收站有一个文件认不出命名，已跳过', { file: basename(file) })
         continue
       }
       const result = parseMemoryFile(text)
       if (!result.ok) {
-        warn('回收站条目解析失败，已跳过', { file: basename(file), reason: result.reason })
+        warnOnce('回收站条目解析失败，已跳过', { file: basename(file), reason: result.reason })
         continue
       }
       out.push({ ...result.parsed, file, rejectedAt: parsedName.archivedAt })
@@ -823,7 +833,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       // 读不出来就是读不出来，两种都是"这条没进队列"）；日志同步留一笔。
       const candidates = loadCandidates((m) => {
         warnings.push(m)
-        warn(m)
+        warnOnce(m)
       })
       return {
         ...buildIndex(entries),
@@ -921,7 +931,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
           // 归档失败（返回 null）时**退回硬删**并留 warn：宁可少一条，也不要突破 100 条上限。
           if (backend.archive(toForget.file) === null) {
             backend.remove(toForget.file)
-            warn('自动遗忘归档失败，已退回硬删（宁可少一条，也不突破条数上限）', { name: toForget.name })
+            warnOnce('自动遗忘归档失败，已退回硬删（宁可少一条，也不突破条数上限）', { name: toForget.name })
             record({ kind: 'delete', conversationId: currentConversation(), name: toForget.name, by: 'system' })
           } else {
             record({ kind: 'archive', conversationId: currentConversation(), name: toForget.name, by: 'system' })
@@ -1085,7 +1095,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       const conflictWith =
         p.conflictWith !== undefined && insideNotesDir(p.conflictWith) ? p.conflictWith : undefined
       if (p.conflictWith !== undefined && conflictWith === undefined) {
-        warn(`${file}：conflictWith 指向候选区之外，该指针已忽略，按新条目保存`)
+        warnOnce(`${file}：conflictWith 指向候选区之外，该指针已忽略，按新条目保存`)
       }
 
       // 带冲突：用候选内容覆盖旧记忆 + 删候选（审查 B P1，否则同名双条进索引）
