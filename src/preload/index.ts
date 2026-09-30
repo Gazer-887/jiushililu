@@ -218,7 +218,7 @@ const api: ApiBridge = {
   gitUnstage: (rels: string[]) => ipcRenderer.invoke(IPC.gitUnstage, rels),
   gitCommit: (message: string) => ipcRenderer.invoke(IPC.gitCommit, message),
   onGitChanged: (cb) => subscribe(IPC.gitChanged, () => cb()),
-  attachFile: () => ipcRenderer.invoke(IPC.attachFile),
+  attachFile: (kind?: 'image') => ipcRenderer.invoke(IPC.attachFile, kind),
   attachPath: (pathOrRel) => ipcRenderer.invoke(IPC.attachPath, pathOrRel),
   polishPrompt: (text: string) => ipcRenderer.invoke(IPC.promptPolish, text),
   getBrowserState: () => ipcRenderer.invoke(IPC.browserState),

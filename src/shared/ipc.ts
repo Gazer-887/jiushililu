@@ -1048,7 +1048,8 @@ export interface ApiBridge {
   rollbackConversation(id: string, toIndex: number): Promise<ConversationRollbackResult | null>
   /** 撤销上一次回滚（把被裁掉的尾巴接回来；不需要确认 —— 它是**恢复**，不是破坏） */
   undoRollbackConversation(id: string): Promise<ConversationRollbackResult | null>
-  attachFile(): Promise<Attachment | null>
+  /** 选文件入附件；`kind:'image'` 只影响选择框的过滤提示（真闸在主进程 readAttachment：mime / 5MB / 每轮 8 张） */
+  attachFile(kind?: 'image'): Promise<Attachment | null>
   /** 按路径取附件 —— 与 `attachFile` **共用同一份读取与边界规则**（只差"路径从哪来"）。 */
   attachPath(pathOrRel: string): Promise<Attachment>
   polishPrompt(text: string): Promise<string>

@@ -129,9 +129,9 @@ export default function InputConsole({
    * `tests/unit/render-callback-stability.test.ts`）。依赖只有两个 setState（引用稳定），
    * 包起来零代价。
    */
-  const addAttachment = useCallback(async (): Promise<void> => {
+  const addAttachment = useCallback(async (kind?: 'image'): Promise<void> => {
     try {
-      const a = await window.api.attachFile()
+      const a = await window.api.attachFile(kind)
       if (!a) return
       setAttachments((prev) => (prev.some((p) => p.path === a.path) ? prev : [...prev, a]))
     } catch (err) {

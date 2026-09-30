@@ -395,6 +395,8 @@ const fsOpLog = []
 
 /** attach:path 载荷流水 —— 这条通道两个来源共用（文件树给相对路径、系统资源管理器给绝对路径） */
 const attachPathCalls = []
+/** attach:file 入参流水 —— 「＋」菜单图片格的接线断言用（断链 #3，待办总览原第 153 行） */
+const attachFileCalls = []
 
 const convRollbackCalls = []
 const convUndoCalls = []
@@ -1710,7 +1712,10 @@ const STUBS = {
     return { ...netStub }
   },
   'git:info': () => ({ branch: 'master', dirty: false }),
-  'attach:file': () => null,
+  'attach:file': (kind) => {
+    attachFileCalls.push(kind ?? null)
+    return null
+  },
   'prompt:polish': () => 'polished',
   'browser:state': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
   'browser:navigate': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
@@ -2482,6 +2487,28 @@ app.whenReady().then(async () => {
   console.log('AGENT_PICKED=' + JSON.stringify(agentPicked))
   const agentSaveCall = convSaveCalls.slice(convSaveCallsBefore).find((c) => c.agentName !== undefined)
   console.log('AGENT_SAVE_CALL=' + JSON.stringify(agentSaveCall ? { agentName: agentSaveCall.agentName } : null))
+
+  // —— 断链 #3 收口：「＋」菜单的图片格是真的（0.13.92 起图片通路已交付，格子不许再装死）——
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.plus-btn');
+      if (btn) btn.click();
+      return !!btn;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const item = Array.from(document.querySelectorAll('.plus-menu .plus-item'))
+        .find((i) => i.querySelector('.plus-name')?.textContent?.trim() === '图片');
+      if (item) item.click();
+      return { found: !!item, isDisabled: item?.classList.contains('disabled') ?? null };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 300))
+  checkTrue('「＋」菜单图片格：点得动且真走 attach:file（入参带 image 过滤提示）',
+    attachFileCalls.length === 1 && attachFileCalls[0] === 'image',
+    attachFileCalls)
 
   // —— 过程可见：工具调用详情 + 思考流（推送 → preload → store → 组件 这段是真实链路，只有数据由这里伪造）——
   win.webContents.send('chat:tool', {

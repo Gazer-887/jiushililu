@@ -1935,10 +1935,19 @@ export function registerIpcHandlers(deps: {
   })
 
   // 附件：选文件 → 读入内容（上限 64KB，超出截断并标注）；「路径 → 附件」实现在 `workspace-fs.readAttachment`，**两个入口共用**（文件选择框 / 拖拽进来）—— 抽到那边是为了能单测。
-  ipcMain.handle(IPC.attachFile, async (e): Promise<Attachment | null> => {
+  // `kind:'image'`（plan58 后断链 #3 的接线，待办总览原第 153 行）：只给选择框加图片后缀过滤——
+  // 是**体验提示不是安全闸**：真校验（mime / 5MB / 每轮 8 张）在 readAttachment，改这里就等于没改。
+  ipcMain.handle(IPC.attachFile, async (e, rawKind: unknown): Promise<Attachment | null> => {
+    const kind = z.enum(['image']).optional().parse(rawKind)
     const ws = getWorkspaceInfo(deps.userDataDir).path
     const win = BrowserWindow.fromWebContents(e.sender) ?? undefined
-    const opts = { properties: ['openFile' as const], defaultPath: ws }
+    const opts = {
+      properties: ['openFile' as const],
+      defaultPath: ws,
+      ...(kind === 'image'
+        ? { filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] }
+        : {})
+    }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     if (res.canceled || res.filePaths.length === 0) return null
     return readAttachment(ws, res.filePaths[0]!, deps.userDataDir)

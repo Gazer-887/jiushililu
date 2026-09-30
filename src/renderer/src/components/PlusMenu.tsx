@@ -18,7 +18,8 @@ export interface PlusMenuProps {
   selectedAgent: string | null
   /** 不传则只提供附件能力（如对话页由上层决定要不要给选择区） */
   onSelectAgent?: (name: string | null) => void
-  onAttach?: () => void
+  /** `kind` 缺省 = 通用文件；`'image'` = 图片后缀过滤（真闸在主进程 readAttachment） */
+  onAttach?: (kind?: 'image') => void
 }
 
 export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: PlusMenuProps): JSX.Element {
@@ -101,11 +102,17 @@ export default function PlusMenu({ selectedAgent, onSelectAgent, onAttach }: Plu
               <span className="plus-name">文件</span>
               <span className="plus-desc">上限 64KB</span>
             </button>
-            <div className="plus-item disabled">
+            <button
+              className="plus-item"
+              onClick={() => {
+                setOpen(false)
+                onAttach?.('image')
+              }}
+            >
               <span className="plus-check" />
               <span className="plus-name">图片</span>
-              <span className="plus-desc">尚未实现</span>
-            </div>
+              <span className="plus-desc">上限 5MB，每轮最多 8 张</span>
+            </button>
           </div>
 
           {onSelectAgent && (
