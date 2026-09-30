@@ -3,7 +3,7 @@ import { createSSEParser } from './sse'
 import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
 import { resolveApiUrl } from './url'
 import { usageFromOpenAIChunk } from './usage-parsers'
-import { effortToSend } from '@shared/reasoning'
+import { effortToSend, openaiReasoningFields } from '@shared/reasoning'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
 
@@ -36,6 +36,9 @@ export function buildOpenAIChatBody(
   // —— 开放字符串之后"不是 default"已不等于"该发"（见该函数的注释与 plan58 R6）
   const effort = effortToSend(settings)
   if (effort !== null) body['reasoning_effort'] = effort
+  // 片②（缺口 C）：`toggle` / `budget_tokens` 两条通道的出境字段（R15/R16）。
+  // kind 非 effort 时上面那行已是 null，两边相加不会双发；未声明编码时这里返回空对象。
+  Object.assign(body, openaiReasoningFields(settings))
   return body
 }
 

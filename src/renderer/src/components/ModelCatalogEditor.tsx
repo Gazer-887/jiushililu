@@ -1,12 +1,26 @@
 import { useState } from 'react'
-import type { ModelSettings, ReasoningConfig, ReasoningEffort } from '@shared/ipc'
+import type {
+  BudgetEncoding,
+  ModelSettings,
+  OffEncoding,
+  ReasoningConfig,
+  ReasoningEffort,
+  ReasoningKind
+} from '@shared/ipc'
+import { BUDGET_ENCODINGS, OFF_ENCODINGS, REASONING_KINDS } from '@shared/ipc'
 import {
   INPUT_MODALITIES,
   modalityLabel,
   type InputModality
 } from '@shared/content-parts'
 import { entryLabel, type ModelEntry } from '@shared/models'
-import { ADDABLE_EFFORT_LEVELS, effortToSend, sortEffortLevels } from '@shared/reasoning'
+import {
+  ADDABLE_EFFORT_LEVELS,
+  BUDGET_ENCODING_LABELS,
+  OFF_ENCODING_LABELS,
+  effortToSend,
+  sortEffortLevels
+} from '@shared/reasoning'
 import FieldNote from './FieldNote'
 
 /**
@@ -20,14 +34,143 @@ const MODALITY_UI: InputModality[] = ['text', 'image', 'video']
  * 推理等级那一块（plan58 R14 · 形态照 Zcode：chips + `+`，`levels` 收**有序**数组）。
  *
  * 三条形态纪律：
- * ① **`kind !== 'effort'` 时只给说明、不给控件** —— `toggle` / `budget_tokens` 的出境形状
- *    还没实现（缺口 C：Zcode 那边要按 `reasoningDisableMode` 显式发"关闭"信号，我们还没做），
- *    此时摆一个开关是**"勾了但不起作用"的假开关**，比不摆更坏（plan54 #3 同族）。
+ * ① **`kind` 决定这一块的形状**（R7）：`effort` 档位卡片、`toggle` 开关 + 关闭编码、
+ *    `budget_tokens` 预算框 + 预算字段、`none` 只剩一行说明。片② 起三型的出境形状都已接通
+ *    （`shared/reasoning.ts`），但"声明了编码"与"端点真吃这一套"仍是两件事 ——
+ *    未实测的披露义务不变（R9）。
  * ② **档位集合只认模型自己声明的 `levels`**（R6）。没声明时列我们的已知词表并**如实标「未实测」** ——
  *    我们三家端点的档位支持情况一格都没实测过（plan58 §丁 / R9），不许替厂商下结论。
  * ③ **"设了不等于生效"当场说**（R5）：意图 = 用户选了该档；生效 = `effortToSend` 判定它真会出境。
  *    两者不一致时用 `hint` 直显（照 `SettingsView` 里 trouble 行的既有形态：实时状态不是注释）。
  */
+
+/** 四种形态的界面名（kind 选择器用；「不支持」= `none`，选它整块只剩说明） */
+const KIND_LABELS: Record<ReasoningKind, string> = {
+  effort: '档位',
+  toggle: '开关',
+  budget_tokens: '预算',
+  none: '不支持'
+}
+
+/** 形态选择器。`none` 也必须能从这里改出去 —— 否则选了"不支持"就被锁死在死界面里。 */
+function ReasoningKindSelect({
+  kind,
+  onChangeKind
+}: {
+  kind: ReasoningKind
+  onChangeKind: (next: ReasoningKind) => void
+}): JSX.Element {
+  return (
+    <select
+      className="choice-item"
+      aria-label="思考形态"
+      value={kind}
+      onChange={(e) => onChangeKind(e.target.value as ReasoningKind)}
+    >
+      {REASONING_KINDS.map((k) => (
+        <option key={k} value={k}>
+          形态：{KIND_LABELS[k]}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/** `toggle` 形态：二态开关 + 关闭编码声明（R16）。编码是"厂商方言"⇒ 逐模型声明，应用层不猜。 */
+function ToggleControls({
+  reasoning,
+  onChangeReasoning
+}: {
+  reasoning: ReasoningConfig | undefined
+  onChangeReasoning: (next: ReasoningConfig) => void
+}): JSX.Element {
+  const on = reasoning?.enabled === true
+  const offEnc: OffEncoding = reasoning?.offEncoding ?? 'omit'
+  const set = (patch: Partial<ReasoningConfig>): void =>
+    onChangeReasoning({ ...reasoning, kind: 'toggle', ...patch })
+  return (
+    <>
+      <div className="choice-list" role="radiogroup" aria-label="思考开关">
+        {([true, false] as const).map((v) => (
+          <button
+            key={String(v)}
+            type="button"
+            className={`choice-item${on === v ? ' is-on' : ''}`}
+            role="radio"
+            aria-checked={on === v}
+            onClick={() => set({ enabled: v })}
+          >
+            <span className="choice-name">{v ? '开' : '关'}</span>
+          </button>
+        ))}
+      </div>
+      <label>
+        关闭编码
+        <select aria-label="关闭编码" value={offEnc} onChange={(e) => set({ offEncoding: e.target.value as OffEncoding })}>
+          {OFF_ENCODINGS.map((enc) => (
+            <option key={enc} value={enc}>
+              {OFF_ENCODING_LABELS[enc]}
+            </option>
+          ))}
+        </select>
+      </label>
+      {!on && offEnc === 'omit' && (
+        <p className="hint">未声明关闭编码：对默认开思考的端点，关闭可能不生效。</p>
+      )}
+    </>
+  )
+}
+
+/** `budget_tokens` 形态：预算数字框 + 预算字段声明（R15）。 */
+function BudgetControls({
+  reasoning,
+  onChangeReasoning
+}: {
+  reasoning: ReasoningConfig | undefined
+  onChangeReasoning: (next: ReasoningConfig) => void
+}): JSX.Element {
+  const budget = reasoning?.budget
+  const enc = reasoning?.budgetEncoding
+  const set = (patch: Partial<ReasoningConfig>): void =>
+    onChangeReasoning({ ...reasoning, kind: 'budget_tokens', ...patch })
+  return (
+    <>
+      <label>
+        思考预算（Token）
+        <input
+          type="number"
+          min="0"
+          aria-label="思考预算"
+          value={budget ?? ''}
+          placeholder="留空 = 不设置"
+          onChange={(e) => {
+            const v = e.target.value.trim() === '' ? undefined : Number(e.target.value)
+            set({ budget: v })
+          }}
+        />
+      </label>
+      <label>
+        预算字段
+        <select
+          aria-label="预算字段"
+          value={enc ?? ''}
+          onChange={(e) => set({ budgetEncoding: e.target.value === '' ? undefined : (e.target.value as BudgetEncoding) })}
+        >
+          <option value="">不发送（未声明字段）</option>
+          {BUDGET_ENCODINGS.map((b) => (
+            <option key={b} value={b}>
+              {BUDGET_ENCODING_LABELS[b]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="hint">
+        Anthropic 协议原生发送 thinking.budget_tokens（免声明）；OpenAI 兼容端点须声明字段，未声明时不发送。
+      </p>
+    </>
+  )
+}
+
 function ReasoningLevels({
   reasoning,
   effort,
@@ -49,14 +192,20 @@ function ReasoningLevels({
   const effective = effortToSend({ reasoningEffort: effort, reasoning }) !== null
   const wantsThinking = effort !== 'default'
 
+  // 换形态**保留已填的字段**：inert 数据存着无害（出境层保证不发），
+  // 替用户清数据 = 偷用户数据（R11′ 否决"界面自动归零"的同一条线）。
+  const setKind = (next: ReasoningKind): void =>
+    onChangeReasoning(next === 'effort' ? { ...reasoning, kind: 'effort' } : { ...reasoning, kind: next })
+
   if (kind !== 'effort') {
     return (
       <>
-        <p className="hint">
-          {kind === 'none'
-            ? '该模型已声明不支持思考。'
-            : '该模型声明为「开关型」或「预算型」，其控制项尚未接入 —— 现在改档位不会发往厂商。'}
-        </p>
+        <ReasoningKindSelect kind={kind} onChangeKind={setKind} />
+        {kind === 'none' && (
+          <p className="hint">该模型已声明不支持思考：控制项不出现，任何思考字段都不发送。</p>
+        )}
+        {kind === 'toggle' && <ToggleControls reasoning={reasoning} onChangeReasoning={onChangeReasoning} />}
+        {kind === 'budget_tokens' && <BudgetControls reasoning={reasoning} onChangeReasoning={onChangeReasoning} />}
       </>
     )
   }
@@ -67,6 +216,7 @@ function ReasoningLevels({
 
   return (
     <>
+      <ReasoningKindSelect kind={kind} onChangeKind={setKind} />
       {/* 卡片组复用设置页既有形态（`.choice-list` + `.choice-item`：访问权限档 / Token Saver 档位
           用的是同一套，门禁也认）—— 不新造 `.chip`（那个类名已被模型切换器占用）。 */}
       <div className="choice-list" role="radiogroup" aria-label="推理等级">
@@ -192,6 +342,14 @@ function AdvancedPanel({
             onChangeEffort={(eff) => onChange({ reasoningEffort: eff })}
           />
         </>
+      )}
+      {/* `none` 的逃出口：上面那道门把整块藏了 ⇒ 不在这里再挂一次形态选择器，
+          选了"不支持"的模型就被锁死在死界面里（没有回去的路）。 */}
+      {rc?.kind === 'none' && (
+        <ReasoningKindSelect
+          kind="none"
+          onChangeKind={(next) => onChange({ reasoning: { ...rc, kind: next } })}
+        />
       )}
       <label>
         工具调用轮数

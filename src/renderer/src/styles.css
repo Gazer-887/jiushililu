@@ -3609,6 +3609,49 @@ label.radio {
   position: relative;
 }
 
+/* 思考强度 chip（plan58 片②）：包装层与菜单定位同权限档；开关按状态着色（开＝accent、关＝中性） */
+.rs-wrap {
+  position: relative;
+}
+
+.rs-toggle.rs-on {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.rs-budget-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+}
+
+.rs-budget-row input {
+  width: 120px;
+}
+
+.rs-budget-row button {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-8);
+}
+
+.rs-budget-row button:hover {
+  border-color: var(--accent-border);
+}
+
+.rs-note {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  margin: 0;
+  padding: var(--sp-4) var(--sp-8);
+}
+
 .tb-menu {
   position: absolute;
   bottom: calc(100% + 6px);

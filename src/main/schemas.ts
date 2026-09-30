@@ -8,7 +8,7 @@ import {
   OUTBOUND_IMAGE_MIMES,
   OUTBOUND_VIDEO_MIMES
 } from '@shared/content-parts'
-import { REASONING_KINDS } from '@shared/ipc'
+import { BUDGET_ENCODINGS, OFF_ENCODINGS, REASONING_KINDS } from '@shared/ipc'
 
 // 入参 schema 独立成文件：纯 zod、不 import electron，可脱离主进程单测。
 // 所有来自渲染进程的入参一律过这里 —— 坏数据挡在主进程门外。
@@ -33,7 +33,10 @@ const reasoningConfigSchema = z.object({
   kind: z.enum(REASONING_KINDS),
   levels: z.array(effortNameSchema).min(1).max(12).optional(),
   enabled: z.boolean().optional(),
-  budget: z.number().int().min(0).max(1_000_000).optional()
+  budget: z.number().int().min(0).max(1_000_000).optional(),
+  // 片②（缺口 C）：两个出境编码。声明什么发什么，应用层不猜厂商方言（R15/R16）
+  budgetEncoding: z.enum(BUDGET_ENCODINGS).optional(),
+  offEncoding: z.enum(OFF_ENCODINGS).optional()
 })
 
 export const settingsSchema = z.object({
@@ -170,6 +173,25 @@ export const modelSaveSchema = z.object({
   apiKey: z.string().max(500),
   source: z.enum(['deepseek', 'custom']).optional()
 }).superRefine(reasoningLevelsGuard)
+
+/**
+ * 输入框 chip 的单字段补丁（plan58 R2）。**形状闸**只管：定位（端点 + 条目）+ 字段形状；
+ * 白名单判档**不在这里** —— handler 会把补丁合进现存档案、整表过 `modelSaveSchema`，
+ * 与整表保存走同一道 `reasoningLevelsGuard`（Q13：patch 与 save 的合法性口径必须一致，
+ * 两道闸各判各的迟早漂成两个口径）。
+ */
+export const modelPatchEntrySchema = z.object({
+  profileId: z.string().min(1).max(64),
+  entryId: z.string().min(1).max(64),
+  patch: z
+    .object({
+      reasoningEffort: effortNameSchema.optional(),
+      reasoning: reasoningConfigSchema.optional()
+    })
+    .refine((p) => p.reasoningEffort !== undefined || p.reasoning !== undefined, {
+      message: '补丁为空：至少要带一个要改的字段'
+    })
+})
 
 /**
  * 逐模型白名单校验（plan58 R6 的落点，Q13 / Q6b 都落在这一条）。

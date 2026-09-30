@@ -5,7 +5,7 @@ import { usageFromOpenAIChunk } from './usage-parsers'
 import type { TokenUsage } from '@shared/usage'
 import { ProviderError, mapHttpError } from './errors'
 import { createSSEParser } from './sse'
-import { effortToSend } from '@shared/reasoning'
+import { effortToSend, openaiReasoningFields } from '@shared/reasoning'
 import { ToolCallAccumulator } from './tool-accumulator'
 import { httpFetch } from './http-client'
 import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
@@ -56,6 +56,8 @@ export function buildToolsBody(
   if (settings.topK !== null) body['top_k'] = settings.topK
   const effort = effortToSend(settings)
   if (effort !== null) body['reasoning_effort'] = effort
+  // 片②（缺口 C）：toggle / budget_tokens 的出境字段，与对话通路同一份判定（R15/R16）
+  Object.assign(body, openaiReasoningFields(settings))
   return body
 }
 

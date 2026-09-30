@@ -827,6 +827,13 @@ let lastExecEventsQuery = null
 const chatSendCalls = []
 /** models:set-entry 的调用流水 —— 模型分组下拉「点模型即切」要断言真的发起了切换 */
 const modelEntryCalls = []
+// ── plan58 片②：思考强度 chip 的桩状态（**有状态**）──
+// patch 要能"改了再读回来"（回显主进程真值的纪律），所以 m1-e2 的设置必须挂在可变变量上，
+// `models:list` 每次现读它。stubActiveModelId 供探针切形态（effort / toggle / budget / 未声明）。
+const modelPatchCalls = []
+const stubE2Settings = { reasoningEffort: 'default', reasoning: { kind: 'effort', levels: ['high', 'low'] } }
+let stubActiveModelId = 'm1-e1'
+let modelBroadcast = () => 0
 /** models:fetch-available 的调用流水（plan47 S1）—— 免保存拉取要断言「真的发起了、入参是表单草稿」 */
 const fetchAvailableCalls = []
 /** 电脑控制开关的当前值与调用流水（2026-09-15 用户需求） */
@@ -1319,15 +1326,20 @@ const STUBS = {
     return enabled
   },
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
+  // ⚠️ 片② 起 m1-e2 的设置挂在 `stubE2Settings` 上（有状态）：chip patch 之后这里必须读得到新值。
   'models:list': () => ({
     profiles: [
-      fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true, {
-        // plan58 片①：**同页**造出"该模型已声明 `reasoning.levels`"的形状 ——
-        // 挂在**第二个**模型上，因为 `AdvancedPanel` 是按模型行展开的（`expanded` 是一个 m.id），
-        // 展开 e1（无 settings = 存量形态）与展开 e2（已声明）不用切端点、不用回列表。
-        // 档位**故意存成非强度序**（high 在前）⇒ 界面必须排成 low→high，否则"从低到高"是假的。
-        e2: { reasoningEffort: 'default', reasoning: { kind: 'effort', levels: ['high', 'low'] } }
-      }),
+      (() => {
+        const p = fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true, {
+          // plan58 片①：**同页**造出"该模型已声明 `reasoning.levels`"的形状 ——
+          // 挂在**第二个**模型上，因为 `AdvancedPanel` 是按模型行展开的（`expanded` 是一个 m.id），
+          // 展开 e1（无 settings = 存量形态）与展开 e2（已声明）不用切端点、不用回列表。
+          // 档位**故意存成非强度序**（high 在前）⇒ 界面必须排成 low→high，否则"从低到高"是假的。
+          e2: stubE2Settings
+        })
+        p.activeModelId = stubActiveModelId
+        return p
+      })(),
       fakeEndpoint('m2', 'agnes-2.5-flash', 'agnes-2.5-flash', 'custom', false),
       fakeEndpoint('m3', 'deepseek-flash', 'deepseek-flash', 'custom', false)
     ],
@@ -1347,6 +1359,31 @@ const STUBS = {
     modelEntryCalls.push({ profileId: input?.profileId, entryId: input?.entryId })
     return {
       profiles: [fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true)],
+      activeId: 'm1',
+      filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
+    }
+  },
+  // 单字段补丁（plan58 R2）：**真办事**的桩 —— 改 stubE2Settings、广播、回完整视图。
+  // 不补桩 = chip 一点就 `No handler registered`、探针成片拿 null（多窗口架构清单那条血坑）。
+  'models:patch-entry': (input) => {
+    modelPatchCalls.push(input)
+    if (input?.entryId === 'm1-e2') {
+      if (input.patch?.reasoningEffort !== undefined) stubE2Settings.reasoningEffort = input.patch.reasoningEffort
+      if (input.patch?.reasoning !== undefined) stubE2Settings.reasoning = input.patch.reasoning
+    }
+    modelBroadcast()
+    return {
+      profiles: [
+        (() => {
+          const p = fakeEndpoint('m1', 'DeepSeek-V4 Flash', 'deepseek-v4-flash', 'deepseek', true, {
+            e2: stubE2Settings
+          })
+          p.activeModelId = stubActiveModelId
+          return p
+        })(),
+        fakeEndpoint('m2', 'agnes-2.5-flash', 'agnes-2.5-flash', 'custom', false),
+        fakeEndpoint('m3', 'deepseek-flash', 'deepseek-flash', 'custom', false)
+      ],
       activeId: 'm1',
       filePath: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\models.json'
     }
@@ -2287,6 +2324,21 @@ app.whenReady().then(async () => {
       if (w.isDestroyed() || w.webContents.isDestroyed()) continue
       try {
         w.webContents.send('agents:changed')
+        n += 1
+      } catch {
+        // 同上：单个窗口失败不影响其余
+      }
+    }
+    return n
+  }
+  // 模型档案广播（plan58 片②）：真源 handler 在 patch/save 之后 `onSettingsChanged('models')`，
+  // 各窗的 chip / 切换器据此重读。桩不广播 ⇒ Q3（跨窗重读）那条断言就是空的（而空态看着全绿）。
+  modelBroadcast = () => {
+    let n = 0
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed() || w.webContents.isDestroyed()) continue
+      try {
+        w.webContents.send('settings:changed', 'models')
         n += 1
       } catch {
         // 同上：单个窗口失败不影响其余
@@ -9481,6 +9533,134 @@ app.whenReady().then(async () => {
       typeof modelEntryCalls[0]?.entryId === 'string' &&
       modelEntryCalls[0].entryId.endsWith('-e2'),
     modelEntryCalls)
+
+  // —— plan58 片②：思考强度 chip（R7 四形状 + R2 patch 全链 + Q1/Q3/Q11/Q12）──────────
+  // 桩里 m1-e2 挂了 reasoning 声明。探针直接改 stubActiveModelId / stubE2Settings（有状态桩）
+  // 再广播，模拟"另一个窗口把激活条目/声明改了"——chip 必须靠重读跟上，而不是本地算。
+  const chipProbe = async () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const btn = document.querySelector('.tb-reasoning')
+        if (!btn) return { exists: false }
+        return {
+          exists: true,
+          label: (btn.textContent || '').trim(),
+          cls: btn.className,
+          toggle: btn.classList.contains('rs-toggle'),
+          effortMenuBtn: !!document.querySelector('.rs-effort'),
+          budgetBox: !!document.querySelector('.rs-budget'),
+          title: btn.getAttribute('title') || ''
+        }
+      })()
+    `)
+  const switchStub = async (entryId, settingsShape) => {
+    stubActiveModelId = entryId
+    if (settingsShape === undefined) delete stubE2Settings.reasoning
+    else if (settingsShape) stubE2Settings.reasoning = settingsShape
+    if (settingsShape && settingsShape.reasoningEffort !== undefined) {
+      stubE2Settings.reasoningEffort = settingsShape.reasoningEffort
+    }
+    modelBroadcast()
+    await new Promise((r) => setTimeout(r, 500))
+  }
+
+  await switchStub('m1-e2', null) // 恢复 effort 声明形态（桩初始形状）
+  const chipEffort = await chipProbe()
+  checkTrue('思考 chip：激活条目声明了 effort 形态 ⇒ chip 出现且档名回显主进程真值',
+    chipEffort.exists === true && chipEffort.effortMenuBtn === true && /思考/.test(chipEffort.label),
+    chipEffort)
+  checkTrue('Q7/R5：openai-compatible 端点不出现「带工具不开思考」标注（那是 Anthropic 专属披露）',
+    !chipEffort.title.includes('带工具时该端点不开思考'),
+    chipEffort.title)
+
+  // 打开菜单：首项「默认」，档位按强度序 low→high（桩里故意存反序 high,low）
+  await win.webContents.executeJavaScript(`document.querySelector('.tb-reasoning').click()`)
+  await new Promise((r) => setTimeout(r, 300))
+  const chipMenu = await win.webContents.executeJavaScript(`
+    (() => ({
+      items: Array.from(document.querySelectorAll('.tb-menu .tb-menu-title')).map((n) => (n.textContent || '').trim())
+    }))()
+  `)
+  checkTrue('思考 chip 菜单：首项「默认」，档位按强度序 low→high（R13；桩里存的是 high,low）',
+    chipMenu.items.join(',') === '默认,low,high',
+    chipMenu)
+
+  // Q1：点 low ⇒ 真走 IPC、桩状态真变、chip 回显新档名（三件事缺一件就是本地自说自话）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const hit = Array.from(document.querySelectorAll('.tb-menu .tb-menu-item'))
+        .find((b) => (b.querySelector('.tb-menu-title')?.textContent || '').trim() === 'low')
+      if (hit) hit.click()
+      return !!hit
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const lastPatch = modelPatchCalls[modelPatchCalls.length - 1]
+  checkTrue('Q1：点档位真走 models:patch-entry，入参带定位与补丁',
+    modelPatchCalls.length > 0 &&
+      lastPatch.profileId === 'm1' &&
+      lastPatch.entryId === 'm1-e2' &&
+      lastPatch.patch?.reasoningEffort === 'low',
+    modelPatchCalls)
+  checkTrue('Q1：桩状态真的变了（patch 不是只改界面）', stubE2Settings.reasoningEffort === 'low', stubE2Settings)
+  const chipAfterPatch = await chipProbe()
+  checkTrue('Q1：chip 回显主进程真值（档名变 low）',
+    chipAfterPatch.exists === true && /low/.test(chipAfterPatch.label),
+    chipAfterPatch)
+
+  // Q3（跨窗那一半）：不发 patch，只从桩侧改值 + 广播 ⇒ chip 必须靠重读跟上
+  stubE2Settings.reasoningEffort = 'high'
+  modelBroadcast()
+  await new Promise((r) => setTimeout(r, 500))
+  const chipAfterBroadcast = await chipProbe()
+  checkTrue('Q3：没发 patch、只广播 ⇒ chip 重读出另一个窗口改的新值（不搬变更内容）',
+    chipAfterBroadcast.exists === true && /high/.test(chipAfterBroadcast.label),
+    chipAfterBroadcast)
+
+  // Q11：toggle 形态 ⇒ 二态开关，档名单元与预算框都不出现
+  await switchStub('m1-e2', { kind: 'toggle', enabled: false, offEncoding: 'enable_thinking_false' })
+  const chipToggle = await chipProbe()
+  checkTrue('Q11：toggle 形态 = 二态开关（档名单元与预算框都不在）',
+    chipToggle.exists === true && chipToggle.toggle === true &&
+      chipToggle.effortMenuBtn === false && chipToggle.budgetBox === false,
+    chipToggle)
+  checkTrue('R16 披露：声明了关闭编码 ⇒ 不出「关闭可能不生效」警示',
+    !chipToggle.title.includes('关闭可能不生效'),
+    chipToggle.title)
+  await win.webContents.executeJavaScript(`document.querySelector('.rs-toggle').click()`)
+  await new Promise((r) => setTimeout(r, 400))
+  const togglePatch = modelPatchCalls[modelPatchCalls.length - 1]
+  checkTrue('toggle 点击真走 patch（reasoning.enabled 翻转为 true，整段带编码）',
+    togglePatch?.patch?.reasoning?.enabled === true && togglePatch.patch.reasoning.offEncoding === 'enable_thinking_false',
+    togglePatch)
+  // 反向：编码回到 omit ⇒ 关的一侧必须出「关闭可能不生效」警示（没发信号的"关"不许说成已关闭）
+  stubE2Settings.reasoning = { kind: 'toggle', enabled: false }
+  modelBroadcast()
+  await new Promise((r) => setTimeout(r, 500))
+  const chipOmit = await chipProbe()
+  checkTrue('R16 披露：编码回到 omit ⇒ 「关闭可能不生效」警示必须出现',
+    chipOmit.exists === true && chipOmit.title.includes('关闭可能不生效'),
+    chipOmit)
+
+  // Q11：budget_tokens 形态 ⇒ 预算框 + 数字输入
+  await switchStub('m1-e2', { kind: 'budget_tokens', budget: 8192, budgetEncoding: 'thinking_budget' })
+  const chipBudget = await chipProbe()
+  checkTrue('Q11：budget_tokens 形态 = 预算 chip（档名单元与开关都不在）',
+    chipBudget.exists === true && chipBudget.budgetBox === true &&
+      chipBudget.toggle === false && chipBudget.effortMenuBtn === false,
+    chipBudget)
+
+  // Q12：未声明 reasoning 的存量形态 ⇒ chip 整个不出现（不给老档案凭空造档）
+  await switchStub('m1-e1', undefined)
+  stubE2Settings.reasoning = { kind: 'effort', levels: ['high', 'low'] } // 还原，后面的探针还要用原始形状
+  stubE2Settings.reasoningEffort = 'default'
+  const chipStock = await chipProbe()
+  checkTrue('Q12：激活条目未声明 reasoning ⇒ chip 不出现（存量档案不被动）',
+    chipStock.exists === false,
+    chipStock)
+  stubActiveModelId = 'm1-e1'
+  modelBroadcast()
+  await new Promise((r) => setTimeout(r, 300))
 
   // —— 真实用量（只计量、不记钱）—— 为什么真推 IPC 事件而不直接看 store：用量从厂商上报 → Provider 解析
   // → runner 累加 → chat:done 带货 → preload 桥 → store 记账 → 界面渲染，推事件能覆盖桥之后的整条链。

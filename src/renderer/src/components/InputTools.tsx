@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store'
 import { activeEntry, entryLabel, sourceLabel, type ModelsView } from '@shared/models'
 import { cacheHitRate, formatRate, formatTokens, reasoningShare, totalTokens } from '@shared/usage'
 import { tierLabel } from '@shared/token-tier'
-import type { GitInfo, PermissionPreset } from '@shared/ipc'
+import type { GitInfo, PermissionPreset, ReasoningConfig } from '@shared/ipc'
+import { KNOWN_EFFORT_LEVELS, effortToSend, sortEffortLevels } from '@shared/reasoning'
 
 // 输入框工具栏零件（P2 控制台）：模型切换 / 上下文圆环 / 权限档 / Git 分支 / 提示词优化。
 
@@ -288,8 +289,192 @@ export function PermissionChip(): JSX.Element {
   )
 }
 
-/** Git 分支显示（只读；切换分支等操作属右抽屉「源代码管理」后续批次） */
-export function BranchChip(): JSX.Element | null {
+/**
+ * 思考强度 chip（plan58 片② R7）：一个位置，形状随 `reasoning.kind` 变 ——
+ * `effort` 档名单元 / `toggle` 二态开关 / `budget_tokens` 预算框 / `none` 与未声明**不出现**（Q12，
+ * 不给存量档案凭空造档）。回显纪律同 PermissionChip（R1）：**读主进程真值** ——
+ * patch 的返回值就是最新视图，不本地自说自话；广播来了重读，不搬变更内容（多窗口铁律）。
+ */
+export function ReasoningChip(): JSX.Element | null {
+  const [models, setModels] = useState<ModelsView | null>(null)
+  const [open, setOpen] = useState(false)
+  const [draftBudget, setDraftBudget] = useState('')
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  const reload = useCallback((): void => {
+    void window.api
+      .listModels()
+      .then(setModels)
+      .catch(() => setModels(null))
+  }, [])
+
+  useEffect(() => {
+    reload()
+  }, [reload])
+
+  useEffect(() => window.api.onSettingsChanged(() => reload()), [reload])
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent): void => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const active = models?.profiles.find((p) => p.id === models.activeId) ?? null
+  const entry = active ? activeEntry(active) : null
+  const rs = entry?.settings?.reasoning
+  if (!active || !entry || !rs || rs.kind === 'none') return null
+
+  const patch = async (next: {
+    reasoningEffort?: string
+    reasoning?: ReasoningConfig
+  }): Promise<void> => {
+    const view = await window.api.patchModelEntry({ profileId: active.id, entryId: entry.id, patch: next })
+    setModels(view)
+  }
+
+  const isAnthropic = active.providerType === 'anthropic'
+  // 缺陷 2（R5）：Anthropic 带工具的轮次不开思考 —— 这是协议限制，不是用户的选择，必须上界面
+  const anthropicNote = isAnthropic ? '带工具时该端点不开思考。' : ''
+
+  // toggle：二态开关，没有菜单（Q11 断言此处档名单元不存在）
+  if (rs.kind === 'toggle') {
+    const on = rs.enabled === true
+    const cannotOff = !on && (rs.offEncoding ?? 'omit') === 'omit'
+    const title = [
+      on ? '思考已开：下一轮请求起生效。' : '思考已关：下一轮请求起生效。',
+      cannotOff ? '未声明关闭编码：对默认开思考的端点，关闭可能不生效。' : '',
+      anthropicNote
+    ]
+      .filter(Boolean)
+      .join('\n')
+    return (
+      <div className="rs-wrap" ref={boxRef}>
+        <button
+          className={`tb-btn tb-reasoning rs-toggle rs-${on ? 'on' : 'off'}`}
+          aria-label="思考开关"
+          title={title}
+          onClick={() => void patch({ reasoning: { ...rs, enabled: !on } })}
+        >
+          思考 {on ? '开' : '关'}
+        </button>
+      </div>
+    )
+  }
+
+  const applyBudget = async (): Promise<void> => {
+    const n = Number(draftBudget)
+    if (draftBudget.trim() === '' || !Number.isFinite(n) || n < 0) return
+    await patch({ reasoning: { ...rs, budget: n } })
+    setDraftBudget('')
+    setOpen(false)
+  }
+
+  // budget_tokens：数字框（R15）。预算字段未声明 ⇒ 预算发不出去，照实说
+  if (rs.kind === 'budget_tokens') {
+    const budget = rs.budget ?? 0
+    const unspoken = !isAnthropic && !rs.budgetEncoding
+    const unspokenNote = '未声明预算字段：OpenAI 兼容端点不会发送该预算。'
+    const title = [
+      budget > 0 ? `思考预算 ${budget} tokens。` : '尚未设置思考预算。',
+      unspoken ? unspokenNote : '',
+      anthropicNote
+    ]
+      .filter(Boolean)
+      .join('\n')
+    return (
+      <div className="rs-wrap" ref={boxRef}>
+        <button
+          className="tb-btn tb-reasoning rs-budget"
+          aria-label="思考预算"
+          title={title}
+          onClick={() => setOpen((v) => !v)}
+        >
+          思考预算 {budget > 0 ? formatTokens(budget) : '未设'}
+          <span className="tb-caret">▾</span>
+        </button>
+        {open && (
+          <div className="tb-menu">
+            {unspoken && <p className="rs-note">{unspokenNote}</p>}
+            <div className="rs-budget-row">
+              <input
+                type="number"
+                min="0"
+                aria-label="思考预算值"
+                value={draftBudget}
+                placeholder={budget > 0 ? String(budget) : '输入预算'}
+                onChange={(e) => setDraftBudget(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void applyBudget()
+                }}
+              />
+              <button onClick={() => void applyBudget()}>应用</button>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // effort：档名单元
+  const effort = entry.settings?.reasoningEffort ?? 'default'
+  const levels = sortEffortLevels(rs.levels ?? [...KNOWN_EFFORT_LEVELS])
+  const effective = effortToSend({ reasoningEffort: effort, reasoning: rs }) !== null
+  const notSent = effort !== 'default' && !effective
+  const title = [
+    effort === 'default' ? '思考档位：默认（不发送思考字段）。' : `思考档位：${effort}。下一轮请求起生效。`,
+    !rs.levels ? '未实测：该模型未声明支持的档位。' : '',
+    notSent ? '该档不会发往厂商（不在声明的档位里）。' : '',
+    anthropicNote
+  ]
+    .filter(Boolean)
+    .join('\n')
+  return (
+    <div className="rs-wrap" ref={boxRef}>
+      <button
+        className="tb-btn tb-reasoning rs-effort"
+        aria-label="思考档位"
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+      >
+        思考 {effort === 'default' ? '默认' : effort}
+        <span className="tb-caret">▾</span>
+      </button>
+      {open && (
+        <div className="tb-menu">
+          {!rs.levels && <p className="rs-note">未实测：该模型未声明支持的档位。</p>}
+          <button
+            className={`tb-menu-item ${effort === 'default' ? 'active' : ''}`}
+            onClick={() => {
+              void patch({ reasoningEffort: 'default' })
+              setOpen(false)
+            }}
+          >
+            <span className="tb-menu-title">默认</span>
+            <span className="tb-menu-desc">不发送思考字段</span>
+          </button>
+          {levels.map((l) => (
+            <button
+              key={l}
+              className={`tb-menu-item ${effort === l ? 'active' : ''}`}
+              onClick={() => {
+                void patch({ reasoningEffort: l })
+                setOpen(false)
+              }}
+            >
+              <span className="tb-menu-title">{l}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Git 分支显示（只读；切换分支等操作属右抽屉「源代码管理」后续批次） */export function BranchChip(): JSX.Element | null {
   const [git, setGit] = useState<GitInfo | null>(null)
   const wsPath = useAppStore((s) => s.workspacePath)
 

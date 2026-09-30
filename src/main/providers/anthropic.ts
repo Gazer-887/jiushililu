@@ -1,4 +1,5 @@
 import type { ChatMessage, ModelSettings, ReasoningEffort, TestResult } from '@shared/ipc'
+import { anthropicThinkingBudget } from '@shared/reasoning'
 import { createSSEParser } from './sse'
 import { usageFromAnthropicEvent, usageFromAnthropicMessage } from './usage-parsers'
 import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
@@ -32,6 +33,16 @@ export function thinkingBudgetFor(effort: ReasoningEffort, maxTokens: number): n
   return Math.min(budget, ceiling)
 }
 
+/**
+ * kind 感知的出口（plan58 片②）：buildAnthropicBody 与 anthropic-agent 一律走这里，
+ * 不再直呼 `thinkingBudgetFor` —— 后者只看档名不看 `kind`，`kind:'none'` / `toggle` 的
+ * 模型在这条通路上会照发思考（R11′ 的"inert 数据永不出境"在 anthropic 侧漏了的那半）。
+ * 预算表（EFFORT_BUDGET）留在本文件，经参数注入共用判定 —— shared 层不 import provider。
+ */
+export function thinkingBudgetForSettings(settings: ModelSettings): number | null {
+  return anthropicThinkingBudget(settings, settings.maxTokens, thinkingBudgetFor)
+}
+
 // 纯函数：Anthropic 的 system 是顶层字段，不走 messages 数组（单元测试覆盖）
 export function mapAnthropicMessages(
   messages: ChatMessage[]
@@ -53,7 +64,7 @@ export function buildAnthropicBody(
   stream: boolean
 ): Record<string, unknown> {
   const { system, messages: rest } = mapAnthropicMessages(messages)
-  const budget = thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens)
+  const budget = thinkingBudgetForSettings(settings)
   // Anthropic 规定 temperature 与 top_p 互斥——top_p 设置时优先，temperature 让位；
   // 思考模式下两者都不发（必须走默认采样）。
   const sampling: Record<string, unknown> = budget

@@ -300,3 +300,101 @@ describe('maskKey（Key 掩码，日志防泄露）', () => {
     expect(maskKey('sk-1234567890abcd')).toBe('sk-****abcd')
   })
 })
+
+// ── plan58 片② · 缺口 C 的请求体级判据（Q4 / Q5 / Q12）────────────────────────
+// 单测层判据照 plan58 预登记的验证层走：provider 层语义在这里验，
+// "chip 点了真的走 IPC"在门禁（verify-shot）验，两层各管各的。
+
+describe('buildOpenAIChatBody · toggle / budget_tokens 出境（缺口 C，R15/R16）', () => {
+  it('★ Q4 正向：budget_tokens 模型的预算真的进请求体，发的是声明的字段', () => {
+    const body = buildOpenAIChatBody(
+      {
+        ...settings,
+        reasoningEffort: 'default',
+        reasoning: { kind: 'budget_tokens', budget: 8192, budgetEncoding: 'thinking_budget' }
+      },
+      [],
+      false
+    )
+    expect(body['thinking_budget']).toBe(8192)
+  })
+
+  it('★ Q4 正向：toggle 关 + 关闭编码 ⇒ 请求体带显式关闭信号', () => {
+    const body = buildOpenAIChatBody(
+      {
+        ...settings,
+        reasoningEffort: 'default',
+        reasoning: { kind: 'toggle', enabled: false, offEncoding: 'enable_thinking_false' }
+      },
+      [],
+      false
+    )
+    expect(body['enable_thinking']).toBe(false)
+  })
+
+  it('★ Q5 互反向：未声明编码 / omit ⇒ 请求体不含任何思考字段（"不发"也要钉住）', () => {
+    const silent = buildOpenAIChatBody(
+      { ...settings, reasoningEffort: 'default', reasoning: { kind: 'toggle', enabled: false } },
+      [],
+      false
+    )
+    expect('enable_thinking' in silent).toBe(false)
+    expect('thinking_budget' in silent).toBe(false)
+    expect('reasoning_effort' in silent).toBe(false)
+    const noEncoding = buildOpenAIChatBody(
+      {
+        ...settings,
+        reasoningEffort: 'default',
+        reasoning: { kind: 'budget_tokens', budget: 8192 }
+      },
+      [],
+      false
+    )
+    expect('thinking_budget' in noEncoding).toBe(false)
+    expect('reasoning' in noEncoding).toBe(false)
+  })
+
+  it('★ kind 与档位互斥：toggle / budget_tokens 形态下存着的 effort 档不发（R11′）', () => {
+    const body = buildOpenAIChatBody(
+      {
+        ...settings,
+        reasoningEffort: 'high',
+        reasoning: { kind: 'budget_tokens', budget: 4096, budgetEncoding: 'thinking_budget' }
+      },
+      [],
+      false
+    )
+    expect('reasoning_effort' in body).toBe(false)
+    expect(body['thinking_budget']).toBe(4096)
+  })
+})
+
+describe('buildAnthropicBody · kind 感知（片② 暗病修）', () => {
+  it('★ Q12 同族：kind:none 的模型即便存着 effort high 也不发 thinking 块', () => {
+    const body = buildAnthropicBody(
+      { ...settings, reasoningEffort: 'high', reasoning: { kind: 'none' } },
+      [],
+      false
+    )
+    expect('thinking' in body).toBe(false)
+  })
+
+  it('★ kind:budget_tokens 用声明的预算进 thinking.budget_tokens', () => {
+    const body = buildAnthropicBody(
+      {
+        ...settings,
+        reasoningEffort: 'default',
+        maxTokens: 65536,
+        reasoning: { kind: 'budget_tokens', budget: 4096 }
+      },
+      [],
+      false
+    )
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 })
+  })
+
+  it('★ 存量形态（未声明 reasoning）行为逐字节不变（Q12 的另一半）', () => {
+    const body = buildAnthropicBody({ ...settings, reasoningEffort: 'high', maxTokens: 65536 }, [], false)
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 32768 })
+  })
+})

@@ -3,7 +3,7 @@ import type { Attachment, SkillInfo } from '@shared/ipc'
 import { DRAG_PATH_MIME } from '@shared/fs-tree'
 import PlusMenu from './PlusMenu'
 import WorkspaceChip from './WorkspaceChip'
-import { BranchChip, ContextRing, ModelSwitcher, PermissionChip, PolishButton, SendButton, UsageChip } from './InputTools'
+import { BranchChip, ContextRing, ModelSwitcher, PermissionChip, ReasoningChip, PolishButton, SendButton, UsageChip } from './InputTools'
 import VoiceButton from './VoiceButton'
 
 // 输入控制台（P2，D-032）：与「这一次请求」有关的设置都收在这里 —— 视线不用来回跑。
@@ -323,6 +323,7 @@ export default function InputConsole({
           />
           <BranchChip />
           <PermissionChip />
+          <ReasoningChip />
         </div>
 
         <div className="tb-group tb-right">

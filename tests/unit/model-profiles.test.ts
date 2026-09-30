@@ -11,6 +11,7 @@ import {
   findModelEntry,
   legacyKeyOwnerId,
   makeEntry,
+  mergeEntrySettings,
   normalizeProfiles,
   profileOf,
   removeProfile,
@@ -484,5 +485,41 @@ describe('findModelEntry（plan39 D-101：快速切换的精确匹配）', () =>
     const a = profile('a', ['mine'])
     expect(findModelEntry([a], 'a', 'MINE')).toBeNull()
     expect(findModelEntry([], null, 'x')).toBeNull()
+  })
+})
+
+// ── plan58 片② · Q2：单字段补丁只动带进来的键，其余逐字节不变 ──────────────────
+describe('mergeEntrySettings（chip 补丁的合并，plan58 R2 / Q2）', () => {
+  const base = {
+    maxTokens: 8192,
+    contextWindow: 131072,
+    reasoningEffort: 'low',
+    temperature: 0.5 as number | null
+  }
+
+  it('★ 补丁只覆盖带进来的键；其余字段原样保留（防整表覆盖回退）', () => {
+    const merged = mergeEntrySettings(base, { reasoningEffort: 'high' })
+    expect(merged).toEqual({ ...base, reasoningEffort: 'high' })
+    expect(merged.maxTokens).toBe(8192)
+    expect(merged.contextWindow).toBe(131072)
+    expect(merged.temperature).toBe(0.5)
+  })
+
+  it('reasoning 整段替换（不是深合并）⇒ 声明以补丁带来的为准', () => {
+    const merged = mergeEntrySettings(
+      { ...base, reasoning: { kind: 'effort', levels: ['low'] } },
+      { reasoning: { kind: 'toggle', enabled: false, offEncoding: 'enable_thinking_false' } }
+    )
+    expect(merged.reasoning).toEqual({ kind: 'toggle', enabled: false, offEncoding: 'enable_thinking_false' })
+  })
+
+  it('存量条目没有 settings（undefined）⇒ 合并结果就是补丁本身', () => {
+    expect(mergeEntrySettings(undefined, { reasoningEffort: 'high' })).toEqual({ reasoningEffort: 'high' })
+  })
+
+  it('不改动传入对象（纯函数）', () => {
+    const original = { ...base }
+    mergeEntrySettings(base, { reasoningEffort: 'high' })
+    expect(base).toEqual(original)
   })
 })

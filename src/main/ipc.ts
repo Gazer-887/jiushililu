@@ -64,6 +64,7 @@ import {
   hasApiKey,
   listProfiles,
   modelsFilePath,
+  patchEntrySettings,
   profileForTest,
   fetchAvailableModels,
   saveEndpoint,
@@ -74,7 +75,8 @@ import {
 } from './store/models'
 import { getProfileKey, hasProfileKey } from './store/settings'
 import { maskKey } from './store/mask'
-import type { ModelProfileView, ModelsView, ModelSaveInput } from '@shared/models'
+import type { ModelPatchEntryInput, ModelProfileView, ModelsView, ModelSaveInput } from '@shared/models'
+import { mergeEntrySettings } from '@shared/models'
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
@@ -94,6 +96,7 @@ import {
   MAX_STORED_CHARS,
   modelEntryPickSchema,
   modelFetchAvailableSchema,
+  modelPatchEntrySchema,
   goalActionSchema,
   goalCreateSchema,
   modelSaveSchema,
@@ -550,6 +553,40 @@ export function registerIpcHandlers(deps: {
     const input = friendlyParse(modelEntryPickSchema, raw)
     setActiveEntry(input.profileId, input.entryId)
     // 「当前模型」变了要广播：别的窗口（设置窗口等）读的是主进程真值，不喊一声就永远拿旧值
+    deps.onSettingsChanged?.('models')
+    return modelsView()
+  })
+
+  // 单字段补丁（plan58 R2）：chip 只改一个旋钮，走整表 `models:save` 会让主窗与设置窗
+  // 两个渲染进程在并发下互相覆盖 —— 这里只动一条条目的一个字段，广播后各窗重读。
+  ipcMain.handle(IPC.modelsPatchEntry, (_e, raw: unknown): ModelsView => {
+    const input = friendlyParse(modelPatchEntrySchema, raw) as ModelPatchEntryInput
+    const { profiles } = listProfiles()
+    const profile = profiles.find((p) => p.id === input.profileId)
+    if (!profile) throw new Error('该端点不存在（可能已被删除）')
+    const entry = profile.models.find((m) => m.id === input.entryId)
+    if (!entry) throw new Error('该模型不存在（可能已被删除）')
+    // Q13：patch 与 save 过**同一道**白名单守卫 —— 补丁合进现存档案后整表跑 `modelSaveSchema`，
+    // `reasoningLevelsGuard` 对两条路给出同一个裁决，不会漂成两个口径。合并走 shared 那份
+    // `mergeEntrySettings`（与落盘同一份，Q2 的"其它字段逐字节不变"只有一份真相）。
+    const merged = mergeEntrySettings(entry.settings, input.patch)
+    friendlyParse(modelSaveSchema, {
+      id: profile.id,
+      name: profile.name,
+      providerType: profile.providerType,
+      baseURL: profile.baseURL,
+      timeoutMs: profile.timeoutMs,
+      stream: profile.stream,
+      models: profile.models.map((m) => ({
+        id: m.id,
+        model: m.model,
+        ...(m.name ? { name: m.name } : {}),
+        ...(m.id === entry.id ? { settings: merged } : m.settings ? { settings: m.settings } : {})
+      })),
+      activeModelId: profile.activeModelId,
+      apiKey: ''
+    })
+    patchEntrySettings(input.profileId, input.entryId, input.patch)
     deps.onSettingsChanged?.('models')
     return modelsView()
   })

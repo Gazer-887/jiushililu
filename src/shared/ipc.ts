@@ -47,6 +47,32 @@ export const REASONING_KINDS = ['effort', 'toggle', 'budget_tokens', 'none'] as 
 export type ReasoningKind = (typeof REASONING_KINDS)[number]
 
 /**
+ * `kind:'budget_tokens'` 的预算**出境字段**（plan58 R15 · 缺口 C）。
+ *
+ * openai-compatible 通路上没有统一的预算字段，仅有的两个已知方言都是**逐模型声明**的
+ * （能力写在模型身上，与 `levels` 同一条 R6 原则）—— 应用层不猜厂商方言。
+ * anthropic 协议**不需要声明**：`thinking.budget_tokens` 是协议自带字段，直接吃 `reasoning.budget`。
+ */
+export const BUDGET_ENCODINGS = ['thinking_budget', 'reasoning_max_tokens'] as const
+export type BudgetEncoding = (typeof BUDGET_ENCODINGS)[number]
+
+/**
+ * `kind:'toggle'` 的**关闭编码**（plan58 R16 · 缺口 C 之二，取值集合抄 Zcode 的五种关闭编码）。
+ *
+ * 不声明（或 `omit`）⇒ 关的一侧不发任何字段 —— 对默认开思考的端点（Qwen 百炼 / Z.AI 等）
+ * 这意味着「关不掉」；界面须照实披露，不许把"没发信号"说成"已关闭"。
+ * `effort_minimal` 没有对称的"开"线形（不存在 `reasoning_effort:'最高'`）⇒ 开的一侧不发。
+ */
+export const OFF_ENCODINGS = [
+  'omit',
+  'enable_thinking_false',
+  'chat_template_kwargs',
+  'reasoning_enabled_false',
+  'effort_minimal'
+] as const
+export type OffEncoding = (typeof OFF_ENCODINGS)[number]
+
+/**
  * 逐模型声明的思考能力（plan58 R6）。未填的存量档案一律按 `kind:'none'` 处理 ——
  * 不给老档案凭空造档，出境行为**逐字节不变**。
  */
@@ -56,8 +82,12 @@ export interface ReasoningConfig {
   levels?: string[]
   /** `kind:'toggle'` 时的开关值 */
   enabled?: boolean
-  /** `kind:'budget_tokens'` 时的预算（token 数） */
+  /** `kind:'budget_tokens'` 时的预算（token 数）；0 或缺 = 不发（预算 0 不是合法出境值） */
   budget?: number
+  /** 预算走哪个请求体字段（R15）；未声明 ⇒ openai-compatible 上不发，anthropic 协议不受它影响 */
+  budgetEncoding?: BudgetEncoding
+  /** 关闭思考时发哪个信号（R16）；未声明 ⇒ 视同 `omit`，界面须披露"该端点可能无法关闭思考" */
+  offEncoding?: OffEncoding
 }
 
 export interface ModelSettings {
@@ -432,6 +462,8 @@ export const IPC = {
   modelsTest: 'models:test',
   modelsFetchAvailable: 'models:fetch-available',
   modelsSetEntry: 'models:set-entry',
+  /** 输入框 chip 的单字段补丁（plan58 R2）：只动一条模型条目的 settings，不整表提交 */
+  modelsPatchEntry: 'models:patch-entry',
   // ── 子 Agent 管理（plan17）──
   /** 三层全量视图（含被覆盖条目与加载警告）；工具目录走 `@shared/agents` 静态常量，不进载荷 */
   agentsList: 'agents:list',
@@ -836,6 +868,8 @@ export interface ApiBridge {
   /** 免保存拉取（plan47 S1）：入参是表单草稿，明文 Key 单向进主进程（同 testConnection 的规矩） */
   fetchAvailableModels(input: import('./models').FetchAvailableInput): Promise<import('./models').AvailableModels>
   setActiveModelEntry(profileId: string, entryId: string): Promise<import('./models').ModelsView>
+  /** 单字段补丁（plan58 R2）：返回补丁后的完整视图 —— chip 的回显纪律是"读主进程真值"，不本地自说自话 */
+  patchModelEntry(input: import('./models').ModelPatchEntryInput): Promise<import('./models').ModelsView>
   listGoals(conversationId: string): Promise<import('./goal').Goal[]>
   createGoal(input: {
     conversationId: string

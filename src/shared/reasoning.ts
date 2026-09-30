@@ -75,3 +75,124 @@ export const KNOWN_EFFORT_LEVELS: readonly string[] = [...KNOWN_EFFORTS]
  * 界面标「未实测」即可，**不许因为没测过就不让用户选**（那等于替厂商下结论，违反 R9）。
  */
 export const ADDABLE_EFFORT_LEVELS: readonly string[] = [...EFFORT_ORDER]
+
+// ── 缺口 C 的出境形状（plan58 片② R15 / R16）────────────────────────────────
+//
+// `effortToSend` 之外的两条通道此前是空壳：`toggle` 的开关与 `budget_tokens` 的预算
+// 存得进、发不出。下面两个函数补上出境判定 —— 与 `effortToSend` 同一条纪律：
+// **主进程发不发、界面披露什么，读同一份判定**，两份判定会漂的症状是
+// "界面说生效、实际没发"（R5 同族）。
+
+/** 出境判定需要的输入形状（`ReasoningConfig` 的最小子集，便于单测构造） */
+export interface ReasoningOutboundInput {
+  reasoningEffort: string
+  reasoning?: {
+    kind: string
+    enabled?: boolean
+    budget?: number
+    budgetEncoding?: string
+    offEncoding?: string
+  }
+}
+
+/**
+ * openai-compatible 通路上 `toggle` / `budget_tokens` 的请求体字段（R15 / R16）。
+ * `effort` 形态走 `effortToSend` 既有通道（`reasoning_effort`），本函数**不碰它** ——
+ * kind 非 effort 时 `effortToSend` 已返回 null，两边相加不会双发。
+ *
+ * 一切"未声明"都落在**不发**（与 `omit` 同一口径），由界面照实披露 ——
+ * 替用户猜一个厂商方言字段，就是拿猜测冒充承诺（R9）。
+ */
+export function openaiReasoningFields(settings: ReasoningOutboundInput): Record<string, unknown> {
+  const cfg = settings.reasoning
+  if (!cfg) return {}
+  const fields: Record<string, unknown> = {}
+
+  if (cfg.kind === 'toggle') {
+    // 没设过开关 = 维持厂商默认，什么都不发
+    if (typeof cfg.enabled !== 'boolean') return {}
+    switch (cfg.offEncoding) {
+      case 'enable_thinking_false':
+        fields['enable_thinking'] = cfg.enabled
+        break
+      case 'chat_template_kwargs':
+        fields['chat_template_kwargs'] = { enable_thinking: cfg.enabled }
+        break
+      case 'reasoning_enabled_false':
+        fields['reasoning'] = { enabled: cfg.enabled }
+        break
+      case 'effort_minimal':
+        // 开的一侧没有对称线形（不存在 `reasoning_effort:'最强'`）⇒ 只有关的一侧发
+        if (!cfg.enabled) fields['reasoning_effort'] = 'minimal'
+        break
+      default:
+        // omit（或未声明）：不发。对默认开思考的端点这等于"关不掉"，界面必须披露。
+        break
+    }
+    return fields
+  }
+
+  if (cfg.kind === 'budget_tokens') {
+    const budget = cfg.budget ?? 0
+    if (budget <= 0) return {} // 预算 0 不是合法出境值，视同未设
+    switch (cfg.budgetEncoding) {
+      case 'thinking_budget':
+        fields['thinking_budget'] = budget
+        break
+      case 'reasoning_max_tokens':
+        fields['reasoning'] = { max_tokens: budget }
+        break
+      default:
+        // 未声明预算字段：预算留在档案里，但不出境（否则发出去的字段是猜的）
+        break
+    }
+  }
+  return fields
+}
+
+/**
+ * anthropic 通路的思考预算（kind 感知版，片② 修的**暗病**在此）：
+ * `thinkingBudgetFor` 只看 `reasoningEffort` 不看 `kind` —— `kind:'none'`（不支持思考）或
+ * `kind:'toggle'` 的模型在 openai 侧发不出档位（R11′ 保证），到 anthropic 侧却会照发思考。
+ * 「inert 数据永不出境」这条不变量必须在两条通路上同时成立。
+ *
+ * - `kind:'budget_tokens'`：用**声明的预算**（协议原生吃 `thinking.budget_tokens`，无需编码声明）；
+ * - `kind:'none'` / `kind:'toggle'`：不发。toggle 的"关"在 anthropic 上恰好就是不发 thinking 块；
+ *   "开"的一侧没有"强制开思考"的线形 ⇒ 同样不发（协议限制，界面披露）。
+ * - `kind:'effort'` 或未声明 `reasoning`：走原 `thinkingBudgetFor`（存量行为逐字节不变）。
+ */
+export function anthropicThinkingBudget(
+  settings: ReasoningOutboundInput,
+  maxTokens: number,
+  effortBudgetFor: (effort: string, maxTokens: number) => number | null
+): number | null {
+  const cfg = settings.reasoning
+  if (cfg) {
+    if (cfg.kind === 'none' || cfg.kind === 'toggle') return null
+    if (cfg.kind === 'budget_tokens') {
+      const budget = cfg.budget ?? 0
+      if (budget <= 0) return null
+      const ceiling = maxTokens - 1024
+      if (ceiling < 1024) return null
+      return Math.min(budget, ceiling)
+    }
+  }
+  return effortBudgetFor(settings.reasoningEffort, maxTokens)
+}
+
+/**
+ * 两个编码的**界面文案**（设置页声明下拉与输入框 chip 的披露共用这一份 ——
+ * 文案写两份迟早漂，漂了的症状是"声明页与 chip 说的不是同一个字段"）。
+ */
+export const BUDGET_ENCODING_LABELS: Readonly<Record<string, string>> = {
+  thinking_budget: 'thinking_budget（百炼）',
+  reasoning_max_tokens: 'reasoning.max_tokens（OpenRouter）'
+}
+
+export const OFF_ENCODING_LABELS: Readonly<Record<string, string>> = {
+  omit: '不发信号（部分端点将无法关闭）',
+  enable_thinking_false: 'enable_thinking: false',
+  chat_template_kwargs: 'chat_template_kwargs.enable_thinking',
+  reasoning_enabled_false: 'reasoning: { enabled: false }',
+  effort_minimal: 'reasoning_effort: minimal（压到最低档）'
+}

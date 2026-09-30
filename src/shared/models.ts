@@ -6,7 +6,8 @@
  * 纯逻辑（不 import electron / 不碰 IO / 不认识 Key 密文，落盘见 `main/store/models.ts`）。
  * ⚠️ API Key 一个字节都不进 `models.json`：仍按"端点 id → 密文"存 settings.json（AGENTS.md / D-013）。
  */
-import type { ModelSettings, ProviderType, ReasoningConfig } from './ipc'
+import type { ModelSettings, ProviderType, ReasoningConfig, BudgetEncoding, OffEncoding } from './ipc'
+import { BUDGET_ENCODINGS, OFF_ENCODINGS } from './ipc'
 import { REASONING_KINDS } from './ipc'
 import { modalitiesFromLegacyFlag, normalizeModalities } from './content-parts'
 
@@ -264,9 +265,33 @@ export interface ModelSaveInput {
   source?: ModelSource
 }
 
+/**
+ * 输入框 chip 的**单字段补丁**（plan58 R2）。只收白名单字段：
+ * 合法性（白名单判档）由主进程合成整表过 `modelSaveSchema` —— 与整表保存同一道闸。
+ */
+export interface ModelPatchEntryInput {
+  profileId: string
+  entryId: string
+  patch: {
+    reasoningEffort?: string
+    reasoning?: ReasoningConfig
+  }
+}
+
+/**
+ * 单字段补丁的合并（plan58 R2 / Q2）。**只覆盖 patch 带的键**，其余原样保留 ——
+ * 校验（handler 合成整表）与落盘（store）都走这一份合并，防的就是 `models:save`
+ * 那种"整表提交互相覆盖"的回退。可单测：Q2 的"其它字段逐字节不变"钉在这里。
+ */
+export function mergeEntrySettings(
+  settings: Partial<ModelSettings> | undefined,
+  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig }
+): Partial<ModelSettings> {
+  return { ...(settings ?? {}), ...patch }
+}
+
 /** 「获取可用模型」的结果：能从厂商那里列出来的模型 ID */
-export interface AvailableModels {
-  ok: boolean
+export interface AvailableModels {  ok: boolean
   /** 给人看的一句话（失败时说清是 Key 错、地址错，还是该端点不提供列表） */
   message: string
   models: string[]
@@ -323,6 +348,13 @@ function normalizeReasoning(raw: unknown): ReasoningConfig | undefined {
   }
   if (typeof r.enabled === 'boolean') out.enabled = r.enabled
   if (typeof r.budget === 'number' && Number.isFinite(r.budget)) out.budget = r.budget
+  // 片②（缺口 C）两个出境编码：只在取值集合内收，认不出 = 当它没填（omission 语义，界面会披露）
+  if (BUDGET_ENCODINGS.includes(r.budgetEncoding as BudgetEncoding)) {
+    out.budgetEncoding = r.budgetEncoding as BudgetEncoding
+  }
+  if (OFF_ENCODINGS.includes(r.offEncoding as OffEncoding)) {
+    out.offEncoding = r.offEncoding as OffEncoding
+  }
   return out
 }
 

@@ -3,6 +3,7 @@ import { mapHttpError, isAbortError } from '@main/providers/errors'
 import {
   chatMessagesSchema,
   chatSendInputSchema,
+  modelPatchEntrySchema,
   modelSaveSchema,
   settingsSchema,
   storedMessagesSchema
@@ -391,5 +392,89 @@ describe('modelSaveSchema：思考档名的逐模型白名单（plan58 R6 / Q6b 
       expect(paths).toContain('models.1.settings.reasoningEffort')
       expect(paths.some((p) => p.startsWith('models.0.'))).toBe(false)
     }
+  })
+})
+
+// ── plan58 片② · modelPatchEntrySchema + 白名单守卫对 patch 一视同仁（Q13）──────
+describe('modelPatchEntrySchema（chip 的单字段补丁，plan58 R2）', () => {
+  const save = (settings: Record<string, unknown>) => ({
+    name: '端点',
+    providerType: 'openai-compatible',
+    baseURL: 'https://api.deepseek.com',
+    apiKey: 'k',
+    models: [{ id: 'e1', model: 'deepseek-flash', ...(settings ? { settings } : {}) }]
+  })
+
+  it('只带一个字段也放行；两个全空 ⇒ 拒（补丁为空没有意义）', () => {
+    expect(
+      modelPatchEntrySchema.safeParse({ profileId: 'p1', entryId: 'e1', patch: { reasoningEffort: 'high' } })
+        .success
+    ).toBe(true)
+    expect(
+      modelPatchEntrySchema.safeParse({ profileId: 'p1', entryId: 'e1', patch: {} }).success
+    ).toBe(false)
+  })
+
+  it('编码字段只认声明的集合（认不出的方言不收，应用层不猜）', () => {
+    expect(
+      modelPatchEntrySchema.safeParse({
+        profileId: 'p1',
+        entryId: 'e1',
+        patch: { reasoning: { kind: 'toggle', enabled: false, offEncoding: 'enable_thinking_false' } }
+      }).success
+    ).toBe(true)
+    expect(
+      modelPatchEntrySchema.safeParse({
+        profileId: 'p1',
+        entryId: 'e1',
+        patch: { reasoning: { kind: 'toggle', enabled: false, offEncoding: '瞎写的编码' } }
+      }).success
+    ).toBe(false)
+    expect(
+      modelPatchEntrySchema.safeParse({
+        profileId: 'p1',
+        entryId: 'e1',
+        patch: { reasoning: { kind: 'budget_tokens', budget: 8192, budgetEncoding: 'thinking_budget' } }
+      }).success
+    ).toBe(true)
+  })
+
+  it('★ Q13 patch 向：合成整表过 modelSaveSchema ⇒ 白名单外的档在 patch 路上同样被拒', () => {
+    // handler 的合成步骤：补丁合进现存档案 → 整表跑 modelSaveSchema。这里复刻同一步，
+    // 守卫对 patch 与 save 给出同一个裁决（两道闸各判各的迟早漂成两个口径）。
+    const stored = save({
+      reasoningEffort: 'low',
+      reasoning: { kind: 'effort', levels: ['low', 'high'] }
+    })
+    const patched = {
+      ...stored,
+      models: [
+        {
+          ...stored.models[0],
+          settings: { ...stored.models[0].settings, reasoningEffort: 'medium' }
+        }
+      ]
+    }
+    const r = modelSaveSchema.safeParse(patched)
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      const paths = r.error.issues.map((i) => i.path.join('.'))
+      expect(paths).toContain('models.0.settings.reasoningEffort')
+      // 报错要带出已声明的档位，让界面能说清为什么（Q6b′ 的口径）
+      const msg = r.error.issues.find((i) => i.path.join('.') === 'models.0.settings.reasoningEffort')?.message ?? ''
+      expect(msg).toContain('low')
+      expect(msg).toContain('high')
+    }
+    // 同一模型、白名单内的档 ⇒ 放行
+    const ok = {
+      ...stored,
+      models: [
+        {
+          ...stored.models[0],
+          settings: { ...stored.models[0].settings, reasoningEffort: 'high' }
+        }
+      ]
+    }
+    expect(modelSaveSchema.safeParse(ok).success).toBe(true)
   })
 })

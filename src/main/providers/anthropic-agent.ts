@@ -2,7 +2,7 @@ import type { ModelSettings } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, ToolSchema } from '@shared/agent'
 import { resolveApiUrl } from './url'
 import { ProviderError, mapHttpError } from './errors'
-import { thinkingBudgetFor } from './anthropic'
+import { thinkingBudgetForSettings } from './anthropic'
 import { createSSEParser } from './sse'
 import { usageFromAnthropicEvent } from './usage-parsers'
 import type { TokenUsage } from '@shared/usage'
@@ -154,7 +154,7 @@ export async function chatWithToolsAnthropic(
   // ⚠️ thinking 与 tools 互斥（交叉验证结论）：部分 Anthropic 模型 / 版本拒收二者同时下发，且带 thinking 的
   // assistant 续轮必须回带 thinking 块（我们只回放 text/tool_use）。工具模式下内核优先保工具 → 自动降级思考。
   const allowThinking = tools.length === 0
-  const budget = allowThinking ? thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens) : null
+  const budget = allowThinking ? thinkingBudgetForSettings(settings) : null
 
   const body: Record<string, unknown> = {
     model: settings.model,
@@ -192,7 +192,7 @@ export function buildAnthropicToolsBody(
 ): Record<string, unknown> {
   const { system, messages: anthropicMessages } = toAnthropicAgentMessages(messages)
   // thinking 与 tools 互斥（见上）；流式同样只保工具
-  const budget = tools.length === 0 ? thinkingBudgetFor(settings.reasoningEffort, settings.maxTokens) : null
+  const budget = tools.length === 0 ? thinkingBudgetForSettings(settings) : null
   return {
     model: settings.model,
     max_tokens: settings.maxTokens,

@@ -714,11 +714,16 @@ describe('可单测的模块不许 import electron（CI 的 quality job 没有�
 describe('推理等级控件：形态纪律（plan58 R7 / R13 / R14）', () => {
   const ed = src('renderer/src/components/ModelCatalogEditor.tsx')
 
-  it('★ `kind` 决定**控件形状**：`none` ⇒ 整块不出现；非 `effort` ⇒ 只给说明不给控件', () => {
-    // `none` 时摆个下拉 = 骗人的格子（plan54 #3 同族）；`toggle`/`budget_tokens` 的出境形状
-    // 还没实现（缺口 C）⇒ 此时给开关是"勾了但不起作用"的假开关，**比不给更坏**。
+  it('★ `kind` 决定**控件形状**：`none` ⇒ 档位块不出现；非 `effort` 分流到各自的控制项（片② 起已接通）', () => {
+    // `none` 时摆个下拉 = 骗人的格子（plan54 #3 同族）。
+    // ⚠️ 片② 改判：片① 时"非 effort 只给说明"是因为出境形状未接通（缺口 C）；片② 接通后
+    // 非 effort 分支里是**真控件**（开关 / 预算框 + 编码声明），故正向锚点随之一并钉住。
     expect(ed, '推理等级那块没有按 kind 分流').toContain("rc?.kind !== 'none'")
-    expect(ed, '非 effort 形态必须只给说明').toContain("if (kind !== 'effort')")
+    expect(ed, '非 effort 形态必须分流').toContain("if (kind !== 'effort')")
+    // 片② 正向：三型的控制项与形态选择器都在场（逃出口 —— 选了 none 还能改回来）
+    expect(ed, 'toggle 没有开关').toContain('aria-label="思考开关"')
+    expect(ed, 'budget_tokens 没有预算框').toContain('aria-label="思考预算"')
+    expect(ed, '没有形态选择器 ⇒ none 是死界面').toContain('aria-label="思考形态"')
   })
 
   it('★ 档位集合只认模型自己声明的 `levels`（R6），没声明时**如实标未实测**而不是替厂商下结论', () => {
@@ -769,5 +774,73 @@ describe('推理等级控件：形态纪律（plan58 R7 / R13 / R14）', () => {
     // 两份档名表会漂 —— 而漂了的症状是"`+` 里能选一个下拉里没有的档"。
     expect(ed).toContain('ADDABLE_EFFORT_LEVELS')
     expect(ed).not.toMatch(/const (EFFORT|KNOWN)\w* = \[/)
+  })
+})
+
+// —— plan58 片②：缺口 C 的出境接线 + patch 单字段 IPC 全链 ——————————————————————————
+// 为什么立组：这一批的病根形状还是"字段存在但没人接"—— `enabled` / `budget` 在片⓪ 就进了
+// 契约层，出境层却是空的（缺口 C），控件上线而这里断一环，用户看到的是只会开的开关。
+// 每一环断了都不会让现有测试红，只会回到"调了不生效"。
+describe('片② 缺口 C：出境接线 + patch 全链每一环都在场', () => {
+  it('★ toggle / budget_tokens 的出境判定在 shared，且两个 openai 构造器都接了', () => {
+    const shared = stripComments(src('shared/reasoning.ts'))
+    expect(shared, '出境判定不在 shared ⇒ 界面披露与主进程发不发会漂（R5 同族）').toContain(
+      'export function openaiReasoningFields'
+    )
+    expect(shared).toContain('export function anthropicThinkingBudget')
+    for (const f of ['main/providers/openai.ts', 'main/providers/openai-agent.ts']) {
+      const code = stripComments(src(f))
+      expect(code, `${f} 没接 toggle/budget 出境字段`).toContain('openaiReasoningFields(settings)')
+    }
+  })
+
+  it('★ anthropic 通路走 kind 感知出口（thinkingBudgetFor 只看档名不看 kind 的暗病不许回来）', () => {
+    const anth = stripComments(src('main/providers/anthropic.ts'))
+    expect(anth, 'body 构造器没有换 kind 感知出口').toContain('thinkingBudgetForSettings(settings)')
+    const agent = stripComments(src('main/providers/anthropic-agent.ts'))
+    // 两处（非流式 + 流式/带工具构造）都不许直呼 thinkingBudgetFor
+    const hits = agent.match(/thinkingBudgetForSettings\(settings\)/g) ?? []
+    expect(hits.length, 'anthropic-agent 只接了一处').toBeGreaterThanOrEqual(2)
+    expect(agent, '还留着直呼旧函数的调用点').not.toMatch(/thinkingBudgetFor\(settings\.reasoningEffort/)
+  })
+
+  it('★ 两个出境编码必须在读盘容错里活下来（否则用户声明过一次、重读就没了）', () => {
+    const models = stripComments(src('shared/models.ts'))
+    expect(models, 'budgetEncoding 读盘被丢').toContain('out.budgetEncoding')
+    expect(models, 'offEncoding 读盘被丢').toContain('out.offEncoding')
+  })
+
+  it('★ patch 单字段全链：通道 → schema → handler（合成过闸）→ store → 广播 → preload', () => {
+    expect(src('shared/ipc.ts')).toContain("modelsPatchEntry: 'models:patch-entry'")
+    const schemas = src('main/schemas.ts')
+    expect(schemas, 'patch 的形状闸不在').toContain('modelPatchEntrySchema')
+    expect(schemas, 'patch schema 没接编码字段').toContain('budgetEncoding')
+    const ipc = stripComments(src('main/ipc.ts'))
+    expect(ipc, 'handler 没挂').toContain('IPC.modelsPatchEntry')
+    expect(ipc, '补丁没有合成整表过 modelSaveSchema ⇒ 白名单守卫对 patch 失效（Q13 漂口径）').toMatch(
+      /friendlyParse\(\s*modelSaveSchema/
+    )
+    expect(ipc, '合并没走 shared 那份 ⇒ Q2 两份真相').toContain('mergeEntrySettings(entry.settings')
+    expect(ipc, 'patch 后不广播 ⇒ 另一个窗口永远拿旧值').toContain("onSettingsChanged?.('models')")
+    expect(stripComments(src('main/store/models.ts'))).toContain('patchEntrySettings')
+    expect(src('preload/index.ts')).toContain('patchModelEntry:')
+  })
+
+  it('★ chip 的回显纪律：读主进程真值（patch 返回值），广播来了重读', () => {
+    const chip = stripComments(src('renderer/src/components/InputTools.tsx'))
+    expect(chip, 'chip 没调 patchModelEntry').toContain('patchModelEntry(')
+    expect(chip, 'patch 结果没有回写视图（本地自说自话）').toContain('setModels(view)')
+    expect(chip, '没有订阅广播 ⇒ 设置窗改了这边不跟').toContain('onSettingsChanged')
+    // Q12：存量档案与 none 都不出现
+    expect(chip, '未声明/none 的判断不见了').toContain("rs.kind === 'none'")
+  })
+
+  it('★ 编码的界面文案只有一份（设置页声明与 chip 披露读同一张表）', () => {
+    const shared = stripComments(src('shared/reasoning.ts'))
+    expect(shared).toContain('BUDGET_ENCODING_LABELS')
+    expect(shared).toContain('OFF_ENCODING_LABELS')
+    const ed = src('renderer/src/components/ModelCatalogEditor.tsx')
+    expect(ed, '设置页声明下拉没用共享文案').toContain('OFF_ENCODING_LABELS')
+    expect(ed).toContain('BUDGET_ENCODING_LABELS')
   })
 })

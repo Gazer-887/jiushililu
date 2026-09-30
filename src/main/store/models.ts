@@ -1,6 +1,6 @@
 import Store from 'electron-store'
 import { copyFileSync, existsSync } from 'node:fs'
-import type { ModelSettings, SettingsSaveInput, SettingsView } from '@shared/ipc'
+import type { ModelSettings, ReasoningConfig, SettingsSaveInput, SettingsView } from '@shared/ipc'
 import {
   activeEntry,
   activeProfile,
@@ -10,6 +10,7 @@ import {
   findModelEntry,
   legacyKeyOwnerId,
   makeEntry,
+  mergeEntrySettings,
   normalizeProfiles,
   profileOf,
   removeProfile,
@@ -365,6 +366,37 @@ export function setActiveEntry(profileId: string, entryId: string): void {
   store.set(
     'profiles',
     profiles.map((p) => (p.id === profileId ? { ...p, activeModelId: entryId, updatedAt: Date.now() } : p))
+  )
+}
+
+/**
+ * 输入框 chip 的单字段补丁（plan58 R2）。只动这一条 entry 的 `settings`，
+ * 条目其余字段（model / name / id）与档案其余部分**一概不碰**（Q2：补丁后
+ * 同档案其它字段逐字节不变 —— 防 `models:save` 那种整表覆盖的回退）。
+ * ⚠️ 白名单判档不在这里：handler 已把补丁合进整表过过 `modelSaveSchema` 才会调到这。
+ */
+export function patchEntrySettings(
+  profileId: string,
+  entryId: string,
+  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig }
+): void {
+  const { profiles } = listProfiles()
+  const profile = profiles.find((p) => p.id === profileId)
+  if (!profile) throw new Error('该端点不存在（可能已被删除）')
+  if (!profile.models.some((m) => m.id === entryId)) throw new Error('该模型不存在（可能已被删除）')
+  store.set(
+    'profiles',
+    profiles.map((p) =>
+      p.id === profileId
+        ? {
+            ...p,
+            models: p.models.map((m) =>
+              m.id === entryId ? { ...m, settings: mergeEntrySettings(m.settings, patch) } : m
+            ),
+            updatedAt: Date.now()
+          }
+        : p
+    )
   )
 }
 
