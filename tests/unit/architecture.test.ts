@@ -121,7 +121,10 @@ const TEST_ENTRIES = [
   'tests/unit/skills.test.ts',
   'tests/unit/system-web-tools.test.ts',
   'tests/unit/system-integration.test.ts',
-  'tests/unit/tokens.test.ts'
+  'tests/unit/tokens.test.ts',
+  'tests/unit/goal-store.test.ts',
+  'tests/unit/goal-agent-apply.test.ts',
+  'tests/unit/goal-ipc-schema.test.ts'
 ]
 
 describe('架构守卫：单测链路不得依赖 electron', () => {
@@ -152,6 +155,19 @@ describe('架构守卫：单测链路不得依赖 electron', () => {
   it('会话存储的基线测试确实覆盖到了 conversations-core（不是空过）', () => {
     const { visited } = walkGraph(join(ROOT, 'tests/unit/conversations-store.test.ts'))
     expect(visited).toContain(join(ROOT, 'src/main/store/conversations-core.ts'))
+  })
+
+  it('目标存储的分层前提没回退：`goal-store.test.ts` 真的走到 goal-core，且语义没漏回薄壳', () => {
+    // 这一条守的是本次分层立项的**唯一前提** ——「语义住在 core、薄壳只装配」。
+    // 薄壳里一旦再出现判断（哪怕一句 `if`），单测照旧绿，可测性却已经失效 ⇒ 只能这样钉。
+    const { visited } = walkGraph(join(ROOT, 'tests/unit/goal-store.test.ts'))
+    expect(visited).toContain(join(ROOT, 'src/main/store/goal-core.ts'))
+    const shell = readFileSync(join(ROOT, 'src/main/store/goal.ts'), 'utf8')
+    // 薄壳里除 `new Store()` 与转发外不许长逻辑 —— 这条守的是「语义住在 core」这个前提本身。
+    // ⚠️ 判据本身踩过两次：用正则/换行字面量时转义把源码写坏（一次落成退格字节、一次未闭合字符串），
+    // 结果是一条永不调用的判据。所以这里只用普通子串，且**由 M8（在薄壳里塞一句 if）验证过它会红**。
+    const banned = ['if (', 'for (', 'while (', 'applyGoalAction', 'normalizeGoals', 'sortGoals']
+    expect(banned.filter((b) => shell.includes(b)), '薄壳里长出了逻辑（分层前提回退）').toEqual([])
   })
 })
 

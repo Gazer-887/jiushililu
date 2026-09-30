@@ -1,7 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
-import type { Goal } from '@shared/goal'
+// ⚠️ e2e 目录里用**相对路径**引 shared 类型：`config/playwright.config.ts` 没配任何 alias，
+// 今天只因写的是 `import type`（转译期擦掉）才不会炸；哪天有人改成值 import，收集阶段就红。
+import type { Goal } from '../../src/shared/goal'
 import { apiCall, launchApp, type E2EApp } from './helpers'
 
 /**
@@ -90,6 +92,11 @@ test.describe('C 类 · 目标落盘真往返（不需要 Key）', () => {
     const file = findGoalFile(h.dataDir)
     const onDisk = JSON.parse(readFileSync(file as string, 'utf8')) as { goals: Goal[] }
     expect(onDisk.goals.find((g) => g.id === created.id)?.status).toBe('done')
+
+    // 标题里那句"不再出现在 open 集里"要自己兑现：open = active/paused（`GoalPanel` 用的同一条判据）
+    const readBack = await apiCall<Goal[]>(h.page, 'listGoals', CONV)
+    expect(readBack.filter((g) => g.status === 'active' || g.status === 'paused')).toEqual([])
+    expect(readBack.map((g) => g.status)).toEqual(['done'])
 
     // 非法转移走的是同一条真通路：再点一次完成 ⇒ 带人话理由被拒（不是静默不动）
     let reason = ''

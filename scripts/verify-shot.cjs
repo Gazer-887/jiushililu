@@ -965,6 +965,9 @@ const STUBS = {
     const g = goalState.find((x) => x.id === input?.id)
     // 真源同句：`goal-core` 里找不到就抛这条（界面据此说人话，不是静默不动）
     if (!g) throw new Error('该目标不存在（可能已被删除）')
+    // ⚠️ 桩的边界（写死，别两边沉默）：这里**不复制状态机** —— 真源 `goal-core.ts` 会拒非法转移并给理由，
+    // 桩对任意状态一律接受，且 `reopen` 不在表里（真源是 done/dropped → active）。
+    // ⇒ 「非法转移」「重开」两格只有单测与 e2e 两层，**门禁给不出这两条证据**。
     const TO = { pause: 'paused', resume: 'active', complete: 'done', drop: 'dropped' }
     if (input?.action === 'edit') g.text = input?.patch?.text ?? g.text
     else if (TO[input?.action]) g.status = TO[input?.action]
@@ -9588,6 +9591,9 @@ app.whenReady().then(async () => {
     goalCompleteClick.rowFound === true && goalCompleteClick.btnFound === true, goalCompleteClick)
   checkTrue('点「完成」后面板**重读过一次目标列表**（不是本地把行抹掉就算数）',
     goalAfterComplete.refound >= 1, goalAfterComplete)
+  // 重拉还得是**当前那条会话**：拉到别的 cid 就是串台的前置形状（cid 已在桩侧记账，核一句零成本）
+  checkTrue('重读只打当前会话（`goal:list` 的入参全是 c1）',
+    goalListCalls.length > 0 && goalListCalls.every((c) => c === 'c1'), goalListCalls)
   checkTrue('完成的那条**从进行中消失**（两行 → 一行，且剩的是暂停那条）',
     goalPanel?.rows === 2 && goalAfterComplete.rows === 1 &&
       !goalAfterComplete.texts.some((x) => x.includes(FAKE_GOALS[0].text)) &&

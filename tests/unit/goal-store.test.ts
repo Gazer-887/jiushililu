@@ -18,6 +18,8 @@ import type { Goal } from '@shared/goal'
  * · 它**抓不到** electron-store 自己的那层（键名拼错、`name:'goals'` 起错文件、原子写行为）——
  *   那一条只在真入口里测得到，见 `tests/e2e/goal-store.spec.ts`（真 main 进程 + JSL_DATA_DIR 沙箱）。
  *   两条不是重复，是同一件事的两个深度：**桩能造的形状 ≠ 真入口才造得出的形状**。
+ * ⚠️ 上面的豁免只到"键名/文件名/原子写"，**不含错误处理**：`fsBackend` 的读失败分支照 conf 的真实分支写
+ *   （ENOENT → undefined；SyntaxError → 抛）。写成"什么异常都兜住"，就会把桩的宽容当成产品的行为 —— 本文件第一版正是这样错的。
  */
 
 function collectingLog(): {
@@ -41,11 +43,16 @@ function collectingLog(): {
 function fsBackend(file: string): GoalBackend {
   return {
     readRaw(): unknown {
+      // ⚠️ 读失败分支必须与真源同一把尺（`node_modules/conf` 的 `get store()`）：
+      // · ENOENT（从没建过目标）⇒ conf 返回空对象 ⇒ `.goals` 是 undefined ⇒ 交给 normalizeGoals
+      // · 坏 JSON（SyntaxError）⇒ conf 在 `clearInvalidConfig: false`（默认值，electron-store 未覆盖）下**直接抛**
+      // 第一版写成"任何异常都当 undefined"，于是下面那条"坏文件不崩"测的是**桩的宽容**而不是产品行为
+      //（独立复核抓出 ⇒ 判据见 `NOTEBOOK/learnings.md` 同日「桩的宽容分支」条）。
       try {
         return (JSON.parse(readFileSync(file, 'utf8')) as { goals?: unknown }).goals
-      } catch {
-        // 文件还不存在 = 从来没建过目标（第一次运行就是这种情况），不是坏数据
-        return undefined
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw err
       }
     },
     writeRaw(goals: Goal[]): void {
@@ -170,17 +177,34 @@ describe('坏数据：丢掉并计数 + 留痕 + 回写，绝不整表崩', () =
     expect((JSON.parse(readFileSync(file, 'utf8')) as { goals: Goal[] }).goals.map((g) => g.id)).toEqual(['g1'])
   })
 
-  it('整个文件不是 JSON ⇒ 不崩、按空处理，下一次写入正常覆盖', () => {
+  it('★ 坏 JSON：真源**没有自愈** —— 读就抛，normalizeGoals 根本没机会介入（欠账另立 ⏳）', () => {
+    // 与真源对齐后的形状。产品真路径是"读失败 → IPC reject → 渲染端 catch 兜成空面板、无 WARN、永不修盘"，
+    // **不是**"坏条目丢弃 + 计数 + 回写"。那条只治"数组里混进坏元素"（下一条断言就是那个形状）。
     const file = join(dir, 'goals.json')
     writeFileSync(file, '{ 这不是 JSON', 'utf8')
     const { log, warns } = collectingLog()
     const repo = createGoalRepo(fsBackend(file), log)
-    expect(repo.listGoals('c1')).toEqual([])
-    const g = repo.createGoalFor({ conversationId: 'c1', text: '照样能建', createdBy: 'user' })
-    expect(g.id).toBeTruthy()
-    // 坏文件形状非法 ⇒ normalizeGoals 计一次 dropped（留痕在，不静默）
-    expect(warns.length).toBeGreaterThanOrEqual(1)
-    expect(repo.listGoals('c1').map((x) => x.id)).toEqual([g.id])
+    expect(() => repo.listGoals('c1')).toThrow()
+    expect(warns).toHaveLength(0)
+  })
+
+  it('数组里混进坏元素才是 normalizeGoals 的主场：丢得掉、数得清、洗得回', () => {
+    const file = join(dir, 'goals.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        goals: [
+          { id: 'ok', conversationId: 'c1', text: '好的那条', createdBy: 'user', status: 'active', createdAt: 1, updatedAt: 1 },
+          { id: 'bad', conversationId: 'c1' }
+        ]
+      }),
+      'utf8'
+    )
+    const { log, warns } = collectingLog()
+    const repo = createGoalRepo(fsBackend(file), log)
+    expect(repo.listGoals('c1').map((g) => g.id)).toEqual(['ok'])
+    expect(warns).toHaveLength(1)
+    expect(warns[0]!.meta).toEqual({ dropped: 1, kept: 1 })
   })
 
   it('★ 文件还不存在（第一次运行）⇒ **现状会报一条 dropped=1 的 WARN 并空写一次盘**，本批按"语义零变化"原样钉住', () => {
@@ -284,6 +308,7 @@ describe('非法转移：带人话理由被拒，且盘上一动不动', () => {
     expect(repo.listGoals('A')).toEqual([])
   })
 
+  // ⚠️ 概率性断言：id 随机段是 4 位 base36，单次碰撞约万分之三 ⇒ 万一红要按**抖动**定性（不许复跑洗绿），与 CI `retries: 0` 同口径
   it('同一毫秒连建 30 条 ⇒ id 互不相同（随机段负责，撞了就是互相覆盖）', () => {
     const repo = createGoalRepo(memBackend(), collectingLog().log)
     const ids = new Set<string>()
