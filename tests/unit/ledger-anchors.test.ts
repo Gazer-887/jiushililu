@@ -187,5 +187,37 @@ describe('待办总览 · 结构守卫', () => {
     }
     expect(bad).toEqual([])
   })
+
+  // 2026-10-01 新增（**守卫新闸之三**：双标自洽）。
+  // 主表内互引一律写成 `#N · SID S0NN`（双标）。为什么要双标：`第 N 行` 那种单标在
+  // 「序号读法」与「物理行号读法」下会落到不同的行（09-30 实测**两读同点 = 0 处**），
+  // 单一读法根本解不出引用。而 SID 是**冻结号**（插行重排都不变），序号会漂。
+  // ⇒ 双标的两半必须互相印证：`#N` 那一行的 SID，必须正好是 `S0NN`。
+  // ⚠️ 只查双标；裸 `#N` 与裸 `第 N 行` 不归本条管。
+  it.skipIf(!live)('互引双标自洽：`#N · SID S0NN` 的两半必须指向同一行', () => {
+    const seq2sid = new Map(rows.map((r) => [r.seq, r.rest[r.rest.length - 1]]))
+    const bad: string[] = []
+    for (const r of rows) {
+      const txt = [r.anchor, ...r.rest].join(' ')
+      for (const m of txt.matchAll(/#(\d+) · SID (S\d+)/g)) {
+        const n = Number(m[1])
+        const real = seq2sid.get(n)
+        if (real !== m[2]) bad.push(`#${r.seq} 引 #${n}·${m[2]}，但 #${n} 实为 ${real ?? '不存在'}`)
+      }
+    }
+    expect(bad).toEqual([])
+  })
+
+  // 2026-10-01 新增（**守卫新闸之四**：✅ 的成色披露）。
+  // ⚠️ 这条**刻意不判「未复验的 ✅ 有多少」** —— 判红会诱导下一端把 ⚠️ 直接改成 ✅ 去消红，
+  // 那是在逼人伪造复核，比不披露更坏。只钉「头注披露的数 = 实数」（同源原则）：
+  // 想让它变少，去做真复核，不是去改头注那一行。
+  it.skipIf(!live)('头注披露的 ✅/⚠️ 成色数 = 实数（同源原则）', () => {
+    const m = head.match(/✅\s*(\d+)\s*条，其中\s*⚠️\s*未独立复验\s*(\d+)\s*条/)
+    expect(m, '头注必须披露「✅ N 条，其中 ⚠️ 未独立复验 M 条」').not.toBeNull()
+    const done = rows.filter((r) => r.state.startsWith('✅')).length
+    const unverified = rows.filter((r) => r.state.startsWith('✅') && r.rest[2] === '⚠️').length
+    expect([Number(m![1]), Number(m![2])]).toEqual([done, unverified])
+  })
 })
 
