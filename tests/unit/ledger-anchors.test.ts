@@ -115,19 +115,23 @@ describe('待办总览 · 结构守卫', () => {
     // 修法不是删行（那会抹掉「plan 原文就写着失效路径」这个失真本身），
     // 而是强制显式标注 —— 没标注的失效锚点会让主键悄悄失效。
     //
-    // ⚠️ 两个坑都是实测踩出来的：
+    // ⚠️ 三个坑都是实测踩出来的：
     //   ① 只查「含 / 的目录形态」会漏掉 `x.ts:12` 这种**带假扩展名**的锚点（变异能混过）；
     //   ② 锚点写**裸文件名**（`PlusMenu.tsx`，AGENTS.md §九 允许的简写）时，
     //      按「根目录 + 几个 base」找会误报 —— 文件其实在 `src/renderer/src/components/`。
     //      ⇒ 必须按 **basename 全仓匹配**。
+    //   ③ 2026-10-01 补：`.github/` 不在遍历表里 ⇒ `ci.yml` 这类**真存在**的锚点被判失效；
+    //      修 28 行失效锚点时暴露（那行原本靠 〔路径待核〕 整行跳过，标记一摘就红）。
+    //   ④ 2026-10-01 补：仓外路径（本机工具，如 `D:/Tools/...`）永远过不了存在性检查，
+    //      ⇒ 新增 `〔仓外〕` 显式标记，语义与 〔路径待核〕 同：**显式声明不可核，而不是漏核**。
     const knownBasenames = new Set<string>()
-    for (const dir of ['src', 'tests', 'scripts', 'lat.md', 'PLAN', 'NOTEBOOK', 'docs', 'config', 'resources']) {
+    for (const dir of ['src', 'tests', 'scripts', 'lat.md', 'PLAN', 'NOTEBOOK', 'docs', 'config', 'resources', '.github']) {
       walk(join(process.cwd(), dir), knownBasenames)
     }
     const DIR_PREFIX = ['plan', 'NOTEBOOK', 'docs', 'lat.md', 'src', 'tests', 'scripts', 'resources', 'config']
     const unmarked: string[] = []
     for (const r of rows) {
-      if (r.anchor.includes('〔路径待核〕')) continue
+      if (r.anchor.includes('〔路径待核〕') || r.anchor.includes('〔仓外')) continue
       // token 要含中文（锚点里大量中文文件名），且必须以字母/数字/汉字开头
       const tokens = r.anchor.match(/[A-Za-z0-9一-龥][A-Za-z0-9_.\-一-龥]*/g) ?? []
       for (const tk of tokens) {
@@ -161,6 +165,25 @@ describe('待办总览 · 结构守卫', () => {
     for (const r of rows) {
       const tokens = r.anchor.match(/plan\d+_[^\s:：,，、。）〕】`]+\.md/g) ?? []
       for (const tk of tokens) if (!planFiles.has(tk)) bad.push(`${r.seq}:${tk}`)
+    }
+    expect(bad).toEqual([])
+  })
+
+  // 2026-10-01 新增（**守卫新闸之一**：〔路径待核〕的保质期）。
+  // 为什么需要它：〔路径待核〕是一张"允许失效"的通行证，没有期限就会永远漂着 ——
+  // 与 AGENTS §四 规律 1「等人拍板的条目会永远漂着」是同一个病。
+  // 判据两条：① 每条 〔路径待核〕 必须带 〔限期 YYYY-MM-DD〕；② 限期不许已过。
+  // 格式写成**两个独立括号**（〔路径待核〕〔限期 …〕）而不是塞进一个括号里 ——
+  // 上面那条存在性判据用的是 `includes('〔路径待核〕')` 精确子串，改格式会让整行重新变红（实测踩过）。
+  it.skipIf(!live)('〔路径待核〕必须带未过期的〔限期〕（防待核锚点无限期漂着）', () => {
+    const d = new Date()
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const bad: string[] = []
+    for (const r of rows) {
+      if (!r.anchor.includes('〔路径待核〕')) continue
+      const m = r.anchor.match(/〔限期\s*(\d{4}-\d{2}-\d{2})〕/)
+      if (!m) bad.push(`${r.seq}:缺〔限期〕`)
+      else if (m[1] < today) bad.push(`${r.seq}:限期 ${m[1]} 已过（今天 ${today}）`)
     }
     expect(bad).toEqual([])
   })
