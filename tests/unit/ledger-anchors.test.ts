@@ -149,5 +149,20 @@ describe('待办总览 · 结构守卫', () => {
       expect(raw).toContain(h)
     }
   })
+
+  // 2026-10-01 台账重建后加：`plan59_待办总览重建` 与 `plan59_主线收束` 撞号那次，
+  // 现有 `:140` 那三条放行**不做存在性判断**，改号改错不会报红（撞号就是活样本）。
+  // 这条只管**具名 plan 文件引用**：形如 `planN_xxx.md` 的 token 必须能在 PLAN/ 下解析。
+  // ⚠️ 故意不含 `planN` / `planN_xxx` 裸形（那是 AGENTS §九 允许的简写，且历史表里大量存在）。
+  it.skipIf(!live)('具名 plan 文件引用必须存在（治撞号与改号错）', () => {
+    const planFiles = new Set<string>()
+    walk(join(process.cwd(), 'PLAN'), planFiles)
+    const bad: string[] = []
+    for (const r of rows) {
+      const tokens = r.anchor.match(/plan\d+_[^\s:：,，、。）〕】`]+\.md/g) ?? []
+      for (const tk of tokens) if (!planFiles.has(tk)) bad.push(`${r.seq}:${tk}`)
+    }
+    expect(bad).toEqual([])
+  })
 })
 
