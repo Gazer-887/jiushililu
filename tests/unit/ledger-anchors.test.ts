@@ -148,9 +148,53 @@ describe('待办总览 · 结构守卫', () => {
     expect(unmarked).toEqual([])
   })
 
+  // ⚠️ 2026-10-02 收紧：本章原钉四条（`## 一/二/三/五`），其中 `## 三、历史失真与异常` 与
+  // `## 五、对外文档与源码不一致` 已**外迁**到 `PLAN/附件-待办总览-历史台账.md`（逐字节搬，只降标题级数）。
+  // ⇒ 本节只钉**主表现存的两章**；外迁件是否还在，由下一条单独钉（拆成两条的理由：
+  //   章**在不在主表里** 与 附件**有没有被搬丢** 是两件事，混一条会说不清红的是哪个）。
   it.skipIf(!live)('必备章节齐全（缺一节就说明重建时漏了那一块）', () => {
-    for (const h of ['## 一、主表', '## 二、待拍板项', '## 三、历史失真与异常', '## 五、对外文档与源码不一致']) {
+    for (const h of ['## 一、主表', '## 二、待拍板项']) {
       expect(raw).toContain(h)
+    }
+    // 反向：已外迁的两章**不许**再出现在主表里 —— 否则就是外迁没做完 / 又抄回来一份，
+    // 而"同一事实登记在两处 ⇒ 必有 N−1 处没人擦"正是本附件 §一 P2 病形。
+    for (const h of ['## 三、历史失真与异常', '## 五、对外文档与源码不一致']) {
+      expect(raw).not.toContain(h)
+    }
+  })
+
+  // 2026-10-02 新增：**头注里引用的 `PLAN/` 文件必须真实存在**。
+  // 为什么单列：主表每行锚点早有存在性判据（见上），但**头注与保护栏那块的路径引用没人管** ——
+  // 外迁当天顺手核出 6 处假路径：`PLAN/.复核-V2.md` 等 4 份文件实际都在
+  // `PLAN/.重建证据-2026-09-29/` 下，而头注写作 `PLAN/.复核-V2.md`（P8「跨文件引用失效」病形）。
+  // 它比主表锚点更危险：头注是**下一端第一个读到的位置**，读到假路径会以为"证据没了"。
+  // ⚠️ 只查形如 `PLAN/xxx` 的显式路径；裸文件名（`plan59`）不归本条管（AGENTS §九 允许简写）。
+  it.skipIf(!live)('头注引用的 PLAN/ 路径必须存在（治「证据文件写了假路径」）', () => {
+    const bad: string[] = []
+    const seen = new Set<string>()
+    for (const m of head.matchAll(/PLAN\/[A-Za-z0-9._\-\u4e00-\u9fa5]+(?:\/[A-Za-z0-9._\-\u4e00-\u9fa5]+)*/g)) {
+      const p = m[0].replace(/[.,、。）]+$/, '')
+      if (seen.has(p)) continue
+      seen.add(p)
+      // ⚠️ 排掉**通配/族指**写法：`PLAN/plan*`（头注"汇总自 PLAN/plan* 全部文件"）、
+      // 以及 `PLAN/plan` 这种被 `*` 截断后的残形 —— 它们不是具体路径，不存在性不适用。
+      //（首跑即踩：判据把 `PLAN/plan*` 读成 `PLAN/plan` 报红，属判据自身误伤而非台账有错。）
+      const after = head.slice(m.index + m[0].length, m.index + m[0].length + 1)
+      if (/[*？]/.test(after) || p === 'PLAN/plan') continue
+      if (!existsSync(join(process.cwd(), p))) bad.push(p)
+    }
+    expect(bad).toEqual([])
+  })
+
+  // 2026-10-02 新增：外迁件必须存在（主表里那两章的正文全在它那儿，丢了就是静默消失）。
+  // ⚠️ 这条的**红**只在"外迁件被删或改名"时出现；主表侧的两条 not.toContain 才是"又抄回来"的红。
+  it.skipIf(!live)('外迁的历史章附件必须存在（防外迁丢件）', () => {
+    const annex = join(process.cwd(), 'PLAN', '附件-待办总览-历史台账.md')
+    expect(existsSync(annex)).toBe(true)
+    // 附件里必须真有那两章的正文（只查存在会漏掉"建了个空壳"）
+    const annexRaw = readFileSync(annex, 'utf8')
+    for (const h of ['### 三、历史失真与异常', '### 五、对外文档与源码不一致']) {
+      expect(annexRaw).toContain(h)
     }
   })
 
