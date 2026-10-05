@@ -87,6 +87,23 @@ function summarize(text: string, limit = 120): string {
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat
 }
 
+/**
+ * 转交图片的消费（plan57 K52 B2）：tool 消息上的图片块只出示一轮 ——
+ * 下一轮请求发出后即摘掉，不让 base64 在历史里每轮重放（Kiro 事故：整段会话被一张图卡死）。
+ * 返回摘掉的块数（单测钉）。幂等：没有可摘的返回 0。
+ */
+export function stripForwardedImageParts(messages: AgentMessage[]): number {
+  let n = 0
+  for (const m of messages) {
+    if (m.role !== 'tool' || !m.parts) continue
+    const keep = m.parts.filter((p) => p.type !== 'image' && p.type !== 'video')
+    n += m.parts.length - keep.length
+    if (keep.length === 0) delete m.parts
+    else m.parts = keep
+  }
+  return n
+}
+
 /** 主循环的日志器（§七④：像"前缀缓存失效"这类**值得但必须知情**的代价要留痕） */
 const log = createLogger('agent-loop')
 
@@ -123,6 +140,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   try {
     return await runRounds()
   } finally {
+    // plan57 K52 B2：异常中断也摘（中途挂掉的转交图不留 base64 在内存历史里；纯数组操作，不抛）
+    stripForwardedImageParts(messages)
     // 异常中断时不带 stopReason（AgentStopReason 只有正常两态，不为此扩共享契约）
     opts.execEvents?.record('run_end', {
       rounds,
@@ -179,6 +198,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
     const res = await opts.chat(sent, emitText)
     if (res.text) lastText = res.text
+    // plan57 K52 B2：本轮请求已把转交图片发出 → 摘掉，不让 base64 在后续轮次里重放
+    stripForwardedImageParts(messages)
 
     // 没有工具调用 = 模型认为任务完成，文本即最终交付
     if (res.toolCalls.length === 0) {
@@ -211,6 +232,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
       const toolStartedAt = Date.now()
       let toolImages: ToolImageRef[] = []
+      // plan57 K52 B2：本工具调用要交给模型的图片块（opt-in，默认空；挂到本条 tool 消息的 parts 上）
+      let forwarded: Array<{ type: 'image'; mime: string; base64: string; ref: string }> = []
       // 看门狗标记（plan37 S0）：save/restore 回前值 —— 单槽阶段硬写 'idle' 会抹平并发路径（见 watchdog.ts）
       const prevPhase = setWatchdogPhase(`tool:${tc.name}`)
       let output: string
@@ -225,6 +248,16 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
             const outcome = typeof raw === 'string' ? { text: raw } : raw
             output = outcome.text
             toolImages = outcome.images ?? []
+            // plan57 K52 B2：opt-in 交图 —— 只有显式要交的工具才挂 parts 进模型（MCP 等老工具不受影响）
+            forwarded =
+              'forwardImagesToModel' in outcome
+                ? (outcome.forwardImagesToModel ?? []).map((f) => ({
+                    type: 'image' as const,
+                    mime: f.mime,
+                    base64: f.base64,
+                    ref: f.ref
+                  }))
+                : []
           } catch (err) {
             output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
           }
@@ -289,10 +322,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       })
 
       // 注入边界标记：工具产出（文件内容/网页/命令输出）一律是**数据**，不是指令
+      // plan57 K52 B2：opt-in 交图 —— forwarded 非空才挂 parts（MCP 等老工具不受影响）；
+      // parts 随下轮请求出境一次，出境后由 strip 摘掉（见 chat 成功后），不摘就会每轮重放。
       messages.push({
         role: 'tool',
         content: `<tool_output name="${tc.name}">\n${output}\n</tool_output>`,
-        tool_call_id: tc.id
+        tool_call_id: tc.id,
+        ...(forwarded.length > 0 ? { parts: forwarded } : {})
       })
     }
   }

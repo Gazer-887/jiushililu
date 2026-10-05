@@ -666,6 +666,8 @@ app.whenReady().then(async () => {
     confirmCommand: (req) => confirm.ask(req),
     // plan43 S3：开发环境 → 命令执行时的 PATH 覆盖（每个 agent run 现读）
     resolveRuntimeEnv,
+    // plan57 K52（B2）：附件落盘根给 `view_image` 读回旧图（runner 不碰 fs 路径判定）
+    attachmentsRoot: userDataDir,
     // 提问口（ask_user）：注入的是**桥本体**（只用到 ask 一个方法）—— runner 不许 import electron，故由组合根注入
     ask,
     // 计划批准（plan27）：planner 出完方案后阻塞等用户点头；不注入 = 闸门不生效（安全默认）

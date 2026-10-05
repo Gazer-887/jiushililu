@@ -33,6 +33,7 @@ import { createGoalTools } from './tools/goal-tools'
 import { createMemoryTools } from './tools/memory-tools'
 import { createPlaybookTools } from './tools/playbook-tools'
 import { createSkillTools } from './tools/skill-tools'
+import { createImageTools } from './tools/image-tools'
 import { createMcpTools } from './tools/mcp-tools'
 import type { SkillsStore } from '../skills/skills-store'
 import type { McpImagePart, McpManager } from '../mcp/mcp-manager'
@@ -118,7 +119,9 @@ const READ_ONLY_TOOLS = new Set([
   'update_todos',
   // 目标与待办同族（plan12 ⑤）：只写应用自身的会话状态（goals.json），不动机器也不碰用户文件
   'set_goal',
-  'ask_user'
+  'ask_user',
+  // 旧图重看（plan57 K52 B2）：纯读落盘旧图，只读档也该能用（D-032：读是上限内能力）
+  'view_image',
 ])
 
 /**
@@ -253,6 +256,8 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     // 技能（plan22 D-059）：同理 —— 没有技能时下发 use_skill 只会让模型对着空清单调用。
     // ⚠️ 判定口是 hasActive()（**生效**技能非空），不是「store 存在」—— 空目录 / 全被覆盖都算没有。
     ...(hooks.skills?.store.hasActive() ? createSkillTools({ store: hooks.skills.store }) : []),
+    // 旧图重看（plan57 K52 B2）：有落盘根才注册，无根不下发（"有消费者才注册"）
+    ...(hooks.attachmentsRoot ? createImageTools({ root: hooks.attachmentsRoot }) : []),
     // MCP（plan23 D-065）：同理 —— 没有已连接服务器时，外部工具不下发（下发即空头承诺）
     //
     // ⚠️ 2026-09-19 真机 bug：`computerControl` / `onGatedDrop` **漏传了**（只传了 manager + confirm）。
@@ -323,6 +328,11 @@ export interface ToolHooks {
    * 不注入 = 不覆盖 PATH（本功能未启用时行为与从前逐字一致）。
    */
   resolveRuntimeEnv?: () => RuntimeEnv
+  /**
+   * 附件落盘根（plan57 K52 B2）。由组合根注入 userDataDir —— runner 不许碰 fs 路径判定；
+   * 不传 = 不下发 `view_image`（"有消费者才注册"，同 todos/ask/subagent）。
+   */
+  attachmentsRoot?: string
   /**
    * 本 run 共享的常驻 shell 槽位。**同一个 run 内所有命令工具实例必须共用一个**：
    * 子代理的确认卡要写自己的名字，所以命令工具按发起者各造一份（见 `buildCommandTools`）；
@@ -408,6 +418,11 @@ export interface AgentRuntimeContext {
   planApproval?: PlanApprovalBridge
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 `process.resourcesPath` —— runner 不许 import electron */
   resourcesPath?: string | null
+  /**
+   * 附件落盘根（plan57 K52 B2：`view_image` 按 ref 读回旧图）。由组合根注入 userDataDir ——
+   * runner 不许碰 fs 路径判定（见文件头）；不注入 = 不下发该工具（"有消费者才注册"）。
+   */
+  attachmentsRoot?: string
   /**
    * plan43 S3：用户选中的开发环境（运行时）→ 命令执行时的 PATH 覆盖。
    *
@@ -775,7 +790,8 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       : {}),
     // 技能（plan22）：只读资产、无开关 —— use_skill 是读操作（D-058），「有消费者才注册」是唯一门槛
     ...(ctx.skills ? { skills: { store: ctx.skills.store } } : {}),
-    // MCP（plan23 D-064）：外部代码执行，确认桥在这里补 conversationId（同一上下文被多会话共用）
+    // 附件落盘根（plan57 K52 B2）：有根才注册 `view_image`（读旧图），无根不下发
+    ...(ctx.attachmentsRoot ? { attachmentsRoot: ctx.attachmentsRoot } : {}),
     ...(ctx.mcp
       ? {
           mcp: {
@@ -1095,6 +1111,11 @@ export function createAgentContext(opts: {
   planApproval?: PlanApprovalBridge
   /** 打包态资源根（找随包的 ripgrep，L0 检索）。由组合根注入 —— runner 不许 import electron */
   resourcesPath?: string | null
+  /**
+   * 附件落盘根（plan57 片③ K52：`view_image` 按 ref 读回旧图）。由组合根注入 userDataDir ——
+   * runner 不许碰 fs 路径判定（见文件头）；不注入 = 不下发该工具（"有消费者才注册"）。
+   */
+  attachmentsRoot?: string
   /** plan43 S3：用户选中的开发环境 → PATH 覆盖（组合根提供；每个 agent run 现读） */
   resolveRuntimeEnv?: () => RuntimeEnv
 }): AgentRuntimeContext {
@@ -1112,7 +1133,8 @@ export function createAgentContext(opts: {
     ...(opts.trash ? { trash: opts.trash } : {}),
     ...(opts.ask ? { ask: opts.ask } : {}),
     ...(opts.planApproval ? { planApproval: opts.planApproval } : {}),
-    ...(opts.resolveRuntimeEnv ? { resolveRuntimeEnv: opts.resolveRuntimeEnv } : {})
+    ...(opts.resolveRuntimeEnv ? { resolveRuntimeEnv: opts.resolveRuntimeEnv } : {}),
+    ...(opts.attachmentsRoot ? { attachmentsRoot: opts.attachmentsRoot } : {})
   }
   ensureAgentRuntime(ctx)
   return ctx

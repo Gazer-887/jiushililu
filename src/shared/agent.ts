@@ -78,11 +78,19 @@ export interface ToolImageRef {
 /**
  * 工具执行结果（plan44 S2b 起允许带图片）。
  * `execute` 的返回类型刻意是 `string | ToolOutcome`：**老工具一个字都不用改**，
- * 只有需要交图的那一个通路返回结构体 —— 改全体签名会把"加缩略图"变成动工具契约。
+ * 只有需要交图的那个通路返回结构体 —— 改全体签名会把"加缩略图"变成动工具契约。
  */
 export interface ToolOutcome {
   text: string
   images?: ToolImageRef[]
+  /**
+   * 交给模型的图片（plan57 K52 B2，opt-in，默认关）。
+   * `images` 只进界面事件（plan44 S2b 意图不变）；要模型**看见**图，必须走这一位 ——
+   * loop 把它挂到 tool 消息的 parts 上随下轮请求出境，用后即 strip（同文件 `stripForwardedImageParts`，
+   * 见 loop.ts），不让 base64 在历史里每轮重放（Kiro 事故：整段会话被一张图卡死）。
+   * MCP 等老工具不填这位 ⇒ 行为与从前逐字一致。
+   */
+  forwardImagesToModel?: Array<{ mime: string; ref: string; base64: string }>
 }
 
 /**
