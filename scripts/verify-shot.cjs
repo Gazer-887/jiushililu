@@ -850,6 +850,10 @@ const ccCalls = []
 /** E5 终端 profile 开关（09-18 拍板"做，默认关"）：值与调用流水 */
 let tpEnabled = false
 const tpCalls = []
+/** D-155 B1-a：浏览器操作开关（与 cc 同形状）＋升级提示横幅（与 tp 同形状） */
+let bcEnabled = false
+const bcCalls = []
+let cuNoticeSeen = false
 
 let gitBroadcast = () => 0
 let gitMode = 'repo' // 'repo' | 'not-repo'
@@ -1365,6 +1369,24 @@ const STUBS = {
     tpCalls.push(enabled)
     return enabled
   },
+  // D-155 B1-a：浏览器操作开关（与 computer-control 同形状）＋升级提示＋被拦列表。
+  // 真值判定在 src/main/ipc.ts；桩同样"设了就记住"。分类逻辑由单测钉（computer-use.test.ts），
+  // 桩只管接线：fixture 两 server 各定一类，被拦与否跟桩内开关现值走。
+  'browser-control:get': () => bcEnabled,
+  'browser-control:set': (enabled) => {
+    bcEnabled = enabled
+    bcCalls.push(enabled)
+    return enabled
+  },
+  'computer-use:notice-get': () => cuNoticeSeen,
+  'computer-use:notice-set': (seen) => {
+    cuNoticeSeen = seen
+    return seen
+  },
+  'computer-use:status': () => [
+    { server: 'windows-mcp', capability: 'desktop', blocked: !ccEnabled, blockedBy: !ccEnabled ? 'desktop' : null },
+    { server: 'playwright', capability: 'browser', blocked: !bcEnabled, blockedBy: !bcEnabled ? 'browser' : null }
+  ],
   // ── 多模型管理（plan7 F5）—— 契约副本：形态照用户给的那张图（一个官方来源 + 两个自定义）──
   // ⚠️ 片② 起 m1-e2 的设置挂在 `stubE2Settings` 上（有状态）：chip patch 之后这里必须读得到新值。
   'models:list': () => ({
@@ -6217,6 +6239,10 @@ app.whenReady().then(async () => {
         labels: rows.map((r) => r.textContent.trim()),
         // 电脑控制开关（2026-09-15 新增）混在同一个 .settings-body 里，一并采下默认态
         cc: shape(pick('启用电脑控制')),
+        // D-155 B1-a：浏览器操作开关同形状。spec 步 4 的"老配置缺字段 → 两个开关都关"落在这里验
+        // （settings.ts import electron，vitest 禁入 —— 见 AGENTS §八；store 侧 === true 与既有 6 个开关同一写法）：
+        // 桩回 falsy 时两开关渲染"关着、可点"，不进禁用死角。
+        bc: shape(pick('启用浏览器操作')),
         // E5 终端 profile 开关（09-18）
         tp: shape(pick('加载 PowerShell profile')),
         keep: shape(pick('锁屏与熄屏后继续运行')),
@@ -6231,9 +6257,10 @@ app.whenReady().then(async () => {
   `)
   const systemBefore = await systemRead()
   const visible = (box) => box !== null && box.w >= 12 && box.h >= 12
-  checkTrue('通用设置内四组开关：启用电脑控制 / 加载 PowerShell profile / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
-    systemBefore.labels.length === 4 &&
+  checkTrue('通用设置内五组开关：启用电脑控制 / 启用浏览器操作 / 加载 PowerShell profile / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
+    systemBefore.labels.length === 5 &&
       systemBefore.cc !== null && systemBefore.cc.checked === false && systemBefore.cc.disabled === false &&
+      systemBefore.bc !== null && systemBefore.bc.checked === false && systemBefore.bc.disabled === false &&
       systemBefore.tp !== null && systemBefore.tp.checked === false && systemBefore.tp.disabled === false &&
       systemBefore.keep !== null && systemBefore.keep.checked === false && systemBefore.keep.disabled === false &&
       systemBefore.auto !== null && systemBefore.auto.checked === false && systemBefore.auto.disabled === false,
@@ -6322,6 +6349,116 @@ app.whenReady().then(async () => {
   checkTrue('E5 再点一下 → 关回原状（桩不留脏状态）',
     tpCalls.length === 2 && tpCalls[1] === false && tpEnabled === false,
     { tpCalls, tpEnabled })
+  // —— D-155 B1-a：浏览器操作开关往返＋被拦列表＋升级横幅 ——
+  // 初态（cc/tp/bc 全关）：被拦列表两项都在（fixture 两 server 各定一类）
+  const cuBlocked = () => sevalRaw(`
+    (() => Array.from(document.querySelectorAll('.settings-body p.hint'))
+      .map((p) => p.textContent.trim()).filter((t) => t.indexOf('已拦截') >= 0))()
+  `)
+  const blockedBefore = await cuBlocked()
+  console.log('BLOCKED_BEFORE=' + JSON.stringify({ blockedBefore, stubs: { ccEnabled, bcEnabled } }))
+  checkTrue('两开关都关着 → 被拦列表两项都在（windows-mcp 桌面类＋playwright 浏览器类，各有被拦原因）',
+    blockedBefore.length === 2 &&
+      blockedBefore.some((t) => t.indexOf('windows-mcp') >= 0 && t.indexOf('桌面') >= 0) &&
+      blockedBefore.some((t) => t.indexOf('playwright') >= 0 && t.indexOf('浏览器') >= 0),
+    { blockedBefore, stubs: { ccEnabled, bcEnabled } })
+  // 点行（label）而不是点 input：真用户点的是行/文案，平台只做一次 activation；
+  // input.click() 在包 input 的 label 里会走两遍开关（开又关），门禁探针必须模拟真人。
+  const bcRowClick = () => sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('启用浏览器操作'));
+      if (c) c.click();
+      return !!c;
+    })()
+  `)
+  const bcCalls0 = bcCalls.length
+  await bcRowClick()
+  await new Promise((r) => setTimeout(r, 600))
+  const blockedBcOn0 = await cuBlocked()
+  const bcOn = await sevalRaw(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.settings-body label.checkbox'))
+        .filter((r) => r.querySelector('input[type=checkbox]'));
+      const c = rows.find((r) => r.textContent.trim().startsWith('启用浏览器操作'));
+      const hints = Array.from(document.querySelectorAll('.settings-body p.hint')).map((p) => p.textContent.trim());
+      const notes = Array.from(document.querySelectorAll('.fnote-mark')).map((n) => n.getAttribute('aria-label') ?? '');
+      return { checked: c ? c.querySelector('input').checked : null, hints, notes: notes.join('|') };
+    })()
+  `)
+  // 等被拦列表跟上（拨开关是一趟 IPC，刷列表是第二趟 —— 定时睡醒就断言会撞上中间态；
+  // 轮询至多 3s，超时不到位才是真红；与 B1-b .cc-text 同一写法）。
+  let blockedBcOn = blockedBcOn0
+  for (let i = 0; i < 10 && !(blockedBcOn.length === 1 && blockedBcOn[0].indexOf('windows-mcp') >= 0); i++) {
+    await new Promise((r) => setTimeout(r, 300))
+    blockedBcOn = await cuBlocked()
+  }
+  checkTrue('浏览器开关点一下 → 桩收到 true（且只收到一次）、界面勾选，且被拦列表只剩桌面那项（开关按类生效）',
+    bcCalls.length === bcCalls0 + 1 && bcCalls[bcCalls0] === true && bcOn.checked === true &&
+      bcOn.notes.indexOf('完整授权') >= 0 &&
+      blockedBcOn.length === 1 && blockedBcOn[0].indexOf('windows-mcp') >= 0,
+    { bcCalls, bcOn: bcOn.checked, blockedBcOn })
+  const bcCalls1 = bcCalls.length
+  await bcRowClick()
+  await new Promise((r) => setTimeout(r, 500))
+  let blockedBack = await cuBlocked()
+  for (let i = 0; i < 10 && blockedBack.length !== 2; i++) {
+    await new Promise((r) => setTimeout(r, 300))
+    blockedBack = await cuBlocked()
+  }
+  checkTrue('浏览器开关再点一下 → 关回原状（载荷 false 且只一次、被拦列表回两项，桩不留脏状态）',
+    bcCalls.length === bcCalls1 + 1 && bcCalls[bcCalls1] === false && bcEnabled === false &&
+      blockedBack.length === 2,
+    { bcCalls, bcEnabled })
+  // 升级横幅：初次见（桩 false）→ 在；点"我知道了" → 桩 true → 不再出现。
+  // 按按钮文本认领横幅（settings-section 里别的 notice-ok 与它无关，避免认错家）。
+  const bannerBtn = () => sevalRaw(`
+    (() => Array.from(document.querySelectorAll('.settings-section .notice-ok button'))
+      .some((x) => (x.textContent || '').indexOf('我知道了') >= 0))()
+  `)
+  checkTrue('升级横幅初次出现（双开关说明＋我知道了按钮）',
+    (await bannerBtn()) === true, { banner: await bannerBtn() })
+  await sevalRaw(`
+    (() => {
+      const bs = Array.from(document.querySelectorAll('.settings-section .notice-ok button'));
+      const b = bs.find((x) => (x.textContent || '').indexOf('我知道了') >= 0);
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  checkTrue('点"我知道了" → 桩记 true、横幅不再出现（只出现一次）',
+    cuNoticeSeen === true && (await bannerBtn()) === false,
+    { cuNoticeSeen })
+  // B1-c K13：技能开关真关 —— 禁用 planner → 该项置灰；再启用 → 回来。
+  // 桩真办事（set 写透进 skillsDisabled，get 读回；fixture 两内置项 planner/reviewer）。
+  await sevalRaw(`(() => { const n = Array.from(document.querySelectorAll('.settings-nav-item')).find((el) => (el.textContent || '').trim() === '技能'); if (n) n.click(); return !!n; })()`)
+  await new Promise((r) => setTimeout(r, 600))
+  const skillRows = () => sevalRaw(`(() => Array.from(document.querySelectorAll('.skills-item')).map((li) => ({ name: li.querySelector('.skills-item-name')?.textContent?.trim() ?? '', off: li.classList.contains('skills-item-off') })))()`)
+  const skillToggle = (name) => sevalRaw(`(() => { const li = Array.from(document.querySelectorAll('.skills-item')).find((x) => (x.querySelector('.skills-item-name')?.textContent ?? '').trim() === ${JSON.stringify('__N__')}); const b = li ? li.querySelector('.skills-item-switch input') : null; if (b) b.click(); return !!b; })()`.replace('__N__', name))
+  const skills0 = await skillRows()
+  checkTrue('技能分区列出桩内两项（planner/reviewer），初态全开',
+    skills0.length === 2 && skills0.every((r) => r.off === false), skills0)
+  await skillToggle('planner')
+  await new Promise((r) => setTimeout(r, 400))
+  const skillsOff = await skillRows()
+  checkTrue('禁用 planner → 该项置灰（.skills-item-off）且桩记下名字（set 写透）',
+    skillsOff.some((r) => r.name === 'planner' && r.off === true) &&
+      skillsOff.some((r) => r.name === 'reviewer' && r.off === false) &&
+      skillsDisabledCalls.length >= 1 &&
+      JSON.stringify(skillsDisabledCalls[skillsDisabledCalls.length - 1]) === JSON.stringify(['planner']),
+    { skillsOff, lastCall: skillsDisabledCalls[skillsDisabledCalls.length - 1] })
+  await skillToggle('planner')
+  await new Promise((r) => setTimeout(r, 400))
+  const skillsOn = await skillRows()
+  checkTrue('再启用 → 置灰消失（桩写回空名单，不留脏状态）',
+    skillsOn.every((r) => r.off === false) &&
+      JSON.stringify(skillsDisabledCalls[skillsDisabledCalls.length - 1]) === JSON.stringify([]),
+    { skillsOn, lastCall: skillsDisabledCalls[skillsDisabledCalls.length - 1] })
+  // 回到通用设置，后续探针还活在那一页
+  await sevalRaw(`(() => { const n = Array.from(document.querySelectorAll('.settings-nav-item')).find((el) => (el.textContent || '').trim() === '通用设置'); if (n) n.click(); return !!n; })()`)
+  await new Promise((r) => setTimeout(r, 400))
   // 初值必须是**从主进程取到的**：取数失败会回落到"未勾选+禁用"，那与"存根返回 false"在断言层分不开 → 查调用次数
   checkTrue('初值来自主进程（`system:get` 真的被调过，不是界面默认值）',
     systemGetCalls >= 1 && systemBefore.keep !== null && systemBefore.keep.disabled === false,
@@ -9549,6 +9686,17 @@ app.whenReady().then(async () => {
     concurrencyResult.runningAfterADone)
   checkTrue('④ **后台那条（A）跑完真的落了盘，且落的是它自己**（P0-1：以前只存"当前显示的那条"）',
     concurrencyResult.savedAOnly.includes('c1'), concurrencyResult.savedAOnly)
+  // B1-b K12：并发时 .cc-text 出现且文案与实现同源（store.ts concurrencyNotice）。
+  // 轮询等出现（300ms×10）：要的是"出现过"，不是"第几毫秒出现" —— 时序抖动不该判红。
+  let ccText = null
+  for (let i = 0; i < 10 && ccText === null; i++) {
+    ccText = await win.webContents.executeJavaScript(
+      `(() => document.querySelector('.cc-text')?.textContent ?? null)()`
+    )
+    if (ccText === null) await new Promise((r) => setTimeout(r, 300))
+  }
+  checkTrue('并发时提示条出现（.cc-text 与 store concurrencyNotice 同源：N 条会话正在运行）',
+    typeof ccText === 'string' && ccText.includes('会话正在运行'), { ccText })
   // —— plan12：目标面板（跨轮次的长期意图）——
   checkTrue('目标面板在输入框上方，且**两条目标都渲染出来**（一进行中、一暂停）',
     goalPanel?.hasPanel === true && goalPanel?.rows === 2 && goalPanel?.pausedCount === 1 && goalPanel?.visible === true,

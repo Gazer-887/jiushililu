@@ -1,31 +1,60 @@
-// plan44 S1 门控单测：白名单命中才放行 / 未开关全拦 / 非桌面派直通 / 桌面派识别。
+// B1-a 门控单测（D-155）：能力分类四类＋优先级＋门控新口径。旧决策 3/3b 口径已随实现删除。
 import { describe, expect, it } from 'vitest'
-import { gateComputerUseTool, isWindowsMcpServer, COMPUTER_USE_ALLOWLIST } from '@shared/computer-use'
+import {
+  classifyCapability,
+  classifyServer,
+  gateComputerUseTool,
+  COMPUTER_USE_ALLOWLIST
+} from '@shared/computer-use'
 
-describe('isWindowsMcpServer（配置名或启动命令任一命中）', () => {
-  it('名字命中 / uvx windows-mcp 命中 / 都不命中', () => {
-    expect(isWindowsMcpServer('windows-mcp', 'uvx windows-mcp')).toBe(true)
-    expect(isWindowsMcpServer('my-desktop', 'uvx windows-mcp@1.0')).toBe(true)
-    expect(isWindowsMcpServer('playwright', 'npx @playwright/mcp')).toBe(false)
+describe('classifyCapability（四类 + 优先级）', () => {
+  it('windows-mcp 专名 → desktop（含推荐卡写入的命名）', () => {
+    expect(classifyCapability('windows-mcp', 'uvx windows-mcp serve', 'Screenshot')).toBe('desktop')
+    expect(classifyCapability('my-desktop', 'uvx windows-mcp@1.0', 'Anything')).toBe('desktop')
+  })
+  it('浏览器信号 → browser（server 名 / 启动命令 / 工具名三处任一）', () => {
+    expect(classifyCapability('playwright', 'npx @playwright/mcp', 'browser_snapshot')).toBe('browser')
+    expect(classifyCapability('my-auto', 'node server.js', 'navigate_page')).toBe('browser')
+    expect(classifyCapability('my-auto', 'node server.js', 'browser_take_screenshot')).toBe('browser')
+  })
+  it('桌面动词 → desktop（server 名或工具名）', () => {
+    expect(classifyCapability('my-tools', '', 'Click')).toBe('desktop')
+    expect(classifyCapability('screen-helper', '', 'capture')).toBe('desktop')
+  })
+  it('普通 server → other（context7 / chromadb 都不许误判成能力类）', () => {
+    expect(classifyCapability('context7', '', 'query-docs')).toBe('other')
+    expect(classifyCapability('chromadb', '', 'query')).toBe('other')
+  })
+  it('优先级：windows-mcp > 浏览器特征 > 桌面动词，不靠实现顺序', () => {
+    expect(classifyCapability('windows-mcp', '', 'navigate_page')).toBe('desktop')
+    expect(classifyCapability('click-helper', '', 'navigate_page')).toBe('browser')
   })
 })
 
-describe('gateComputerUseTool（决策 3 + 3b）', () => {
-  it('桌面派未开启 → 全拦（含白名单内的 Screenshot）', () => {
-    expect(
-      gateComputerUseTool({ isComputerUseServer: true, enabled: false, toolName: 'Screenshot' })
-    ).toBe('drop-server-off')
+describe('classifyServer（整 server 取最强一档）', () => {
+  it('工具里有一条 browser 即整 server 判 browser', () => {
+    expect(classifyServer('my-auto', '', ['query', 'navigate_page'])).toBe('browser')
   })
-  it('开启后：白名单命中放行（含 Process），未知/被屏蔽项（PowerShell/FileSystem/Registry/Scrape）一律拦', () => {
-    for (const name of COMPUTER_USE_ALLOWLIST) {
-      expect(gateComputerUseTool({ isComputerUseServer: true, enabled: true, toolName: name })).toBe('keep')
-    }
-    for (const name of ['PowerShell', 'FileSystem', 'Registry', 'Scrape', 'BrandNewTool']) {
-      expect(gateComputerUseTool({ isComputerUseServer: true, enabled: true, toolName: name })).toBe('drop-not-allowlisted')
-    }
+  it('server 无信号但工具有桌面动词 → desktop；全无 → other', () => {
+    expect(classifyServer('my-tools', '', ['Click'])).toBe('desktop')
+    expect(classifyServer('context7', '', ['query-docs'])).toBe('other')
   })
-  it('非桌面派 server 不受本闸影响（浏览器派照常）', () => {
-    expect(gateComputerUseTool({ isComputerUseServer: false, enabled: false, toolName: 'browser_snapshot' })).toBe('keep')
+})
+
+describe('gateComputerUseTool（D-155：开关开 = 完整授权）', () => {
+  it('other 类直通（开关状态无关）', () => {
+    expect(gateComputerUseTool({ capability: 'other', enabled: false })).toBe('keep')
+  })
+  it('桌面类：关全拦、开全放（含白名单外的 PowerShell —— 名单不再参与放行）', () => {
+    expect(gateComputerUseTool({ capability: 'desktop', enabled: false })).toBe('drop-server-off')
+    expect(gateComputerUseTool({ capability: 'desktop', enabled: true })).toBe('keep')
+  })
+  it('浏览器类与桌面类同口径', () => {
+    expect(gateComputerUseTool({ capability: 'browser', enabled: false })).toBe('drop-server-off')
+    expect(gateComputerUseTool({ capability: 'browser', enabled: true })).toBe('keep')
+  })
+  it('注记表还在（删了它会连 Process 类风险注记一起丢，D-155 连带）', () => {
+    expect(COMPUTER_USE_ALLOWLIST).toContain('Process')
   })
 })
 

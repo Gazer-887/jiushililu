@@ -178,8 +178,9 @@ describe('createMcpTools（门控与透传）', () => {
     const tools = createMcpTools({
       manager,
       confirm: async () => false,
-      // 非桌面派 server 不受门控影响，但这两个字段**必填**（D-119 ① 复查后收紧）
+      // 非桌面派 server 不受门控影响，但三个开关字段**必填**（D-119 ① 复查后收紧＋D-155 B1-a）
       computerControl: false,
+      browserControl: false,
       onGatedDrop: () => {}
     })
     const echo = tools.find((t) => t.schema.name === 'mcp__test__echo')!
@@ -200,6 +201,7 @@ describe('createMcpTools（门控与透传）', () => {
         return true
       },
       computerControl: false,
+      browserControl: false,
       onGatedDrop: () => {}
     })
     const echo = tools.find((t) => t.schema.name === 'mcp__test__echo')!
@@ -215,7 +217,7 @@ describe('createMcpTools（门控与透传）', () => {
 // 于是桌面派工具被整体丢弃、且一条日志都不留。**纯判据单测与非桌面派单测都验不出来** ——
 // 病根在"hooks → 装配 → 门控"这条缝上，所以这里必须在 `createAllTools` 这一层断言。
 describe('装配层透传：桌面派门控（回归 · 2026-09-19）', () => {
-  /** 起一个 `windows-mcp` 派内存 server：白名单内的 Screenshot + 名单外的 PowerShell */
+  /** 起一个 `windows-mcp` 派内存 server：Screenshot + Snapshot + PowerShell（D-155 起开着整批下发） */
   async function makeDesktopServer(): Promise<{ clientTransport: Transport }> {
     const server = new Server({ name: 'test-server', version: '1.0.0' }, { capabilities: { tools: {} } })
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -251,21 +253,21 @@ describe('装配层透传：桌面派门控（回归 · 2026-09-19）', () => {
 
   it('开关关闭 → 白名单内的也不下发（drop-server-off）', async () => {
     const manager = await makeDesktopManager()
-    const names = toolNames({ mcp: { manager, computerControl: false } })
+    const names = toolNames({ mcp: { manager, computerControl: false, browserControl: false } })
     expect(names).not.toContain('mcp__windows-mcp__Screenshot')
     expect(names).not.toContain('mcp__windows-mcp__Snapshot')
     expect(names).not.toContain('mcp__windows-mcp__PowerShell')
   })
 
-  it('⚠️ 开关通过 hooks 传到装配层 → 白名单内下发、名单外仍拦（漏传的话这里全空）', async () => {
+  it('⚠️ 开关通过 hooks 传到装配层 → 开着整批下发（含白名单外的 PowerShell，D-155；漏传的话这里全空）', async () => {
     const manager = await makeDesktopManager()
-    const names = toolNames({ mcp: { manager, computerControl: true } })
+    const names = toolNames({ mcp: { manager, computerControl: true, browserControl: true } })
     expect(names).toContain('mcp__windows-mcp__Screenshot')
     expect(names).toContain('mcp__windows-mcp__Snapshot')
-    expect(names).not.toContain('mcp__windows-mcp__PowerShell')
+    expect(names).toContain('mcp__windows-mcp__PowerShell')
   })
 
-  it('两类原因都上报：关着时白名单内也拦、开着时只拦名单外', async () => {
+  it('两类原因都上报：关着整批拦（drop-server-off）、开着整批放（零拦）', async () => {
     // ⚠️ 断言只钉"拦了哪些、为什么拦"这两条**硬事实**，不掺任何执行路径假设
     // （D-119 ① 复查意见：原先的写法把"漏传"与"确认桥"绑在一起，将来若按权限档调整
     //  确认桥的注入条件，这条回归测试会把正确实现判红）。
@@ -275,6 +277,7 @@ describe('装配层透传：桌面派门控（回归 · 2026-09-19）', () => {
       mcp: {
         manager: closed,
         computerControl: false,
+        browserControl: false,
         onGatedDrop: (fullName, reason) => dropsClosed.push({ name: fullName, reason })
       }
     })
@@ -291,17 +294,18 @@ describe('装配层透传：桌面派门控（回归 · 2026-09-19）', () => {
       mcp: {
         manager: opened,
         computerControl: true,
+        browserControl: true,
         onGatedDrop: (fullName, reason) => dropsOpened.push({ name: fullName, reason })
       }
     })
-    expect(dropsOpened).toEqual([{ name: 'mcp__windows-mcp__PowerShell', reason: 'drop-not-allowlisted' }])
+    expect(dropsOpened).toEqual([])
   })
 
   it('hooks 不提供 onGatedDrop 时也有默认落点（不许"拦了却不说"）', async () => {
     // `onGatedDrop` 在 ToolHooks 上是可选的，但 `createMcpTools` 必填 —— 装配层必须兜底。
     // 这条防的是"回调为空 ⇒ 日志一条都没有 ⇒ 排查被带偏"（本 bug 的真实现场）。
     const manager = await makeDesktopManager()
-    const names = toolNames({ mcp: { manager, computerControl: true } })
+    const names = toolNames({ mcp: { manager, computerControl: true, browserControl: true } })
     expect(names).toContain('mcp__windows-mcp__Screenshot') // 兜底没把功能弄坏
   })
 })

@@ -23,7 +23,7 @@ export interface McpToolRef {
   name: string
   description?: string
   fullName: string
-  /** 启动命令+参数（桌面派 server 识别用，plan44 决策 3；SSE 无 command 时为空） */
+  /** 启动命令+参数（能力分类用，D-155；SSE 无 command 时为空） */
   launchHint?: string
   /** MCP inputSchema（JSON Schema）—— 与 AgentTool.parameters 同族，直接透传给模型 */
   inputSchema?: Record<string, unknown>

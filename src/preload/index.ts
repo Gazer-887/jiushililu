@@ -185,9 +185,14 @@ const api: ApiBridge = {
   onPlaybookChanged: (cb) => subscribe(IPC.playbookChanged, () => cb()),
   // ── 执行事件流（plan26 D-077）──
   listExecEvents: (query) => ipcRenderer.invoke(IPC.execEventsList, query),
-  // 电脑控制开关（plan44 门控）/ E5 终端 profile 开关（默认关）
+  // 电脑控制开关（plan44 门控）/ 浏览器操作开关（D-155 B1-a）/ E5 终端 profile 开关（默认关）
   getComputerControl: () => ipcRenderer.invoke(IPC.computerControlGet),
   setComputerControl: (enabled: boolean) => ipcRenderer.invoke(IPC.computerControlSet, enabled),
+  getBrowserControl: () => ipcRenderer.invoke(IPC.browserControlGet),
+  setBrowserControl: (enabled: boolean) => ipcRenderer.invoke(IPC.browserControlSet, enabled),
+  getComputerUseNotice: () => ipcRenderer.invoke(IPC.computerUseNoticeGet),
+  setComputerUseNotice: (seen: boolean) => ipcRenderer.invoke(IPC.computerUseNoticeSet, seen),
+  getComputerUseStatus: () => ipcRenderer.invoke(IPC.computerUseStatus),
   getTerminalProfile: () => ipcRenderer.invoke(IPC.terminalProfileGet),
   setTerminalProfile: (enabled: boolean) => ipcRenderer.invoke(IPC.terminalProfileSet, enabled),
   // plan34 S2a：技能禁用名单（设置页开关用）。MCP 开关走 mcpSaveServer（cfg.enabled）

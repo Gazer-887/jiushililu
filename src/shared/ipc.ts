@@ -433,6 +433,14 @@ export interface McpSaveResult {
   reason?: string
 }
 
+/** 设置页"被拦 server 列表"用（D-155 B1-a 步 5）：server 级定级 + 被哪个开关拦 */
+export interface ComputerUseServerStatus {
+  server: string
+  capability: import('./computer-use').CapabilityClass
+  blocked: boolean
+  blockedBy: 'desktop' | 'browser' | null
+}
+
 /** `settings:changed` 广播的载荷：变的是哪一类设置。
  *  ⚠️ 抽成命名类型而非四处手写字符串联合（主进程广播点 / preload 断言 / Api 接口 / 渲染端监听各写一遍
  *     = 四份会漂移的副本；2026-09-19 加 `devEnv` 时正好踩到，顺手收口）。 */
@@ -531,6 +539,19 @@ export const IPC = {
    */
   computerControlGet: 'computer-control:get',
   computerControlSet: 'computer-control:set',
+  /**
+   * 浏览器操作开关（D-155 B1-a：与 computerControl 同形状）。关 = 浏览器类 MCP 工具整批不下发；
+   * 开关变更自下一轮对话生效（与电脑控制同一条口径）。
+   */
+  browserControlGet: 'browser-control:get',
+  browserControlSet: 'browser-control:set',
+  /**
+   * 双开关升级提示（D-155 B1-a 步 4）：只读"见过没见过"。设置页顶部横幅只出现一次的落盘位。
+   * 被拦 server 列表（步 5）：按配置 server 逐个定级，报被哪个开关拦（展示用，不参与放行）。
+   */
+  computerUseNoticeGet: 'computer-use:notice-get',
+  computerUseNoticeSet: 'computer-use:notice-set',
+  computerUseStatus: 'computer-use:status',
   /** E5（09-18 拍板"做，默认关"）：内置终端是否加载 PowerShell profile；生效时机 = 下一次起终端 */
   terminalProfileGet: 'terminal-profile:get',
   terminalProfileSet: 'terminal-profile:set',
@@ -955,6 +976,13 @@ export interface ApiBridge {
   /** **电脑控制开关**（plan44 门控）与 **E5 终端 profile 开关**（默认关，下一次起终端生效） */
   getComputerControl(): Promise<boolean>
   setComputerControl(enabled: boolean): Promise<boolean>
+  /** **浏览器操作开关**（D-155 B1-a：与电脑控制同形状；关 = 浏览器类整批不下发） */
+  getBrowserControl(): Promise<boolean>
+  setBrowserControl(enabled: boolean): Promise<boolean>
+  /** 双开关升级提示（读"见过没见过"；写返回改后的值）与被拦 server 列表（展示用） */
+  getComputerUseNotice(): Promise<boolean>
+  setComputerUseNotice(seen: boolean): Promise<boolean>
+  getComputerUseStatus(): Promise<ComputerUseServerStatus[]>
   getTerminalProfile(): Promise<boolean>
   setTerminalProfile(enabled: boolean): Promise<boolean>
   /** plan43 S3：当前**生效**的开发环境（状态栏用）。与 `detectRuntimes().selected` 的区别：

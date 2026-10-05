@@ -262,17 +262,18 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     // ② 同一句 `onGatedDrop?.()` 也是空的 → 连"被拦了什么"的日志都没有，
     //    于是排查时翻遍运行日志干干净净，反倒像是"门控压根没跑"（真机就是这么骗过去的）。
     // **为什么单测全绿也没抓住**：`computer-use.test.ts` 测的是纯判据、`mcp-manager.test.ts` 的
-    // 「门控与透传」段用的是**非桌面派** server（`isComputerUseServer=false` → 判据第一句就 `keep` 了），
+    // 「门控与透传」段用的是**非能力类** server（other 类第一句就 `keep` 了），
     // 两边都绕开了"hooks → 装配 → 门控"这条真正出事的通路。补的回归测试见
     // `tests/unit/mcp-manager.test.ts` 的「装配层透传」段 —— 那里造的是 `windows-mcp` 派 server。
     ...(hooks.mcp?.manager.hasConnected()
       ? createMcpTools({
           manager: hooks.mcp.manager,
           ...(hooks.mcp.confirm ? { confirm: hooks.mcp.confirm } : {}),
-          // 这两个**无条件透传**（不用 `...(cond ? {x} : {})`）：
+          // 这三个**无条件透传**（不用 `...(cond ? {x} : {})`）：
           // `false` 被条件展开吞成"字段不存在"，看着与显式关闭等价，实则把"关"与"没设置"混成一回事 ——
           // 权限开关上这种含糊迟早出事（D-119 ① 的 P0 复查结论）。
           computerControl: hooks.mcp.computerControl === true,
+          browserControl: hooks.mcp.browserControl === true,
           onGatedDrop: hooks.mcp.onGatedDrop ?? defaultGatedDropLog,
           // 漏传它 = 截图又被静默丢掉（plan44 S2b 要修的就是这个），所以类型上是必填
           saveImages: hooks.mcp.saveImages
@@ -369,6 +370,11 @@ export interface ToolHooks {
      * 漏传它必须在**编译期**就报错，而不是运行期静默全拦。
      */
     computerControl: boolean
+    /**
+     * 浏览器操作开关（D-155 B1-a：与 computerControl 同形状，**必填**）。
+     * 两个都必须传 —— 漏传任一个 = 该类被静默全拦（D-119 ① 同族，只查 computerControl 查不出浏览器类的问题）。
+     */
+    browserControl: boolean
     onGatedDrop?: (fullName: string, reason: string) => void
     /**
      * MCP 图片落盘（plan44 S2b）。**必填** —— 理由与 `computerControl` 同一条：
@@ -550,9 +556,14 @@ export interface RunAgentArgs {
    * 语义就是"缺省 = 关"。**权限类不许替用户默认开**，而 `=== true` 正是这条语义的落地点
    * （`undefined` / `false` / 任何非 `true` 都判关）。⚠️ 改这里之前先记住：把它改成"非 false 即真"
    * 会让所有忘记传的调用点**静默放开电脑控制** —— 失效方向就从"关"翻成了"开"，那是安全问题。
-   * 生产侧 `ipc.ts` 每次发送都现取 `getComputerControlEnabled()`，不存在漏传。
+   * 生产侧 `ipc.ts` 每次发送都现取 `getComputerControlEnabled()` / `getBrowserControlEnabled()`，不存在漏传。
    */
   computerControl?: boolean
+  /**
+   * 浏览器操作开关（D-155 B1-a）：与 computerControl 同形状、同判据 —— 可选是刻意的，
+   * 缺省 = 关（`=== true` 落地点，注释见上一条；把"非 false 即真"会静默放开浏览器操作）。
+   */
+  browserControl?: boolean
   /**
    * MCP 图片落盘（plan44 S2b）。这里**可选**（标题生成 / 子代理那几条路径用不上），
    * 但缺省不是"丢掉算了" —— 走 `dropImagesWithLog`：收不到图就**记一条 warn**。
@@ -769,9 +780,10 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       ? {
           mcp: {
             manager: ctx.mcp.manager,
-            // plan44 决策 4：桌面派门控读**本轮**的 computerControl（ipc 每次发送现取设置）；
-            // 被拦工具记日志（决策 3b：未知工具名默认屏蔽要"看得见被拦了什么"才查得动）
+            // plan44 决策 4 + D-155 B1-a：桌面/浏览器双开关读**本轮**值（ipc 每次发送现取设置）；
+            // 被拦工具记日志（D-155：被拦 server 列表在设置页可见，单靠日志查不动）
             computerControl: args.computerControl === true,
+            browserControl: args.browserControl === true,
             saveImages: args.saveImages ?? dropImagesWithLog,
             onGatedDrop: defaultGatedDropLog,
             ...(ctx.confirmCommand

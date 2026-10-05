@@ -6,7 +6,8 @@ import type {
   SettingsSaveInput,
   StorageLocationInfo,
   TestResult,
-  WorkspaceInfo
+  WorkspaceInfo,
+  ComputerUseServerStatus
 } from '@shared/ipc'
 import { entryLabel, sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
@@ -261,6 +262,12 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const [perm, setPerm] = useState<PermissionPreset>('write')
   /** 电脑控制开关（plan44 门控）：真值在主进程；关 = 桌面工具整批不下发 */
   const [ccEnabled, setCcEnabled] = useState<boolean | null>(null)
+  /** 浏览器操作开关（D-155 B1-a：与电脑控制同形状；关 = 浏览器类整批不下发） */
+  const [bcEnabled, setBcEnabled] = useState<boolean | null>(null)
+  /** 被拦 server 列表（展示用；空 = 全部下发中，刷新点见 refreshBlocked） */
+  const [blocked, setBlocked] = useState<ComputerUseServerStatus[]>([])
+  /** 双开关升级提示横幅：只出现一次（缺字段 = 没见过，见 dismissNotice） */
+  const [noticeVisible, setNoticeVisible] = useState(false)
   /** E5：内置终端是否加载 PowerShell profile（默认关；下一次起终端生效） */
   const [tpEnabled, setTpEnabled] = useState<boolean | null>(null)
   /** 省 token 档位：跟权限档一样是"人定的档"，真值在主进程 */
@@ -324,6 +331,9 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
       .catch(() => setWs(null))
     void window.api.getPermission().then(setPerm)
     void window.api.getComputerControl().then(setCcEnabled)
+    void window.api.getBrowserControl().then(setBcEnabled)
+    void window.api.getComputerUseNotice().then((seen) => setNoticeVisible(!seen))
+    void window.api.getComputerUseStatus().then(setBlocked).catch(() => setBlocked([]))
     void window.api.getTerminalProfile().then(setTpEnabled)
     void window.api.getTokenTier().then(setTier)
     void window.api
@@ -589,9 +599,30 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     setPerm(await window.api.setPermission(p))
   }
 
+  /** 被拦列表刷新点：挂载时一次＋每次拨开关后一次（server 增删不跟，备注见正文） */
+  const refreshBlocked = async (): Promise<void> => {
+    try {
+      setBlocked(await window.api.getComputerUseStatus())
+    } catch {
+      setBlocked([])
+    }
+  }
+
   /** 电脑控制开关（2026-09-15）：主进程返回值回显，不做乐观更新 */
   const chooseCC = async (value: boolean): Promise<void> => {
     setCcEnabled(await window.api.setComputerControl(value))
+    await refreshBlocked()
+  }
+
+  /** 浏览器操作开关（D-155 B1-a）：与 chooseCC 同口径（回显＋刷被拦列表） */
+  const chooseBC = async (value: boolean): Promise<void> => {
+    setBcEnabled(await window.api.setBrowserControl(value))
+    await refreshBlocked()
+  }
+
+  /** 升级提示横幅：点"我知道了"即落盘，下次不再出现 */
+  const dismissNotice = async (): Promise<void> => {
+    setNoticeVisible(!(await window.api.setComputerUseNotice(true)))
   }
 
   /** E5 终端 profile 开关：同款回显（真值在主进程，下一次起终端才换壳） */
@@ -716,6 +747,16 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
         {section === 'general' && (
           <div className="settings-section">
             <h2>通用设置</h2>
+
+            {/* 双开关升级提示（D-155 B1-a 步 4）：只出现一次，点"我知道了"即落盘 */}
+            {noticeVisible && (
+              <div className="notice-ok">
+                电脑控制升级为两个能力开关：桌面操控、浏览器操作。开关开 = 该类工具完整授权。
+                <button className="btn-secondary" onClick={() => void dismissNotice()}>
+                  我知道了
+                </button>
+              </div>
+            )}
 
             <div className="field-label">工作区</div>
             {/* 承重定位（plan7 批 F4）：这里改的是"新任务的默认落点"；老会话绑定当时的工作区，不受影响 */}
@@ -843,6 +884,38 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             {ccEnabled === true && (
               <p className="hint">已开启。桌面工具需先在 MCP 设置页添加 windows-mcp 并正常启动后才会下发。</p>
             )}
+
+            {/* 浏览器操作（D-155 B1-a：与电脑控制同形状；关 = 浏览器类整批不下发） */}
+            <div className="field-label field-label-with-note">
+              浏览器操作
+              <FieldNote
+                text={[
+                  '允许模型操作浏览器（页面导航、截图、点击等）。',
+                  '工具由外部浏览器自动化 MCP 服务提供：开关开 = 该类工具完整授权，新工具名无需逐个批准；关 = 该类整批不下发。'
+                ]}
+              />
+            </div>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={bcEnabled ?? false}
+                disabled={bcEnabled === null}
+                onChange={(e) => void chooseBC(e.target.checked)}
+              />
+              启用浏览器操作
+            </label>
+            {bcEnabled === true && (
+              <p className="hint">已开启。浏览器类工具需先在 MCP 设置页添加对应服务并正常启动后才会下发。</p>
+            )}
+            {/* 被拦 server 列表（D-155 B1-a 步 5）：只列被拦的（blocked===false 的不上屏），空 = 全部下发中 */}
+            {blocked
+              .filter((b) => b.blocked)
+              .map((b) => (
+              <p key={b.server} className="hint">
+                已拦截 {b.server}（{b.blockedBy === 'desktop' ? '桌面' : '浏览器'}类）：
+                {b.blockedBy === 'desktop' ? '电脑控制' : '浏览器操作'}开关未开。
+              </p>
+            ))}
 
             {/* E5（09-18 拍板"做，默认关"）：默认带 -NoProfile（确定性优先），开了才加载用户 profile */}
             <div className="field-label field-label-with-note">

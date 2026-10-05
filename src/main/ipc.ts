@@ -41,11 +41,13 @@ import {
   type McpSaveResult,
   type McpServerConfig,
   type McpServerStatus,
+  type ComputerUseServerStatus,
   type SettingsChangedKind
 } from '@shared/ipc'
+import { classifyServer } from '@shared/computer-use'
 import { readMcpImageDataUrl, saveMcpImage } from './mcp/artifacts'
 import type { ToolImageRef } from '@shared/agent'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getMemoryApprovalGate, setMemoryApprovalGate, getComputerControlEnabled, setComputerControlEnabled, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getMemoryApprovalGate, setMemoryApprovalGate, getComputerControlEnabled, setComputerControlEnabled, getBrowserControlEnabled, setBrowserControlEnabled, getComputerUseNoticeSeen, setComputerUseNoticeSeen, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
 import { transcribe, testVoiceEndpoint } from './voice/transcribe'
 import type { VoicePatch } from '@shared/voice'
 import type { SystemSettings, SystemView } from '@shared/system'
@@ -755,6 +757,8 @@ export function registerIpcHandlers(deps: {
         firecrawlApiKey: getFirecrawlKey() || null,
         // 自视段（2026-09-15）：电脑控制开关由组合根读好传入（runner 不碰 electron-store）
         computerControl: getComputerControlEnabled(),
+        // D-155 B1-a：浏览器操作开关同形状传入（缺省 = 关，见 runner 入口注释）
+        browserControl: getBrowserControlEnabled(),
         // plan44 S2b：MCP 截图落进 userData/mcp-artifacts/，界面按引用读；**不进模型上下文**。
         // 必填（漏传 = 截图静默消失，正是这一片要修的症状），故两处装配都补。
         saveImages: (imgs) =>
@@ -940,6 +944,8 @@ export function registerIpcHandlers(deps: {
         conversationId: req.conversationId ?? AGENT_TASK_OWNER,
         // 自视段：一次性任务同样报告配置（模型名/工具/子代理）
         computerControl: getComputerControlEnabled(),
+        // D-155 B1-a：同上，浏览器开关同形状
+        browserControl: getBrowserControlEnabled(),
         // plan44 S2b：MCP 截图落进 userData/mcp-artifacts/，界面按引用读；**不进模型上下文**。
         // 必填（漏传 = 截图静默消失，正是这一片要修的症状），故两处装配都补。
         saveImages: (imgs) =>
@@ -1746,14 +1752,50 @@ export function registerIpcHandlers(deps: {
     }
   )
 
-  // ── 电脑控制开关（2026-09-15 立，plan44 09-18 接上实体）── 单一真相源：
-  //    每轮发送现取此值传入 createMcpTools，桌面派（windows-mcp）server 的工具据此整体下发/拦截。
+  // ── 电脑控制开关（2026-09-15 立，plan44 09-18 接上实体；D-155 起为双开关之桌面半）── 单一真相源：
+  //    每轮发送现取此值传入 createMcpTools，桌面类 server 的工具据此整体下发/拦截。
   //    开关变更自**下一轮对话**起生效（工具表按轮重建）。
   ipcMain.handle(IPC.computerControlGet, (): boolean => getComputerControlEnabled())
 
   ipcMain.handle(IPC.computerControlSet, (_e, raw: unknown): boolean => {
     const enabled = z.boolean().parse(raw)
     return setComputerControlEnabled(enabled)
+  })
+
+  // D-155 B1-a：浏览器操作开关（与电脑控制同形状）＋升级提示横幅＋被拦 server 列表。
+  // 被拦列表是展示口径：server 级定级（自身信号＋全部工具名最强一档），单工具放行仍逐工具判。
+  ipcMain.handle(IPC.browserControlGet, (): boolean => getBrowserControlEnabled())
+
+  ipcMain.handle(IPC.browserControlSet, (_e, raw: unknown): boolean => {
+    const enabled = z.boolean().parse(raw)
+    return setBrowserControlEnabled(enabled)
+  })
+
+  ipcMain.handle(IPC.computerUseNoticeGet, (): boolean => getComputerUseNoticeSeen())
+
+  ipcMain.handle(IPC.computerUseNoticeSet, (_e, raw: unknown): boolean => {
+    const seen = z.boolean().parse(raw)
+    return setComputerUseNoticeSeen(seen)
+  })
+
+  ipcMain.handle(IPC.computerUseStatus, (): ComputerUseServerStatus[] => {
+    const cc = getComputerControlEnabled()
+    const bc = getBrowserControlEnabled()
+    const servers = deps.agent.mcp?.manager.listServers() ?? []
+    return servers.map((s) => {
+      const capability = classifyServer(
+        s.config.name,
+        [s.config.command ?? '', ...(s.config.args ?? [])].join(' '),
+        s.tools.map((t) => t.name)
+      )
+      const blocked = capability === 'desktop' ? !cc : capability === 'browser' ? !bc : false
+      const blockedBy: ComputerUseServerStatus['blockedBy'] = !blocked
+        ? null
+        : capability === 'desktop'
+          ? 'desktop'
+          : 'browser'
+      return { server: s.config.name, capability, blocked, blockedBy }
+    })
   })
 
   // E5（09-18 拍板"做，默认关"）：内置终端是否加载 PowerShell profile。

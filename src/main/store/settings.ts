@@ -50,6 +50,16 @@ interface StoredSettings extends ModelSettings {
    * 涉及鼠标键盘的权限必须由用户显式开启，不能替他默认。
    */
   computerControlEnabled?: boolean
+  /**
+   * **浏览器操作开关**（D-155 B1-a：与 computerControl 同形状）。权限闸在消费侧：
+   * 关 = 浏览器类 MCP 工具整批不下发。缺字段 = 老配置 → `false`（与电脑控制同一条判据）。
+   */
+  browserControlEnabled?: boolean
+  /**
+   * **双开关升级提示已读**（D-155 B1-a 步 4）。设置页顶部横幅只出现一次的落盘位：
+   * 缺字段 = 还没见过 → 显示；点"我知道了"后写 true。**纯展示位，不参与任何放行判断。**
+   */
+  computerUseNoticeSeen?: boolean
   /** E5（09-18 拍板"做，默认关"）：内置终端起 shell 时是否加载 PowerShell profile */
   terminalLoadProfileEnabled?: boolean
   /**
@@ -202,6 +212,26 @@ export function getComputerControlEnabled(): boolean {
 export function setComputerControlEnabled(enabled: boolean): boolean {
   store.set('computerControlEnabled', enabled)
   return getComputerControlEnabled()
+}
+
+/** 与 getComputerControlEnabled 同一条判据（`=== true`，坏值宁可静默关着）。 */
+export function getBrowserControlEnabled(): boolean {
+  return store.store.browserControlEnabled === true
+}
+
+export function setBrowserControlEnabled(enabled: boolean): boolean {
+  store.set('browserControlEnabled', enabled)
+  return getBrowserControlEnabled()
+}
+
+/** 升级提示横幅：只读"见过没见过"，缺字段 = 没见过。 */
+export function getComputerUseNoticeSeen(): boolean {
+  return store.store.computerUseNoticeSeen === true
+}
+
+export function setComputerUseNoticeSeen(seen: boolean): boolean {
+  store.set('computerUseNoticeSeen', seen)
+  return getComputerUseNoticeSeen()
 }
 
 /**

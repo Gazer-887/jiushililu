@@ -8,9 +8,9 @@ import type { McpManager } from '../../mcp/mcp-manager'
 import {
   PROCESS_RISK_NOTE,
   COMPUTER_USE_RISKY_TOOLS,
+  classifyCapability,
   forceMainDisplay,
-  gateComputerUseTool,
-  isWindowsMcpServer
+  gateComputerUseTool
 } from '@shared/computer-use'
 
 export interface McpToolDeps {
@@ -30,6 +30,11 @@ export interface McpToolDeps {
    */
   computerControl: boolean
   /**
+   * 浏览器操作开关（D-155 B1-a：与 computerControl 同形状，**必填**，理由同上 ——
+   * 漏传它 = 浏览器类工具被静默全拦，且与"桌面开关开着"混在一起查不动）。
+   */
+  browserControl: boolean
+  /**
    * 被门控拦下的工具名（日志用；决策 3b「未知一律屏蔽并记一条」）。**必填**，理由同上：
    * 漏传它 = 拦了却不说，排查时"该有的日志一条都没有"会把方向带偏（本 bug 就是这么骗过一轮排查的）。
    */
@@ -47,19 +52,17 @@ export function createMcpTools(deps: McpToolDeps): AgentTool[] {
   // `activeTools()` 只认 connected 态，`enabled=false` 的 server 根本不在里面（manager 已保证）。
   const tools: AgentTool[] = []
   for (const ref of deps.manager.activeTools()) {
-    const isDesktop = isWindowsMcpServer(ref.server, ref.launchHint ?? '')
-    const decision = gateComputerUseTool({
-      isComputerUseServer: isDesktop,
-      enabled: deps.computerControl,
-      toolName: ref.name
-    })
+    const capability = classifyCapability(ref.server, ref.launchHint ?? '', ref.name)
+    // D-155：传"该类开关" —— 桌面类走 computerControl，浏览器类走 browserControl，other 类恒放行。
+    const enabled =
+      capability === 'browser' ? deps.browserControl : capability === 'desktop' ? deps.computerControl : true
+    const decision = gateComputerUseTool({ capability, enabled })
     if (decision !== 'keep') {
       deps.onGatedDrop(ref.fullName, decision)
       continue
     }
     const label = `${ref.server}/${ref.name}`
-    const riskyNote =
-      isDesktop && COMPUTER_USE_RISKY_TOOLS.includes(ref.name) ? `\n${PROCESS_RISK_NOTE}` : ''
+    const riskyNote = COMPUTER_USE_RISKY_TOOLS.includes(ref.name) ? `\n${PROCESS_RISK_NOTE}` : ''
     tools.push({
       schema: {
         name: ref.fullName,
@@ -77,11 +80,11 @@ export function createMcpTools(deps: McpToolDeps): AgentTool[] {
           if (!ok) return '用户取消了本次 MCP 工具调用。'
         }
         // D-066：callTool 的错误以人话文本返回（manager 内已处理），模型可读可自纠
-        // O2：桌面派只打主屏（display 是工具参数，按 schema 覆写；非桌面派直通）
+        // O2：桌面类只打主屏（display 是工具参数，按 schema 覆写；浏览器类与 other 类直通）
         const res = await deps.manager.callTool(
           ref.server,
           ref.name,
-          isDesktop ? forceMainDisplay(ref.inputSchema, payload) : payload
+          capability === 'desktop' ? forceMainDisplay(ref.inputSchema, payload) : payload
         )
         // 图片只进界面：文本里已经写了"有一张截图"，模型据此知道存在，但**不会**把 base64 读进上下文。
         const saved = res.images.length > 0 ? deps.saveImages(res.images) : []
