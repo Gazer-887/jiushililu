@@ -256,12 +256,123 @@ describe('待办总览 · 结构守卫', () => {
   // ⚠️ 这条**刻意不判「未复验的 ✅ 有多少」** —— 判红会诱导下一端把 ⚠️ 直接改成 ✅ 去消红，
   // 那是在逼人伪造复核，比不披露更坏。只钉「头注披露的数 = 实数」（同源原则）：
   // 想让它变少，去做真复核，不是去改头注那一行。
+// 2026-10-01 新增（**守卫新闸之四**：✅ 的成色披露）。
+  // ⚠️ 这条**刻意不判「未复验的 ✅ 有多少」** —— 判红会诱导下一端把 ⚠️ 直接改成 ✅ 去消红，
+  // 那是在逼人伪造复核，比不披露更坏。只钉「头注披露的数 = 实数」（同源原则）：
+  // 想让它变少，去做真复核，不是去改头注那一行。
   it.skipIf(!live)('头注披露的 ✅/⚠️ 成色数 = 实数（同源原则）', () => {
     const m = head.match(/✅\s*(\d+)\s*条，其中\s*⚠️\s*未独立复验\s*(\d+)\s*条/)
     expect(m, '头注必须披露「✅ N 条，其中 ⚠️ 未独立复验 M 条」').not.toBeNull()
     const done = rows.filter((r) => r.state.startsWith('✅')).length
     const unverified = rows.filter((r) => r.state.startsWith('✅') && r.rest[2] === '⚠️').length
     expect([Number(m![1]), Number(m![2])]).toEqual([done, unverified])
+  })
+
+  // ⚠️⚠️ 下面三条新闸**一律不许把状态图标写进正则字符类**。
+  //
+  // 本轮实测踩坑（三次，同族）：① Python `re` 里写 `[\ud83d\udea9]` 是两个**孤立代理**，
+  //   `### 1-2 🚧` 整行静默漏检（标题数 4≠5）；② `ledger-count-20261002.py` 的「粘连检测」
+  //   对真阳性（L322 同一行两遍标题）报「无」；③ **JS/TS 正则无 `u` 标志时字符类按 UTF-16
+  //   code unit 处理**，🚧 是代理对 ⇒ 字符类只匹配到**半个代理**，`m[1]` 是孤立代理，
+  //   字典查不到 → `undefined`，18 行假脱钩。
+  // ⇒ 统一改成**捕获完整状态词**再与 `VALUES` 比对（完整字符串比较不受代理影响）。
+  const HEAD_RE = /^###\s*1-(\d+)\s*(.+?)\s*（序号\s*(\d+)[–—-](\d+)，共\s*(\d+)\s*条/
+  const headMarks = (): { no: number; state: string; lo: number; hi: number; n: number; at: number }[] => {
+    const out: { no: number; state: string; lo: number; hi: number; n: number; at: number }[] = []
+    mainBody.forEach((l, i) => {
+      const m = l.match(HEAD_RE)
+      if (!m) return
+      const st = m[2].trim()
+      if (!(VALUES as readonly string[]).includes(st)) return
+      out.push({ no: Number(m[1]), state: st, lo: Number(m[3]), hi: Number(m[4]), n: Number(m[5]), at: i })
+    })
+    return out
+  }
+
+  // 2026-10-03 新增（**守卫新闸之五**：分块标题唯一）。
+  // 为什么需要它：`### 1-N` 标题是 V1 粘连的落点——2026-10-01 21:43 的一次插入把
+  // 同一句标题打印了两遍（`PLAN/待办总览.md` 改判前的第 322 行），
+  // **两份备份（备份-20261002-121856 / -235801）为证，非 P2 本轮造成**。
+  // 守卫此前 15 条一条都不覆盖它 ⇒ 粘连存在期间一直全绿。
+  // ⚠️ 检测必须覆盖两种形态：① 整行重复 ② **同一行内出现两次**——
+  //    后者按「行」去重永远看不到（`ledger-count-20261002.py` 的粘连检测即栽在这里）。
+  it.skipIf(!live)('`### 1-N` 分块标题全表唯一（V1 粘连的守卫落点）', () => {
+    const marks = headMarks()
+    expect(marks.length, '分块标题数应与状态块数一致（本表现为 5）').toBe(5)
+    expect(new Set(marks.map((m) => m.no)).size, '分块标题编号有重复').toBe(marks.length)
+    const glued = mainBody.filter((l) => (l.match(/###\s*1-\d+/g) ?? []).length > 1)
+    expect(glued.map((l) => l.slice(0, 40))).toEqual([])
+  })
+
+  // 2026-10-03 新增（**守卫新闸之六**：分块标题自陈区间/条数 = 实数）。
+  // 存量缺陷实证：S026 从 ⏳ 改判 ❌ 后块边界移动而标题没动 ⇒
+  // `1-1` 写「1–137，共 137 条」实为 1–136/136 条、`1-2` 写「138–158」实为 137–157、
+  // `1-3` 写「159–217，共 59 条」实为 158–217/60 条（且与 1-4 的 218 重叠）。
+  // 三处都是「摘要层与正文层不同源」，而这类失真不会自己报错。
+  it.skipIf(!live)('分块标题自陈的序号区间与条数 = 该块实际（摘要层同源）', () => {
+    const marks = headMarks()
+    expect(marks.length).toBe(5)
+    const bad: string[] = []
+    marks.forEach((mk, k) => {
+      const end = k + 1 < marks.length ? marks[k + 1].at : mainBody.length
+      const seqs = mainBody
+        .slice(mk.at + 1, end)
+        .map((l) => {
+          const t = l.trim()
+          if (!t.startsWith('|')) return null
+          const c = t.replace(/^\||\|$/g, '').split('|').map((x) => x.trim())
+          return c.length >= 4 && /^\d+$/.test(c[0]) ? Number(c[0]) : null
+        })
+        .filter((x): x is number => x !== null)
+      const lo = seqs.length ? Math.min(...seqs) : -1
+      const hi = seqs.length ? Math.max(...seqs) : -1
+      if (lo !== mk.lo || hi !== mk.hi || seqs.length !== mk.n)
+        bad.push(`1-${mk.no} 写 ${mk.lo}–${mk.hi}/共${mk.n}，实为 ${lo}–${hi}/共${seqs.length}`)
+    })
+    expect(bad).toEqual([])
+  })
+
+  // 2026-10-03 新增（**守卫新闸之七**：标题↔状态列脱钩为 0）。
+  // 为什么单列一条：守卫原 15 条全部只比**状态列**，标题只是装饰——于是「按标题插错块」
+  // 与「块边界移动后标题没动」两类事故都能全绿通过。
+  // 实证：P2 首版只重排数据行、没动标题位置，`check_ledger.py` 报脱钩 **10 行**
+  // （1 个 🚧 落在 ⏳ 标题下、7 个 ❌ 落在 🚧 标题下），而 vitest 当时 15/15 全绿。
+  it.skipIf(!live)('每行的状态 = 其上方最近分块标题的状态（防插错块/标题未随条数移动）', () => {
+    const marks = headMarks()
+    expect(marks.length).toBe(5)
+    const bad: string[] = []
+    marks.forEach((mk, k) => {
+      const end = k + 1 < marks.length ? marks[k + 1].at : mainBody.length
+      for (const ln of mainBody.slice(mk.at + 1, end)) {
+        const t = ln.trim()
+        if (!t.startsWith('|')) continue
+        const c = t.replace(/^\||\|$/g, '').split('|').map((x) => x.trim())
+        if (c.length < 4 || !/^\d+$/.test(c[0])) continue
+        if (c[3] !== mk.state) bad.push(`#${c[0]} 是 ${c[3]}，却在 ${mk.state} 标题下`)
+      }
+    })
+    expect(bad).toEqual([])
+  })
+
+  // 2026-10-04 新增（**守卫新闸之八**：主表数据行恰好 8 列）。
+  // 为什么需要它：`ledger-anchors` 的行解析是 `c.length < 4` 即入 rows ⇒ **列数多于一列的行
+  // 仍会被当数据行、其余 18 条仍全绿**。2026-10-04 施工批实证：某行把阳性对照词表写成
+  // `theme|主题`，那个 `|` 就是列分隔符 ⇒ 该行由 8 列撑成 9 列、下游整行错位，而守卫毫无反应。
+  // 与判据③同族：**插入串禁带锚点自身** / **禁带结构分隔符**。
+  // ⚠️ 只判**主表数据行**；`## 二、待拍板项` 的 5 列辅助表不算（它是另一个表，另有其形）。
+  // ⚠️ 表头/分隔行靠「首格不是纯数字」自然跳过，不特判。
+  // 变异证据：`python 台账整理区/tools/guard-19-mutation-20261004.py`
+  // （9 列变异与 7 列变异**两组都能红**，还原回全绿；恒绿的尺子比没有尺子更坏）。
+  it.skipIf(!live)('主表数据行恰好 8 列（防插入串里的 `|` 把行撑成 9 列）', () => {
+    const bad: string[] = []
+    for (const ln of mainBody) {
+      const t = ln.trim()
+      if (!t.startsWith('|')) continue
+      const c = t.replace(/^\||\|$/g, '').split('|').map((x) => x.trim())
+      if (!/^\d+$/.test(c[0] ?? '')) continue
+      if (c.length !== 8) bad.push(`#${c[0]} 是 ${c.length} 列`)
+    }
+    expect(bad).toEqual([])
   })
 })
 
