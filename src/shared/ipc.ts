@@ -124,6 +124,12 @@ export interface ModelSettings {
 export interface SettingsView extends ModelSettings {
   hasApiKey: boolean
   apiKeyMasked: string
+  /**
+   * K51 探测直通（B3）：当前模型档案条目的探测记录（有才带）。发送前 gate 与界面注记共用；
+   * 过期与否由消费方按 `isDetectionFresh` 判，这里只透传不裁决。
+   */
+  detectedModalities?: import('./content-parts').InputModality[]
+  detectedAt?: number
 }
 
 /** 保存入参：apiKey 为空串表示"保留已存 Key 不变" */

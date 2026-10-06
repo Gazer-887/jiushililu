@@ -7,6 +7,7 @@
  * ⚠️ API Key 一个字节都不进 `models.json`：仍按"端点 id → 密文"存 settings.json（AGENTS.md / D-013）。
  */
 import type { ModelSettings, ProviderType, ReasoningConfig, BudgetEncoding, OffEncoding } from './ipc'
+import type { InputModality } from './content-parts'
 import { BUDGET_ENCODINGS, OFF_ENCODINGS } from './ipc'
 import { REASONING_KINDS } from './ipc'
 import { modalitiesFromLegacyFlag, normalizeModalities } from './content-parts'
@@ -22,6 +23,60 @@ export interface ModelEntry {
   /** 显示名（可空 = 用 model 当显示名） */
   name?: string
   settings?: Partial<ModelSettings>
+  /**
+   * K51 探测落盘（plan57 K51 / D-146 D）：官方能力位问回来的模态 + 问到的时刻 + 来源。
+   * 与手勾 `settings.inputModalities` **读写同一个语义**，但手勾优先 —— 探测只填"未声明处"，
+   * 绝不覆盖用户亲手勾的值（D-146 D"可覆写能力表"）。
+   */
+  detectedModalities?: InputModality[]
+  /** 探测时刻（Date.now()）。超 `DETECT_TTL_MS` 即视为过期，按"未探测"处理 —— 过期数据比没有更坏 */
+  detectedAt?: number
+  /** 目前只有 Anthropic 官方 `/v1/models` 有这个位（OpenAI 侧无官方位，不填） */
+  detectSource?: 'anthropic-models-api'
+}
+
+/** 探测缓存有效期：7 天（B3 定案）。过期不断网重探的 quiet 失败，只降级显示与报因 */
+export const DETECT_TTL_MS = 7 * 24 * 3600 * 1000
+
+/** 探测记录是否还有效：缺字段、非数字、未来时间一律按无效（防脏数据把过期判成新鲜） */
+export function isDetectionFresh(detectedAt: number | undefined, now: number = Date.now()): boolean {
+  if (typeof detectedAt !== 'number' || !Number.isFinite(detectedAt)) return false
+  const age = now - detectedAt
+  if (age < 0) return false
+  return age <= DETECT_TTL_MS
+}
+
+/** 单个模型官方能力位（目前只有 Anthropic 回这个；OpenAI 侧无官方位，不参与） */
+export interface ModelCapabilities {
+  /** `capabilities.image_input.supported` 的原值；缺字段 = 该模型没声明 = null 语义 */
+  imageInput?: boolean
+}
+
+/**
+ * K51 落盘映射（纯函数，单测钉住）：按模型 ID 精确匹配档案条目，把官方能力位写成
+ * `detectedModalities + detectedAt + detectSource`。**只增不改** —— 手勾 settings、
+ * id/name/model 一律不动；对不上的模型 ID 与缺 imageInput 的条目直接跳过。
+ * `capabilities` 为空/缺省 = 本次没问到任何位 ⇒ 全表原样返回（失败形状不写盘，K51-3）。
+ */
+export function applyDetectionToEntries(
+  entries: ModelEntry[],
+  capabilities: Record<string, ModelCapabilities> | undefined,
+  now: number
+): ModelEntry[] {
+  if (!capabilities) return entries
+  let changed = false
+  const next = entries.map((e) => {
+    const cap = capabilities[e.model]
+    if (!cap || typeof cap.imageInput !== 'boolean') return e
+    changed = true
+    return {
+      ...e,
+      detectedModalities: (cap.imageInput ? ['text', 'image'] : ['text']) as InputModality[],
+      detectedAt: now,
+      detectSource: 'anthropic-models-api' as const
+    }
+  })
+  return changed ? next : entries
 }
 
 /**
@@ -297,6 +352,11 @@ export interface AvailableModels {  ok: boolean
   /** 给人看的一句话（失败时说清是 Key 错、地址错，还是该端点不提供列表） */
   message: string
   models: string[]
+  /**
+   * K51 顺手带回的官方能力位（目前只有 Anthropic lane 填；OpenAI 侧无官方位，缺省）。
+   * 缺省/空对象 = 本次没问到任何位，调用方不得据此改档案（失败形状不写盘）。
+   */
+  capabilities?: Record<string, ModelCapabilities>
 }
 
 /**

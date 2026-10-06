@@ -78,7 +78,7 @@ import {
 import { getProfileKey, hasProfileKey } from './store/settings'
 import { maskKey } from './store/mask'
 import type { ModelPatchEntryInput, ModelProfileView, ModelsView, ModelSaveInput } from '@shared/models'
-import { mergeEntrySettings } from '@shared/models'
+import { isDetectionFresh, mergeEntrySettings } from '@shared/models'
 import { createProvider } from './providers'
 import { getUIPrefs, setUIPref, resetUIPrefs } from './store/ui-prefs'
 import { listWorkspaceDir, readAttachment, readWorkspaceBinary, readWorkspaceFile } from './workspace-fs'
@@ -695,7 +695,13 @@ export function registerIpcHandlers(deps: {
       { image: 0, video: 0 }
     )
     // 第三个参数是协议：视频只有 OpenAI 兼容线有通路，Anthropic 勾了也发不出去 ⇒ 照样拦，不静默丢块
-    const gateErr = modalityGateError(settings.inputModalities, outbound, settings.providerType)
+    // K53（B3 选 B）：官方探测状态直通 —— 过期/缺失按未探测走旧文案，新鲜才进三路报因。拦不拦不动。
+    const detected = settings.detectedModalities
+    const officialImage =
+      detected && isDetectionFresh(settings.detectedAt) ? detected.includes('image') : null
+    const gateErr = modalityGateError(settings.inputModalities, outbound, settings.providerType, {
+      image: officialImage
+    })
     if (gateErr) {
       chatGate.end(conversationId)
       emit.error(gateErr)

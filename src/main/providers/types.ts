@@ -28,5 +28,11 @@ export interface IProvider {
    * （OpenAI 兼容 `/models`、Anthropic `/v1/models` 且要额外请求头）。
    * ⚠️ 失败要回**人话**（Key 错 / 地址错 / 不支持），不许返回空数组 —— 用户会以为端点没有模型。
    */
-  listModels(req: ProviderRequest): Promise<{ ok: boolean; message: string; models: string[] }>
+  listModels(req: ProviderRequest): Promise<{
+    ok: boolean
+    message: string
+    models: string[]
+    /** K51：官方能力位（目前只有 Anthropic lane 填；缺省 = 没问到，调用方不得据此改档案） */
+    capabilities?: Record<string, { imageInput?: boolean }>
+  }>
 }

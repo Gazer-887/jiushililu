@@ -209,7 +209,30 @@ export class AnthropicProvider implements IProvider {
       if (models.length === 0) {
         return { ok: false, message: '此端点不提供模型列表（返回体无模型）：请手动填写模型 ID', models: [] }
       }
-      return { ok: true, message: `获取到 ${models.length} 个模型`, models }
+      // K51（plan57 K51 / D-146 D）：顺手抽官方能力位 `capabilities.image_input.supported`。
+      // 缺该字段的模型不进表（= 没声明，不等于不支持）；调用方见空表/缺省不得改档案。
+      const capabilities: Record<string, { imageInput?: boolean }> = {}
+      for (const m of list) {
+        if (!m || typeof m !== 'object') continue
+        const id = (m as { id?: unknown }).id
+        if (typeof id !== 'string' || id.length === 0) continue
+        const cap = (m as { capabilities?: unknown }).capabilities
+        const supported =
+          cap && typeof cap === 'object'
+            ? (cap as { image_input?: unknown }).image_input
+            : undefined
+        const imageInput =
+          supported && typeof supported === 'object'
+            ? (supported as { supported?: unknown }).supported
+            : undefined
+        if (typeof imageInput === 'boolean') capabilities[id] = { imageInput }
+      }
+      return {
+        ok: true,
+        message: `获取到 ${models.length} 个模型`,
+        models,
+        ...(Object.keys(capabilities).length > 0 ? { capabilities } : {})
+      }
     } catch (err) {
       if (isAbortError(err)) {
         return { ok: false, message: '获取模型列表超时：请检查 baseURL 是否可达', models: [] }

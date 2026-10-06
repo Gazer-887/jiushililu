@@ -182,6 +182,30 @@ describe('模态闸（D-146 B / K55：发送前按**本轮实际用到的模态*
     expect(v).toContain(String(MAX_VIDEOS_PER_TURN))
     expect(v).toContain('视频')
   })
+
+  it('K53-B 官方确认支持但没勾 ⇒ 仍拦，报因升级成"勾选即可"（拦不拦不动）', () => {
+    const e = modalityGateError(['text'], IMG, 'openai-compatible', { image: true }) ?? ''
+    expect(e).toContain('官方能力位显示该模型支持图片输入')
+    expect(e).toContain('勾选「图片」')
+    // 仍拦：返回值非 null（不是放行）
+    expect(modalityGateError(['text'], IMG, 'openai-compatible', { image: true })).not.toBeNull()
+  })
+
+  it('K53-B 官方确认不支持 ⇒ 仍拦，报因升级成"换模型"', () => {
+    const e = modalityGateError(['text'], IMG, 'openai-compatible', { image: false }) ?? ''
+    expect(e).toContain('官方能力位显示该模型不支持图片输入')
+    expect(e).toContain('换用支持图片输入的模型')
+  })
+
+  it('K53-B 未探测/过期 ⇒ 旧文案逐字保留（第四参缺省与 null 同形）', () => {
+    const old = modalityGateError(['text'], IMG) ?? ''
+    expect(modalityGateError(['text'], IMG, 'openai-compatible', { image: null }) ?? '').toBe(old)
+    expect(modalityGateError(['text'], IMG, 'openai-compatible', undefined) ?? '').toBe(old)
+    expect(old).toContain('未声明支持图片输入')
+    // 视频路径不受探测参影响：旧文案原样
+    const v = modalityGateError(['text'], VID, 'openai-compatible', { image: true }) ?? ''
+    expect(v).toContain('未声明支持视频输入')
+  })
 })
 
 describe('模态集合的读盘容错（K55 迁移）', () => {

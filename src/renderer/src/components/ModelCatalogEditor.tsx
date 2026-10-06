@@ -13,7 +13,7 @@ import {
   modalityLabel,
   type InputModality
 } from '@shared/content-parts'
-import { entryLabel, type ModelEntry } from '@shared/models'
+import { entryLabel, isDetectionFresh, type ModelEntry } from '@shared/models'
 import {
   ADDABLE_EFFORT_LEVELS,
   BUDGET_ENCODING_LABELS,
@@ -408,6 +408,23 @@ function AdvancedPanel({
           )
         })}
       </div>
+      {/* K51 探测注记（B3）：有新鲜探测记录才显 —— 缺失/过期不显示（未探测不是负信息，不占位）。
+          文案只讲两件事：官方位说什么 + 手勾为准（§十）。 */}
+      {(() => {
+        const fresh =
+          entry.detectedModalities && isDetectionFresh(entry.detectedAt) ? entry.detectedModalities : null
+        if (!fresh) return null
+        const days = Math.floor((Date.now() - (entry.detectedAt as number)) / 86400000)
+        const ago = days <= 0 ? '今天' : `${days}天前`
+        const supports = fresh.includes('image')
+        return (
+          <span className="hint mc-adv-detected">
+            {supports
+              ? `官方能力位：支持图片输入（${ago}探测；仍以手勾为准）`
+              : `官方能力位：不支持图片输入（${ago}探测；手勾可覆盖）`}
+          </span>
+        )
+      })()}
       <span className="hint inline-hint">Top K 请使用端点级或厂商默认值：多数端点不支持该参数</span>
     </div>
   )

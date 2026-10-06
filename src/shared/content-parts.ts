@@ -236,22 +236,36 @@ export function modalityLabel(m: InputModality): string {
 }
 
 /**
+ * 官方探测状态（K51→K53，B3 选 B）：当前模型的官方图片能力位。
+ * - `true` = 官方确认支持（但手勾没勾 ⇒ 仍拦，报因升级成"勾选即可"）；
+ * - `false` = 官方确认不支持（⇒ 仍拦，报因升级成"换模型"）；
+ * - `null`/`undefined` = 未探测或已过期 ⇒ **旧文案逐字保留**（既有单测钉住，一字不改）。
+ */
+export interface OfficialImageSupport {
+  image: boolean | null
+}
+
+/**
  * 能力位闸（D-146 B）：本轮要发的媒体里有模型未声明支持的模态时**发送前拦**，报清楚是几条、去哪儿改。
  * 独立成纯函数不是为了好看：`chat:send` 那条链在门禁的隔离进程里跑不到，
  * 而"死开关"这一族（字段存在、没人消费）必须有能被单测钉住的判定点。
  *
  * 拦的是**整段历史里任意一轮带媒体**：旧轮折成 marker 后模型仍被告知"这里有过一张图/一段视频"，
  * 那正是"界面有、模型没"的假成功，不能因为它不带 base64 就放行。
+ * （B3 定案：C 方案驳回，D-146 B 维持 —— K53 只升级报因精度，不改"拦不拦"。）
  *
  * @param providerType 协议类型。⚠️ **视频只有 OpenAI 兼容线有通路**，Anthropic 那边没有 image 之外的
  *   视频块形状 —— 用户在 Anthropic 档案上勾了「视频」也发不出去，所以这里必须按协议再拦一道，
  *   而不是等 provider 静默丢掉那个块（那正是"界面有、模型没"）。
+ * @param official K53 新增（可选）：官方探测状态。只影响**图片被拦时**的那一句报因，
+ *   视频路径与上限两条一律走旧文案（探测目前只问图片位，不碰视频）。
  * @returns null = 放行；否则是可直接显示给用户的原因
  */
 export function modalityGateError(
   available: readonly InputModality[],
   counts: { image: number; video: number },
-  providerType: 'openai-compatible' | 'anthropic' = 'openai-compatible'
+  providerType: 'openai-compatible' | 'anthropic' = 'openai-compatible',
+  official?: OfficialImageSupport
 ): string | null {
   if (counts.image > MAX_IMAGES_PER_TURN) {
     return `一条消息最多 ${MAX_IMAGES_PER_TURN} 张图片，本轮有 ${counts.image} 张：请分几条消息发送`
@@ -263,6 +277,19 @@ export function modalityGateError(
     if (counts[need] === 0 || !available.includes(need)) {
       if (counts[need] === 0) continue
       const label = MODALITY_LABEL[need]
+      // K53：图片被拦且有新鲜官方位 ⇒ 报因升级（仍拦）。视频/未知一律旧文案。
+      if (need === 'image' && official && official.image === true) {
+        return (
+          `本轮含 ${counts[need]} ${MODALITY_QUANTIFIER[need]}${label}，官方能力位显示该模型支持${label}输入：` +
+          `请在「设置 → 模型」的「输入模态」里勾选「${label}」后重发`
+        )
+      }
+      if (need === 'image' && official && official.image === false) {
+        return (
+          `本轮含 ${counts[need]} ${MODALITY_QUANTIFIER[need]}${label}，官方能力位显示该模型不支持${label}输入：` +
+          `请换用支持${label}输入的模型（可在「设置 → 模型」拉模型列表刷新探测）`
+        )
+      }
       return (
         `本轮含 ${counts[need]} ${MODALITY_QUANTIFIER[need]}${label}，当前模型未声明支持${label}输入：` +
         `请在「设置 → 模型」的「输入模态」里勾选「${label}」，或改用支持${label}输入的模型`

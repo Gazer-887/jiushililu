@@ -4,6 +4,7 @@ import type { ModelSettings, ReasoningConfig, SettingsSaveInput, SettingsView } 
 import {
   activeEntry,
   activeProfile,
+  applyDetectionToEntries,
   canDeleteEntry,
   canDeleteProfile,
   createProfile,
@@ -181,7 +182,10 @@ export function getSettingsView(): SettingsView {
   return {
     ...settingsOf(active.profile, active.entry),
     hasApiKey: hasProfileKey(active.profile.id),
-    apiKeyMasked: maskKey(getProfileKey(active.profile.id))
+    apiKeyMasked: maskKey(getProfileKey(active.profile.id)),
+    // K51 直通：有探测记录就带上（过期裁决在消费方，不在这里）
+    ...(active.entry.detectedModalities ? { detectedModalities: active.entry.detectedModalities } : {}),
+    ...(typeof active.entry.detectedAt === 'number' ? { detectedAt: active.entry.detectedAt } : {})
   }
 }
 
@@ -435,7 +439,24 @@ export async function fetchAvailableModels(input: FetchAvailableInput): Promise<
   const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, FETCH_MODELS_TIMEOUT_CAP_MS))
   try {
     const provider = createProvider(input.providerType)
-    return await provider.listModels({ settings, apiKey, messages: [], signal: controller.signal })
+    const result = await provider.listModels({ settings, apiKey, messages: [], signal: controller.signal })
+    // K51 拉列表刷新（B3 定案）：只在编辑已存端点时写盘（`input.id` 在场）。
+    // 新端点表单免保存拉取时无档案可写 —— capabilities 随结果回界面，落盘等下次拉取。
+    // 缺 capabilities/空表/失败 ⇒ 不写盘（失败形状不写盘，K51-3 的落盘半边）。
+    if (input.id && result.ok && result.capabilities && Object.keys(result.capabilities).length > 0) {
+      const { profiles } = listProfiles()
+      const now = Date.now()
+      let touched = false
+      const next = profiles.map((p) => {
+        if (p.id !== input.id) return p
+        const entries = applyDetectionToEntries(p.models, result.capabilities, now)
+        if (entries === p.models) return p
+        touched = true
+        return { ...p, models: entries }
+      })
+      if (touched) store.set('profiles', next)
+    }
+    return result
   } catch (err) {
     return {
       ok: false,

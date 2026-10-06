@@ -1408,6 +1408,11 @@ const STUBS = {
           e2: stubE2Settings
         })
         p.activeModelId = stubActiveModelId
+        // K51 注记探针的形状：第一行（e1，无 settings = 存量形态）带新鲜探测记录 ⇒
+        // 展开后高级面板里出现官方能力位注记（门禁只断言"有注记"，不判具体天数，时间断言是单测的事）
+        p.models[0].detectedModalities = ['text', 'image']
+        p.models[0].detectedAt = Date.now()
+        p.models[0].detectSource = 'anthropic-models-api'
         return p
       })(),
       fakeEndpoint('m2', 'agnes-2.5-flash', 'agnes-2.5-flash', 'custom', false),
@@ -3649,7 +3654,11 @@ app.whenReady().then(async () => {
       `)
       await new Promise((r) => setTimeout(r, 500))
       const adv = await sevalRaw(`
-        (() => ({ panel: !!document.querySelector('.mc-adv'), fields: document.querySelectorAll('.mc-adv input, .mc-adv select').length }))()
+        (() => ({
+          panel: !!document.querySelector('.mc-adv'),
+          fields: document.querySelectorAll('.mc-adv input, .mc-adv select').length,
+          detectedNote: document.querySelector('.mc-adv-detected')?.textContent?.trim() ?? null
+        }))()
       `)
       console.log('MODEL_CATALOG=' + JSON.stringify({ ...catalog, adv }))
       modelCatalog = { ...catalog, adv }
@@ -10024,6 +10033,13 @@ app.whenReady().then(async () => {
   checkTrue('**每个模型能展开自己的高级设置**（展开前没有面板 → 展开后有，且字段不止一个）',
     modelCatalog?.advBefore === false && modelCatalog?.adv?.panel === true && (modelCatalog?.adv?.fields ?? 0) >= 5,
     modelCatalog?.adv)
+  // —— B3·K51：探测注记（第一行 e1 带新鲜探测记录 ⇒ 展开后高级面板出现官方能力位注记；
+  //    只断言"有注记 + 点名图片支持 + 声明手勾为准"，天数与过期语义是单测的事）
+  checkTrue('K51 有新鲜探测记录的模型行 → 高级面板出现官方能力位注记（支持图片＋手勾为准）',
+    (modelCatalog?.adv?.detectedNote ?? '').includes('官方能力位') === true &&
+      (modelCatalog?.adv?.detectedNote ?? '').includes('支持图片输入') === true &&
+      (modelCatalog?.adv?.detectedNote ?? '').includes('手勾为准') === true,
+    modelCatalog?.adv?.detectedNote)
 
   // —— plan47 S1：免保存拉取（破「先保存才能拉、先有模型才能保存」死循环）——
   checkTrue('新端点（未保存、无 id）点「获取可用模型」→ **真的发起 models:fetch-available**，入参是表单草稿',
