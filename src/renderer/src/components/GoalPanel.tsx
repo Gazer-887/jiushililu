@@ -19,6 +19,8 @@ export default function GoalPanel(): JSX.Element | null {
 
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState('')
+  // B0b：完成判据与正文同一次提交 —— 超限由主进程 schema 拒，人话进 notice（前端不重复实现 200 字那把尺）
+  const [doneWhenDraft, setDoneWhenDraft] = useState('')
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
@@ -30,6 +32,7 @@ export default function GoalPanel(): JSX.Element | null {
     setNotice(null)
     setAdding(false)
     setEditing(null)
+    setDoneWhenDraft('')
     setShowAll(false)
     setShowEnded(false)
   }, [activeId, loadGoals])
@@ -54,8 +57,10 @@ export default function GoalPanel(): JSX.Element | null {
   const submitNew = async (): Promise<void> => {
     const text = draft.trim()
     if (!text) return
-    await run(() => createGoal(activeId, text))
+    const doneWhen = doneWhenDraft.trim()
+    await run(() => createGoal(activeId, text, doneWhen ? doneWhen : undefined))
     setDraft('')
+    setDoneWhenDraft('')
     setAdding(false)
   }
 
@@ -110,6 +115,22 @@ export default function GoalPanel(): JSX.Element | null {
               if (e.key === 'Escape') {
                 setAdding(false)
                 setDraft('')
+                setDoneWhenDraft('')
+              }
+            }}
+          />
+          <input
+            className="goal-donewhen"
+            value={doneWhenDraft}
+            placeholder="完成判据（可选，最多 200 字）"
+            title="完成判据随目标保存；超 200 字会被拒绝"
+            onChange={(e) => setDoneWhenDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void submitNew()
+              if (e.key === 'Escape') {
+                setAdding(false)
+                setDraft('')
+                setDoneWhenDraft('')
               }
             }}
           />
@@ -121,6 +142,7 @@ export default function GoalPanel(): JSX.Element | null {
             onClick={() => {
               setAdding(false)
               setDraft('')
+              setDoneWhenDraft('')
             }}
           >
             取消
@@ -215,6 +237,14 @@ export default function GoalPanel(): JSX.Element | null {
                 onClick={() => void run(() => actOnGoal(g.id, 'reopen'))}
               >
                 重开
+              </button>
+              {/* B0b：终态行可删 —— 进行中行早有删除入口，终态行此前只能重开再删，删完计数减一 */}
+              <button
+                className="goal-btn goal-btn-del"
+                title="彻底删除（记录不保留）"
+                onClick={() => void run(() => deleteGoal(g.id))}
+              >
+                删除
               </button>
             </span>
           </div>

@@ -242,7 +242,7 @@ interface AppState {
   loadGoals: (conversationId: string) => Promise<void>
   /** Agent 自建目标（plan12 ⑤）：只并入**当前会话**的目标列表 —— 目标是会话的属性，别会的不串台 */
   applyAgentGoal: (goal: Goal) => void
-  createGoal: (conversationId: string, text: string) => Promise<void>
+  createGoal: (conversationId: string, text: string, doneWhen?: string) => Promise<void>
   actOnGoal: (id: string, action: GoalAction, patch?: { text?: string; doneWhen?: string }) => Promise<void>
   deleteGoal: (id: string) => Promise<void>
   /** 并发提醒（plan11 §2.3）：同时跑第二条会话时提醒一次"两个会话改同一个工作区会互相覆盖"。**只提醒不拦** —— 应用判断不了它们会不会碰同一批文件，把知情权交给用户。 */
@@ -1176,8 +1176,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (s.goals.some((g) => g.id === goal.id)) return
     set({ goals: sortGoals([goal, ...s.goals]) })
   },
-  createGoal: async (conversationId: string, text: string) => {
-    await window.api.createGoal({ conversationId, text })
+  createGoal: async (conversationId: string, text: string, doneWhen?: string) => {
+    // B0b：第三参只做透传 —— 200 字那把尺在主进程 schema，不在前端重复实现
+    await window.api.createGoal({ conversationId, text, ...(doneWhen ? { doneWhen } : {}) })
     await get().loadGoals(conversationId)
   },
   /** 非法转移会抛出人话理由（由界面显示），这里**不吞掉** */

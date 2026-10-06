@@ -954,6 +954,13 @@ const STUBS = {
     return goalState.filter((g) => g.conversationId === cid).map((g) => ({ ...g }))
   },
   'goal:create': (input) => {
+    // B0b：桩按真源同一规则拒超限 —— `friendlyParse` 无该字段 label 时回退 path，
+    // 故人话是 `参数不合法：doneWhen —— 不能大于 200`（写死字符串 = 改了真源文案这里不跟着变，
+    // 按构造规则拼才是"契约的复制品"）。前端不实现这把尺，超限必须一路走到桩才被拒。
+    if (typeof input?.text === 'string' && input.text.length > 200)
+      throw new Error('参数不合法：text —— 不能大于 200')
+    if (typeof input?.doneWhen === 'string' && input.doneWhen.length > 200)
+      throw new Error('参数不合法：doneWhen —— 不能大于 200')
     const g = {
       ...FAKE_GOALS[0],
       id: 'g-new',
@@ -962,6 +969,7 @@ const STUBS = {
       status: 'active',
       updatedAt: Date.now()
     }
+    if (typeof input?.doneWhen === 'string' && input.doneWhen) g.doneWhen = input.doneWhen
     goalState.push(g)
     return { ...g }
   },
@@ -9849,6 +9857,156 @@ app.whenReady().then(async () => {
       goalAfterReopen.countText?.includes('1') === true &&
       goalAfterReopen.refound >= 1,
     goalAfterReopen)
+
+  // —— B0b：`doneWhen` 录入 + 终态删除（plan59 §三之二）——
+  // 前置：新建表单真有两个输入（判据输入缺了后面全红说明不了产品）
+  goalListCalls.length = 0
+  const B0B_TEXT = '门禁新建带判据'
+  const B0B_DW = '判据上桩自证'
+  const goalAddForm = await win.webContents.executeJavaScript(`
+    (() => {
+      const addBtn = Array.from(document.querySelectorAll('.goal-add')).find((b) =>
+        (b.textContent ?? '').includes('新建目标'));
+      if (addBtn) addBtn.click();
+      return { addFound: !!addBtn };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400))
+  const goalFormFields = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.goal-input');
+      const inputs = box ? Array.from(box.querySelectorAll('input')) : [];
+      return {
+        boxFound: !!box,
+        placeholders: inputs.map((i) => i.placeholder ?? '')
+      };
+    })()
+  `)
+  checkTrue('B0b 前置：点「新建目标」后表单出现，且有两个输入（正文 + 完成判据）',
+    goalAddForm.addFound === true && goalFormFields.boxFound === true &&
+      goalFormFields.placeholders.length === 2,
+    { goalAddForm, goalFormFields })
+  const goalCreateFill = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.goal-input');
+      if (!box) return { filled: false };
+      const inputs = Array.from(box.querySelectorAll('input'));
+      const iSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      iSet.call(inputs[0], ${JSON.stringify(B0B_TEXT)});
+      inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+      iSet.call(inputs[1], ${JSON.stringify(B0B_DW)});
+      inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
+      const go = Array.from(box.querySelectorAll('.goal-btn')).find((b) => b.textContent.trim() === '添加');
+      if (go) go.click();
+      return { filled: true, clicked: !!go };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700)) // createGoal → loadGoals 两趟 IPC，读早了看到飞行中的 DOM
+  const goalAfterCreate = {
+    ...(await win.webContents.executeJavaScript(`
+      (() => {
+        const live = Array.from(document.querySelectorAll('.goal-row')).filter((r) => !r.classList.contains('ended'));
+        return {
+          liveRows: live.length,
+          liveTexts: live.map((r) => r.querySelector('.goal-text')?.textContent?.trim() ?? '')
+        };
+      })()
+    `)),
+    // 桩侧记账（Node 侧变量）：载荷里的 doneWhen 真上桩，不是界面本地回显
+    storedDw: (() => {
+      const g = goalState.find((x) => x.text === B0B_TEXT)
+      return g ? (g.doneWhen ?? null) : '<<not-found>>'
+    })(),
+    refound: goalListCalls.length
+  }
+  console.log('GOAL_AFTER_CREATE=' + JSON.stringify(goalAfterCreate))
+  checkTrue('B0b-1 新建带判据 → 判据真上桩（载荷形状自证）且行出现在进行中、动作后真重读过',
+    goalAfterCreate.storedDw === B0B_DW &&
+      goalAfterCreate.liveTexts.some((x) => x.includes(B0B_TEXT)) === true &&
+      goalAfterCreate.refound >= 1,
+    goalAfterCreate)
+  // A2：终态删除 —— 此时终态只剩 g2 一条，删完计数按钮应该消失（done.length 归零则按钮不渲染）
+  goalListCalls.length = 0
+  const goalEndedDel = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll('.goal-row.ended'));
+      const hit = rows.find((r) => (r.querySelector('.goal-text')?.textContent ?? '').includes(${JSON.stringify(
+        FAKE_GOALS[1].text
+      )}));
+      const btn = hit ? Array.from(hit.querySelectorAll('.goal-btn')).find((b) => b.textContent.trim() === '删除') : null;
+      if (btn) btn.click();
+      return { rowFound: !!hit, btnFound: !!btn };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700)) // deleteGoal → loadGoals 两趟 IPC
+  const goalAfterEndedDel = {
+    ...(await win.webContents.executeJavaScript(`
+      (() => {
+        const ended = Array.from(document.querySelectorAll('.goal-row.ended'));
+        return {
+          endedRows: ended.length,
+          countGone: !document.querySelector('.goal-add.goal-done-count')
+        };
+      })()
+    `)),
+    refound: goalListCalls.length
+  }
+  console.log('GOAL_AFTER_ENDED_DEL=' + JSON.stringify(goalAfterEndedDel))
+  checkTrue('B0b-2 终态行点「删除」→ 该行消失且终态计数归零（按钮不再渲染）、动作后真重读过',
+    goalEndedDel.rowFound === true && goalEndedDel.btnFound === true &&
+      goalAfterEndedDel.endedRows === 0 && goalAfterEndedDel.countGone === true &&
+      goalAfterEndedDel.refound >= 1,
+    { goalEndedDel, goalAfterEndedDel })
+  // A3：超限 —— 201 字判据一路走到桩才被拒，人话上屏（前端不实现这把尺，拦了就说明前端私设了尺）
+  const B0B_OVER = '判'.repeat(201)
+  const goalOverOpen = await win.webContents.executeJavaScript(`
+    (() => {
+      const addBtn = Array.from(document.querySelectorAll('.goal-add')).find((b) =>
+        (b.textContent ?? '').includes('新建目标'));
+      if (addBtn) addBtn.click();
+      return { addFound: !!addBtn };
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 400)) // React 重渲染一拍：同 tick 里读 .goal-input 必然空（A3 首版即如此假红）
+  console.log('B0B_A3_STEP=open-done')
+  const goalOverfill = await win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const box = document.querySelector('.goal-input');
+        if (!box) return { boxFound: false };
+        const inputs = Array.from(box.querySelectorAll('input'));
+        if (inputs.length < 2) return { boxFound: true, inputCount: inputs.length };
+        const iSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        iSet.call(inputs[0], '超限判据新建');
+        inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+        iSet.call(inputs[1], ${JSON.stringify(B0B_OVER)});
+        inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
+        const go = Array.from(box.querySelectorAll('.goal-btn')).find((b) => b.textContent.trim() === '添加');
+        if (go) go.click();
+        return { boxFound: true, inputCount: inputs.length, clicked: !!go };
+      } catch (e) {
+        return { fillThrew: String((e && e.message) || e) };
+      }
+    })()
+  `)
+  await new Promise((r) => setTimeout(r, 700))
+  console.log('B0B_A3_STEP=fill-click-done')
+  const goalOverResult = {
+    ...(await win.webContents.executeJavaScript(`
+      (() => {
+        const notice = document.querySelector('.goal-notice');
+        return { noticeText: notice ? (notice.textContent ?? '').trim() : null };
+      })()
+    `)),
+    // 桩侧：超限行没落袋（拒了就不能留半条）
+    leaked: goalState.some((x) => x.text === '超限判据新建')
+  }
+  console.log('GOAL_OVER_LIMIT=' + JSON.stringify({ ...goalOverResult, overLen: B0B_OVER.length }))
+  checkTrue('B0b-3 判据超 200 字 → 主进程人话上屏（「不能大于 200」）且超限行没落袋',
+    goalOverOpen.addFound === true && goalOverfill.boxFound === true && goalOverfill.clicked === true &&
+      (goalOverResult.noticeText ?? '').includes('不能大于 200') === true &&
+      goalOverResult.leaked === false,
+    { goalOverOpen, goalOverfill, goalOverResult })
 
   // ⚠️ “目标摆在待办上面”这条没写成断言：待办面板“没有待办”时自己不占位，探针跑到那一刻它根本不在
   //    DOM 里 → 几何对比无从判；写成“todo 为 null 就放行”只会得到一条永远绿的假断言。顺序目前由 JSX
