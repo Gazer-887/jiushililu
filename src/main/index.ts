@@ -19,10 +19,25 @@ import { createAskBridge } from './ask'
 import { IPC } from '@shared/ipc'
 import {
   browserClick,
+  browserCloseTab,
+  browserConsoleMessages,
   browserCurrentUrl,
+  browserDrag,
+  browserEvalScript,
+  browserHandleDialog,
+  browserHover,
+  browserListTabs,
   browserNavigate,
+  browserNetworkRequests,
+  browserNewTab,
+  browserPressKey,
   browserReadPage,
+  browserScreenshot,
+  browserSelectTab,
+  browserSnapshot,
   browserType,
+  browserUploadFile,
+  browserWaitFor,
   initBrowser,
   setBrowserStateListener
 } from './browser'
@@ -869,7 +884,22 @@ app.whenReady().then(async () => {
       },
       readPage: browserReadPage,
       click: browserClick,
-      type: browserType
+      type: browserType,
+      hover: browserHover,
+      pressKey: browserPressKey,
+      drag: (from, to) => browserDrag(from, to),
+      screenshot: browserScreenshot,
+      snapshot: browserSnapshot,
+      evalScript: browserEvalScript,
+      consoleMessages: browserConsoleMessages,
+      networkRequests: browserNetworkRequests,
+      handleDialog: (action, promptText) => browserHandleDialog(action, promptText),
+      listTabs: browserListTabs,
+      newTab: browserNewTab,
+      selectTab: browserSelectTab,
+      closeTab: browserCloseTab,
+      uploadFile: (target, filePath) => browserUploadFile(target, filePath),
+      waitFor: (target, timeoutMs) => browserWaitFor(target, timeoutMs)
     })
     log.info('浏览器适配器已注入 agent 接缝')
   } else {

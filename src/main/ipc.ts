@@ -7,6 +7,7 @@ import {
   IPC,
   type Attachment,
   type BrowserState,
+  type BrowserTabRef,
   type ChatMessage,
   type GitInfo,
   type PermissionPreset,
@@ -205,10 +206,16 @@ import {
   readGitStatus
 } from './store/git-info'
 import {
+  browserCloseTab,
   browserGoBack,
   browserGoForward,
+  browserListTabs,
   browserNavigate,
+  browserNewTab,
+  browserOpenExternal,
   browserReload,
+  browserScreenshot,
+  browserSelectTab,
   getBrowserState,
   setBrowserBounds,
   setBrowserVisible
@@ -2058,6 +2065,26 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.browserBack, (): BrowserState => browserGoBack())
   ipcMain.handle(IPC.browserForward, (): BrowserState => browserGoForward())
   ipcMain.handle(IPC.browserReload, (): BrowserState => browserReload())
+
+  // plan60：标签页 + 截图 + 外部打开（UI 与工具共用同一实现；校验与 browser.ts 同口径）
+  ipcMain.handle(IPC.browserTabs, (): BrowserTabRef[] => browserListTabs())
+  ipcMain.handle(IPC.browserTabNew, async (_e, raw: unknown): Promise<BrowserTabRef> => {
+    const url = raw === undefined || raw === null ? undefined : z.string().min(1).max(2000).parse(raw)
+    return browserNewTab(url)
+  })
+  ipcMain.handle(IPC.browserTabSelect, (_e, raw: unknown): BrowserTabRef | null => {
+    return browserSelectTab(z.string().min(1).max(64).parse(raw))
+  })
+  ipcMain.handle(IPC.browserTabClose, (_e, raw: unknown): boolean => {
+    return browserCloseTab(z.string().min(1).max(64).parse(raw))
+  })
+  ipcMain.handle(IPC.browserScreenshot, async (): Promise<{ base64: string }> => {
+    const shot = await browserScreenshot()
+    return { base64: shot.base64 }
+  })
+  ipcMain.handle(IPC.browserOpenExternal, async (_e, raw: unknown): Promise<string> => {
+    return browserOpenExternal(z.string().min(1).max(2000).parse(raw))
+  })
 
   ipcMain.handle(IPC.browserSetVisible, (_e, raw: unknown): void => {
     setBrowserVisible(Boolean(z.boolean().parse(raw)))

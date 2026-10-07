@@ -28,6 +28,7 @@ import {
 import type { RuntimeEnv } from './tools/shell-session'
 import { createWebTools } from './tools/web-tools'
 import { createBrowserTools } from './tools/browser-tools'
+import { saveAttachmentImage } from '../attachments-store'
 import { createTodoTools } from './tools/todo-tools'
 import { createGoalTools } from './tools/goal-tools'
 import { createMemoryTools } from './tools/memory-tools'
@@ -70,6 +71,9 @@ import { SUMMARY_SYSTEM_PROMPT } from './context'
  */
 const log = createLogger('agent-runner')
 
+/** 开关关时的 WARN 只发一次（每 run 发一条 = 从不用浏览器的用户日志被刷屏） */
+let browserOffWarned = false
+
 /** plan44 S2b：装配层没给落盘函数时的**响亮**兜底 —— 宁可留一条 warn，也不静默吞掉截图 */
 function dropImagesWithLog(images: McpImagePart[]): ToolImageRef[] {
   log.warn('MCP 返回了图片，但本次装配未提供落盘函数，已丢弃并留痕', { count: images.length })
@@ -103,7 +107,10 @@ const COMMAND_SATELLITES = ['check_command', 'kill_command']
 const COMMAND_AUTO_ATTACH = ['check_command']
 
 /** 「只读」权限档下模型只能拿到这些（D-032：权限是上限，不是建议）。
- *  浏览器类工具不写本机文件故归入只读，但**会改变远端状态**（点击 / 提交），说明里要标注。
+ *  浏览器类工具不写本机文件故 navigate/read_page 归入只读；
+ *  plan60 §三.6：click / type **会改变远端状态**（点击 / 提交），只读档只能看不能摸 ——
+ *  此前注释自己承认矛盾（"说明里要标注"），现按"读与写"的实质纠正：只读档保留纯读，
+ *  其余浏览器动作（含新增的 hover/drag/press_key/upload/eval_script 等）一律要开开关的可写档。
  *  待办清单只改内存状态 → 只读档也该能用（它是"进度可见"，不是"改机器"）。
  *  提问同理：`ask_user` 只是把问题交给用户、**不动机器也不改状态** —— 只读档拦它等于让模型在
  *  拿不定主意时只能猜（那正是本能力要消灭的），故任何档位都该能问。 */
@@ -114,8 +121,6 @@ const READ_ONLY_TOOLS = new Set([
   'fetch_url',
   'browser_navigate',
   'browser_read_page',
-  'browser_click',
-  'browser_type',
   'update_todos',
   // 目标与待办同族（plan12 ⑤）：只写应用自身的会话状态（goals.json），不动机器也不碰用户文件
   'set_goal',
@@ -226,7 +231,32 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     ...createFileTools(writer, hooks.policy),
     ...buildCommandTools(workspaceRoot, hooks, hooks.agentLabel),
     ...createWebTools(hooks.webSearchDeps),
-    ...createBrowserTools(),
+    // plan60 §三.5：开关关 = 内置 browser_* 整批不下发 + 一条 WARN（B1-a 语义；MCP 侧见 mcp-tools 门控）。
+    // 开关值走 hooks.browserControl（run 层显式传入，缺省=关）；截图落盘器由 attachmentsRoot 装配。
+    ...(() => {
+      if (hooks.browserControl !== true) {
+        if (!browserOffWarned) {
+          browserOffWarned = true
+          log.warn('浏览器操作开关已关：本轮不下发 browser_*（设置页可开）')
+        }
+        return []
+      }
+      return createBrowserTools({
+        browserControlEnabled: true,
+        ...(hooks.attachmentsRoot
+          ? {
+              saveScreenshot: (pngBase64: string) => {
+                const saved = saveAttachmentImage(hooks.attachmentsRoot!, {
+                  mime: 'image/png',
+                  buf: Buffer.from(pngBase64, 'base64'),
+                  now: () => new Date()
+                })
+                return saved ? saved.ref : null
+              }
+            }
+          : {})
+      })
+    })(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
     ...(hooks.onTodos ? createTodoTools({ update: hooks.onTodos }) : []),
     // 目标（plan12 ⑤）：同理 —— onSetGoal 由组合根实现（store + 推送都在那儿，runner 不碰 electron-store）
@@ -333,6 +363,11 @@ export interface ToolHooks {
    * 不传 = 不下发 `view_image`（"有消费者才注册"，同 todos/ask/subagent）。
    */
   attachmentsRoot?: string
+  /**
+   * 内置浏览器操作开关本轮值（D-155 B1-a / plan60 §三.5）。run 层显式传入，**缺省 = 关**：
+   * 关 = 内置 `browser_*` 整批不下发（与 MCP 侧 `hooks.mcp.browserControl` 同语义，各管各的线）。
+   */
+  browserControl?: boolean
   /**
    * 本 run 共享的常驻 shell 槽位。**同一个 run 内所有命令工具实例必须共用一个**：
    * 子代理的确认卡要写自己的名字，所以命令工具按发起者各造一份（见 `buildCommandTools`）；
@@ -792,6 +827,9 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     ...(ctx.skills ? { skills: { store: ctx.skills.store } } : {}),
     // 附件落盘根（plan57 K52 B2）：有根才注册 `view_image`（读旧图），无根不下发
     ...(ctx.attachmentsRoot ? { attachmentsRoot: ctx.attachmentsRoot } : {}),
+    // plan60 §三.5：内置浏览器开关显式透传（D-119 ①：无条件透传，`=== true` 落地点在消费侧；
+    // 缺省=关，见 ToolHooks.browserControl 注释 —— "非 false 即真"会静默放开浏览器操作）。
+    browserControl: args.browserControl === true,
     ...(ctx.mcp
       ? {
           mcp: {

@@ -3846,6 +3846,71 @@ label.radio {
   pointer-events: none;
 }
 
+/* plan60：标签条 + 截图预览（原生视图盖住下半区，条与预览都浮在上方） */
+.bp-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 2px var(--sp-6);
+  overflow-x: auto;
+}
+
+.bp-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 180px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 0 2px 0 var(--sp-2);
+}
+
+.bp-tab.on {
+  border-color: var(--accent);
+}
+
+.bp-tab-name {
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-xs);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bp-tab-x {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.bp-shot {
+  position: absolute;
+  inset: 60px 8px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-end;
+  background: var(--panel);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2);
+  z-index: 5;
+}
+
+.bp-shot-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
 /* ══ 控制台自适应（2026-09-12）══════════════════════════
    输入框随内容长高、工具栏窄宽度下优雅换行。
    （.chat-input 与 .console 的定义在文件前部，此处不再重复。） */

@@ -946,6 +946,86 @@ const memoryAutoStub = { autoMemoryEnabled: undefined, reflectionModel: undefine
 const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
+  // plan60：内置浏览器桩（有状态标签页）。面板挂载即拉 state；动作后 state 带 tabs 回，
+  // 面板不自己记 tabs（唯一真相源在"主进程"那头，面板只渲染 —— 与 GoalPanel 跨窗广播同口径）。
+  // 初始零标签（空态不断言"强留空白标签"，关到零个回空态是 plan60 定死的形态）。
+  ...(() => {
+    const tabs = []
+    let activeId = ''
+    let seq = 0
+    // snap 的 url/title 取 active 标签（与真源 emit() 同形状 —— 面板地址栏读 s.url，
+    // 写死空串 = 切换标签地址栏永远不动，G2/G3 全红说明不了产品）
+    const snap = () => {
+      const active = tabs.find((t) => t.id === activeId)
+      return {
+        url: active ? active.url : '',
+        title: active ? active.title : '',
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        tabs: tabs.map((t) => ({ id: t.id, url: t.url, title: t.title })),
+        activeTabId: activeId
+      }
+    }
+    // ⚠️ 真源靠 `browser:changed` 推送刷新面板（动作后不重拉），桩必须同形状推送 ——
+    // 否则面板永远停在初始态，这组判据全红说明不了产品（GoalPanel 那组能过是因为它动作后重拉）。
+    const push = (event) => {
+      try {
+        event?.sender?.send('browser:changed', snap())
+      } catch {
+        /* 窗口已关，无视 */
+      }
+    }
+    return {
+      'browser:state': () => snap(),
+      'browser:set-visible': () => {},
+      'browser:set-bounds': () => {},
+      // 地址栏导航真改 active 标签的 url（G2/G3 靠它造出"两个标签不同址"；固定回空串 = 切来切去没区别）
+      'browser:navigate': (url, event) => {
+        const t = tabs.find((x) => x.id === activeId)
+        if (t && typeof url === 'string' && url) {
+          t.url = url
+          t.title = url
+        }
+        push(event)
+        return snap()
+      },
+      'browser:back': () => snap(),
+      'browser:forward': () => snap(),
+      'browser:reload': () => snap(),
+      'browser:tabs': () => tabs.map((t) => ({ id: t.id, url: t.url, title: t.title })),
+      'browser:tab-new': (url, event) => {
+        seq += 1
+        const u = typeof url === 'string' && url ? url : 'about:blank'
+        const t = { id: `gtab-${seq}`, url: u, title: u }
+        tabs.push(t)
+        activeId = t.id
+        push(event)
+        return { ...t }
+      },
+      'browser:tab-select': (id, event) => {
+        const t = tabs.find((x) => x.id === id)
+        if (!t) return null
+        activeId = id
+        push(event)
+        return { ...t }
+      },
+      'browser:tab-close': (id, event) => {
+        const i = tabs.findIndex((x) => x.id === id)
+        if (i < 0) return false
+        tabs.splice(i, 1)
+        if (activeId === id) activeId = tabs.length > 0 ? tabs[tabs.length - 1].id : ''
+        push(event)
+        return true
+      },
+      // 截图桩：1x1 红点 PNG（真字节，预览 <img> 能解出来；不是空串占位）
+      'browser:screenshot': () => ({
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+      }),
+      'browser:open-external': () => '已在外部浏览器中打开'
+    }
+  })(),
   // 目标（plan12）：契约副本 —— 一条进行中 + 一条暂停（覆盖两种状态的行内外观）
   // ⚠️ 桩必须**真办事**（plan57 片④ 同一条纪律）：目标面板在动作后会 `loadGoals` 重读，
   // 桩若固定回两条，"完成后从进行中消失"这条判据在门禁里根本造不出形状（读到的永远是初始态）。
@@ -1790,13 +1870,8 @@ const STUBS = {
     return null
   },
   'prompt:polish': () => 'polished',
-  'browser:state': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
-  'browser:navigate': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
-  'browser:back': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
-  'browser:forward': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
-  'browser:reload': () => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false }),
-  'browser:set-visible': () => undefined,
-  'browser:set-bounds': () => undefined,
+  // plan60：旧的极简 browser 桩已删 —— 有状态标签页桩在 STUBS 头部（对象字面量后键胜出，
+  // 留着这里会静默覆盖，G2/G3/G7 全红说的了产品。这就是"桩是契约的复制品"的反例：两份桩=没有桩）。
   'logs:info': () => ({
     dir: 'C:\\Users\\Gazer\\AppData\\Roaming\\jiushililu\\logs',
     files: ['app.log', 'app.1.log']
@@ -10020,6 +10095,147 @@ app.whenReady().then(async () => {
   // ⚠️ “目标摆在待办上面”这条没写成断言：待办面板“没有待办”时自己不占位，探针跑到那一刻它根本不在
   //    DOM 里 → 几何对比无从判；写成“todo 为 null 就放行”只会得到一条永远绿的假断言。顺序目前由 JSX
   //    结构保证（GoalPanel 在 TodoPanel 之前）。TODO：等有稳定的“待办非空”场景时补上真判据。
+
+  // —— plan60：内置浏览器面板（多标签 + 截图预览 + 外部打开）——
+  // 桩是"有状态标签页 + browser:changed 推送"（见 STUBS），面板只渲染不记账。
+  const openedBrowser = await openBuiltin('浏览器')
+  checkTrue('工作台能通过 ＋ 菜单打开浏览器', openedBrowser === true, openedBrowser)
+  await new Promise((r) => setTimeout(r, 700))
+  const browserRead = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const tabs = Array.from(document.querySelectorAll('.bp-tab'));
+        const addr = document.querySelector('.bp-addr');
+        const img = document.querySelector('.bp-shot-img');
+        return {
+          hasPanel: !!document.querySelector('.browser-panel'),
+          tabCount: tabs.length,
+          tabNames: tabs.map((t) => t.querySelector('.bp-tab-name')?.textContent?.trim() ?? ''),
+          activeCount: tabs.filter((t) => t.classList.contains('on')).length,
+          addrValue: addr ? addr.value : null,
+          hasShotBtn: !!document.querySelector('.bp-btn[title*="截取当前页"]'),
+          hasExternalBtn: !!document.querySelector('.bp-btn[title*="外部浏览器"]'),
+          shotSrc: img ? img.getAttribute('src') : null,
+          shotW: img ? img.naturalWidth : 0
+        };
+      })()
+    `)
+  // ⚠️ 填值与按回车必须分两拍：React state 是异步的，同 tick 里按回车读到的还是空串（B0b A3 同类坑）
+  const browserFillAddr = (text) =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const addr = document.querySelector('.bp-addr');
+        if (!addr) return false;
+        const iSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        iSet.call(addr, ${JSON.stringify(text)});
+        addr.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      })()
+    `)
+  const browserPressEnter = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const addr = document.querySelector('.bp-addr');
+        if (!addr) return false;
+        addr.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        return true;
+      })()
+    `)
+  const browserClickBtn = (titlePart) =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const btns = Array.from(document.querySelectorAll('.bp-btn, .bp-tab-name, .bp-tab-x'));
+        const hit = btns.find((b) => ((b.getAttribute('title') || b.textContent) ?? '').includes(${JSON.stringify(titlePart)}));
+        if (hit) hit.click();
+        return !!hit;
+      })()
+    `)
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  let browserState = await browserRead()
+  checkTrue('plan60 前置：浏览器面板挂载（空标签起步，不强留空白标签）',
+    browserState.hasPanel === true && browserState.tabCount === 0, browserState)
+  // G1：新建标签
+  await browserClickBtn('新建标签页')
+  await sleep(500)
+  browserState = await browserRead()
+  checkTrue('plan60-G1 点"＋"→ 标签条出现 1 个标签（含选中态）',
+    browserState.tabCount === 1 && browserState.activeCount === 1, browserState)
+  // 首标签导航到 A（造出可辨 URL）
+  await browserFillAddr('https://a.test/')
+  await sleep(400)
+  await browserPressEnter()
+  await sleep(500)
+  browserState = await browserRead()
+  // G7 先半边：标签名显示 URL（strip 不是一排无名点）
+  checkTrue('plan60-G7 标签名显示地址（首标签名含 a.test）',
+    browserState.tabNames.some((n) => n.includes('a.test')) === true, browserState)
+  // 第二标签 + 导航到 B
+  await browserClickBtn('新建标签页')
+  await sleep(500)
+  await browserFillAddr('https://b.test/')
+  await sleep(400)
+  await browserPressEnter()
+  await sleep(500)
+  browserState = await browserRead()
+  // G2：选中首标签 → 地址栏切回 A（切走不串台）
+  const tabBtns = await win.webContents.executeJavaScript(`
+    (() => Array.from(document.querySelectorAll('.bp-tab-name')).map((b) => b.textContent.trim()))()
+  `)
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const hit = Array.from(document.querySelectorAll('.bp-tab-name'))
+        .find((b) => (b.textContent ?? '').includes('a.test'));
+      if (hit) hit.click();
+    })()
+  `)
+  await sleep(500)
+  browserState = await browserRead()
+  checkTrue('plan60-G2 选中首标签 → 地址栏切回 a.test（2 个标签都在）',
+    browserState.tabCount === 2 && (browserState.addrValue ?? '').includes('a.test') === true,
+    { ...browserState, tabBtns })
+  // G3：切到 B → 地址栏是 b.test（各标签状态独立保留）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const hit = Array.from(document.querySelectorAll('.bp-tab-name'))
+        .find((b) => (b.textContent ?? '').includes('b.test'));
+      if (hit) hit.click();
+    })()
+  `)
+  await sleep(500)
+  browserState = await browserRead()
+  checkTrue('plan60-G3 切到次标签 → 地址栏是 b.test（状态各存各的）',
+    (browserState.addrValue ?? '').includes('b.test') === true, browserState)
+  // G4：关闭含 b.test 的标签 → 回到 1 个且剩的是 a.test
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const tabs = Array.from(document.querySelectorAll('.bp-tab'));
+      const hit = tabs.find((t) => ((t.querySelector('.bp-tab-name')?.textContent) ?? '').includes('b.test'));
+      const x = hit ? hit.querySelector('.bp-tab-x') : null;
+      if (x) x.click();
+    })()
+  `)
+  await sleep(500)
+  browserState = await browserRead()
+  checkTrue('plan60-G4 关闭 b.test 标签 → 剩 1 个且是 a.test（关到零个回空态，不断言强留）',
+    browserState.tabCount === 1 && browserState.tabNames.some((n) => n.includes('a.test')) === true,
+    browserState)
+  // G5：外部打开按钮在（只断言存在 —— 点了会真调系统浏览器，门禁里不点）
+  checkTrue('plan60-G5 "在外部浏览器中打开"按钮在（D-157 兼容小入口，门禁只验存在不点）',
+    browserState.hasExternalBtn === true, browserState)
+  // G6：截图 → 预览 <img> 出现且解得出真尺寸（桩给 1x1 真 PNG，不是空串占位）
+  await browserClickBtn('截取当前页')
+  let shotW = 0
+  let shotSrc = null
+  for (let i = 0; i < 10; i++) {
+    await sleep(300)
+    browserState = await browserRead()
+    shotW = browserState.shotW
+    shotSrc = browserState.shotSrc
+    if (shotW > 0) break
+  }
+  checkTrue('plan60-G6 点截图 → 预览图出现且解出真尺寸（data URL + naturalWidth>0）',
+    (shotSrc ?? '').startsWith('data:image/png;base64,') === true && shotW > 0,
+    { shotW, shotHead: (shotSrc ?? '').slice(0, 30) })
 
   // —— plan7 F5.1：模型目录（一把 Key 能调多个模型 + 每个模型的高级设置）——
   checkTrue('点「编辑」→ 出现**模型目录编辑器**（这是 F5.1 的核心形态）',

@@ -29,6 +29,66 @@ const adapter: BrowserAdapter = {
   type: async (target, text) => {
     calls.push(`type:${target}=${text}`)
     return `已输入 ${text}`
+  },
+  hover: async (target) => {
+    calls.push(`hover:${target}`)
+    return `已悬停 ${target}`
+  },
+  pressKey: async (key) => {
+    calls.push(`key:${key}`)
+    return `已按键 ${key}`
+  },
+  drag: async (from, to) => {
+    calls.push(`drag:${from}>${to}`)
+    return `已拖拽`
+  },
+  screenshot: async () => {
+    calls.push('screenshot')
+    return { base64: 'AAA=', mime: 'image/png' as const }
+  },
+  snapshot: async () => {
+    calls.push('snapshot')
+    return '[]'
+  },
+  evalScript: async (js) => {
+    calls.push(`eval:${js.length}`)
+    return 'undefined'
+  },
+  consoleMessages: async () => {
+    calls.push('console')
+    return '暂无 console 记录'
+  },
+  networkRequests: async () => {
+    calls.push('network')
+    return '暂无网络请求记录'
+  },
+  handleDialog: async (action) => {
+    calls.push(`dialog:${action}`)
+    return '当前无挂起 dialog'
+  },
+  listTabs: () => {
+    calls.push('tabs:list')
+    return []
+  },
+  newTab: async (url) => {
+    calls.push(`tabs:new:${url ?? ''}`)
+    return { id: 't9', url: url ?? '', title: '' }
+  },
+  selectTab: (id) => {
+    calls.push(`tabs:select:${id}`)
+    return null
+  },
+  closeTab: (id) => {
+    calls.push(`tabs:close:${id}`)
+    return false
+  },
+  uploadFile: async (target, filePath) => {
+    calls.push(`upload:${target}=${filePath}`)
+    return '已设置文件'
+  },
+  waitFor: async (target) => {
+    calls.push(`wait:${target}`)
+    return `条件已出现：${target}`
   }
 }
 
@@ -40,12 +100,24 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 const byName = new Map(createBrowserTools().map((t) => [t.schema.name, t]))
 
 describe('浏览器工具的异步跨度包装', () => {
-  it('四个工具齐全且 schema 未被重建过程丢掉', () => {
+  it('十五个工具齐全且 schema 未被重建过程丢掉（plan60：4→15，旧断言按§三.6 重定，不删）', () => {
     expect([...byName.keys()].sort()).toEqual([
       'browser_click',
+      'browser_console',
+      'browser_dialog',
+      'browser_drag',
+      'browser_eval_script',
+      'browser_hover',
       'browser_navigate',
+      'browser_network',
+      'browser_press_key',
       'browser_read_page',
-      'browser_type'
+      'browser_screenshot',
+      'browser_snapshot',
+      'browser_tabs',
+      'browser_type',
+      'browser_upload',
+      'browser_wait'
     ])
     for (const t of byName.values()) expect(t.schema.parameters).toBeTruthy()
   })

@@ -265,12 +265,22 @@ export interface GitCommitResult extends GitOpResult {
   summary: string
 }
 
+/** 浏览器标签页引用（plan60：界面标签条与工具共用同一份） */
+export interface BrowserTabRef {
+  id: string
+  url: string
+  title: string
+}
+
 export interface BrowserState {
   url: string
   title: string
   loading: boolean
   canGoBack: boolean
   canGoForward: boolean
+  /** 当前标签列表（plan60；缺省 = 老快照/未初始化，不代表"没有标签"） */
+  tabs?: BrowserTabRef[]
+  activeTabId?: string
 }
 
 export interface BrowserBounds {
@@ -669,6 +679,13 @@ export const IPC = {
   browserReload: 'browser:reload',
   browserSetVisible: 'browser:set-visible',
   browserSetBounds: 'browser:set-bounds',
+  /** plan60：标签页 + 截图 + 外部打开 */
+  browserTabs: 'browser:tabs',
+  browserTabNew: 'browser:tab-new',
+  browserTabSelect: 'browser:tab-select',
+  browserTabClose: 'browser:tab-close',
+  browserScreenshot: 'browser:screenshot',
+  browserOpenExternal: 'browser:open-external',
   browserChanged: 'browser:changed',
   logsOpen: 'logs:open',
   logsInfo: 'logs:info',
@@ -1095,6 +1112,13 @@ export interface ApiBridge {
   setBrowserVisible(visible: boolean): Promise<void>
   setBrowserBounds(bounds: BrowserBounds): Promise<void>
   onBrowserChanged(cb: (s: BrowserState) => void): () => void
+  /** plan60：标签页 + 截图 + 外部打开 */
+  browserTabs(): Promise<BrowserTabRef[]>
+  browserTabNew(url?: string): Promise<BrowserTabRef>
+  browserTabSelect(id: string): Promise<BrowserTabRef | null>
+  browserTabClose(id: string): Promise<boolean>
+  browserScreenshot(): Promise<{ base64: string }>
+  browserOpenExternal(url: string): Promise<string>
   openLogsDir(): Promise<boolean>
   getLogsInfo(): Promise<LogsInfo>
   listCheckpoints(): Promise<CheckpointRunMeta[]>
