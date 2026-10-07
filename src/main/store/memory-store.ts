@@ -3,11 +3,13 @@
 //    记忆层因此**物理上**没有通路能碰到 `store/settings.ts`（权限档的唯一真相源）——
 //    这是"记忆改不了权限"那条架构不变量在代码上的落点，由 `architecture.test.ts` 的守卫乙看守。
 
+import { join } from 'node:path'
 import type { ChatMessage } from '@shared/ipc'
 import { reviewSeenKey } from '@shared/memory'
 import type { MemoryIndex, MemoryStats, PrescreenReport } from '@shared/memory'
 import type { TokenUsage } from '@shared/usage'
-import { createMemoryRepo, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
+import { createFtsIndex, type FtsIndex } from '../memory/fts'
+import { createMemoryRepo, parseMemoryFile, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
 import { createReflectionRunner, type ReflectChat, type ReflectOutput } from '../memory/reflection'
 import {
   PRESCREEN_SYSTEM_PROMPT,
@@ -16,6 +18,7 @@ import {
   parsePrescreenResult
 } from '../memory/prescreen'
 import { nodeFsAdapter, type FsAdapter } from './conversations-fs'
+import { notesDir } from './memory-fs'
 import {
   createFsMemoryBackend,
   migrateMemoryFormat,
@@ -42,6 +45,15 @@ export interface MemoryStoreReflectionOptions {
   onReflectionLog?: (message: string, extra?: Record<string, unknown>) => void
   /** 反思日上限（缺省 20，跨日重置） */
   dailyLimit?: number
+}
+
+/** FTS 全文索引（plan63 片 2）的装配选项 */
+export interface MemoryStoreFtsOptions {
+  /**
+   * 索引 DB 路径；缺省 `<root>/memory/fts.db`。显式 `null` = 关闭全文索引
+   * （内存 fs 的单测传 null，防测试真落 SQLite 文件）。初始化失败也走关闭降级。
+   */
+  ftsPath?: string | null
 }
 
 export interface MemoryStore extends MemoryRepo {
@@ -108,7 +120,7 @@ export function uniqueMergedName(base: string, names: Set<string>): string {
 export function createMemoryStore(
   root: string,
   fs: FsAdapter = nodeFsAdapter,
-  opts: MemoryRepoOptions & MemoryStoreReflectionOptions = {}
+  opts: MemoryRepoOptions & MemoryStoreReflectionOptions & MemoryStoreFtsOptions = {}
 ): MemoryStore {
   const warn = opts.onWarn ?? (() => {})
   const reflLog = opts.onReflectionLog ?? (() => {})
@@ -117,7 +129,71 @@ export function createMemoryStore(
   // 每次启动都跑一遍（幂等：已是新格式就立刻返回，代价是一次 existsSync + 一次 JSON.parse）
   migrateMemoryFormat(root, fs, warn)
   const backend = createFsMemoryBackend(root, fs, { onWarn: warn })
-  const inner = createMemoryRepo(backend, {
+
+  // plan63 片 2：FTS 全文索引接线（D-154/D-156）。索引是**衍生缓存**：DB 落 `<root>/fts.db`
+  // （root 即 memory 数据根，与 notes/ meta.json 同级；不许进 root/memory/ ——那是归档区）。
+  // 启动全量重建（当前量级几十条、毫秒级；万条量级再评估增量维护），因此自愈脏索引不靠记。
+  // 初始化失败只降级（记忆本体照常，检索退回旧通路），不拖垮 store 装配。
+  let fts: FtsIndex | null = null
+  const ftsPath = opts.ftsPath === undefined ? join(root, 'fts.db') : opts.ftsPath
+  if (ftsPath !== null) {
+    try {
+      const index = createFtsIndex(ftsPath)
+      index.clear()
+      for (const file of backend.listFiles()) {
+        ftsSync(index, notesDir(root), file, backend.read(file))
+      }
+      fts = index
+    } catch (err) {
+      fts = null
+      warn(
+        '记忆全文索引初始化失败，已降级为关闭：' +
+          (err instanceof Error ? err.message : String(err))
+      )
+    }
+  }
+  /** notes 区文件同步进 FTS；text=null 表示已删/解析失败 ⇒ 摘行。候选/归档/拒绝区天然不进索引 */
+  function ftsSync(index: FtsIndex, notesPrefix: string, file: string, text: string | null): void {
+    if (!file.startsWith(notesPrefix)) return
+    if (text === null) {
+      index.remove(file)
+      return
+    }
+    const parsed = parseMemoryFile(text)
+    if (!parsed.ok) {
+      index.remove(file)
+      return
+    }
+    index.upsert({
+      file,
+      name: parsed.parsed.name,
+      class: parsed.parsed.class,
+      body: parsed.parsed.body
+    })
+  }
+  // 装饰 backend：凡写/删/归档 notes 条目，同步 FTS（restore 走 write+remove 组合，自动被覆盖）
+  const ftsBackend: FsMemoryBackend =
+    fts === null
+      ? backend
+      : {
+          ...backend,
+          write(file, text) {
+            backend.write(file, text)
+            ftsSync(fts!, notesDir(root), file, text)
+          },
+          remove(file) {
+            const ok = backend.remove(file)
+            if (ok) ftsSync(fts!, notesDir(root), file, null)
+            return ok
+          },
+          archive(file) {
+            const to = backend.archive(file)
+            if (to !== null) ftsSync(fts!, notesDir(root), file, null)
+            return to
+          }
+        }
+
+  const inner = createMemoryRepo(ftsBackend, {
     ...opts,
     onWrite: (info) => {
       if (collecting) {

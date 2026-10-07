@@ -64,17 +64,68 @@ export interface FtsIndex {
   /** query 走 matchQueryFor 口径；空查询返回空数组（不是全表） */
   search(query: string, limit?: number): FtsHit[]
   count(): number
+  /** 清空全表。启动全量重建用（索引是衍生缓存，重建是自愈手段） */
+  clear(): void
   close(): void
 }
 
 export function createFtsIndex(dbPath: string): FtsIndex {
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true })
-  const db = new Database(dbPath)
+
+  // 连接策略：文件路径走「每操作短连接」（开-写-关），调用方因此不持任何常驻句柄——
+  // 记忆写频低（人工/反思级），每次开销毫秒级；而测试惯用「建目录→跑→rmSync」的清理模式，
+  // 常驻连接会让 Windows 的 rmSync 撞 EPERM（55 条假红实测）。:memory:（单测）保持常驻，否则数据不落。
+  if (dbPath === ':memory:') {
+    const db = new Database(dbPath)
+    installSchema(db)
+    const bound = bindOps(db)
+    return {
+      ...bound,
+      close() {
+        db.close()
+      }
+    }
+  }
+  const withDb = <T>(fn: (db: Database.Database) => T): T => {
+    const db = new Database(dbPath)
+    try {
+      installSchema(db)
+      return fn(db)
+    } finally {
+      db.close()
+    }
+  }
+  return {
+    upsert(input) {
+      withDb((db) => bindOps(db).upsert(input))
+    },
+    remove(file) {
+      withDb((db) => bindOps(db).remove(file))
+    },
+    search(query, limit = 8) {
+      return withDb((db) => bindOps(db).search(query, limit))
+    },
+    count() {
+      return withDb((db) => bindOps(db).count())
+    },
+    clear() {
+      withDb((db) => bindOps(db).clear())
+    },
+    close() {
+      /* 短连接模式无常驻句柄，幂等空操作 */
+    }
+  }
+}
+
+function installSchema(db: Database.Database): void {
   db.pragma('journal_mode = WAL')
   db.exec(
     'CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(' +
       "body, name UNINDEXED, class UNINDEXED, file UNINDEXED, tokenize='unicode61')"
   )
+}
+
+function bindOps(db: Database.Database): FtsIndex {
   const del = db.prepare('DELETE FROM memory_fts WHERE file = ?')
   const ins = db.prepare('INSERT INTO memory_fts (body, name, class, file) VALUES (?, ?, ?, ?)')
   const upsert = db.transaction((input: { file: string; name: string; class: string; body: string }) => {
@@ -102,8 +153,11 @@ export function createFtsIndex(dbPath: string): FtsIndex {
     count() {
       return (db.prepare('SELECT count(*) AS n FROM memory_fts').get() as { n: number }).n
     },
+    clear() {
+      db.exec('DELETE FROM memory_fts')
+    },
     close() {
-      db.close()
+      /* 由持有者决定，bindOps 自身不关 */
     }
   }
 }
