@@ -33,6 +33,10 @@ files:
 asarUnpack:
   - '**/node_modules/node-pty/**'
   - '**/*.node'
+  # better-sqlite3 被 unpack 到物理区后，它发起的 require 是纯物理解析、看不见 asar 内的模块
+  # ⇒ 它的 JS 依赖链必须跟着出来（bindings 找 .node 用的加载器；file-uri-to-path 是 bindings 的依赖）
+  - '**/node_modules/bindings/**'
+  - '**/node_modules/file-uri-to-path/**'
 
 # ⚠️ 必须关掉"为 Electron ABI 重编原生模块"（2026-09-13 实测踩到）：默认 true 会对每个原生依赖
 # 跑 node-gyp rebuild，而本机没有 Visual Studio 工具链 → 打包直接失败（`Could not find any
@@ -40,7 +44,13 @@ asarUnpack:
 # 关掉是安全的：node-pty 1.1.0 走 N-API 预编译，ABI 跨 Node/Electron 稳定（Electron 33 实测
 # 零 rebuild 直接可用）；重编只会引入风险（要求用户装 VS 工具链，或产出行为不同的二进制）。
 # ⚠️ 代价：将来引入**非 N-API** 的原生模块时，这一条必须重新评估。
+#   ↑ 该时刻已于 2026-10-07 到来（better-sqlite3 v12 非 N-API）：不改本行，改用
+#   afterPack 钩子把产物内那份换成 Electron ABI prebuilt（scripts/afterpack-sqlite-prebuilt.cjs）；
+#   v13 的 N-API 版在 Node 20/22 segfault（上游 #1514 未修）暂不可用，升级前先复验。
 npmRebuild: false
+
+# better-sqlite3 双 ABI 处理（见 npmRebuild 段注释与 scripts/afterpack-sqlite-prebuilt.cjs 文件头）
+afterPack: scripts/afterpack-sqlite-prebuilt.cjs
 
 extraResources:
   - from: resources/icon.ico
