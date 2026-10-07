@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createFtsIndex } from '@main/memory/fts'
+import { createMemoryTools } from '@main/agent/tools/memory-tools'
 import { serializeMemory } from '@main/memory/memory-core'
 import { createMemoryStore } from '@main/store/memory-store'
 import { nodeFsAdapter } from '@main/store/conversations-fs'
@@ -123,6 +124,33 @@ describe('FTS 与记忆装配层接线（plan63 片 2）', () => {
     })
     expect(saved.ok).toBe(true)
     expect(existsSync(join(root, 'fts.db'))).toBe(false)
+  })
+
+  it('searchMemory 集成：BM25 召回生效条目；recall 未命中走兜底；FTS 关闭恒空', async () => {
+    const root = makeRoot()
+    const store = createMemoryStore(root, nodeFsAdapter)
+    const saved = store.save({
+      name: 'proxy-port',
+      description: '代理端口',
+      class: 'knowledge',
+      body: '代理端口是 65532'
+    })
+    expect(saved.ok).toBe(true)
+    expect(store.searchMemory('代理').map((h) => h.name)).toEqual(['proxy-port'])
+
+    const tools = createMemoryTools({
+      repo: store,
+      conversationId: () => 'c1',
+      searchMemory: (q, l) => store.searchMemory(q, l)
+    })
+    const recall = tools.find((t) => t.schema.name === 'recall')!
+    // 查询词按空格分（短语 AND 语义）：「代理 端口」两短语都在 proxy-port 里；连写的「代理设置」不命中是设计内
+    const out = (await recall.execute({ name: '代理 端口' })) as string
+    expect(out).toContain('全文检索找到 1 条相关')
+    expect(out).toContain('proxy-port')
+
+    const off = createMemoryStore(root, nodeFsAdapter, { ftsPath: null })
+    expect(off.searchMemory('代理')).toEqual([])
   })
 })
 

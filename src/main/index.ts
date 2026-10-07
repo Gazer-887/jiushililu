@@ -694,6 +694,8 @@ app.whenReady().then(async () => {
       repo: memory,
       // 记忆开关（批 1）：每轮由 runner 读一次 —— 改设置即时生效，不用重启
       enabled: () => getMemoryEnabled(),
+      // plan63 片 3：recall 未命中的全文检索兜底（store 内 FTS 关闭时返回空数组，工具层走旧行为）
+      searchMemory: (query: string, limit?: number) => memory.searchMemory(query, limit),
       confirm: (reason: string, conversationId: string) =>
         confirm.ask({ tool: 'remember', detail: reason, agent: '记忆', where: '', conversationId })
     },

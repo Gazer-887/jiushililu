@@ -31,7 +31,7 @@ import { createBrowserTools } from './tools/browser-tools'
 import { saveAttachmentImage } from '../attachments-store'
 import { createTodoTools } from './tools/todo-tools'
 import { createGoalTools } from './tools/goal-tools'
-import { createMemoryTools } from './tools/memory-tools'
+import { createMemoryTools, type MemoryToolDeps } from './tools/memory-tools'
 import { createPlaybookTools } from './tools/playbook-tools'
 import { createSkillTools } from './tools/skill-tools'
 import { createImageTools } from './tools/image-tools'
@@ -273,6 +273,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
           // K16：上面 ToolHooks 已经把本轮原话算好了，这一层却漏传 —— 于是纠正识别只在单测里活着，
           // 「重复纠正率」这个对外宣传的读数在生产通路上永远为 0。
           ...(hooks.memory.lastUserMessage ? { lastUserMessage: hooks.memory.lastUserMessage } : {}),
+          ...(hooks.memory.searchMemory ? { searchMemory: hooks.memory.searchMemory } : {}),
           ...(hooks.memory.confirm ? { confirm: hooks.memory.confirm } : {})
         })
       : []),
@@ -385,6 +386,8 @@ export interface ToolHooks {
     /** 记忆开关（批 1）：false = 这一轮**不下发** remember / recall（结构性关断，不是提示词层面） */
     enabled?: () => boolean
     confirm?: (reason: string) => Promise<boolean>
+    /** plan63 片 3：recall 未命中的全文检索兜底（由组合根级 hooks 透传） */
+    searchMemory?: MemoryToolDeps['searchMemory']
     /** 本轮用户原话（批 4 纠正识别用）。取值见 `lastUserText` */
     lastUserMessage?: () => string | null
   }
@@ -472,6 +475,8 @@ export interface AgentRuntimeContext {
     /** 记忆开关（批 1）：false = 不下发 remember / recall。每轮读一次 → 改设置即时生效，不用重启 */
     enabled?: () => boolean
     confirm?: (reason: string, conversationId: string) => Promise<boolean>
+    /** plan63 片 3：recall 未命中的全文检索兜底（FTS 关闭时组合根传恒空实现或不传） */
+    searchMemory?: MemoryToolDeps['searchMemory']
   }
   /** Playbook 库（plan19 批 3）。由组合根注入 —— runner 不许碰 electron-store / fs */
   playbook?: {
@@ -803,6 +808,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
             // 批 4：纠正识别要"这一轮用户说了什么"。数据只有这里（`args.history`）有 ——
             // 工具层拿不到，故由装配处注入。取**最后一条** user（本轮的原话）。
             lastUserMessage: () => lastUserText(args.history),
+            ...(ctx.memory.searchMemory ? { searchMemory: ctx.memory.searchMemory } : {}),
             ...(ctx.memory.confirm
               ? {
                   confirm: (reason: string) =>
@@ -1130,6 +1136,8 @@ export function createAgentContext(opts: {
     /** 记忆开关（批 1）：false = 不下发 remember / recall。每轮读一次 → 改设置即时生效，不用重启 */
     enabled?: () => boolean
     confirm?: (reason: string, conversationId: string) => Promise<boolean>
+    /** plan63 片 3：recall 未命中的全文检索兜底（FTS 关闭时组合根传恒空实现或不传） */
+    searchMemory?: MemoryToolDeps['searchMemory']
   }
   /** Playbook 库（plan19 批 3）。由组合根注入 —— runner 不许碰 electron-store / fs */
   playbook?: {

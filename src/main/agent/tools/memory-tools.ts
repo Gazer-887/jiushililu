@@ -20,6 +20,11 @@ export interface MemoryToolDeps {
    * 工具层自己拿不到，也**不许**去猜。
    */
   lastUserMessage?: () => string | null
+  /**
+   * 全文检索兜底（plan63 片 3 · D-154/D-156）：recall 按名未命中时用它找相关条目。
+   * 不给 = 关闭兜底，recall 保持精确命中行为（逐字不变）。FTS 索引关闭时组合根注入的是恒空实现。
+   */
+  searchMemory?: (query: string, limit?: number) => Array<{ file: string; name: string; class: string; score: number }>
 }
 
 /**
@@ -175,6 +180,15 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
       const hit = index.entries.find((e) => e.name === name)
       if (!hit) {
         deps.repo.record({ kind: 'recall', conversationId: deps.conversationId(), name, found: false })
+        // plan63 片 3：按名未命中时用全文检索兜底（把相关条目递到模型眼前）；未注入或零命中走旧行为
+        const related = deps.searchMemory?.(name) ?? []
+        if (related.length > 0) {
+          const lines = related.map((h) => `- 「${h.name}」（${h.class}）`)
+          return (
+            `没有名为「${name}」的记忆。全文检索找到 ${related.length} 条相关（可用 recall 按名取回正文）：\n` +
+            lines.join('\n')
+          )
+        }
         return `没有名为「${name}」的记忆。可用条目：${index.entries.map((e) => e.name).join('、') || '（无）'}`
       }
       deps.repo.record({ kind: 'recall', conversationId: deps.conversationId(), name, found: true })

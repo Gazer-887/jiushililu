@@ -86,6 +86,11 @@ export interface MemoryStore extends MemoryRepo {
   /** 取记忆统计。事件流读不出来 → 返回 null（界面显示「暂无」） */
   getStats(): MemoryStats | null
   /**
+   * 全文检索（plan63 片 3 · D-154/D-156）：BM25 排序的生效条目召回。
+   * FTS 索引未启用（关闭 / 初始化失败降级）时恒返回空数组 —— 调用方据此走旧行为。
+   */
+  searchMemory(query: string, limit?: number): Array<{ file: string; name: string; class: string; score: number }>
+  /**
    * 跑一次候选区预筛（plan55 片④-a）：把同义提案归簇、为每簇写一份**合并稿候选**。
    * ⚠️ 只写合并稿，**不删来源** —— 来源要等用户批准合并稿时才收掉（`absorbMergeSources`）。
    * ⚠️ 分组质量无判据可测（plan55 §六）：这里只保证形状可信。
@@ -461,6 +466,7 @@ export function createMemoryStore(
       const { events } = backend.readEvents()
       if (events.length === 0) return null
       return inner.computeStats(events)
-    }
+    },
+    searchMemory: (query, limit) => fts?.search(query, limit) ?? []
   }
 }
