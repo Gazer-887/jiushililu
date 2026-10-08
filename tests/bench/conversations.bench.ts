@@ -1,23 +1,32 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { ChatMessage, Conversation } from '@shared/ipc'
 import { createConversationsRepo } from '@main/store/conversations-core'
 import { createFsConversationsBackend } from '@main/store/conversations-fs'
+import {
+  formatViolations,
+  percentileR7,
+  thresholdViolations,
+  type BenchmarkMetrics
+} from '../helpers/benchmark-metrics'
 
 // plan10 A 批第三块：**测量定引擎**（plan8 R8 的正题）。
 // 跑法（显式跑，**不进 CI** —— 阈值是耗时，CI 上会抖）：
-//   npm run bench        （= vitest run --config config/vitest.bench.config.ts）
-//   想让堆增量可信：NODE_OPTIONS=--expose-gc npm run bench
-//   （注意不是 config/vitest.config.ts —— 那份 include 只有 tests/unit，bench 匹配不到）
+//   node node_modules/vitest/vitest.mjs run --config config/vitest.bench.config.ts tests/bench/conversations.bench.ts --pool=forks --maxWorkers=1 --minWorkers=1
+//   注意不是 config/vitest.config.ts —— 那份 include 只有 tests/unit，bench 匹配不到
+// 堆增量要可信，前提是 **Vitest 工作进程**持有 global.gc；本文件以脚本内自测的 gcEnabled 为准，
+// 不可用即**普通三档直接抛错**，不产出任何性能结论（本机 2026-10-08 / vitest 2.1.9 实测：
+// 父进程 node --expose-gc 未传到 forks worker；临时进程环境变量 NODE_OPTIONS=--expose-gc 时自测为 true。
+// 已安装 vitest 源码 resolveConfig 内存在 poolOptions.execArgv，CLI 帮助未展示不等于该能力不存在）。
 //
-// ⚠️ **判据先登记、再跑**（plan10 §2.3）：阈值写死在下面、脚本自己出 PASS/FAIL，
+// ⚠️ **判据先登记、再跑**（plan10 §2.3）：阈值写死在下面、脚本自己出判定，
 //    不允许"跑完看数据再挑一个好看的说法"。
 // ⚠️ 下面那份旧实现是**对照基线**（整表读+整表写、正文内嵌），不是产品代码 ——
 //    不对比就答不出"分层换来了什么"与"JSON 还够不够快"。
 
-/** 预登记阈值：任一超标 → 结论是"必须迁移（SQLite）" */
+/** 预登记阈值：任一超标 → 阈值触发，**交回评估**（是否迁移由用户裁决，脚本不自动决定） */
 const THRESHOLDS = {
   listP95Ms: 50,
   saveP95Ms: 50,
@@ -42,14 +51,75 @@ function msg(i: number): ChatMessage {
   return { role: i % 2 === 0 ? 'user' : 'assistant', content: `第 ${i} 条消息，写长一点让量级真实。`.repeat(6) }
 }
 
-function pct(sorted: number[], p: number): number {
+// ⚠️ **旧统计口径（R1 专用，未纳入本轮 R7 修复）**：用 floor(p/100×n) 作零基下标。
+// 20 个样本时 P95 落到下标 19，也就是**最大样本**——它不是 R7 P95。
+// 保留它只为让同文件的 R1 巨型档维持原样本数、原阈值与原判词；普通三档不再用它。
+const legacyIndexPct = (sorted: number[], p: number): number => {
   const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))
   return sorted[idx] ?? 0
 }
 
-function stats(samples: number[]): { p50: number; p95: number } {
+function legacyStats(samples: number[]): { p50: number; p95: number } {
   const sorted = [...samples].sort((a, b) => a - b)
-  return { p50: pct(sorted, 50), p95: pct(sorted, 95) }
+  return { p50: legacyIndexPct(sorted, 50), p95: legacyIndexPct(sorted, 95) }
+}
+
+/** 本轮普通三档统一用 R7；max 单列，因为 max 才揭示旧 floor 下标实际取到的那一端 */
+const r7 = (samples: readonly number[], p: number): number => percentileR7(samples, p)
+const maxOf = (samples: readonly number[]): number => Math.max(...samples)
+
+/** 人读摘要的显示精度样本行：只给人看，**不能**据此复算判词（截精后原值不可还原） */
+const displaySampleLine = (samples: readonly number[]): string =>
+  `[${samples.map((v) => v.toFixed(4)).join(', ')}]`
+
+// ===== 无损 JSON 证据 =====
+// 固定前缀让第三方能机械抽取：不解析控制台排版，只按前缀找行；数值直接 JSON.stringify，
+// 不先 toFixed —— 判词用的是未舍入值，证据也必须是未舍入值，否则边界（如 49.99999）无法复算。
+const EVIDENCE_PREFIX = 'JSL_BENCH_EVIDENCE_JSON'
+
+/** 运行身份：外部传 JSL_BENCH_RUN_ID 让日志与运行一一对应；未传则现场生成，不复用旧 ID */
+const RUN_ID =
+  process.env.JSL_BENCH_RUN_ID ?? `r8-${process.pid}-${new Date().toISOString().replace(/[:.]/g, '-')}`
+
+/** 证据落盘目录（可选）：传 JSL_BENCH_EVIDENCE_DIR 则每档另存一份独立 JSON，**不覆盖**旧运行 */
+const EVIDENCE_DIR = process.env.JSL_BENCH_EVIDENCE_DIR ?? null
+
+interface ScaleEvidence {
+  kind: 'jsl-bench-evidence'
+  version: 1
+  runId: string
+  scale: { name: string; n: number; m: number; runs: number }
+  env: { node: string; platform: string; arch: string; gcEnabled: boolean }
+  algorithm: 'R7'
+  samples: {
+    newList: number[]
+    oldList: number[]
+    newSave: number[]
+    oldSave: number[]
+  }
+  stats: {
+    newList: { p95: number; max: number }
+    oldList: { p95: number; max: number }
+    newSave: { p95: number; max: number }
+    oldSave: { p95: number; max: number }
+  }
+  heapMB: { new: number; old: number }
+  thresholds: typeof THRESHOLDS
+  metrics: BenchmarkMetrics
+  violations: ReturnType<typeof thresholdViolations>
+  bytes: { newIndex: number; newBodyApprox: number; oldWhole: number }
+}
+
+/** 输出并（可选）落盘一条无损证据；落盘失败只记一行，不掩盖已打印的行 */
+const emitEvidence = (record: unknown, fileName: string): void => {
+  console.log(`${EVIDENCE_PREFIX} ${JSON.stringify(record)}`)
+  if (!EVIDENCE_DIR) return
+  try {
+    mkdirSync(EVIDENCE_DIR, { recursive: true })
+    writeFileSync(join(EVIDENCE_DIR, fileName), `${JSON.stringify(record, null, 2)}\n`, 'utf8')
+  } catch (err) {
+    console.log(`${EVIDENCE_PREFIX} {"kind":"jsl-bench-evidence-write-failed","file":"${fileName}","error":"${String(err)}"}`)
+  }
 }
 
 // 旧口径的等价复刻（对照基线）：整表读 + 整表写，正文内嵌
@@ -137,7 +207,45 @@ describe('会话存储：分层前后 + 引擎结论', () => {
     '测量三档量级：列表 / 保存 / 列表堆增量（新旧对照）',
     () => {
       const rows: string[] = []
+      const evidence: string[] = []
+      const scaleViolations: { scale: string; violations: ReturnType<typeof thresholdViolations> }[] = []
       let verdictFail = false
+      // GC 以**测试工作进程**实测为准，不能只看父进程的启动参数
+      const gcEnabled = typeof global.gc === 'function'
+      const env = {
+        node: process.version,
+        platform: process.platform,
+        arch: process.arch,
+        gcEnabled
+      }
+
+      console.log(
+        `\n===== 运行环境（Vitest 工作进程内自测）=====\n` +
+          `node=${process.version} platform=${process.platform}/${process.arch} gcEnabled=${String(gcEnabled)} runId=${RUN_ID}`
+      )
+
+      // ⚠️ 环境闸必须在**造数据与任何性能采样之前**：堆增量没有 GC 就不是可比证据。
+      // 缺 GC 时只警告却继续跑，会让「三项通过/本轮未触发」在无效环境下照样打印 —— 那是假绿。
+      if (!gcEnabled) {
+        const error = {
+          kind: 'jsl-bench-env-error',
+          version: 1,
+          runId: RUN_ID,
+          env,
+          error: {
+            code: 'GC_UNAVAILABLE',
+            message: 'Vitest 工作进程内 global.gc 不是函数；堆增量不可比，本次不产出任何性能结论',
+            hint: '本机实测可用启动方式：临时进程环境变量 NODE_OPTIONS=--expose-gc，并以脚本自测 gcEnabled=true 为准'
+          },
+          validPerformanceResult: false
+        }
+        console.log(`\n===== 环境错误：global.gc 不可用，本次不测量 =====`)
+        emitEvidence(error, `${RUN_ID}-env-error.json`)
+        throw new Error(
+          `环境不满足：Vitest 工作进程内 global.gc 不可用（node=${process.version} ${process.platform}/${process.arch}）。` +
+            '堆增量不在未回收垃圾上测量则不可比，本次不产出性能结论，请用带 GC 的启动方式重跑。'
+        )
+      }
 
       for (const scale of SCALES) {
         const root = tmpRoot()
@@ -183,6 +291,13 @@ describe('会话存储：分层前后 + 引擎结论', () => {
           oldList(root)
           oldListSamples.push(performance.now() - t0)
         }
+        const listRuns = newListSamples.length
+        const oldListRuns = oldListSamples.length
+        if (listRuns !== scale.runs || oldListRuns !== scale.runs) {
+          throw new Error(
+            `档位「${scale.name}」list 采样不完整：新 ${listRuns} 旧 ${oldListRuns}，期望各 ${scale.runs}`
+          )
+        }
 
         // 保存：改中间那条会话
         const saveId = `c${String(Math.floor(scale.n / 2)).padStart(4, '0')}`
@@ -199,8 +314,15 @@ describe('会话存储：分层前后 + 引擎结论', () => {
           oldSave(root, saveId, Array.from({ length: scale.m }, (_, j) => msg(j)))
           oldSaveSamples.push(performance.now() - t0)
         }
+        const saveRuns = newSaveSamples.length
+        const oldSaveRuns = oldSaveSamples.length
+        if (saveRuns !== scale.runs || oldSaveRuns !== scale.runs) {
+          throw new Error(
+            `档位「${scale.name}」save 采样不完整：新 ${saveRuns} 旧 ${oldSaveRuns}，期望各 ${scale.runs}`
+          )
+        }
 
-        // 列表堆增量："会不会把正文整个拉进内存"
+        // 列表堆增量："会不会把正文整个拉进内存"。单位口径：bytes / 1024 / 1024 = MiB（下称 MB）。
         const heapOf = (fn: () => void): number => {
           global.gc?.()
           const before = process.memoryUsage().heapUsed
@@ -212,29 +334,100 @@ describe('会话存储：分层前后 + 引擎结论', () => {
         )
         const oldHeap = heapOf(() => oldList(root))
 
-        const nl = stats(newListSamples)
-        const ns = stats(newSaveSamples)
-        const ol = stats(oldListSamples)
-        const os = stats(oldSaveSamples)
+        // 新旧两套实现都用 R7 统计，口径一致才可比；旧实现只作对照，不参与失败判定。
+        const metrics: BenchmarkMetrics = {
+          listP95Ms: r7(newListSamples, 95),
+          saveP95Ms: r7(newSaveSamples, 95),
+          listHeapDeltaMB: newHeap
+        }
+        const violations = thresholdViolations(metrics, THRESHOLDS)
+        if (violations.length > 0) verdictFail = true
 
-        const fail = ns.p95 > THRESHOLDS.saveP95Ms || newHeap > THRESHOLDS.listHeapDeltaMB
-        if (fail) verdictFail = true
+        // 无损证据先落地：采样一结束就输出，判词与断言都在它之后
+        emitEvidence(
+          {
+            kind: 'jsl-bench-evidence',
+            version: 1,
+            runId: RUN_ID,
+            scale: { name: scale.name, n: scale.n, m: scale.m, runs: scale.runs },
+            env,
+            algorithm: 'R7',
+            samples: {
+              newList: newListSamples,
+              oldList: oldListSamples,
+              newSave: newSaveSamples,
+              oldSave: oldSaveSamples
+            },
+            stats: {
+              newList: { p95: metrics.listP95Ms, max: maxOf(newListSamples) },
+              oldList: { p95: r7(oldListSamples, 95), max: maxOf(oldListSamples) },
+              newSave: { p95: metrics.saveP95Ms, max: maxOf(newSaveSamples) },
+              oldSave: { p95: r7(oldSaveSamples, 95), max: maxOf(oldSaveSamples) }
+            },
+            heapMB: { new: newHeap, old: oldHeap },
+            thresholds: THRESHOLDS,
+            metrics,
+            violations,
+            bytes: { newIndex: newBytes, newBodyApprox: bodyBytes, oldWhole: oldBytes }
+          } satisfies ScaleEvidence,
+          `${RUN_ID}-${scale.name}.json`
+        )
 
         rows.push(
           [
             scale.name,
-            `list 新 ${nl.p95.toFixed(1)}ms / 旧 ${ol.p95.toFixed(1)}ms`,
-            `save 新 ${ns.p95.toFixed(1)}ms / 旧 ${os.p95.toFixed(1)}ms`,
-            `list 堆增量 新 ${newHeap.toFixed(2)}MB / 旧 ${oldHeap.toFixed(2)}MB`,
+            `list 新 R7P95 ${metrics.listP95Ms.toFixed(2)}ms / max ${maxOf(newListSamples).toFixed(2)}ms（n=${listRuns}）`,
+            `list 旧 R7P95 ${r7(oldListSamples, 95).toFixed(2)}ms / max ${maxOf(oldListSamples).toFixed(2)}ms（n=${oldListRuns}）`,
+            `save 新 R7P95 ${metrics.saveP95Ms.toFixed(2)}ms / max ${maxOf(newSaveSamples).toFixed(2)}ms（n=${saveRuns}）`,
+            `save 旧 R7P95 ${r7(oldSaveSamples, 95).toFixed(2)}ms / max ${maxOf(oldSaveSamples).toFixed(2)}ms（n=${oldSaveRuns}）`,
+            `list 堆增量 新 ${newHeap.toFixed(2)}MB / 旧 ${oldHeap.toFixed(2)}MB（MiB）`,
             `索引 ${newBytes}B vs 正文约 ${mb(bodyBytes).toFixed(1)}MB（旧整表 ${mb(oldBytes).toFixed(1)}MB）`,
-            fail ? '⚠️ 超阈值' : 'ok'
+            `阈值 list P95<${THRESHOLDS.listP95Ms}ms save P95<${THRESHOLDS.saveP95Ms}ms heap<${THRESHOLDS.listHeapDeltaMB}MB（严格小于）`,
+            `新实现判定：${violations.length === 0 ? '三项均通过' : `超线 ${formatViolations(violations)}`}（旧实现仅对照，不判失败）`
           ].join(' | ')
         )
+        evidence.push(
+          [
+            '',
+            `──── 档位「${scale.name}」（n=${scale.n} × m=${scale.m}，runs=${scale.runs}）────`,
+            `新 list 样本(ms)：${displaySampleLine(newListSamples)}`,
+            `旧 list 样本(ms)：${displaySampleLine(oldListSamples)}`,
+            `新 save 样本(ms)：${displaySampleLine(newSaveSamples)}`,
+            `旧 save 样本(ms)：${displaySampleLine(oldSaveSamples)}`,
+            `新 list R7P95=${metrics.listP95Ms.toFixed(4)}ms max=${maxOf(newListSamples).toFixed(4)}ms`,
+            `新 save R7P95=${metrics.saveP95Ms.toFixed(4)}ms max=${maxOf(newSaveSamples).toFixed(4)}ms`,
+            `旧 list R7P95=${r7(oldListSamples, 95).toFixed(4)}ms max=${maxOf(oldListSamples).toFixed(4)}ms`,
+            `旧 save R7P95=${r7(oldSaveSamples, 95).toFixed(4)}ms max=${maxOf(oldSaveSamples).toFixed(4)}ms`,
+            `list heap 新=${newHeap.toFixed(4)}MB 旧=${oldHeap.toFixed(4)}MB（gcEnabled=${String(gcEnabled)}）`,
+            `逐项判定：` +
+              [
+                `list P95 ${metrics.listP95Ms.toFixed(4)} < ${THRESHOLDS.listP95Ms} → ${metrics.listP95Ms < THRESHOLDS.listP95Ms ? '通过' : '超线'}`,
+                `save P95 ${metrics.saveP95Ms.toFixed(4)} < ${THRESHOLDS.saveP95Ms} → ${metrics.saveP95Ms < THRESHOLDS.saveP95Ms ? '通过' : '超线'}`,
+                `heap ${newHeap.toFixed(4)} < ${THRESHOLDS.listHeapDeltaMB} → ${newHeap < THRESHOLDS.listHeapDeltaMB ? '通过' : '超线'}`
+              ].join('；')
+          ].join('\n')
+        )
+        scaleViolations.push({ scale: scale.name, violations })
       }
 
-      console.log('\n===== plan10 A 批 · 测量结果（预登记阈值：list/save P95 < 50ms，列表堆增量 < 20MB）=====')
+      console.log('\n===== 测量结果（预登记阈值：list/save P95 < 50ms，列表堆增量 < 20MB；统计口径 R7）=====')
       for (const r of rows) console.log('· ' + r)
-      console.log(`\n===== 引擎结论：${verdictFail ? '必须迁移（有指标超阈值）' : '不迁移 —— 保持 JSON（分层之后已无致命点）'} =====\n`)
+      console.log('\n===== 人读摘要（以下为显示精度四位小数；无损复算请取 JSL_BENCH_EVIDENCE_JSON 行）=====')
+      for (const e of evidence) console.log(e)
+      // 判词只说"阈值是否触发"，不替用户裁决存储引擎
+      console.log(
+        `\n===== 阈值判定：${verdictFail ? '阈值触发，交回评估（是否迁移由用户裁决，本脚本不自动决定）' : '本轮未触发（三项新实现指标均低于预登记阈值）'} =====\n`
+      )
+
+      // 所有采样与证据打印完成后，再让超线进入真实失败路径
+      const failed = scaleViolations.filter((s) => s.violations.length > 0)
+      if (failed.length > 0) {
+        const detail = failed
+          .map((s) => `档位「${s.scale}」${formatViolations(s.violations)}`)
+          .join('；')
+        throw new Error(`plan10 A 批 · 普通三档预登记阈值触发：${detail}。详见上方原始样本与逐项判定。`)
+      }
+      expect(failed).toEqual([])
     },
     600_000
   )
@@ -265,7 +458,8 @@ describe('会话存储：分层前后 + 引擎结论', () => {
           await backend.writeMessages(id, messages)
           saveSamples.push(performance.now() - t0)
         }
-        const s = stats(saveSamples)
+        // ⚠️ R1 保留旧统计算法与旧阈值，未纳入本轮 R7 修复（普通三档才切 R7）
+        const s = legacyStats(saveSamples)
 
         // 堆增量：单次保存期间新分配且未及回收的量（stringify 产物 + Buffer 等，gc → await → 不 gc 量）
         // 有 GC 时序噪声，跑 3 次取中位数，量级参考用
@@ -298,7 +492,9 @@ describe('会话存储：分层前后 + 引擎结论', () => {
       }
 
       console.log(
-        '\n===== plan10 R1 · 单会话巨型文件档（预登记判定：10MB 档 save P95 < 500ms 且堆增量 < 6 倍文件）====='
+        '\n===== plan10 R1 · 单会话巨型文件档（预登记判定：10MB 档 save P95 < 500ms 且堆增量 < 6 倍文件）=====\n' +
+          '⚠️ R1 旧统计口径，未纳入本轮 R7 修复：p50/p95 用 floor(p/100×n) 零基下标，样本数与阈值维持原样。\n' +
+          `R1 工作进程环境：node=${process.version} gcEnabled=${String(typeof global.gc === 'function')}`
       )
       for (const r of rows) console.log('· ' + r)
       const verdict = fail
