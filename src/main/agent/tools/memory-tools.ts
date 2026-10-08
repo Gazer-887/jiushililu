@@ -177,8 +177,9 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
     async execute(args) {
       const name = typeof args['name'] === 'string' ? args['name'].trim() : ''
       const index = deps.repo.list()
-      const hit = index.entries.find((e) => e.name === name)
-      if (!hit) {
+      // 注入预算不限制生效正文回取；备用查询复用全库读侧守卫。
+      const hit = index.entries.find((e) => e.name === name) ?? deps.repo.findConflict(name)
+      if (!hit || hit.name !== name) {
         deps.repo.record({ kind: 'recall', conversationId: deps.conversationId(), name, found: false })
         // plan63 片 3：按名未命中时用全文检索兜底（把相关条目递到模型眼前）；未注入或零命中走旧行为
         const related = deps.searchMemory?.(name) ?? []
@@ -192,9 +193,7 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
         return `没有名为「${name}」的记忆。可用条目：${index.entries.map((e) => e.name).join('、') || '（无）'}`
       }
       deps.repo.record({ kind: 'recall', conversationId: deps.conversationId(), name, found: true })
-      const full = deps.repo.get(hit.file)
-      const text = full?.body ?? hit.description
-      return `【${hit.name}｜${hit.description}】\n${text}`
+      return `【${hit.name}｜${hit.description}】\n${hit.body}`
     }
   }
 
