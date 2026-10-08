@@ -237,13 +237,11 @@ export async function runScenario(scenario: Scenario): Promise<World> {
     archived: () =>
       backend
         .listArchived()
-        .map((f) => ({ slug: parseArchivedFileName(f.slice(f.lastIndexOf('/') + 1))?.slug ?? '', text: backend.read(f) }))
-        .sort((a, b) => (a.slug < b.slug ? -1 : 1)),
-    archived: () =>
-      backend.listArchived().map((f) => ({
-        slug: parseArchivedFileName(f.split('/').pop() ?? '')?.slug ?? '',
-        text: backend.read(f)
-      })),
+        .map((f) => ({
+          slug: parseArchivedFileName(f.split('/').pop() ?? '')?.slug ?? '',
+          text: backend.read(f)
+        }))
+        .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0)),
     warnings: () => [...warnings]
   }
 }
