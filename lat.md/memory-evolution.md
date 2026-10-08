@@ -201,3 +201,22 @@ Playbook 与记忆分目录（[[src/main/store/playbook-fs.ts#playbooksDir]] 与
 别把两个读数当同一个数比。两笔在收尾时由
 [[src/main/memory/inject.ts#sumInjectionTax]] 合成一个注入税读数 —— 相加这件事放在 `inject.ts`
 而不是调用点，是因为调用点在 `ipc.ts`，那一层起不了真进程、也就钉不住单测。
+
+## 本地全文索引是衍生缓存
+
+[[src/main/memory/fts.ts#createFtsIndex]] 的 FTS5 只承载可重建的查询索引，已生效 Markdown 条目仍是真源。
+索引在 notes/ 旁独立存放；[[src/main/store/memory-store.ts#createMemoryStore]] 装饰已有写、删、归档出口，
+启动全量重建，因此候选、拒绝与归档不因另一个索引入口进入召回。把候选一起索引会绕过审批语义；
+把数据库当正文真源则会把可重建的缓存变成另一份必须同步的存档。
+
+[[src/main/memory/fts.ts#tokenizeForFts]] 对覆盖范围内 CJK 字符逐字切分；
+[[src/main/memory/fts.ts#matchQueryFor]] 把连续词转短语、词间AND，防止默认unicode61将中文整段当一词导致短词查不到。
+这只保证约定的字面匹配形状，不等于语义检索或真实用户语料的质量已被验证。
+
+[[src/main/agent/tools/memory-tools.ts#createMemoryTools]] 仍先用预算内 repo.list() 精确匹配条目名，未命中才返回FTS相关项名字。
+这保持了旧命中路径，但也保留预算外正文取不回的已知边界：收到名字建议不等于下一次recall必能读到正文。
+初始化失败或显式关闭索引会退回旧通路；运行期数据库故障的兜底不由这条初始化契约证明。
+
+文件索引按操作短连接，避免Windows常驻句柄妨碍目录回收；内存数据库需要保留连接以保持数据。
+better-sqlite3 v12 的Node/Electron两种ABI由 [afterPack 打包钩子](../scripts/afterpack-sqlite-prebuilt.cjs) 在打包阶段处理，
+开发依赖保持Node版本、产物换Electron版本；混用会导致装机包加载失败。是否已经发布必须另查tag与资产，不能由包版本号推定。
