@@ -131,7 +131,6 @@ function makeBackend(seed: Record<string, string> = {}) {
       if (f.startsWith(`${ROOT}/candidates/`)) candidates.set(f, t)
       else files.set(f, t)
     },
-    remove: (f: string) => (f.startsWith(`${ROOT}/candidates/`) ? candidates.delete(f) : files.delete(f)),
     pathFor: (slug: string) => `${ROOT}/${slug}.md`,
     appendEvent: (line: string) => void events.push(line),
     ...arch.backend
@@ -157,10 +156,6 @@ export async function runScenario(scenario: Scenario): Promise<World> {
     confirm: async () => false // 场景不点确认桥——确认档行为在单测层已钉
   })
   const rememberTool = tools.find((t) => t.schema.name === 'remember')!
-
-  const reflect = createReflectionRunner({
-    chat: async () => ({ content: '' }) // 每步 reflect 时重造
-  })
 
   let currentLastUser = ''
   for (const step of scenario.steps) {
