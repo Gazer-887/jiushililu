@@ -3,13 +3,14 @@
 //    记忆层因此**物理上**没有通路能碰到 `store/settings.ts`（权限档的唯一真相源）——
 //    这是"记忆改不了权限"那条架构不变量在代码上的落点，由 `architecture.test.ts` 的守卫乙看守。
 
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type { ChatMessage } from '@shared/ipc'
 import { reviewSeenKey } from '@shared/memory'
-import type { MemoryIndex, MemoryStats, PrescreenReport } from '@shared/memory'
+import type { MemoryIndex, MemorySearchResult, MemoryStats, PrescreenReport } from '@shared/memory'
 import type { TokenUsage } from '@shared/usage'
 import { createFtsIndex, type FtsIndex } from '../memory/fts'
-import { createMemoryRepo, parseMemoryFile, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
+import { createMemoryRepo, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
 import { createReflectionRunner, type ReflectChat, type ReflectOutput } from '../memory/reflection'
 import {
   PRESCREEN_SYSTEM_PROMPT,
@@ -18,7 +19,6 @@ import {
   parsePrescreenResult
 } from '../memory/prescreen'
 import { nodeFsAdapter, type FsAdapter } from './conversations-fs'
-import { notesDir } from './memory-fs'
 import {
   createFsMemoryBackend,
   migrateMemoryFormat,
@@ -50,8 +50,8 @@ export interface MemoryStoreReflectionOptions {
 /** FTS 全文索引（plan63 片 2）的装配选项 */
 export interface MemoryStoreFtsOptions {
   /**
-   * 索引 DB 路径；缺省 `<root>/memory/fts.db`。显式 `null` = 关闭全文索引
-   * （内存 fs 的单测传 null，防测试真落 SQLite 文件）。初始化失败也走关闭降级。
+   * 索引 DB 路径；缺省 `<root>/fts.db`。显式 `null` = 关闭全文索引
+   * （内存 fs 的单测传 null，防测试真落 SQLite 文件）。初始化失败标为不可用，正文能力保留。
    */
   ftsPath?: string | null
 }
@@ -87,9 +87,9 @@ export interface MemoryStore extends MemoryRepo {
   getStats(): MemoryStats | null
   /**
    * 全文检索（plan63 片 3 · D-154/D-156）：BM25 排序的生效条目召回。
-   * FTS 索引未启用（关闭 / 初始化失败降级）时恒返回空数组 —— 调用方据此走旧行为。
+   * 显式区分正常零命中、关闭与故障；只有正常结果可携带相关条目。
    */
-  searchMemory(query: string, limit?: number): Array<{ file: string; name: string; class: string; score: number }>
+  searchMemory(query: string, limit?: number): MemorySearchResult
   /**
    * 跑一次候选区预筛（plan55 片④-a）：把同义提案归簇、为每簇写一份**合并稿候选**。
    * ⚠️ 只写合并稿，**不删来源** —— 来源要等用户批准合并稿时才收掉（`absorbMergeSources`）。
@@ -135,68 +135,69 @@ export function createMemoryStore(
   migrateMemoryFormat(root, fs, warn)
   const backend = createFsMemoryBackend(root, fs, { onWarn: warn })
 
-  // plan63 片 2：FTS 全文索引接线（D-154/D-156）。索引是**衍生缓存**：DB 落 `<root>/fts.db`
-  // （root 即 memory 数据根，与 notes/ meta.json 同级；不许进 root/memory/ ——那是归档区）。
-  // 启动全量重建（当前量级几十条、毫秒级；万条量级再评估增量维护），因此自愈脏索引不靠记。
-  // 初始化失败只降级（记忆本体照常，检索退回旧通路），不拖垮 store 装配。
-  let fts: FtsIndex | null = null
+  // FTS是衍生缓存；资格只由core完整生效快照决定，不再单独解析notes或复制守卫。
   const ftsPath = opts.ftsPath === undefined ? join(root, 'fts.db') : opts.ftsPath
-  if (ftsPath !== null) {
+  let fts: FtsIndex | null = null
+  let ftsStatus: MemorySearchResult['status'] = ftsPath === null ? 'disabled' : 'ready'
+  let indexedSignature: string | null = null
+
+  function disableIndex(stage: string, error: unknown): void {
+    ftsStatus = 'unavailable'
     try {
-      const index = createFtsIndex(ftsPath)
-      index.clear()
-      for (const file of backend.listFiles()) {
-        ftsSync(index, notesDir(root), file, backend.read(file))
+      fts?.close()
+    } catch {
+      // 关闭缓存失败不能影响已经完成的正文操作。
+    }
+    fts = null
+    try {
+      const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null
+      const code = typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{1,39}$/.test(rawCode) ? rawCode : 'UNKNOWN'
+      warn('记忆全文索引不可用，正文功能保留；关闭应用后重建索引并重启可恢复', { stage, code })
+    } catch {
+      // 告警接收方失败也不能把成功落盘伪装成保存失败。
+    }
+  }
+
+  function syncIndex(): void {
+    if (!fts) return
+    try {
+      const entries = inner.listActiveEntries().map(({ file, name, class: cls, body }) => ({
+        file, name, class: cls, body
+      }))
+      const signature = createHash('sha256').update(JSON.stringify(entries)).digest('hex')
+      // 签名限制重建频率；行数检查同时修复运行中丢失的专用派生表/缓存文件。
+      if (signature !== indexedSignature || fts.count() !== entries.length) {
+        fts.replace(entries)
+        indexedSignature = signature
       }
-      fts = index
-    } catch (err) {
-      fts = null
-      warn(
-        '记忆全文索引初始化失败，已降级为关闭：' +
-          (err instanceof Error ? err.message : String(err))
-      )
+    } catch (error) {
+      disableIndex('sync', error)
     }
   }
-  /** notes 区文件同步进 FTS；text=null 表示已删/解析失败 ⇒ 摘行。候选/归档/拒绝区天然不进索引 */
-  function ftsSync(index: FtsIndex, notesPrefix: string, file: string, text: string | null): void {
-    if (!file.startsWith(notesPrefix)) return
-    if (text === null) {
-      index.remove(file)
-      return
+
+  // 正文操作先完成，只有缓存同步进入隔离异常分支。恢复后直接回填，不依赖闭包调用装饰器。
+  const ftsBackend: FsMemoryBackend = {
+    ...backend,
+    write(file, text) {
+      backend.write(file, text)
+      syncIndex()
+    },
+    remove(file) {
+      const ok = backend.remove(file)
+      if (ok) syncIndex()
+      return ok
+    },
+    archive(file) {
+      const target = backend.archive(file)
+      if (target !== null) syncIndex()
+      return target
+    },
+    restoreFrom(file) {
+      const target = backend.restoreFrom(file)
+      if (target !== null) syncIndex()
+      return target
     }
-    const parsed = parseMemoryFile(text)
-    if (!parsed.ok) {
-      index.remove(file)
-      return
-    }
-    index.upsert({
-      file,
-      name: parsed.parsed.name,
-      class: parsed.parsed.class,
-      body: parsed.parsed.body
-    })
   }
-  // 装饰 backend：凡写/删/归档 notes 条目，同步 FTS（restore 走 write+remove 组合，自动被覆盖）
-  const ftsBackend: FsMemoryBackend =
-    fts === null
-      ? backend
-      : {
-          ...backend,
-          write(file, text) {
-            backend.write(file, text)
-            ftsSync(fts!, notesDir(root), file, text)
-          },
-          remove(file) {
-            const ok = backend.remove(file)
-            if (ok) ftsSync(fts!, notesDir(root), file, null)
-            return ok
-          },
-          archive(file) {
-            const to = backend.archive(file)
-            if (to !== null) ftsSync(fts!, notesDir(root), file, null)
-            return to
-          }
-        }
 
   const inner = createMemoryRepo(ftsBackend, {
     ...opts,
@@ -208,6 +209,15 @@ export function createMemoryStore(
       opts.onWrite?.(info)
     }
   })
+
+  if (ftsPath !== null) {
+    try {
+      fts = createFtsIndex(ftsPath)
+      syncIndex()
+    } catch (error) {
+      disableIndex('init', error)
+    }
+  }
 
   const reflectionRunner = opts.reflectChat
     ? createReflectionRunner({ chat: opts.reflectChat })
@@ -327,7 +337,7 @@ export function createMemoryStore(
 
   return {
     ...inner,
-    backend,
+    backend: ftsBackend,
     // plan56 片②：`list` 要拿"已看过"集去筛提示格 ⇒ 必须在 `...inner` 之后覆盖
     list,
     // 入口按 **file** 定位（与全库"读写删一律按 file"同口径）：同名两条提示时，
@@ -467,6 +477,15 @@ export function createMemoryStore(
       if (events.length === 0) return null
       return inner.computeStats(events)
     },
-    searchMemory: (query, limit) => fts?.search(query, limit) ?? []
+    searchMemory: (query, limit): MemorySearchResult => {
+      syncIndex()
+      if (!fts) return { status: ftsStatus === 'disabled' ? 'disabled' : 'unavailable', hits: [] }
+      try {
+        return { status: 'ready', hits: fts.search(query, limit) }
+      } catch (error) {
+        disableIndex('search', error)
+        return { status: 'unavailable', hits: [] }
+      }
+    }
   }
 }

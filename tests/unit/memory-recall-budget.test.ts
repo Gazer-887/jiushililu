@@ -63,7 +63,7 @@ describe('预算限制注入索引，正文回取仍覆盖生效集合', () => {
     const index = store.list()
     expect(index.omitted).toBeGreaterThan(0)
     expect(index.entries.some((entry) => entry.name === TARGET)).toBe(false)
-    expect(store.searchMemory('量子船坞').map((entry) => entry.name)).toEqual([TARGET])
+    expect(store.searchMemory('量子船坞').hits.map((entry) => entry.name)).toEqual([TARGET])
 
     const recall = recallFor(store)
     const suggested = await recall.execute({ name: '量子船坞' })
@@ -85,7 +85,7 @@ describe('预算限制注入索引，正文回取仍覆盖生效集合', () => {
   it('FTS关闭时，预算外生效条目仍可按名称回取', async () => {
     const store = seededStore(false)
     expect(store.list().entries.some((entry) => entry.name === TARGET)).toBe(false)
-    expect(store.searchMemory('量子船坞')).toEqual([])
+    expect(store.searchMemory('量子船坞').hits).toEqual([])
     expect(await recallFor(store).execute({ name: TARGET })).toContain(BODY)
   })
 
@@ -125,7 +125,7 @@ describe('预算限制注入索引，正文回取仍覆盖生效集合', () => {
     const archived = store.backend.listArchived()
     expect(archived).toHaveLength(1)
     expect(readFileSync(archived[0]!, 'utf8')).toContain(BODY)
-    expect(store.searchMemory('量子船坞')).toEqual([])
+    expect(store.searchMemory('量子船坞').hits).toEqual([])
     expect(await recallFor(store).execute({ name: TARGET })).not.toContain(BODY)
   })
 })

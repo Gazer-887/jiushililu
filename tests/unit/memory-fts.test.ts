@@ -23,6 +23,22 @@ describe('matchQueryFor（查询侧短语语义）', () => {
 })
 
 describe('createFtsIndex（:memory: 全链路）', () => {
+  it('replace中途失败整笔回滚，原索引保留且无半份新行', () => {
+    const idx = createFtsIndex(':memory:')
+    try {
+      idx.upsert({ file: 'old.md', name: 'old', class: 'knowledge', body: '原有船坞' })
+      expect(() => idx.replace([
+        { file: 'new.md', name: 'new', class: 'knowledge', body: '新建白塔' },
+        { file: 'bad.md', name: 'bad', class: 'knowledge', get body(): string { throw new Error('fixture interrupted snapshot') } }
+      ])).toThrow('fixture interrupted snapshot')
+      expect(idx.count()).toBe(1)
+      expect(idx.search('船坞').map((hit) => hit.name)).toEqual(['old'])
+      expect(idx.search('白塔')).toEqual([])
+    } finally {
+      idx.close()
+    }
+  })
+
   it('upsert→search 中文命中，BM25 相关性排序', () => {
     const idx = createFtsIndex(':memory:')
     try {

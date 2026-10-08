@@ -208,8 +208,10 @@ Playbook 与记忆分目录（[[src/main/store/playbook-fs.ts#playbooksDir]] 与
 ## 本地全文索引是衍生缓存
 
 [[src/main/memory/fts.ts#createFtsIndex]] 的 FTS5 只承载可重建的查询索引，已生效 Markdown 条目仍是真源。
-索引在 notes/ 旁独立存放；[[src/main/store/memory-store.ts#createMemoryStore]] 装饰已有写、删、归档出口，
-启动全量重建，因此候选、拒绝与归档不因另一个索引入口进入召回。把候选一起索引会绕过审批语义；
+索引在 notes/ 旁独立存放；[[src/main/memory/memory-core.ts#createMemoryRepo]] 的完整生效快照
+复用loadAll字段守卫与画像消解，尚未施加提示词预算。[[src/main/store/memory-store.ts#createMemoryStore]]
+启动以该快照重建，写、删、归档、恢复后同步，查询前复核外部变更。单事务替换缓存，内容签名不变则不重复建表；
+索引行数不符时同样重建。候选、拒绝、归档、被硬拒内容及旧画像都不能从另一个索引入口进入召回。把候选一起索引会绕过审批语义；
 把数据库当正文真源则会把可重建的缓存变成另一份必须同步的存档。
 
 [[src/main/memory/fts.ts#tokenizeForFts]] 对覆盖范围内 CJK 字符逐字切分；
@@ -218,8 +220,10 @@ Playbook 与记忆分目录（[[src/main/store/playbook-fs.ts#playbooksDir]] 与
 
 [[src/main/agent/tools/memory-tools.ts#createMemoryTools]] 仍先用预算内 repo.list() 精确匹配条目名，未命中才返回FTS相关项名字。
 预算外生效条目也可通过全库受守卫查询按名取正文，候选/归档/拒绝区仍隔离。
-FTS运行期故障与检索质量的证据另行验证，不由本条名称回取契约证明。
-初始化失败或显式关闭索引会退回旧通路；运行期数据库故障的兜底不由这条初始化契约证明。
+[[src/shared/memory.ts#MemorySearchResult]]区分ready/disabled/unavailable，正常零命中与故障不会混同。
+初始化或运行故障只隔离缓存，不让已成功正文操作报假失败；recall明确告知全文检索不可用，精确名称回取继续。
+不回显原始SQLite异常/路径，也不自动删除坏DB；确认专用缓存归属后关闭应用、移走缓存并重启从正文重建。
+单事务原子性不代替生效资格，字面检索也不证明真实语料的检索质量。
 
 文件索引按操作短连接，避免Windows常驻句柄妨碍目录回收；内存数据库需要保留连接以保持数据。
 better-sqlite3 v12 的Node/Electron两种ABI由 [afterPack 打包钩子](../scripts/afterpack-sqlite-prebuilt.cjs) 在打包阶段处理，

@@ -5,6 +5,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import Database from 'better-sqlite3'
+import type { MemorySearchHit } from '@shared/memory'
 
 /** CJK 区段（假名 / 汉字扩展 / 谚文）：unicode61 把连续 CJK 当一整块词，必须应用层逐字切开 */
 const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/
@@ -48,18 +49,20 @@ export function matchQueryFor(text: string): string | null {
   return phrases.length > 0 ? phrases.join(' ') : null
 }
 
-export interface FtsHit {
-  /** 条目文件名（记忆区相对路径），接线侧据此回指条目原文 */
+export type FtsHit = MemorySearchHit
+
+export interface FtsDocument {
   file: string
   name: string
   class: string
-  /** bm25 值：越小越相关（FTS5 惯例，负值常见），本接口不做归一，也不提供 snippet（原词形态由调用方回原文取） */
-  score: number
+  body: string
 }
 
 export interface FtsIndex {
   /** 幂等：同 file 重复 upsert 是替换不是叠加；remove 过的 file 重新 upsert 等价首次 */
-  upsert(input: { file: string; name: string; class: string; body: string }): void
+  upsert(input: FtsDocument): void
+  /** 单事务替换完整生效快照；失败回滚，不能留下半份索引。 */
+  replace(entries: readonly FtsDocument[]): void
   remove(file: string): void
   /** query 走 matchQueryFor 口径；空查询返回空数组（不是全表） */
   search(query: string, limit?: number): FtsHit[]
@@ -99,6 +102,9 @@ export function createFtsIndex(dbPath: string): FtsIndex {
     upsert(input) {
       withDb((db) => bindOps(db).upsert(input))
     },
+    replace(entries) {
+      withDb((db) => bindOps(db).replace(entries))
+    },
     remove(file) {
       withDb((db) => bindOps(db).remove(file))
     },
@@ -128,14 +134,24 @@ function installSchema(db: Database.Database): void {
 function bindOps(db: Database.Database): FtsIndex {
   const del = db.prepare('DELETE FROM memory_fts WHERE file = ?')
   const ins = db.prepare('INSERT INTO memory_fts (body, name, class, file) VALUES (?, ?, ?, ?)')
-  const upsert = db.transaction((input: { file: string; name: string; class: string; body: string }) => {
-    del.run(input.file)
-    // 入库文本 = 正文与条目名都参与检索；name 另存 UNINDEXED 列供结果回显
+  const insert = (input: FtsDocument): void => {
+    // 正文与名称参与检索；名称另存 UNINDEXED 列回显，不提供原文片段。
     ins.run(`${tokenizeForFts(input.body)} ${tokenizeForFts(input.name)}`, input.name, input.class, input.file)
+  }
+  const upsert = db.transaction((input: FtsDocument) => {
+    del.run(input.file)
+    insert(input)
+  })
+  const replace = db.transaction((entries: readonly FtsDocument[]) => {
+    db.exec('DELETE FROM memory_fts')
+    for (const entry of entries) insert(entry)
   })
   return {
     upsert(input) {
       upsert(input)
+    },
+    replace(entries) {
+      replace(entries)
     },
     remove(file) {
       del.run(file)

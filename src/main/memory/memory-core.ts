@@ -359,6 +359,8 @@ export interface MemoryRepo {
    * ⚠️ 只筛 `needsReview` 那一格 —— 条目照常进 `entries`、照常注入，消掉的是提示不是记忆。
    */
   list(reviewSeen?: ReadonlySet<string>): MemoryIndex
+  /** 完整生效快照：与注入读侧同一守卫/画像消解，尚未施加提示词预算。供派生索引使用。 */
+  listActiveEntries(): MemoryEntry[]
   /** plan53 片 1：把归档条目放回生效集合。同名已存在 ⇒ 拒，**绝不覆盖** */
   restoreArchived(file: string): MemoryRestoreResult
   /**
@@ -826,6 +828,7 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
 
   return {
     listFiles: () => backend.listFiles(),
+    listActiveEntries: () => loadAll().entries,
 
     list(reviewSeen) {
       const { entries, warnings, duplicates, needsReview } = loadAll()

@@ -3,7 +3,7 @@
 // ⚠️ 证据指针**不由模型填** —— 会话 id 与轮次由运行时给，否则模型可以伪造来源。
 
 import type { AgentTool } from '@shared/agent'
-import { MODEL_MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass } from '@shared/memory'
+import { MODEL_MEMORY_CLASSES, MEMORY_LIMITS, type MemoryClass, type MemorySearchResult } from '@shared/memory'
 import type { MemoryRepo } from '@main/memory/memory-core'
 
 export interface MemoryToolDeps {
@@ -22,9 +22,9 @@ export interface MemoryToolDeps {
   lastUserMessage?: () => string | null
   /**
    * 全文检索兜底（plan63 片 3 · D-154/D-156）：recall 按名未命中时用它找相关条目。
-   * 不给 = 关闭兜底，recall 保持精确命中行为（逐字不变）。FTS 索引关闭时组合根注入的是恒空实现。
+   * 不给 = 关闭兜底；显式关闭保留旧行为。索引故障必须告知，不能当作检索零命中。
    */
-  searchMemory?: (query: string, limit?: number) => Array<{ file: string; name: string; class: string; score: number }>
+  searchMemory?: (query: string, limit?: number) => MemorySearchResult
 }
 
 /**
@@ -182,7 +182,11 @@ export function createMemoryTools(deps: MemoryToolDeps): AgentTool[] {
       if (!hit || hit.name !== name) {
         deps.repo.record({ kind: 'recall', conversationId: deps.conversationId(), name, found: false })
         // plan63 片 3：按名未命中时用全文检索兜底（把相关条目递到模型眼前）；未注入或零命中走旧行为
-        const related = deps.searchMemory?.(name) ?? []
+        const result = deps.searchMemory?.(name)
+        if (result?.status === 'unavailable') {
+          return `没有名为「${name}」的记忆。全文检索暂不可用，本次无法判断是否有相关条目；精确名称回取仍可使用。可在关闭应用后重建记忆索引并重启恢复。`
+        }
+        const related = result?.hits ?? []
         if (related.length > 0) {
           const lines = related.map((h) => `- 「${h.name}」（${h.class}）`)
           return (

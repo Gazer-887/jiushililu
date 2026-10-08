@@ -86,6 +86,20 @@ export interface MemoryEntry {
   file: string
 }
 
+/** 全文索引只给相关名称，不授予按缓存路径读取正文的许可。 */
+export interface MemorySearchHit {
+  file: string
+  name: string
+  class: string
+  /** BM25 原始分数，越小越相关。 */
+  score: number
+}
+
+/** 故障与真实零命中分开；关闭和故障都不携带缓存中的旧命中。 */
+export type MemorySearchResult =
+  | { status: 'ready'; hits: MemorySearchHit[] }
+  | { status: 'disabled' | 'unavailable'; hits: [] }
+
 /** 注入用的索引视图。`omitted` / `warnings` 必须如实带到界面与 prompt，不许静默丢 */
 export interface MemoryIndex {
   /** 只含校验通过且未被预算截断的条目（进注入段） */

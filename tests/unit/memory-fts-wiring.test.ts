@@ -136,7 +136,7 @@ describe('FTS 与记忆装配层接线（plan63 片 2）', () => {
       body: '代理端口是 65532'
     })
     expect(saved.ok).toBe(true)
-    expect(store.searchMemory('代理').map((h) => h.name)).toEqual(['proxy-port'])
+    expect(store.searchMemory('代理').hits.map((h) => h.name)).toEqual(['proxy-port'])
 
     const tools = createMemoryTools({
       repo: store,
@@ -150,7 +150,7 @@ describe('FTS 与记忆装配层接线（plan63 片 2）', () => {
     expect(out).toContain('proxy-port')
 
     const off = createMemoryStore(root, nodeFsAdapter, { ftsPath: null })
-    expect(off.searchMemory('代理')).toEqual([])
+    expect(off.searchMemory('代理')).toEqual({ status: 'disabled', hits: [] })
   })
 })
 

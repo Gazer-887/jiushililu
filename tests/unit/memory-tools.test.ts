@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { AgentTool } from '@shared/agent'
+import type { MemoryToolDeps } from '@main/agent/tools/memory-tools'
 import { createMemoryRepo, type MemoryRepo } from '@main/memory/memory-core'
 import { createMemoryTools } from '@main/agent/tools/memory-tools'
 import { createArchiveMock } from '../helpers/memory-archive-mock'
@@ -17,7 +18,7 @@ function setup(
     turnIndex?: number
     confirm?: boolean
     lastUser?: string
-    searchMemory?: (query: string, limit?: number) => Array<{ file: string; name: string; class: string; score: number }>
+    searchMemory?: MemoryToolDeps['searchMemory']
   } = {}
 ) {
   const files = new Map<string, string>()
@@ -28,7 +29,6 @@ function setup(
     candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
     listCandidates: () => [],
     write: (f: string, t: string) => void files.set(f, t),
-    remove: (f: string) => files.delete(f),
     pathFor: (slug: string) => `${ROOT}/${slug}.md`,
     appendEvent: (line: string) => void events.push(line),
     ...arch.backend
@@ -220,7 +220,7 @@ describe('recall：命中与否都要留痕', () => {
 describe('recall 的全文检索兜底（plan63 片 3）', () => {
   it('未命中但有相关条目 → 返回兜底列表，账仍记 found:false', async () => {
     const s = setup({
-      searchMemory: () => [{ file: '/mem/notes/a.md', name: 'prefers-tables', class: 'style', score: -1.2 }]
+      searchMemory: () => ({ status: 'ready', hits: [{ file: '/mem/notes/a.md', name: 'prefers-tables', class: 'style', score: -1.2 }] })
     })
     await s.byName('remember').execute(GOOD)
     const out = await s.byName('recall').execute({ name: '表格偏好' })
@@ -230,7 +230,7 @@ describe('recall 的全文检索兜底（plan63 片 3）', () => {
   })
 
   it('未命中且检索零结果 → 旧行为逐字（列出可用条目）', async () => {
-    const s = setup({ searchMemory: () => [] })
+    const s = setup({ searchMemory: () => ({ status: 'ready', hits: [] }) })
     await s.byName('remember').execute(GOOD)
     const out = await s.byName('recall').execute({ name: '不存在' })
     expect(out).toContain('可用条目：prefers-tables')
