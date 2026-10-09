@@ -652,6 +652,8 @@ export type AgentRunResult = AgentLoopResult & {
   runId: string
   changedFiles: number
   usage: TokenUsage | null
+  usageComplete: boolean
+  tokenTier: ReturnType<typeof resolvePolicy>['tier']
   /** plan27：本轮「计划批准」结论。`undefined` = **没触发批准闸**（普通 agent / 空方案 / 显式跳过） */
   planApproved?: boolean
 }
@@ -980,6 +982,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
 /** 本轮累计的真实用量（plan8 R9）：一轮里**可能调好几次模型**，每次的 usage 都要加起来 —— 只记最后一次会让账面少一大半；
  *  `null` = 厂商一次都没报（**不是**"用量为 0"，两者必须分得清）。 */
   let usageAcc: TokenUsage | null = null
+  let usageComplete = true
 
   const chat = async (messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult> => {
     // plan29 D-090：**这里原来有一层整轮墙钟**（`args.signal ?? AbortSignal.timeout(settings.timeoutMs)`），
@@ -990,19 +993,33 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     //    （见 providers/stream-guard.ts），它知道自己是哪一层超时，也就能说清是哪一层。
     // `args.signal` 只剩一个语义：**用户点了停止** —— 该立刻停，且不该有第二个数字来抢这个决定权。
     const signal = args.signal
-    const res =
-      effective.providerType === 'anthropic'
-        ? await streamWithToolsAnthropic(effective, args.apiKey, messages, toolSchemas, onText, signal)
-        : await streamWithToolsOpenAI(
-            effective,
-            args.apiKey,
-            messages,
-            toolSchemas,
-            onText,
-            signal,
-            args.onReasoning
-          )
+    let res: AgentChatResult
+    try {
+      res =
+        effective.providerType === 'anthropic'
+          ? await streamWithToolsAnthropic(
+              effective,
+              args.apiKey,
+              messages,
+              toolSchemas,
+              onText,
+              signal
+            )
+          : await streamWithToolsOpenAI(
+              effective,
+              args.apiKey,
+              messages,
+              toolSchemas,
+              onText,
+              signal,
+              args.onReasoning
+            )
+    } catch (error) {
+      usageComplete = false
+      throw error
+    }
     if (res.usage) usageAcc = addUsage(usageAcc ?? emptyUsage(), res.usage)
+    else usageComplete = false
     return res
   }
 
@@ -1030,11 +1047,13 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
           ? await streamWithToolsAnthropic(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
           : await streamWithToolsOpenAI(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
       if (res.usage) usageAcc = addUsage(usageAcc ?? emptyUsage(), res.usage)
+      else usageComplete = false
       const text = (res.text ?? '').trim()
       if (!text) return null
       args.summaryCache?.set(args.conversationId, text)
       return text
     } catch {
+      usageComplete = false
       return null // fail-soft 内聚：回调自己兜底；loop 侧还有一层 catch（防注入回调不守约）
     }
   }
@@ -1064,7 +1083,15 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   }
 
   const changedFiles = ctx.checkpoints.get(runId)?.changes.length ?? 0
-  let final: AgentRunResult = { ...result, agent: def?.name ?? '内核默认', runId, changedFiles, usage: usageAcc }
+  let final: AgentRunResult = {
+    ...result,
+    agent: def?.name ?? '内核默认',
+    runId,
+    changedFiles,
+    usage: usageAcc,
+    usageComplete: usageAcc !== null && usageComplete,
+    tokenTier: policy.tier
+  }
   let planApproved: boolean | undefined
 
   // ── 计划批准闸（plan27）──────────────────────────────────────────────
@@ -1103,6 +1130,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
           // 用量**求和**：两轮都花了钱，账单必须与厂商对得上（归并口径见 PLAN/plan27_计划批准.md D-082）。
           // 其余账目（runId / changedFiles / stopReason）以 **executor 那轮**为准 —— planner 无写操作，检查点空转。
           usage: execResult.usage ? addUsage(usageAcc ?? emptyUsage(), execResult.usage) : usageAcc,
+          usageComplete: final.usageComplete && execResult.usageComplete,
           // agent 仍报**用户启用的那个**：他看到的应是「我选的 agent 干了这件事」，而不是「偷偷换了个人」
           agent: def.name
         }

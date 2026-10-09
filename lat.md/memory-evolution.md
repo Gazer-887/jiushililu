@@ -69,7 +69,8 @@
 三笔账在 [[src/shared/ipc.ts#ConversationMeta]] 上并排：真实用量 / 窗口化省下的估算 / 注入税，
 对应厂商真值、替它做的减法、自己加的固定开销。估算一律带"估"的标记；
 缺字段一律**不显示**而不补 0——"没记忆"与"税为 0"是两件事。
-[[src/renderer/src/store.ts#mergeUsage]] 并盘上累计时只许往前长（取 max），倒退比不显示更难解释。
+[[src/renderer/src/store.ts#mergeUsage]] 委托共享会话统计合并盘上累计，来源与覆盖也随快照恢复。
+本地注入税或节省估算不能赋予空账厂商来源；未上报时只显示已有估算，明确实报0才显示厂商0。
 反思自己那次调用是**第四格**：它不占对话轮，却真花钱。
 [[src/main/memory/reflection.ts#ReflectChat]] 随候选一起把厂商用量交出来，
 [[src/main/store/memory-store.ts#MemoryStoreReflectionOptions]] 的钩子把它送到

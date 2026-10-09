@@ -4,9 +4,7 @@ import { resolveApiUrl } from './url'
 import { ProviderError, mapHttpError } from './errors'
 import { thinkingBudgetForSettings } from './anthropic'
 import { createSSEParser } from './sse'
-import { usageFromAnthropicEvent } from './usage-parsers'
-import type { TokenUsage } from '@shared/usage'
-import { mergeUsageHalves } from '@shared/usage'
+import { createAnthropicUsageAccumulator, usageFromAnthropicMessage } from './usage-parsers'
 import { ToolCallAccumulator } from './tool-accumulator'
 import { httpFetch } from './http-client'
 import { createStreamGuard, type StreamGuard, type StreamGuardOptions } from './stream-guard'
@@ -114,6 +112,7 @@ export function toAnthropicAgentMessages(messages: AgentMessage[]): {
 /** Anthropic 响应 JSON → AgentChatResult（text 块拼接为回复；tool_use 块转 toolCalls） */
 export function fromAnthropicResponse(json: {
   content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }>
+  usage?: unknown
 }): AgentChatResult {
   const blocks = json.content ?? []
   const text = blocks
@@ -127,7 +126,7 @@ export function fromAnthropicResponse(json: {
       name: b.name as string,
       arguments: JSON.stringify(b.input ?? {})
     }))
-  return { text: text.length > 0 ? text : null, toolCalls }
+  return { text: text.length > 0 ? text : null, toolCalls, usage: usageFromAnthropicMessage(json) }
 }
 
 /** 工具定义 → Anthropic tools 字段（OpenAI 的 parameters 在 Anthropic 叫 input_schema） */
@@ -261,7 +260,7 @@ async function anthropicStreamBody(
   const acc = new ToolCallAccumulator()
   let text = ''
   /** 这一轮的用量（plan8 R9）：Anthropic **分两处报**（message_start 输入 / message_delta 输出） */
-  let usage: TokenUsage | null = null
+  const usage = createAnthropicUsageAccumulator()
 
   const parser = createSSEParser((data) => {
     try {
@@ -273,11 +272,8 @@ async function anthropicStreamBody(
         content_block?: { type?: string; id?: string; name?: string; input?: unknown }
         delta?: { type?: string; text?: string; partial_json?: string }
       }
-      // 两处都收：只收一处账面会少一半（输入那半在 message_start 里就报完了）。
-      // ⚠️ 这里必须是**合并**而不能是覆盖 —— 原来的 `usage = evtUsage` 会让后到的 `message_delta`（只报输出）
-      // 把 `message_start` 报的**输入量抹成 0**：账面少一半，日志里却什么都看不出来（2026-09-13 修）。
-      const evtUsage = usageFromAnthropicEvent(evt)
-      if (evtUsage) usage = usage ? mergeUsageHalves(usage, evtUsage) : evtUsage
+      // 计量与文本/工具独立：只有基础输入及最终输出齐全才发布报告。
+      usage.addEvent(evt)
       if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
         acc.startAnthropic(
           evt.index ?? 0,
@@ -313,5 +309,5 @@ async function anthropicStreamBody(
   parser.end()
 
   const toolCalls = acc.finish()
-  return { text: text.length > 0 ? text : null, toolCalls, ...(usage ? { usage } : {}) }
+  return { text: text.length > 0 ? text : null, toolCalls, usage: usage.getUsage() }
 }

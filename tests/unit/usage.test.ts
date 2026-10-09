@@ -345,7 +345,7 @@ describe('累加与合并时的可选计数', () => {
     expect(mergeOptionalMax(100, 80)).toBe(100)
     expect(mergeOptionalMax(undefined, 80)).toBe(80)
     expect(mergeOptionalMax(100, undefined)).toBe(100)
-    expect(mergeOptionalMax(null, null)).toBeUndefined()
+    expect(mergeOptionalMax(null, null)).toBeNull()
     expect(mergeOptionalMax(undefined, undefined)).toBeUndefined()
   })
 })
@@ -422,11 +422,13 @@ describe('usage 形状探针', () => {
 /**
  * **接线守卫**：上面测的是纯函数，测不到"主循环到底调没调它"（同 `stream-envelope` 那组守卫的道理）—— 纯函数全绿、调用点被换成别的，测试没反应，所以直接读源码钉住那一句。
  */
-describe('接线守卫：Anthropic 主循环真的在合并两半', () => {
+describe('接线守卫：Anthropic 主循环使用完整计量累计器', () => {
   const src = readFileSync('src/main/providers/anthropic-agent.ts', 'utf8')
 
-  it('调的是 `mergeUsageHalves`（把合并删掉 / 换成覆盖都会红）', () => {
-    expect(src).toContain('mergeUsageHalves(usage, evtUsage)')
+  it('阶段报告经累计器成对收口（行为由真实SSE回归另验）', () => {
+    expect(src).toContain('createAnthropicUsageAccumulator()')
+    expect(src).toContain('usage.addEvent(evt)')
+    expect(src).toContain('usage.getUsage()')
   })
 
   it('旧的覆盖写法不许回来（那正是"输入量被抹成 0"的病根）', () => {

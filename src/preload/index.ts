@@ -3,13 +3,18 @@ import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { AgentSaveInput } from '@shared/agents'
 import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
 import type { PlaybookSaveInput } from '@shared/playbook'
-import type { ChatDonePayload, RendererErrorReport, SettingsChangedKind, StreamEnvelope } from '@shared/ipc'
+import type {
+  ChatDonePayload,
+  ConversationSaveStats,
+  RendererErrorReport,
+  SettingsChangedKind,
+  StreamEnvelope
+} from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { FetchAvailableInput, ModelPatchEntryInput, ModelSaveInput } from '@shared/models'
 import type { Goal, GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
-import type { TokenUsage } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
 import type { SystemSettings } from '@shared/system'
 import type { NetworkPatch } from '@shared/network'
@@ -118,11 +123,8 @@ const api: ApiBridge = {
   listConversations: () => ipcRenderer.invoke(IPC.convList),
   getConversation: (id: string) => ipcRenderer.invoke(IPC.convGet, id),
   createConversation: (input: ConversationCreateInput) => ipcRenderer.invoke(IPC.convCreate, input),
-  saveConversation: (
-    id: string,
-    messages: ChatMessage[],
-    stats?: { usage?: TokenUsage; avoidedTokens?: number; tokenTier?: TokenSaverTier; agentName?: string }
-  ) => ipcRenderer.invoke(IPC.convSave, stats ? { id, messages, ...stats } : { id, messages }),
+  saveConversation: (id: string, messages: ChatMessage[], stats?: ConversationSaveStats) =>
+    ipcRenderer.invoke(IPC.convSave, stats ? { id, messages, ...stats } : { id, messages }),
   switchConversation: (prevId: string | null, nextId: string | null) =>
     ipcRenderer.invoke(IPC.convSwitch, { prevId, nextId }),
   renameConversation: (id: string, title: string) => ipcRenderer.invoke(IPC.convRename, { id, title }),

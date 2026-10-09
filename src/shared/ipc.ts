@@ -345,6 +345,10 @@ export interface ConversationMeta {
   /** 这条会话的**真实用量累计**（plan8 R9），必须落盘：牌上写的是"本会话累计"，一重启就归零就是在骗人。
    *  缺字段 = 老数据 / 还没跑过 → 界面显示"暂无"，**不补 0**。 */
   usage?: TokenUsage
+  /** 明确区分已报告0与旧空账0；缺标记的旧全0来源未知，不反推。 */
+  usageReported?: boolean
+  /** 当前计量范围是否全部有报告；false为已观察漏报，缺字段为旧记录未标覆盖范围。 */
+  usageComplete?: boolean
   /** 这条会话**省下**的估算 token（plan8 R9.1）：不是厂商账，故与 `usage` 分开存 —— 混算等于两笔账糊一起 */
   avoidedTokens?: number
   /** **注入税**累计（plan19 §5.2 / K17）：每轮**注入**进去的固定开销 —— 记忆段 + 执行手册段，
@@ -373,6 +377,18 @@ export interface ConversationMeta {
 export interface Conversation extends ConversationMeta {
   messages: ChatMessage[]
 }
+
+/** 保存统计的同一契约，桥/主进程/renderer不得各漏一份字段。bodyBytes由主进程计算。 */
+export type ConversationSaveStats = Pick<
+  ConversationMeta,
+  | 'usage'
+  | 'usageReported'
+  | 'usageComplete'
+  | 'avoidedTokens'
+  | 'memoryTokens'
+  | 'tokenTier'
+  | 'agentName'
+>
 
 export interface ConversationCreateInput {
   workspace: string
@@ -828,6 +844,8 @@ export type { BackgroundTask } from './background'
 /** `chat:done` 的信封负载（plan8 R9）：收尾事件带货，而不是另开一条 `usage:changed` —— 用量就是"这一轮的总结"，同时刻到。`usage: null` = **厂商没报**（不是 0），界面显示占用估算、不假装知道精确值。 */
 export interface ChatDonePayload {
   usage: TokenUsage | null
+  /** 主链计量请求（含摘要/批准后执行）是否均有完整报告；已报小计不能冒充完整总量。 */
+  usageComplete?: boolean
   /** 本轮省下的估算 token（plan8 R9.1）：与 `usage` 并列而不合并 —— 一个是**厂商真值**、一个是**本地估算**；它**不进**会话用量账本。 */
   avoided?: number
   /** 这一轮用的档位（plan8 R9.1 §七②）：不记档位，事后按档比数字就说不清数是从哪跑出来的。缺字段 = 老主进程 → 界面**不显示档位标签**，不替它编默认值。 */
@@ -958,7 +976,7 @@ export interface ApiBridge {
     id: string,
     messages: ChatMessage[],
     /** 会话统计（plan8 R9 / R9.1 / plan17）：**给了才更新，不给就保持盘上原值**。用对象而非并列参数 —— 这类"账"以后还会加。 */
-    stats?: { usage?: TokenUsage; avoidedTokens?: number; agentName?: string }
+    stats?: ConversationSaveStats
   ): Promise<ConversationMeta | null>
   renameConversation(id: string, title: string): Promise<ConversationMeta | null>
   deleteConversation(id: string): Promise<void>

@@ -53,7 +53,7 @@ export function UsageChip(): JSX.Element | null {
   const record = useAppStore((s) => (s.activeId ? s.usageByConversation[s.activeId] : undefined))
 
   // 没会话、或还没拿到过真实用量 → 整块不渲染（工具栏不为"暂无"占位）
-  if (!record) return null
+  if (!record || (!record.usageReported && record.avoided <= 0 && record.memory <= 0 && !record.reflectionTotal)) return null
 
   const { total, last, avoided, memory, reflectionTotal } = record
   /**
@@ -61,18 +61,17 @@ export function UsageChip(): JSX.Element | null {
    * 写 0% 等于替厂商宣布"一点没命中"）。但 `思考 0%` 会出现：厂商明确报了 0 就是事实，该显示。
    * 这两种 0 走两条路，见 @shared/usage。
    */
-  const hit = cacheHitRate(total)
-  const think = reasoningShare(total)
+  const hit = record.usageReported ? cacheHitRate(total) : null
+  const think = record.usageReported ? reasoningShare(total) : null
   const tip = [
-    `本会话累计（厂商上报值）：${totalTokens(total)} tokens`,
-    `输入 ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}`,
-    hit !== null
-      ? `其中前缀缓存命中：${formatTokens(total.cachedPromptTokens ?? 0)}（${formatRate(hit)}）`
-      : '前缀缓存命中：厂商未上报',
-    think !== null
-      ? `输出里推理（思考）：${formatTokens(total.reasoningTokens ?? 0)}（${formatRate(think)}）`
-      : '输出里推理（思考）：厂商未上报',
-    last ? `最近一轮：${totalTokens(last)} tokens` : '',
+    record.usageReported ? `主对话已上报合计：${totalTokens(total)} tokens` : '主对话用量：厂商未上报或旧记录来源未知',
+    record.usageReported ? `输入 ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}` : '',
+    record.usageReported ? (record.usageComplete === true ? '覆盖：本轮链路各请求均有报告' : record.usageComplete === false ? '覆盖：仅已上报部分，存在未报告请求' : '覆盖：旧记录未记范围') : '',
+    record.usageReported ? (total.cachedPromptTokens == null ? '前缀缓存命中：厂商未上报'
+      : `其中前缀缓存命中：${formatTokens(total.cachedPromptTokens)}（${hit === null ? '输入为0，比例不适用' : formatRate(hit)}）`) : '',
+    record.usageReported ? (total.reasoningTokens == null ? '输出里推理（思考）：厂商未上报'
+      : `输出里推理（思考）：${formatTokens(total.reasoningTokens)}（${think === null ? '输出为0，比例不适用' : formatRate(think)}）`) : '',
+    last ? `最近一轮已上报：${totalTokens(last)} tokens${record.lastComplete === false ? '（部分）' : ''}` : '',
     // 记下"这轮是哪一档跑的" —— 用户比数字时得知道它的出处（plan8 §七②）
     record.tier ? `省 Token 档位（设置页可修改）：${tierLabel(record.tier)}` : '',
     // ⚠️ 这行必须**说清是估算**：它与上面的"厂商真实值"不同源，不说清用户没法判断哪个数能信。
@@ -90,14 +89,16 @@ export function UsageChip(): JSX.Element | null {
 
   return (
     <span className="usage-chip" title={tip}>
-      <span className="usage-total">{formatTokens(totalTokens(total))}</span>
-      <span className="usage-unit">tok</span>
+      {record.usageReported && <>
+        <span className="usage-total">{formatTokens(totalTokens(total))}</span>
+        <span className="usage-unit">tok</span>
+      </>}
       {last && <span className="usage-last">+{formatTokens(totalTokens(last))}</span>}
       {hit !== null && <span className="usage-rate">命中 {formatRate(hit)}</span>}
       {think !== null && <span className="usage-rate">思考 {formatRate(think)}</span>}
       {/* 主进程没带这个字段就**不显示** —— 不替它编一个默认档 */}
       {record.tier && <span className="usage-tier">{tierLabel(record.tier)}</span>}
-      {avoided > 0 && <span className="usage-saved">省 {formatTokens(avoided)}</span>}
+      {avoided > 0 && <span className="usage-saved">省 {formatTokens(avoided)}(估)</span>}
       {/* 注入税（plan19 §5.2）：本地估算，照既有诚实口径标"估" */}
       {memory > 0 && <span className="usage-memory">记忆税 {formatTokens(memory)}(估)</span>}
       {/* 批 2 反思用量：会话切换时跑的额外模型调用，与对话账分开 */}

@@ -1,7 +1,7 @@
 import type { ChatMessage, ModelSettings, ReasoningEffort, TestResult } from '@shared/ipc'
 import { anthropicThinkingBudget } from '@shared/reasoning'
 import { createSSEParser } from './sse'
-import { usageFromAnthropicEvent, usageFromAnthropicMessage } from './usage-parsers'
+import { createAnthropicUsageAccumulator, usageFromAnthropicMessage } from './usage-parsers'
 import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
 import { resolveApiUrl } from './url'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
@@ -129,15 +129,14 @@ export class AnthropicProvider implements IProvider {
       return
     }
 
+    const meter = createAnthropicUsageAccumulator()
     const parser = createSSEParser((data) => {
       try {
         const json = JSON.parse(data) as AnthropicEvent
         if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
           cb.onChunk(json.delta.text)
         }
-        // 用量**分两处报**（plan8 R9）：`message_start` 给输入、`message_delta` 给输出；只收一处账面就少一半
-        const usage = usageFromAnthropicEvent(json)
-        if (usage) cb.onUsage?.(usage)
+        meter.addEvent(json)
       } catch {
         // 忽略无法解析的行
       }
@@ -152,6 +151,8 @@ export class AnthropicProvider implements IProvider {
     }
     parser.push(decoder.decode())
     parser.end()
+    const usage = meter.getUsage()
+    if (usage) cb.onUsage?.(usage)
   }
 
   async testConnection(req: ProviderRequest): Promise<TestResult> {

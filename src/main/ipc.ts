@@ -57,7 +57,7 @@ import { networkSetSchema } from '@shared/network'
 import type { SystemIntegration } from './system-integration'
 import type { NetworkProxy } from './network-proxy'
 import { listSystemFonts } from './system-fonts'
-import { resolvePolicy, type TokenSaverTier } from '@shared/token-tier'
+import { isTokenSaverTier, resolvePolicy, type TokenSaverTier } from '@shared/token-tier'
 // 「当前用哪个模型」由**模型档案**决定（plan7 F5 多模型）：内核/界面永远只看见"当前这一个模型"，真源搬到了 store/models
 import {
   deleteProfileById,
@@ -874,8 +874,9 @@ export function registerIpcHandlers(deps: {
       emit.done(
         result.usage,
         result.avoidedTokens ?? 0,
-        getTokenTier(),
-        sumInjectionTax(estimateMemoryTokens(memoryBlock), estimatePlaybookTokens(playbookBlock))
+        result.tokenTier,
+        sumInjectionTax(estimateMemoryTokens(memoryBlock), estimatePlaybookTokens(playbookBlock)),
+        result.usageComplete
       )
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
@@ -1110,9 +1111,14 @@ export function registerIpcHandlers(deps: {
         usage: z
           .object({
             promptTokens: z.number().finite().nonnegative(),
-            completionTokens: z.number().finite().nonnegative()
+            completionTokens: z.number().finite().nonnegative(),
+            cachedPromptTokens: z.number().finite().nonnegative().nullable().optional(),
+            reasoningTokens: z.number().finite().nonnegative().nullable().optional()
           })
           .optional(),
+        usageReported: z.boolean().optional(),
+        usageComplete: z.boolean().optional(),
+        tokenTier: z.custom<TokenSaverTier>(isTokenSaverTier).optional(),
         avoidedTokens: z.number().finite().nonnegative().optional(),
         // 注入税（plan19 §5.2）：同样是估算，单独一笔账
         memoryTokens: z.number().finite().nonnegative().optional(),
@@ -1141,10 +1147,15 @@ export function registerIpcHandlers(deps: {
         ? {
             usage: {
               promptTokens: Math.round(input.usage.promptTokens),
-              completionTokens: Math.round(input.usage.completionTokens)
+              completionTokens: Math.round(input.usage.completionTokens),
+              ...(input.usage.cachedPromptTokens !== undefined ? { cachedPromptTokens: input.usage.cachedPromptTokens === null ? null : Math.round(input.usage.cachedPromptTokens) } : {}),
+              ...(input.usage.reasoningTokens !== undefined ? { reasoningTokens: input.usage.reasoningTokens === null ? null : Math.round(input.usage.reasoningTokens) } : {})
             }
           }
         : {}),
+      ...(input.usageReported !== undefined ? { usageReported: input.usageReported } : {}),
+      ...(input.usageComplete !== undefined ? { usageComplete: input.usageComplete } : {}),
+      ...(input.tokenTier !== undefined ? { tokenTier: input.tokenTier } : {}),
       ...(input.avoidedTokens !== undefined ? { avoidedTokens: Math.round(input.avoidedTokens) } : {}),
       ...(input.memoryTokens !== undefined ? { memoryTokens: Math.round(input.memoryTokens) } : {}),
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),

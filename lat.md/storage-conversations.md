@@ -71,6 +71,22 @@ electron-store 只支持"整个对象一把写"，与分层不可兼得；它又
 账本只长不缩（取较大值而非覆盖）：并发两条会话同时落盘时，晚到的那个若拿着较旧的快照，
 直接覆盖会让数字倒退，而"看着像真的"。
 
+## 用量来源与覆盖范围随账保存
+
+[[src/shared/conversation-usage.ts#accumulateConversationUsage]] 分开厂商报告、本地估算与独立反思。
+无报告也记一次漏报事实，但不赋予数学空账厂商来源；真实成对0仍是有效报告。
+[[src/shared/conversation-usage.ts#mergeConversationUsage]] 重读累计时不制造最近一轮，恢复来源、覆盖、档位与本地估算。
+旧全0来源无法反推，原数保留但不作为实报；旧正数沿原报告契约显示，覆盖范围仍未知。
+
+[[src/shared/usage.ts#mergeUsageSnapshots]] 合并同一累计账的快照，明确未知及较大范围缺失明细不能借旧局部数字变成整笔已知。
+[[src/main/store/conversations-core.ts#createConversationsRepo]] 保存所有统计字段；不给不抹，明确漏报不能被晚到true洗掉。
+主进程保存校验保留可选明细的0/null/缺字段，不能只收两个基础数便丢掉缓存、思考与档位。
+
+[[src/main/providers/usage-parsers.ts#createAnthropicUsageAccumulator]] 以初始输入和最终输出成对收口，最终累计报告覆盖阶段值。
+[[src/main/agent/runner.ts#runAgent]] 观察主请求、摘要及批准后的执行请求；任一漏报或摘要失败，则只能说已报部分。
+实际档位来自本轮策略，不能在异步结束后读取已被用户更改的设置。独立反思不在这份请求覆盖声明里。
+Anthropic输入是否归一为未缓存输入加缓存读写仍待裁，当前保留既有原始input_tokens，不将本切片当成跨协议计费对账。
+
 ## 出境与落盘是两把尺子
 
 同一份消息被两把尺子量：发给模型的 [[src/main/schemas.ts#chatMessagesSchema]] 与落盘的

@@ -48,7 +48,13 @@ export interface ChatEmitter {
    * 真值），故**分开传**；`tier` = 这一轮用的省 token 档位 —— 用户定调第 4 条：计量必须记下这轮用的哪一档，
    * 否则事后按档位比数字时说不清"这个数是在哪档下跑出来的"。
    */
-  done(usage: TokenUsage | null, avoided?: number, tier?: TokenSaverTier, memoryTokens?: number): void
+  done(
+    usage: TokenUsage | null,
+    avoided?: number,
+    tier?: TokenSaverTier,
+    memoryTokens?: number,
+    usageComplete?: boolean
+  ): void
   error(message: string): void
   /** 危险操作确认（也带会话身份 —— 用户要知道是**哪条会话**在问） */
   confirm(req: ToolConfirmRequest): void
@@ -80,10 +86,11 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     goal: (goal) => send(IPC.goalChanged, goal),
     subagents: (list) => send(IPC.subagentChanged, list),
     checkpoint: (runId) => send(IPC.checkpointChanged, runId),
-    done: (usage, avoided = 0, tier, memoryTokens) =>
+    done: (usage, avoided = 0, tier, memoryTokens, usageComplete) =>
       send(IPC.chatDone, {
         usage,
         avoided,
+        ...(usageComplete !== undefined ? { usageComplete } : {}),
         // 注入税（plan19 §5.2）：**本地估算**，只在真有记忆段时才带 —— 没有就不带，界面也就不显示
         ...(memoryTokens && memoryTokens > 0 ? { memoryTokens } : {}),
         ...(tier ? { tier } : {})

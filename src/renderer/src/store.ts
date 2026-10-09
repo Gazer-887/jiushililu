@@ -14,14 +14,8 @@ import { applyAssistantChunk, applyAssistantThinking, applyAssistantTool } from 
 import type { AskRequest } from '@shared/ask'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
-import {
-  addUsage,
-  emptyUsage,
-  mergeOptionalMax,
-  mergeUsageHalves,
-  type TokenUsage
-} from '@shared/usage'
-import type { TokenSaverTier } from '@shared/token-tier'
+import { accumulateConversationUsage, mergeConversationUsage, type ConversationUsage } from '@shared/conversation-usage'
+export type { ConversationUsage } from '@shared/conversation-usage'
 import { estimateMessageTokens, estimatePartsTokens } from '@shared/tokens'
 import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
 import { applyLocale } from './i18n'
@@ -250,25 +244,6 @@ interface AppState {
   dismissConcurrencyNotice: () => void
 }
 
-export interface ConversationUsage {
-  total: TokenUsage
-  last: TokenUsage | null
-  /** 最近一轮用的**省 token 档位**（plan8 R9.1 §七②）：不记档位就没法按档比数字。缺 = 老版本主进程没带这个字段 → 界面不显示档位标签，**不替它编默认值**。 */
-  tier?: TokenSaverTier
-  /** 累计**省下**的估算 token（plan8 R9.1）：**不进** `total` —— 那是厂商真值，这是我们替它做的减法，混一起分不清 */
-  avoided: number
-  /** 累计**注入税**（plan19 §5.2）：记忆段每轮占掉的估算 token，**也不进** `total` —— 第三笔账。
-   *  缺 = 老版本主进程没带 → 不显示，**不替它编 0**（与 tier 同一处理）。 */
-  memory: number
-  /**
-   * 累计**反思用量**（批 2 plan19 §5.2）：反思是会话切换时跑的额外模型调用，它的 token 账**单列** ——
-   * 与对话 `total` 分开，混一起就分不清"这笔 token 是用户聊出来的还是机器自己复盘复出来的"。
-   * ⚠️ 缺 = 老版本主进程没带 / 这条会话还没跑过反思 → 界面**不显示反思用量**，不替它编 0。
-   * 来源是主进程聚合后的 `UsageRecord.kind === 'reflection'` —— 渲染端不自己 filter records
-   *    （审查 B8 P1：用量牌走这个聚合字段，不走 records 的 kind 字段）。
-   */
-  reflectionTotal?: TokenUsage
-}
 
 /** 把**盘上**的用量并进内存账本（plan8 R9 / R9.1）。规矩：**只许往前长**（取 max）—— 覆盖会让数字倒退，而账本倒退比不显示更难解释。
  *  ⚠️ 盘上带回来的只是累计总量、不是某一轮：`last` 保持内存值，不拿历史累计冒充"最近一轮"。 */
@@ -278,55 +253,11 @@ function mergeUsage(
 ): Record<string, ConversationUsage> {
   let next: Record<string, ConversationUsage> | null = null
   for (const m of metas) {
-    const stored = m.usage
-    const storedAvoided = m.avoidedTokens ?? 0
-    const storedMemory = m.memoryTokens ?? 0
-    // 反思用量（K15）：装配层以前从不写这个字段，用量牌那格一直是空的 —— 生产端已接上
-    const storedReflection = m.reflectionUsage
-    if (!stored && storedAvoided === 0 && storedMemory === 0 && !storedReflection) continue
-    const cur: ConversationUsage | undefined = (next ?? prev)[m.id]
-    const cached = mergeOptionalMax(cur?.total.cachedPromptTokens, stored?.cachedPromptTokens)
-    const reasoning = mergeOptionalMax(cur?.total.reasoningTokens, stored?.reasoningTokens)
-    const total: TokenUsage = cur
-      ? {
-          promptTokens: Math.max(cur.total.promptTokens, stored?.promptTokens ?? 0),
-          completionTokens: Math.max(cur.total.completionTokens, stored?.completionTokens ?? 0),
-          ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
-          ...(reasoning === undefined ? {} : { reasoningTokens: reasoning })
-        }
-      : (stored ?? { promptTokens: 0, completionTokens: 0 })
-    const avoided = Math.max(cur?.avoided ?? 0, storedAvoided)
-    // 注入税（plan19 §5.2）同样是"只许往前长"：它是累计值，倒退比不显示更难解释
-    const memory = Math.max(cur?.memory ?? 0, storedMemory)
-    // 第三笔账逐字段取大的那份（与 usage 同一条「只长不缩」）；两边都没有才是 undefined —— 不替它编 0
-    const reflectionTotal: TokenUsage | undefined =
-      storedReflection || cur?.reflectionTotal
-        ? mergeUsageHalves(
-            cur?.reflectionTotal ?? { promptTokens: 0, completionTokens: 0 },
-            storedReflection ?? { promptTokens: 0, completionTokens: 0 }
-          )
-        : undefined
-    const same =
-      cur &&
-      total.promptTokens === cur.total.promptTokens &&
-      total.completionTokens === cur.total.completionTokens &&
-      (total.cachedPromptTokens ?? null) === (cur.total.cachedPromptTokens ?? null) &&
-      (total.reasoningTokens ?? null) === (cur.total.reasoningTokens ?? null) &&
-      avoided === cur.avoided &&
-      memory === cur.memory &&
-      reflectionTotal?.promptTokens === cur.reflectionTotal?.promptTokens &&
-      reflectionTotal?.completionTokens === cur.reflectionTotal?.completionTokens
-    if (same) continue
-    next = {
-      ...(next ?? prev),
-      [m.id]: {
-        total,
-        last: cur?.last ?? null,
-        avoided,
-        memory,
-        ...(reflectionTotal ? { reflectionTotal } : {})
-      }
-    }
+    const cur = (next ?? prev)[m.id]
+    const merged = mergeConversationUsage(cur, m)
+    if (!merged) continue
+    if (cur && JSON.stringify(cur) === JSON.stringify(merged)) continue
+    next = { ...(next ?? prev), [m.id]: merged }
   }
   return next ?? prev
 }
@@ -919,28 +850,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   markDone: (e) => {
-    // 真实用量累加进**那一条会话**的账本。缺字段一律当"厂商没报"：信封另一头是另一个进程，版本不齐 / 事件被截断都可能给不出 usage —— 不许直接炸，也不写假账。
-    const usage = e.payload?.usage ?? null
-    const avoided = e.payload?.avoided ?? 0
-    // 注入税（plan19 §5.2）：本轮记忆段占掉的估算 token，累计进同一会话的第三笔账
-    const memoryTax = e.payload?.memoryTokens ?? 0
-    const tier = e.payload?.tier
     set((s) => {
-      const prev = s.usageByConversation[e.conversationId]
-      const nextUsage: ConversationUsage | null =
-        usage || avoided > 0 || memoryTax > 0
-          ? {
-              total: usage ? addUsage(prev?.total ?? emptyUsage(), usage) : (prev?.total ?? emptyUsage()),
-              last: usage ?? prev?.last ?? null,
-              avoided: (prev?.avoided ?? 0) + avoided,
-              memory: (prev?.memory ?? 0) + memoryTax,
-              // 反思那格必须带过去：这里是**重建整条记录**而不是增量合并，漏带就等于
-              // "落盘落对了，但下一轮对话结束时界面上那格静默消失"（K15 渲染端）
-              ...(prev?.reflectionTotal ? { reflectionTotal: prev.reflectionTotal } : {}),
-              // 档位：这一轮没带就保留上一次的 —— 老版本主进程不带这个字段，直接覆盖会把已记的档位抹掉
-              ...(tier ? { tier } : prev?.tier ? { tier: prev.tier } : {})
-            }
-          : null
+      const nextUsage = accumulateConversationUsage(s.usageByConversation[e.conversationId], e.payload ?? { usage: null })
       return settleRuntime(
         s,
         {
@@ -1083,7 +994,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         agentName: metaAgentName ?? '',
         ...(rec
           ? {
-              usage: rec.total,
+              ...(rec.usageReported ? { usage: rec.total } : {}),
+               usageReported: rec.usageReported,
+               ...(rec.usageComplete !== undefined ? { usageComplete: rec.usageComplete } : {}),
               avoidedTokens: rec.avoided,
               // 注入税（plan19 §5.2）：> 0 才带 —— 没有就不写，别把"没记忆"写成"税为 0"
               ...(rec.memory > 0 ? { memoryTokens: rec.memory } : {}),

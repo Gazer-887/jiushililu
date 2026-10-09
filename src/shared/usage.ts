@@ -95,18 +95,15 @@ export function mergeOptionalMax(
   a: number | null | undefined,
   b: number | null | undefined
 ): number | null | undefined {
-  if (unknown(a) && unknown(b)) return undefined
+  if (unknown(a) && unknown(b)) return a === null || b === null ? null : undefined
   if (unknown(a)) return b
   if (unknown(b)) return a
   return Math.max(a as number, b as number)
 }
 
 /**
- * 合并**同一轮的两份半账**（Anthropic 把 usage 分两处报：`message_start` 给输入、`message_delta` 给输出）。
- * 规则是**逐字段取大的那份**，不是相加：两半各自只报自己那侧、另一侧写 0
- * （`message_start` 里那个 `output_tokens: 1` 是占位），相加会把这个占位也算进去（真实用例：88 + 1 = 89）。
- * ⚠️ 对 `cached` / `reasoning` 尤其重要：它们**只出现在其中一半**，若按"另一侧缺失 = 未知"处理会被抹成
- * null —— 界面就再也看不到命中率了。
+ * 旧版逐字段取大助手，仅保留给历史半账形状的回归对照。
+ * 不能据此认定协议计量完整；生产协议以完整累计器收口，累计账合并走mergeUsageSnapshots。
  */
 export function mergeUsageHalves(a: TokenUsage, b: TokenUsage): TokenUsage {
   const cached = mergeOptionalMax(a.cachedPromptTokens, b.cachedPromptTokens)
@@ -117,6 +114,75 @@ export function mergeUsageHalves(a: TokenUsage, b: TokenUsage): TokenUsage {
     ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
     ...(reasoning === undefined ? {} : { reasoningTokens: reasoning })
   }
+}
+
+/**
+ * 合并同一累计账的快照。明确未报告的字段保持未知；较小范围的旧数不能补成较大范围的整笔账。
+ * 协议内阶段计数应以最终报告收口，不能借这个取大操作认定两半齐全。
+ */
+export function mergeUsageSnapshots(a: TokenUsage, b: TokenUsage): TokenUsage {
+  const optional = (
+    left: number | null | undefined,
+    right: number | null | undefined,
+    leftScope: number,
+    rightScope: number
+  ): number | null | undefined => {
+    if (left === null || right === null) return null
+    if (left === undefined && right === undefined) return undefined
+    if (left === undefined) return leftScope > rightScope ? null : right
+    if (right === undefined) return rightScope > leftScope ? null : left
+    return Math.max(left, right)
+  }
+  const cached = optional(
+    a.cachedPromptTokens,
+    b.cachedPromptTokens,
+    a.promptTokens,
+    b.promptTokens
+  )
+  const reasoning = optional(
+    a.reasoningTokens,
+    b.reasoningTokens,
+    a.completionTokens,
+    b.completionTokens
+  )
+  return {
+    promptTokens: Math.max(a.promptTokens, b.promptTokens),
+    completionTokens: Math.max(a.completionTokens, b.completionTokens),
+    ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
+    ...(reasoning === undefined ? {} : { reasoningTokens: reasoning })
+  }
+}
+
+/** 旧正计数沿原报告契约保留；旧全0无法辨认空账与真0，必须有新来源标记才显示为实报。 */
+export function hasReportedUsage(
+  usage: TokenUsage | null | undefined,
+  reported?: boolean
+): boolean {
+  if (
+    !usage ||
+    !Number.isFinite(usage.promptTokens) ||
+    !Number.isFinite(usage.completionTokens) ||
+    usage.promptTokens < 0 ||
+    usage.completionTokens < 0
+  )
+    return false
+  if (reported !== undefined) return reported
+  return (
+    usage.promptTokens > 0 ||
+    usage.completionTokens > 0 ||
+    (usage.cachedPromptTokens ?? 0) > 0 ||
+    (usage.reasoningTokens ?? 0) > 0
+  )
+}
+
+/** 顺序追加报告：漏报事实粘住，旧覆盖范围未记也不能凭新一轮报告补成完整历史。 */
+export function extendUsageCoverage(
+  previous: boolean | undefined,
+  current: boolean | undefined
+): boolean | undefined {
+  if (previous === false || current === false) return false
+  if (previous === undefined || current === undefined) return undefined
+  return true
 }
 
 export function totalTokens(u: TokenUsage): number {

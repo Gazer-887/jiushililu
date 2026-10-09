@@ -88,7 +88,7 @@ import { addReflectionUsage, getConversation } from './store/conversations'
 import type { ChatMessage } from '@shared/ipc'
 import type { ReflectChat } from './memory/reflection'
 import { resolveReflectModel } from './memory/reflection'
-import { mergeUsageHalves, type TokenUsage } from '@shared/usage'
+import { mergeUsageSnapshots, type TokenUsage } from '@shared/usage'
 import { REFLECTION_SYSTEM_PROMPT } from './memory/reflection-prompt'
 
 // 主进程入口：窗口生命周期 + IPC 注册（Agent 内核跑在 worker_threads，不在这里）。
@@ -273,7 +273,7 @@ function createReflectChat(): ReflectChat {
           },
           // K15：反思这笔账以前根本没有来源，现在随候选一起交回装配层
           onUsage: (u) => {
-            usage = usage ? mergeUsageHalves(usage, u) : u
+            usage = usage ? mergeUsageSnapshots(usage, u) : u
           }
         }
       )

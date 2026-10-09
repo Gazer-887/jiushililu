@@ -141,7 +141,7 @@ export function usageFromAnthropicEvent(json: unknown): TokenUsage | null {
       promptTokens: input,
       completionTokens: isNonNegInt(output) ? output : 0,
       cachedPromptTokens: isNonNegInt(cachedRead) ? cachedRead : null,
-      // Anthropic 的 usage 里**没有**单列思考量（thinking 计入输出），故这里是明确的"没报"
+      // 旧半账接口不用于完整计量；完整响应和流式累计器另读思考明细
       reasoningTokens: null
     }
   }
@@ -159,6 +159,73 @@ export function usageFromAnthropicEvent(json: unknown): TokenUsage | null {
   }
 
   return null
+}
+
+/** Anthropic思考细分已包含在output_tokens中，只作明细，不再次加总。 */
+function pickAnthropicReasoning(usage: Record<string, unknown>): number | null {
+  const details = usage['output_tokens_details']
+  if (!details || typeof details !== 'object') return null
+  const thinking = (details as Record<string, unknown>)['thinking_tokens']
+  return isNonNegInt(thinking) ? thinking : null
+}
+
+/**
+ * 完整流式计量：初始输入与最终输出成对。message_delta是整条消息的累计报告，出现时覆盖阶段值。
+ * 参考官方SDK MessageStream的message_delta处理；不能与不同请求之间的累计相加混用。
+ */
+export function createAnthropicUsageAccumulator(): {
+  addEvent(json: unknown): void
+  getUsage(): TokenUsage | null
+} {
+  let input: number | undefined
+  let output: number | undefined
+  let cached: number | null = null
+  let reasoning: number | null = null
+  return {
+    addEvent(json) {
+      if (!json || typeof json !== 'object') return
+      const event = json as Record<string, unknown>
+      const start = event['type'] === 'message_start'
+      if (!start && event['type'] !== 'message_delta') return
+      const message = event['message']
+      const raw =
+        start && message && typeof message === 'object'
+          ? (message as Record<string, unknown>)['usage']
+          : event['usage']
+      if (!raw || typeof raw !== 'object') {
+        if (start) input = undefined
+        else output = undefined
+        return
+      }
+      const usage = raw as Record<string, unknown>
+      probeShape(start ? 'anthropic:message_start' : 'anthropic:message_delta', raw)
+      if (start || 'output_tokens_details' in usage) reasoning = pickAnthropicReasoning(usage)
+      if (start) {
+        input = isNonNegInt(usage['input_tokens']) ? usage['input_tokens'] : undefined
+        output = undefined
+        cached = isNonNegInt(usage['cache_read_input_tokens'])
+          ? usage['cache_read_input_tokens']
+          : null
+      } else {
+        output = isNonNegInt(usage['output_tokens']) ? usage['output_tokens'] : undefined
+        if ('input_tokens' in usage)
+          input = isNonNegInt(usage['input_tokens']) ? usage['input_tokens'] : undefined
+        if ('cache_read_input_tokens' in usage)
+          cached = isNonNegInt(usage['cache_read_input_tokens'])
+            ? usage['cache_read_input_tokens']
+            : null
+      }
+    },
+    getUsage() {
+      if (input === undefined || output === undefined) return null
+      return {
+        promptTokens: input,
+        completionTokens: output,
+        cachedPromptTokens: cached,
+        reasoningTokens: reasoning
+      }
+    }
+  }
 }
 
 /**
@@ -181,6 +248,6 @@ export function usageFromAnthropicMessage(json: unknown): TokenUsage | null {
     promptTokens: input,
     completionTokens: output,
     cachedPromptTokens: isNonNegInt(cachedRead) ? cachedRead : null,
-    reasoningTokens: null
+    reasoningTokens: pickAnthropicReasoning(u)
   }
 }

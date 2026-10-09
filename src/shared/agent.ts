@@ -44,7 +44,7 @@ export interface AgentChatResult {
   text: string | null
   toolCalls: ToolCall[]
   /** 这一轮的真实用量（plan8 R9）；厂商不报就没有这个字段——上层据此决定用真值还是退回估算 */
-  usage?: TokenUsage
+  usage?: TokenUsage | null
 }
 
 export interface ToolEvent {

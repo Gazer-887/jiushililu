@@ -1,10 +1,17 @@
 import { randomUUID } from 'node:crypto'
-import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
+import {
+  addUsage,
+  emptyUsage,
+  hasReportedUsage,
+  mergeUsageSnapshots,
+  type TokenUsage
+} from '@shared/usage'
 import type {
   ChatMessage,
   Conversation,
   ConversationCreateInput,
-  ConversationMeta
+  ConversationMeta,
+  ConversationSaveStats
 } from '@shared/ipc'
 
 // 会话存储的**纯逻辑**（不依赖 electron / fs，便于单测）：标题推导、工作区标签、分组排序、消息规整，
@@ -55,12 +62,8 @@ export interface ConversationsRepo {
   saveConversation(
     id: string,
     messages: ChatMessage[],
-    stats?: {
-      usage?: ConversationMeta['usage']
-      avoidedTokens?: number
-      /** 最近一次使用的主 Agent（plan17 D9）：给了才更新，不给保持原值——回滚/改名不许抹掉。**空串 = 切回内核默认**（删字段） */
-      agentName?: string
-      /** 会话正文 UTF-8 字节数（批 2 plan19）：反思前置门用它判断是否值得跑 */
+    stats?: ConversationSaveStats & {
+      /** 只由主进程根据正文计算，不接受renderer传入。 */
       bodyBytes?: number
     }
   ): ConversationMeta | null
@@ -293,15 +296,21 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
       // 用量账本（plan8 R9）：**只长不缩**，且"没给"不许把已有的抹掉。取 max 而不是直接覆盖：并发两条会话
       // 同时落盘时，晚到的那个若拿着较旧的快照，覆盖会让账**倒退**（用户看着数字变小，比不显示更费解）。
       const usage = stats?.usage
-      if (usage) {
-        const prev = current.usage
-        next.usage = prev
-          ? {
-              promptTokens: Math.max(prev.promptTokens, usage.promptTokens),
-              completionTokens: Math.max(prev.completionTokens, usage.completionTokens)
-            }
-          : usage
+      const currentReported = hasReportedUsage(current.usage, current.usageReported)
+      if (usage && stats?.usageReported !== false) {
+        next.usage =
+          currentReported && current.usage ? mergeUsageSnapshots(current.usage, usage) : usage
+        next.usageReported = true
+      } else if (stats?.usageReported === false && !currentReported) {
+        next.usageReported = false
       }
+      if (stats?.usageComplete !== undefined) {
+        next.usageComplete = current.usageComplete === false ? false : stats.usageComplete
+      }
+      if (typeof stats?.memoryTokens === 'number') {
+        next.memoryTokens = Math.max(current.memoryTokens ?? 0, Math.round(stats.memoryTokens))
+      }
+      if (stats?.tokenTier !== undefined) next.tokenTier = stats.tokenTier
       // 省下的量（plan8 R9.1）：同一条"只长不缩"的规矩
       if (typeof stats?.avoidedTokens === 'number') {
         next.avoidedTokens = Math.max(current.avoidedTokens ?? 0, Math.round(stats.avoidedTokens))

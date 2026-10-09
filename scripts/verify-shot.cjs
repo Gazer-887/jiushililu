@@ -1675,8 +1675,8 @@ const STUBS = {
   }),
   // 记流水：要验「在别的页面期间流出来的内容有没有被存下来」+ 用量账本有没有跟着走
   // agentName（plan17）：一并记下 —— G2 的"渲染侧载荷带主 Agent"断言靠它（它只护渲染侧，真生效由 runner 单测钉）
-  'conv:save': ({ id, messages, usage, agentName }) => {
-    convSaveCalls.push({ id, messages, usage, agentName })
+  'conv:save': (stats) => {
+    convSaveCalls.push({ ...stats })
     return null
   },
   // 记下调用与载荷，并回一份权威会话 —— 渲染端必须用它覆盖内存（回滚后与撤销后的条数刻意不同）
@@ -10529,7 +10529,9 @@ app.whenReady().then(async () => {
           // 命中率 / 思考占比：两块可能都在、只在一块、或一块都没有（"都没有"正是**厂商没报**那档，不许冒 0%）
           rates: Array.from(el.querySelectorAll('.usage-rate')).map((n) => n.textContent),
           tier: el.querySelector('.usage-tier')?.textContent ?? null,
-          title: el.getAttribute('title') ?? ''
+          title: el.getAttribute('title') ?? '',
+          width: el.getBoundingClientRect().width,
+          height: el.getBoundingClientRect().height
         }
       })()
     `)
@@ -10537,6 +10539,19 @@ app.whenReady().then(async () => {
   const chipNull = await readUsageChip()
   checkTrue('厂商没报用量时，工具栏**不冒出用量牌**（宁可没有，也不写一笔假账）',
     chipNull.total === null, chipNull)
+
+  // 无报告但有本地税：估算可见，不能出现厂商0；来源标记随保存载荷发送。
+  win.webContents.send('chat:done', { conversationId: 'c1', payload: { usage: null, memoryTokens: 42, tier: 'light', usageComplete: false } })
+  await new Promise((r) => setTimeout(r, 300))
+  const estimatesOnly = await readUsageChip()
+  const estimatedSave = [...convSaveCalls].reverse().find((c) => c.id === 'c1')
+  checkTrue('13a无报告有估算：税可见、厂商数字缺席且几何非零', estimatesOnly.total === null && estimatesOnly.memoryTax?.includes('42') && estimatesOnly.width > 0 && estimatesOnly.height > 0, estimatesOnly)
+  checkTrue('13a无报告保存来源false、不提交空usage，税与档位保留', estimatedSave?.usage === undefined && estimatedSave?.usageReported === false && estimatedSave?.usageComplete === false && estimatedSave?.memoryTokens === 42 && estimatedSave?.tokenTier === 'light', estimatedSave)
+
+  win.webContents.send('chat:done', { conversationId: 'c1', payload: { usage: { promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0, reasoningTokens: 0 }, usageComplete: true } })
+  await new Promise((r) => setTimeout(r, 300))
+  const actualZero = await readUsageChip()
+  checkTrue('13a成对0可见；0分母标比例不适用，漏报覆盖事实保留', actualZero.total === '0' && actualZero.last === '+0' && actualZero.title.includes('比例不适用') && actualZero.title.includes('存在未报告请求') && !actualZero.title.includes('厂商未上报'), actualZero)
 
   // 真报一轮：1200 + 340 = 1540 → 显示 1.5k。缓存/推理都明确报 0（厂商说了没命中也没思考）→ 该显示 0%，不许当“没报”藏起来
   win.webContents.send('chat:done', {
@@ -10552,7 +10567,7 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 500))
   const chip1 = await readUsageChip()
   checkTrue('判据 13b：注入税出现在用量牌上，且标明是**估算**',
-    typeof chip1.memoryTax === 'string' && chip1.memoryTax.includes('340') && chip1.memoryTax.includes('估'),
+    typeof chip1.memoryTax === 'string' && chip1.memoryTax.includes('382') && chip1.memoryTax.includes('估'),
     chip1.memoryTax)
 
   // 再来一轮：+1000 → 累计 2540 → 2.5k（这条才是“累计”的判据）；命中 800/2000 = 40%，推理 200/540 = 37%
@@ -10576,7 +10591,7 @@ app.whenReady().then(async () => {
     chip1.title)
   // plan8 R9.1：窗口化省下的量要看得见，**且不许混进厂商真值**
   checkTrue('省下的量单独显示（5.2k = 4800+400），**没有混进 2.5k 那个真值里**',
-    chip2.saved === '省 5.2k' && chip2.total === '2.5k', chip2)
+    chip2.saved === '省 5.2k(估)' && chip2.total === '2.5k', chip2)
   checkTrue('悬停说明把"省下的量"标成**本地估算**（它和厂商账不是一个来源）',
     chip2.title.includes('本地估算'), chip2.title)
   // plan8 R9.1 §七①：命中率 / 思考占比 —— 厂商**报了**才有资格出现
