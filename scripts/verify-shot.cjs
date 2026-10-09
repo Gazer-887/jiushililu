@@ -11856,7 +11856,7 @@ app.whenReady().then(async () => {
     win.webContents.executeJavaScript(`
       (() => {
         const content = document.querySelector('.msg-assistant .msg-content') || document.querySelector('.msg .msg-content');
-        if (!content) return false;
+        if (!content) return null;
         const sel = window.getSelection();
         sel.removeAllRanges();
         if (${withSelection}) {
@@ -11865,8 +11865,10 @@ app.whenReady().then(async () => {
           sel.addRange(range);
         }
         const box = content.closest('.msg');
+        // 判据 3 精确化（S147 缺口一）：把右键那条消息的序号带出来，落盘 turnIndex 要与它逐一相等
+        const index = Number(box?.getAttribute('data-msg-index'));
         box.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 300 }));
-        return true;
+        return Number.isInteger(index) ? index : null;
       })()
     `)
 
@@ -11885,7 +11887,8 @@ app.whenReady().then(async () => {
   )
   await new Promise((r) => setTimeout(r, 300))
 
-  await openCtxMenuOnMessage(true)
+  // 单次打开即取序号：右键落在第一条助手消息上（会话两消息 [user, assistant]，选取器先抓 .msg-assistant）
+  const rightClickedIndex = await openCtxMenuOnMessage(true)
   await new Promise((r) => setTimeout(r, 400))
   const captureWithSelection = await menuHasCapture()
   const captureOpened = await win.webContents.executeJavaScript(`
@@ -11928,15 +11931,18 @@ app.whenReady().then(async () => {
   await new Promise((r) => setTimeout(r, 700))
   const capturedInput = memorySaveCalls[saveBefore]
   console.log('MEMORY_CAPTURE_SAVE=' + JSON.stringify(capturedInput ?? null))
+  // 判据 3 精确化（S147 缺口一）：此前只查「id 非空 + 序号是整数」，等于不比对；现在逐一与
+  // 期望值相等 —— 会话 id 取门禁活动会话（conv:list 首个、用量段各轮同 id），序号取右键那条的
+  // data-msg-index（自 DOM 读出，不写死）。主进程整链（真 handler + 真落盘 + provider 零调用）
+  // 由 tests/unit/memory-capture-ipc.test.ts 补。
   checkTrue(
-    '判据 3：通路 B 落盘时 `origin: user` 且证据指针精确（会话 id + 消息序号）',
+    '判据 3：通路 B 落盘时 `origin: user` 且证据指针与选中消息逐一相等（会话 id + 消息序号）',
     !!capturedInput &&
       capturedInput.origin === 'user' &&
-      capturedInput.evidence &&
-      typeof capturedInput.evidence.conversationId === 'string' &&
-      capturedInput.evidence.conversationId.length > 0 &&
-      Number.isInteger(capturedInput.evidence.turnIndex),
-    capturedInput
+      capturedInput.evidence?.conversationId === 'c1' &&
+      rightClickedIndex !== null &&
+      capturedInput.evidence.turnIndex === rightClickedIndex,
+    { capturedInput, rightClickedIndex }
   )
 
   // ── 时间线（plan26 S2 · D-078，09-19 搬进主对话）：头部开关可达 + 六 kind 渲染 + scope 切换走 IPC ──

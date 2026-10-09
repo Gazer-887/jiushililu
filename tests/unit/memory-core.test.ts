@@ -387,6 +387,27 @@ describe('K36 读侧分家：「未加载」与「需你过目」不许共用一
     expect(after.needsReview).toHaveLength(0)
     expect(after.entries).toHaveLength(1)
   })
+
+  // S147 缺口二（B1-登记表-11）：无前缀高熵串在读侧的**专门组合**断言。contract.test.ts 只单测
+  // 了形状识别纯函数，读侧此前只覆盖标记档/授权确认档/已知前缀三种，没有「高熵 + 读盘 + 同库对照」
+  // 这一刀：高熵无前缀走确认桥（K36 现行政策），不是硬拒——「读盘塞凭据一律不注入」的旧说法
+  // 在这一档上不成立，判据要按现行政策钉住，并让两种形状在同一个读数里分得清。
+  it('⑥ 无前缀高熵串：读侧照常注入 + 进「需过目」（确认档），同库已知前缀仍硬拒（两个形状一个读数里分得清）', () => {
+    const repo = makeRepo({
+      // 35 位、含大小写与数字、无已知前缀 —— 命中 `high-entropy` 而非 `known-prefix`
+      [`${ROOT}/entropy.md`]: withBody('entropy', '手写进来的长串 Ab3Xy9Kq2Lm7Np4Rs6Tv1Wz5Yb8Df0Gh3Jk6 没有已知前缀，只是形状像凭据。'),
+      [`${ROOT}/evil.md`]: withBody('evil', '令牌 ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+    })
+    const idx = repo.list()
+    // 高熵档：当前政策是确认档（不是硬拒）——照常注入、浮出过目、不冒充「未能加载」
+    expect(idx.entries.map((e) => e.name)).toEqual(['entropy'])
+    expect(idx.needsReview.map((r) => r.name)).toEqual(['entropy'])
+    expect(idx.needsReview[0]!.reason).toContain('确认')
+    expect(idx.warnings.some((w) => w.includes('entropy.md'))).toBe(false)
+    // 同库对照：已知前缀仍是硬拒（未加载 + 警告区），且不进「需过目」
+    expect(idx.warnings.some((w) => w.includes('evil.md'))).toBe(true)
+    expect(idx.needsReview.some((r) => r.name === 'evil')).toBe(false)
+  })
 })
 
 describe('事件流：批 1 必须埋，事后补不回来', () => {
