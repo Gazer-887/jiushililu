@@ -129,6 +129,7 @@ describe('Anthropic 的 usage 解析（**分两处报**：message_start 给输�
       promptTokens: 321,
       completionTokens: 1,
       cachedPromptTokens: null,
+      cacheWritePromptTokens: null,
       reasoningTokens: null
     })
   })
@@ -170,6 +171,7 @@ describe('Anthropic 非流式整份响应的 usage 解析', () => {
       promptTokens: 120,
       completionTokens: 8,
       cachedPromptTokens: null,
+      cacheWritePromptTokens: null,
       reasoningTokens: null
     })
   })
@@ -179,7 +181,7 @@ describe('Anthropic 非流式整份响应的 usage 解析', () => {
       usageFromAnthropicMessage({
         usage: { input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 64 }
       })
-    ).toMatchObject({ cachedPromptTokens: 64 })
+    ).toMatchObject({ promptTokens: 164, cachedPromptTokens: 64 })
   })
 
   it('只报一半 / 没有 usage / 脏数据 → null（半个账比没有账更坏）', () => {
@@ -253,15 +255,19 @@ describe('缓存命中与推理量：真机实测样本回归', () => {
       type: 'message_start',
       message: { usage: { input_tokens: 321, output_tokens: 1, cache_read_input_tokens: 300 } }
     })
+    // A 口径：321 未缓存 + 300 读命中 = 621 总输入
     expect(u?.cachedPromptTokens).toBe(300)
+    expect(u?.promptTokens).toBe(621)
   })
 
-  it('Anthropic：`cache_creation_input_tokens`（**写入**缓存）不算命中', () => {
+  it('Anthropic：`cache_creation_input_tokens`（**写入**缓存）不算命中，但计入总输入', () => {
     const u = usageFromAnthropicEvent({
       type: 'message_start',
       message: { usage: { input_tokens: 321, output_tokens: 1, cache_creation_input_tokens: 20 } }
     })
     expect(u?.cachedPromptTokens).toBeNull()
+    expect(u?.cacheWritePromptTokens).toBe(20)
+    expect(u?.promptTokens).toBe(341)
   })
 })
 
@@ -371,7 +377,8 @@ describe('Anthropic 的两半合一份', () => {
 
   it('**输入取 start、输出取 delta** —— 输入不许被抹成 0（覆盖式合并的旧病）', () => {
     const merged = mergeUsageHalves(start(), delta())
-    expect(merged.promptTokens).toBe(321)
+    // A 口径：start 半的输入已归一为 321 未缓存 + 300 读命中 = 621
+    expect(merged.promptTokens).toBe(621)
     expect(merged.completionTokens).toBe(88)
   })
 

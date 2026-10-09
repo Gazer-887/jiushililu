@@ -27,6 +27,7 @@ function reportedDetails(usage: TokenUsage): TokenUsage {
   return {
     ...usage,
     cachedPromptTokens: usage.cachedPromptTokens ?? null,
+    cacheWritePromptTokens: usage.cacheWritePromptTokens ?? null,
     reasoningTokens: usage.reasoningTokens ?? null
   }
 }

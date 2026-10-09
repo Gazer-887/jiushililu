@@ -133,14 +133,23 @@ export function usageFromAnthropicEvent(json: unknown): TokenUsage | null {
     if (!isNonNegInt(input)) return null
     const output = u['output_tokens']
     /**
-     * Anthropic 的缓存命中 = `cache_read_input_tokens`（**读**命中）。隔壁 `cache_creation_input_tokens`
-     * （这轮**写入**缓存的量）**不收** —— 它不是命中，混进来会把命中率算成假数字（数错了是 bug，口径错了是误导）。
+     * 口径 A（用户 2026-10-09 裁）：输入归一为**总输入** —— 未缓存 `input_tokens`
+     * + 读命中 `cache_read_input_tokens` + 写缓存 `cache_creation_input_tokens`，
+     * 与 OpenAI 兼容侧 `prompt_tokens`（本即总输入）对齐，跨协议比例才有同一个分母。
+     * 明细仍分列：读命中进 `cachedPromptTokens`（命中率分子），写缓存进 `cacheWritePromptTokens`
+     * —— 写入不是命中，混进命中率会把数字做成假的。
+     * 缺字段按 0 计入总数（老 API 无此字段 ≈ 没写缓存），同时明细如实记 null（未报）。
      */
     const cachedRead = u['cache_read_input_tokens']
+    const cachedWrite = u['cache_creation_input_tokens']
     return {
-      promptTokens: input,
+      promptTokens:
+        input +
+        (isNonNegInt(cachedRead) ? cachedRead : 0) +
+        (isNonNegInt(cachedWrite) ? cachedWrite : 0),
       completionTokens: isNonNegInt(output) ? output : 0,
       cachedPromptTokens: isNonNegInt(cachedRead) ? cachedRead : null,
+      cacheWritePromptTokens: isNonNegInt(cachedWrite) ? cachedWrite : null,
       // 旧半账接口不用于完整计量；完整响应和流式累计器另读思考明细
       reasoningTokens: null
     }
@@ -180,6 +189,7 @@ export function createAnthropicUsageAccumulator(): {
   let input: number | undefined
   let output: number | undefined
   let cached: number | null = null
+  let cachedWrite: number | null = null
   let reasoning: number | null = null
   return {
     addEvent(json) {
@@ -200,28 +210,33 @@ export function createAnthropicUsageAccumulator(): {
       const usage = raw as Record<string, unknown>
       probeShape(start ? 'anthropic:message_start' : 'anthropic:message_delta', raw)
       if (start || 'output_tokens_details' in usage) reasoning = pickAnthropicReasoning(usage)
+      const readFor = (): number | null =>
+        isNonNegInt(usage['cache_read_input_tokens']) ? usage['cache_read_input_tokens'] : null
+      const writeFor = (): number | null =>
+        isNonNegInt(usage['cache_creation_input_tokens'])
+          ? usage['cache_creation_input_tokens']
+          : null
       if (start) {
         input = isNonNegInt(usage['input_tokens']) ? usage['input_tokens'] : undefined
         output = undefined
-        cached = isNonNegInt(usage['cache_read_input_tokens'])
-          ? usage['cache_read_input_tokens']
-          : null
+        cached = readFor()
+        cachedWrite = writeFor()
       } else {
         output = isNonNegInt(usage['output_tokens']) ? usage['output_tokens'] : undefined
         if ('input_tokens' in usage)
           input = isNonNegInt(usage['input_tokens']) ? usage['input_tokens'] : undefined
-        if ('cache_read_input_tokens' in usage)
-          cached = isNonNegInt(usage['cache_read_input_tokens'])
-            ? usage['cache_read_input_tokens']
-            : null
+        if ('cache_read_input_tokens' in usage) cached = readFor()
+        if ('cache_creation_input_tokens' in usage) cachedWrite = writeFor()
       }
     },
     getUsage() {
       if (input === undefined || output === undefined) return null
+      // 口径 A：读/写缺字段按 0 计入总输入（老 API ≈ 没有缓存参与），明细保留 null 让 UI 标未报
       return {
-        promptTokens: input,
+        promptTokens: input + (cached ?? 0) + (cachedWrite ?? 0),
         completionTokens: output,
         cachedPromptTokens: cached,
+        cacheWritePromptTokens: cachedWrite,
         reasoningTokens: reasoning
       }
     }
@@ -243,11 +258,17 @@ export function usageFromAnthropicMessage(json: unknown): TokenUsage | null {
   const output = u['output_tokens']
   // 与 OpenAI 同规矩：只报一半的数据宁可不用（半个账比没有账更坏）
   if (!isNonNegInt(input) || !isNonNegInt(output)) return null
+  // 口径 A：总输入 = 未缓存 + 读命中 + 写缓存（见 usageFromAnthropicEvent 同段注释）
   const cachedRead = u['cache_read_input_tokens']
+  const cachedWrite = u['cache_creation_input_tokens']
   return {
-    promptTokens: input,
+    promptTokens:
+      input +
+      (isNonNegInt(cachedRead) ? cachedRead : 0) +
+      (isNonNegInt(cachedWrite) ? cachedWrite : 0),
     completionTokens: output,
     cachedPromptTokens: isNonNegInt(cachedRead) ? cachedRead : null,
+    cacheWritePromptTokens: isNonNegInt(cachedWrite) ? cachedWrite : null,
     reasoningTokens: pickAnthropicReasoning(u)
   }
 }

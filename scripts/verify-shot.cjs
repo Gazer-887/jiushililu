@@ -10548,16 +10548,16 @@ app.whenReady().then(async () => {
   checkTrue('13a无报告有估算：税可见、厂商数字缺席且几何非零', estimatesOnly.total === null && estimatesOnly.memoryTax?.includes('42') && estimatesOnly.width > 0 && estimatesOnly.height > 0, estimatesOnly)
   checkTrue('13a无报告保存来源false、不提交空usage，税与档位保留', estimatedSave?.usage === undefined && estimatedSave?.usageReported === false && estimatedSave?.usageComplete === false && estimatedSave?.memoryTokens === 42 && estimatedSave?.tokenTier === 'light', estimatedSave)
 
-  win.webContents.send('chat:done', { conversationId: 'c1', payload: { usage: { promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0, reasoningTokens: 0 }, usageComplete: true } })
+  win.webContents.send('chat:done', { conversationId: 'c1', payload: { usage: { promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0, reasoningTokens: 0, cacheWritePromptTokens: 0 }, usageComplete: true } })
   await new Promise((r) => setTimeout(r, 300))
   const actualZero = await readUsageChip()
   checkTrue('13a成对0可见；0分母标比例不适用，漏报覆盖事实保留', actualZero.total === '0' && actualZero.last === '+0' && actualZero.title.includes('比例不适用') && actualZero.title.includes('存在未报告请求') && !actualZero.title.includes('厂商未上报'), actualZero)
 
-  // 真报一轮：1200 + 340 = 1540 → 显示 1.5k。缓存/推理都明确报 0（厂商说了没命中也没思考）→ 该显示 0%，不许当“没报”藏起来
+  // 真报一轮：1200 + 340 = 1540 → 显示 1.5k。缓存/推理/写缓存都明确报 0（厂商说了没命中、没思考、没写缓存）→ 该显示 0%，不许当“没报”藏起来
   win.webContents.send('chat:done', {
     conversationId: 'c1',
     payload: {
-      usage: { promptTokens: 1200, completionTokens: 340, cachedPromptTokens: 0, reasoningTokens: 0 },
+      usage: { promptTokens: 1200, completionTokens: 340, cachedPromptTokens: 0, reasoningTokens: 0, cacheWritePromptTokens: 0 },
       avoided: 4800,
       // 注入税（plan19 §5.2）：本轮记忆段占掉的估算 token —— 有就显示，且必须标"估"
       memoryTokens: 340,
@@ -10574,7 +10574,7 @@ app.whenReady().then(async () => {
   win.webContents.send('chat:done', {
     conversationId: 'c1',
     payload: {
-      usage: { promptTokens: 800, completionTokens: 200, cachedPromptTokens: 800, reasoningTokens: 200 },
+      usage: { promptTokens: 800, completionTokens: 200, cachedPromptTokens: 800, reasoningTokens: 200, cacheWritePromptTokens: 25 },
       avoided: 400,
       tier: 'balanced'
     }
@@ -10599,6 +10599,13 @@ app.whenReady().then(async () => {
     chip1.rates.length === 2 && chip1.rates[0] === '命中 0%' && chip1.rates[1] === '思考 0%', chip1.rates)
   checkTrue('第二轮按**累计**算命中率（800/2000 = 40%；推理 200/540 = 37%）',
     chip2.rates.length === 2 && chip2.rates[0] === '命中 40%' && chip2.rates[1] === '思考 37%', chip2.rates)
+  // 口径 A（0.13.104）：厂商明确报的写缓存（含 0）随累计进悬停「其中缓存写入」行，输入标注含缓存口径。
+  // ⚠️ 判据修正（首次实跑 2/506 红后，2026-10-10 [ZCode·顾灵默]）：原判据的夹具前两轮不带写键，
+  // 而 in-session 累计经 reportedDetails 必然补键为 null（与 cached/reasoning 同规矩，三态见 usage.ts），
+  // addUsage 的「null 粘住」（判据 6 有意为之，同 chip3 的命中率整块消失）会把后续真值 25 洗掉——
+  // 即原正例自证不可能成立。修法是把夹具改成「厂商明确报 0」（与缓存/推理同款 explicit-0），不动产品。
+  checkTrue('口径A：厂商报写缓存（前两轮 0 + 本轮 25）→ 悬停出现「其中缓存写入：25」且输入标注含缓存读写入',
+    chip2.title.includes('其中缓存写入：25') && chip2.title.includes('输入（含缓存读写入）'), chip2.title)
   // 档位：计量必须记下“这轮用的哪一档”，否则事后按档位比数字说不清来源；这里顺带验它跟着轮次更新
   checkTrue('用量牌显示这轮用的档位（第一轮 light → 第二轮 balanced，跟着更新）',
     chip1.tier === '轻量' && chip2.tier === '平衡', { c1: chip1.tier, c2: chip2.tier })
@@ -10614,13 +10621,18 @@ app.whenReady().then(async () => {
   win.webContents.send('chat:done', {
     conversationId: 'c1',
     payload: {
-      usage: { promptTokens: 100, completionTokens: 20, cachedPromptTokens: null, reasoningTokens: null }
+      usage: { promptTokens: 100, completionTokens: 20, cachedPromptTokens: null, reasoningTokens: null, cacheWritePromptTokens: null }
     }
   })
   await new Promise((r) => setTimeout(r, 500))
   const chip3 = await readUsageChip()
   checkTrue('有一轮没报缓存 → 命中率整块消失（不写 0%），但主计数照常累计（2100+560 = 2.7k）',
     chip3.rates.length === 0 && chip3.total === '2.7k' && chip3.last === '+120', chip3)
+  // 口径 A 反向：厂商明确未报写缓存（null）→ 不渲染写行（未报不洗成 0），与命中率同款整块消失。
+  // 「旧记录无键不标注」不在此层验：in-session 累计经 reportedDetails 必带键（见上面判据修正说明），
+  // 旧记录无键不被补值由 persistence 单测「写缓存明确 null 与缺字段分得清」覆盖。
+  checkTrue('口径A反向：厂商明确未报写缓存（null）→ 悬停不出现写行（未报不洗成 0）',
+    !chip3.title.includes('缓存写入'), chip3.title)
 
   // ── 源代码管理（plan16）：看得见改动 → 勾选暂存 → 写消息 → 提交 → 清空 ──────────
   // ⚠️ 这一段跑在最后：前面几段探针动过工作台布局（分栏 / 折叠 / 关设置窗），

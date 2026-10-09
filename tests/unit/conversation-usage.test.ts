@@ -65,8 +65,26 @@ describe('会话用量来源、覆盖与快照', () => {
       promptTokens: 110,
       completionTokens: 22,
       cachedPromptTokens: null,
+      cacheWritePromptTokens: null,
       reasoningTokens: null
     })
+  })
+  it('写缓存明细沿累计相加，明确null同样粘住（口径A新字段走同一三态）', () => {
+    const first = add(undefined, {
+      usage: { promptTokens: 10, completionTokens: 2, cacheWritePromptTokens: 5 },
+      usageComplete: true
+    })
+    expect(add(first, { usage: known, usageComplete: true }).total?.cacheWritePromptTokens).toBeNull()
+    const second = add(undefined, {
+      usage: { promptTokens: 10, completionTokens: 2, cacheWritePromptTokens: 5 },
+      usageComplete: true
+    })
+    expect(
+      add(second, {
+        usage: { promptTokens: 10, completionTokens: 2, cacheWritePromptTokens: 7 },
+        usageComplete: true
+      }).total?.cacheWritePromptTokens
+    ).toBe(12)
   })
   it('重读累计不造最近一轮，档位与反思独立还原', () => {
     expect(

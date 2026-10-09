@@ -1113,6 +1113,7 @@ export function registerIpcHandlers(deps: {
             promptTokens: z.number().finite().nonnegative(),
             completionTokens: z.number().finite().nonnegative(),
             cachedPromptTokens: z.number().finite().nonnegative().nullable().optional(),
+            cacheWritePromptTokens: z.number().finite().nonnegative().nullable().optional(),
             reasoningTokens: z.number().finite().nonnegative().nullable().optional()
           })
           .optional(),
@@ -1149,6 +1150,7 @@ export function registerIpcHandlers(deps: {
               promptTokens: Math.round(input.usage.promptTokens),
               completionTokens: Math.round(input.usage.completionTokens),
               ...(input.usage.cachedPromptTokens !== undefined ? { cachedPromptTokens: input.usage.cachedPromptTokens === null ? null : Math.round(input.usage.cachedPromptTokens) } : {}),
+              ...(input.usage.cacheWritePromptTokens !== undefined ? { cacheWritePromptTokens: input.usage.cacheWritePromptTokens === null ? null : Math.round(input.usage.cacheWritePromptTokens) } : {}),
               ...(input.usage.reasoningTokens !== undefined ? { reasoningTokens: input.usage.reasoningTokens === null ? null : Math.round(input.usage.reasoningTokens) } : {})
             }
           }

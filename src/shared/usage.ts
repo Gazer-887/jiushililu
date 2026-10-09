@@ -19,6 +19,12 @@ export interface TokenUsage {
    */
   cachedPromptTokens?: number | null
   /**
+   * 输入里**写入前缀缓存**的那部分（Anthropic `cache_creation_input_tokens`，口径 A 起计入 `promptTokens` 总输入）。
+   * 三态同 `cachedPromptTokens`：数字（含明确报的 0）是事实，`null` 是厂商没报，`undefined` 是这份账不含这条信息
+   * （OpenAI 兼容协议的 `prompt_tokens` 本即总输入，没有写出量可报）。
+   */
+  cacheWritePromptTokens?: number | null
+  /**
    * 输出里**推理（思考链）**的那部分（plan8 R9.1 §七①）。
    * 与上面那个的差别：真机实测 DeepSeek 会明确报 `reasoning_tokens: 0`（这轮没思考）——
    * **报了 0 就是真的 0**，与"没报"是两回事，别一起当 null。
@@ -76,11 +82,13 @@ function addOptional(
 
 export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   const cached = addOptional(a.cachedPromptTokens, b.cachedPromptTokens)
+  const write = addOptional(a.cacheWritePromptTokens, b.cacheWritePromptTokens)
   const reasoning = addOptional(a.reasoningTokens, b.reasoningTokens)
   return {
     promptTokens: a.promptTokens + b.promptTokens,
     completionTokens: a.completionTokens + b.completionTokens,
     ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
+    ...(write === undefined ? {} : { cacheWritePromptTokens: write }),
     ...(reasoning === undefined ? {} : { reasoningTokens: reasoning })
   }
 }
@@ -107,11 +115,13 @@ export function mergeOptionalMax(
  */
 export function mergeUsageHalves(a: TokenUsage, b: TokenUsage): TokenUsage {
   const cached = mergeOptionalMax(a.cachedPromptTokens, b.cachedPromptTokens)
+  const write = mergeOptionalMax(a.cacheWritePromptTokens, b.cacheWritePromptTokens)
   const reasoning = mergeOptionalMax(a.reasoningTokens, b.reasoningTokens)
   return {
     promptTokens: Math.max(a.promptTokens, b.promptTokens),
     completionTokens: Math.max(a.completionTokens, b.completionTokens),
     ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
+    ...(write === undefined ? {} : { cacheWritePromptTokens: write }),
     ...(reasoning === undefined ? {} : { reasoningTokens: reasoning })
   }
 }
@@ -139,6 +149,12 @@ export function mergeUsageSnapshots(a: TokenUsage, b: TokenUsage): TokenUsage {
     a.promptTokens,
     b.promptTokens
   )
+  const write = optional(
+    a.cacheWritePromptTokens,
+    b.cacheWritePromptTokens,
+    a.promptTokens,
+    b.promptTokens
+  )
   const reasoning = optional(
     a.reasoningTokens,
     b.reasoningTokens,
@@ -149,6 +165,7 @@ export function mergeUsageSnapshots(a: TokenUsage, b: TokenUsage): TokenUsage {
     promptTokens: Math.max(a.promptTokens, b.promptTokens),
     completionTokens: Math.max(a.completionTokens, b.completionTokens),
     ...(cached === undefined ? {} : { cachedPromptTokens: cached }),
+    ...(write === undefined ? {} : { cacheWritePromptTokens: write }),
     ...(reasoning === undefined ? {} : { reasoningTokens: reasoning })
   }
 }

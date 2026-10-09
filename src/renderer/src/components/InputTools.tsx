@@ -63,12 +63,18 @@ export function UsageChip(): JSX.Element | null {
    */
   const hit = record.usageReported ? cacheHitRate(total) : null
   const think = record.usageReported ? reasoningShare(total) : null
+  // 口径 A（0.13.104 起）：Anthropic 输入归一为总输入（未缓存 + 缓存读 + 缓存写）。
+  // 有没有这个键就是新旧口径的分界：新记录带（值可为 null），旧记录压根没有——不推断历史。
+  const normalizedInput = 'cacheWritePromptTokens' in total
   const tip = [
     record.usageReported ? `主对话已上报合计：${totalTokens(total)} tokens` : '主对话用量：厂商未上报或旧记录来源未知',
-    record.usageReported ? `输入 ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}` : '',
+    record.usageReported ? `输入${normalizedInput ? '（含缓存读写入）' : ''} ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}` : '',
     record.usageReported ? (record.usageComplete === true ? '覆盖：本轮链路各请求均有报告' : record.usageComplete === false ? '覆盖：仅已上报部分，存在未报告请求' : '覆盖：旧记录未记范围') : '',
     record.usageReported ? (total.cachedPromptTokens == null ? '前缀缓存命中：厂商未上报'
       : `其中前缀缓存命中：${formatTokens(total.cachedPromptTokens)}（${hit === null ? '输入为0，比例不适用' : formatRate(hit)}）`) : '',
+    record.usageReported && typeof total.cacheWritePromptTokens === 'number'
+      ? `其中缓存写入：${formatTokens(total.cacheWritePromptTokens)}`
+      : '',
     record.usageReported ? (total.reasoningTokens == null ? '输出里推理（思考）：厂商未上报'
       : `输出里推理（思考）：${formatTokens(total.reasoningTokens)}（${think === null ? '输出为0，比例不适用' : formatRate(think)}）`) : '',
     last ? `最近一轮已上报：${totalTokens(last)} tokens${record.lastComplete === false ? '（部分）' : ''}` : '',

@@ -112,6 +112,45 @@ describe('来源与统计字段必须沿保存链重启恢复', () => {
     })
   })
 
+  it('写缓存明细沿保存链往返不丢，重复保存按完整快照逐字段取大（口径A）', () => {
+    const { repo, conversation, reopen } = setup()
+    repo.saveConversation(conversation.id, messages, {
+      usage: { promptTokens: 1200, completionTokens: 180, cachedPromptTokens: 400, cacheWritePromptTokens: 25, reasoningTokens: 0 }
+    })
+    repo.saveConversation(conversation.id, messages, {
+      usage: { promptTokens: 1300, completionTokens: 200, cachedPromptTokens: 500, cacheWritePromptTokens: 8, reasoningTokens: 1 }
+    })
+    expect(reopen().getConversation(conversation.id)?.usage).toEqual({
+      promptTokens: 1300,
+      completionTokens: 200,
+      cachedPromptTokens: 500,
+      cacheWritePromptTokens: 25,
+      reasoningTokens: 1
+    })
+  })
+
+  it('写缓存明确null与缺字段分得清：null不洗成0，旧记录无键不被补值', () => {
+    const { repo, conversation, reopen } = setup()
+    repo.saveConversation(conversation.id, messages, {
+      usage: { promptTokens: 100, completionTokens: 20, cachedPromptTokens: null, cacheWritePromptTokens: null }
+    })
+    expect(reopen().getConversation(conversation.id)?.usage).toEqual({
+      promptTokens: 100,
+      completionTokens: 20,
+      cachedPromptTokens: null,
+      cacheWritePromptTokens: null
+    })
+    repo.saveConversation(conversation.id, messages, {
+      usage: { promptTokens: 100, completionTokens: 20 }
+    })
+    expect(reopen().getConversation(conversation.id)?.usage).toEqual({
+      promptTokens: 100,
+      completionTokens: 20,
+      cachedPromptTokens: null,
+      cacheWritePromptTokens: null
+    })
+  })
+
   it('不给统计不抹已有来源、估算及档位', () => {
     const { repo, conversation, reopen } = setup()
     const stats = {

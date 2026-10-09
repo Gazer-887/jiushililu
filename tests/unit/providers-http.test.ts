@@ -183,8 +183,9 @@ describe('Anthropic：认证头与流式取数走另一套方言', () => {
       { onChunk: (t) => chunks.push(t), onUsage: (u) => usages.push(u) }
     )
     expect(chunks).toEqual(['hi'])
+    // A 口径（D-199）：11 未缓存 + 3 读命中 + 写缓存未报按 0 = 14 总输入，写明细 null（老 API 未报）
     expect(usages).toEqual([
-      { promptTokens: 11, completionTokens: 5, cachedPromptTokens: 3, reasoningTokens: null }
+      { promptTokens: 14, completionTokens: 5, cachedPromptTokens: 3, cacheWritePromptTokens: null, reasoningTokens: null }
     ])
   })
 })
