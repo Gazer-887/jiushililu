@@ -228,3 +228,14 @@ Playbook 与记忆分目录（[[src/main/store/playbook-fs.ts#playbooksDir]] 与
 文件索引按操作短连接，避免Windows常驻句柄妨碍目录回收；内存数据库需要保留连接以保持数据。
 better-sqlite3 v12 的Node/Electron两种ABI由 [afterPack 打包钩子](../scripts/afterpack-sqlite-prebuilt.cjs) 在打包阶段处理，
 开发依赖保持Node版本、产物换Electron版本；混用会导致装机包加载失败。是否已经发布必须另查tag与资产，不能由包版本号推定。
+
+## 新事件日志是经过净化的记录副本
+
+[[src/main/memory/events.ts#serializeEvent]]是记忆与手册共用的唯一序列化出口。
+已知前缀/PEM等硬拒凭据形状整字符串字段替换，不能只遮掉第一个词或PEM头留下其他值。
+拒写和未命中的name/reason属于未获批准的原始尝试，高熵形状同样净化；已确认生效名称和正常会话指针
+中的高熵不自动抹去，避免把合法身份与统计关联拆断。事件结构与调用方对象保持不变，只有新日志副本净化。
+
+拒写只阻止正文生效，不会自动阻止refuse记录原始名称；只测试某个“脱敏函数”不能证明真正生产者经过它。
+净化落在共用出口，避免Memory/Playbook/直接record各自重复漏接。未知格式密码仍有识别边界，
+本机制不自动改写用户历史日志或聊天正文，也不改变已批准数据的生命周期。

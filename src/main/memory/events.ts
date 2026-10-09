@@ -3,6 +3,7 @@
 // ⚠️ 落盘是**追加型**（不是原子写）：半行尾部可容忍（读时跳过坏行即可），与会话正文的取舍不同。
 
 import type { MemoryClass, MemoryOrigin } from '@shared/memory'
+import { findCredentialShape } from '@shared/memory'
 
 /**
  * 事件载荷（不含时间戳）。`conversationId` 允许为 null —— 界面上的手工操作没有"当前会话"。
@@ -67,7 +68,17 @@ export function injectionKey(names: string[]): string {
 
 /** 序列化成**一行**。⛔ 不许出现裸换行 —— 那会让一条事件裂成两行、后面全部错位 */
 export function serializeEvent(event: MemoryEvent): string {
-  return JSON.stringify(event)
+  const rawAttempt = ('rejected' in event && event.rejected === true) ||
+    ('found' in event && event.found === false)
+  return JSON.stringify(event, (key: string, value: unknown) => {
+    if (typeof value !== 'string') return value
+    const credential = findCredentialShape(value)
+    // 硬拒形状不能属于合法生效身份；整字段抹去，避免留下第二个凭据或PEM正文。
+    // 高熵也可能是已确认的名称/正常会话ID，只净化未批准尝试的原始文本。
+    if (credential?.kind === 'known-prefix' ||
+      (credential && rawAttempt && (key === 'name' || key === 'reason'))) return '[已脱敏]'
+    return value
+  })
 }
 
 const KINDS = new Set([
