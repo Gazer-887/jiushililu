@@ -192,17 +192,14 @@ Playbook 与记忆分目录（[[src/main/store/playbook-fs.ts#playbooksDir]] 与
 [[src/main/store/playbook-fs.ts#playbookEventsPath]]）、分预算
 （[[src/shared/playbook.ts#PLAYBOOK_LIMITS]] 的注入上限与记忆的 `maxIndexBytes` 互不影响），
 因为两者花钱模型不同：一份每轮无条件地花，一份只在任务类型匹配时才花。
-活跃标签从用户这一轮的原话推断（[[src/main/ipc.ts]] 的 `inferActiveTags`，那张关键词表自己注明
-只求"可演示、可机器判定"、不求准），而推断只能住在组合根——runner 不碰 electron-store，
-没有别处同时知道"这一轮是谁"与"手册库在哪"。
+活跃标签从用户这一轮原话经 [[src/shared/playbook.ts#inferActiveTags]] 推断；拉丁词按词边界，中文包含匹配仍是未校准初值。组合根知道会话与库，把全集匹配交给 [[src/main/memory/playbook-core.ts#createPlaybookRepo]] 的 recall；预算交给 [[src/main/memory/playbook-core.ts#capPlaybookEntries]] 截匹配集。先截全集再匹配会让最旧的唯一匹配条目失去注入机会。
+管理页的 [[src/renderer/src/components/PlaybookManager.tsx#PlaybookManager]] 只筛当前索引清单，与召回复用 [[src/shared/playbook.ts#matchesPlaybookTags]] 精确交集；未列清单不等于失去召回资格。
 
 段必须**静态**：混进时间戳、轮数或会话 id 就会让前缀缓存每轮失效，
 而静态性正是靠 [[src/main/memory/inject.ts#composeMemoryBlock]] 只吃记忆集合来保证的。
 拼装顺序同样是合同的一部分——数据边界声明必须先于数据本身出现
-（[[src/main/agent/runner.ts#runAgent]] 里记忆段接在安全基线之后）。两个估算函数的口径**不同**：
-[[src/main/memory/inject.ts#estimateMemoryTokens]] 按宽字符逐字计，
-[[src/main/memory/playbook-inject.ts#estimatePlaybookTokens]] 按 UTF-8 字节除三，
-别把两个读数当同一个数比。两笔在收尾时由
+（[[src/main/agent/runner.ts#runAgent]] 里记忆段接在安全基线之后）。两个估算函数现在共用 [[src/main/memory/inject.ts#estimateMemoryTokens]]；
+[[src/main/memory/playbook-inject.ts#estimatePlaybookTokens]] 复用它，避免同一文本因来源不同被估成两笔数。注入预算仍分开，本地估算不等于厂商计费。两笔在收尾时由
 [[src/main/memory/inject.ts#sumInjectionTax]] 合成一个注入税读数 —— 相加这件事放在 `inject.ts`
 而不是调用点，是因为调用点在 `ipc.ts`，那一层起不了真进程、也就钉不住单测。
 
@@ -240,3 +237,21 @@ better-sqlite3 v12 的Node/Electron两种ABI由 [afterPack 打包钩子](../scri
 拒写只阻止正文生效，不会自动阻止refuse记录原始名称；只测试某个“脱敏函数”不能证明真正生产者经过它。
 净化落在共用出口，避免Memory/Playbook/直接record各自重复漏接。未知格式密码仍有识别边界，
 本机制不自动改写用户历史日志或聊天正文，也不改变已批准数据的生命周期。
+
+## 指标事件的版本边界
+
+[[src/main/memory/memory-core.ts#computeStats]] 的误伤分子按名称去重，且只认同一保留事件窗口中的成功写入；分母仍是成功写入次数。日志轮转留下的孤立标记不能与新窗口写入混算，否则比例可超过100%。
+[[src/main/memory/events.ts#MemoryEvent]] 的新事件记录应用版本与 [[src/shared/memory.ts#MEMORY_STATS_VERSION]]，由record统一写入、组合根注入应用版本。纠正率按两字段共同分组；旧事件没有版本，必须留在未标组。缺版本不能推断，历史计数语义不能通过补字段修复。分组样本只覆盖当前保留日志，不能证明长期质量趋势。
+
+## 校准采样的边界
+
+[[src/main/memory/calibration.ts#computeMemoryCalibration]] 重放现有拒写及数量型采样事件，提供反思调用命中率、队列深度/年龄与索引截断比例。[[src/main/memory/calibration.ts#queueWaitSample]] 从保留的入/出队记录恢复年龄；旧项或轮转后缺坐标必须记未知，不能把未知写成零天。采集不调用模型、不调整初值，也不校准无生产采样入口的证据原话截断。
+
+## 手册确认与删除事件
+
+[[src/main/memory/playbook-core.ts#createPlaybookRepo]] 必须消费guard：已知凭据形状硬拒，高熵confirm档无confirmed拒绝并返回needsConfirm。[[src/main/agent/tools/playbook-tools.ts#createPlaybookTools]] 通过组合根提供的确认桥问用户，只有同意才带confirmed重调；没有桥时拒绝，不能静默入库。人工编辑沿用记忆页的拒绝加提示，未引入候选存储地基。删除独立记playbook_delete，不能把删除伪装成召回未命中。
+
+## 反思出队与界面统计
+
+[[src/main/store/memory-store.ts#createMemoryStore]] 的runReflection串行执行，先查日额度再精确出队；无参只取队首。启动补跑不预出队，否则会跳项或在限额满时吞掉待执行任务。队列容量100与日执行上限20独立；满容量明确拒绝，跨日重置仍落盘，不宣称无限排队。
+[[src/renderer/src/components/InputTools.tsx#UsageChip]] 展示全库累计重复纠正率，比例与厂商用量来源不同，null不显示、0明确显示。App启动与变更通知重读统计，不能依赖MemoryManager已经打开。版本分组样本在记忆页显示，未知版本不推断。

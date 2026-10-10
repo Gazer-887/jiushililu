@@ -71,9 +71,13 @@ function useStreamSubscriptions(): void {
     const offAgents = window.api.onAgentsChanged(() => void s().refreshAgents())
     void s().refreshAgents()
     // 记忆（plan19 批 1）：定义变更后**重读**；本轮写入痕迹推给护栏 2 的面板（D-043）
-    const offMemory = window.api.onMemoryChanged(() => void s().refreshMemory())
+    const offMemory = window.api.onMemoryChanged(() => {
+      void s().refreshMemory()
+      void s().refreshMemoryStats()
+    })
     const offMemoryNotice = window.api.onMemoryNotice((notice) => s().showMemoryNotice(notice))
     void s().refreshMemory()
+    void s().refreshMemoryStats()
     // Playbook（plan19 批 3）：同上口径 —— 变了就重读，不搬变更内容
     const offPlaybook = window.api.onPlaybookChanged(() => void s().refreshPlaybook())
     // 会话列表变更（plan26 D-080 智能标题：主进程异步改名后推送）——重拉列表让侧栏标题跟着变

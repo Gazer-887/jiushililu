@@ -29,6 +29,8 @@ export interface ReflectOutput {
   candidates: MemoryCandidate[]
   /** 本次反思的用量（K15）。null = 前置门挡掉没调用，或厂商没报 */
   usage: TokenUsage | null
+  /** 前置门未过：没有模型调用，与零候选/失败分开采样 */
+  skipped?: true
 }
 
 /** 前置门阈值：会话正文小于此值不调反思（空话不值得反思） */
@@ -50,7 +52,7 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
   return {
     async reflect(input) {
       if (input.bodyBytes < MIN_BODY_BYTES) {
-        return { candidates: [], usage: null }
+        return { candidates: [], usage: null, skipped: true }
       }
 
       // 失败**不在这一层咽**（R17）：以前 catch 成 `{ candidates: [] }`，注释写着"留痕由调用方做"，

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { PLAYBOOK_LIMITS } from '@shared/playbook'
 import { buildPlaybookIndex, createPlaybookRepo, indexLine, parsePlaybookFile, serializePlaybook, slugFor } from '@main/memory/playbook-core'
 import type { PlaybookBackend, PlaybookEntry } from '@main/memory/playbook-core'
-import type { MemoryEvent } from '@main/memory/events'
+import { parseEventLine, type MemoryEvent } from '@main/memory/events'
 // MemoryEvent 用于 save 事件断言
 
 const ROOT = '/evo/playbooks'
@@ -190,6 +190,62 @@ describe('CRUD：校验、撞名、标签', () => {
     expect(edit.ok).toBe(true)
     expect(repo.get(file)?.createdAt).toBe(FIXED.toISOString())
     expect(repo.get(file)?.description).toBe('改过的')
+  })
+
+  it('删除成功写入 playbook_delete 事件，而不是伪装成 recall 未命中', () => {
+    const { repo, backend } = makeRepo()
+    const saved = repo.save(valid)
+    expect(saved.ok).toBe(true)
+    if (!saved.ok) throw new Error('预置 Playbook 未能保存')
+
+    expect(repo.remove(saved.file)).toBe(true)
+    const eventLine = backend.events[backend.events.length - 1]!
+    const last = JSON.parse(eventLine) as MemoryEvent
+    expect(last).toMatchObject({
+      kind: 'playbook_delete',
+      conversationId: 'c1',
+      name: valid.name
+    })
+    expect(parseEventLine(eventLine)).toMatchObject(last)
+  })
+})
+
+// ── 高熵凭据 confirm 档（D-200①A · B3-D2 修复）────────────────────────────
+describe('高熵凭据 confirm 档（D-200①A：问一句，不静默入库）', () => {
+  // 复用 B3 探针 P2 的无前缀高熵串（findCredentialShape 的 high-entropy 档）
+  const hiEntropyToken = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0'
+
+  it('confirm 档首调（无 confirmed）→ 拒 + needsConfirm，且盘上不留内容', () => {
+    const { repo, backend } = makeRepo()
+    const body = `调用时带上 ${hiEntropyToken} 即可`
+    const r = repo.save({ ...valid, body })
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.needsConfirm).toBe(true)
+    // B3-D2 旧形态就是这一步失守：guard 被丢弃，凭据形状内容静默入库（撞母本红线）
+    expect(backend.listFiles()).toHaveLength(0)
+  })
+
+  it('用户确认（confirmed:true）→ 放行入库', () => {
+    const { repo } = makeRepo()
+    const body = `调用时带上 ${hiEntropyToken} 即可`
+    const r = repo.save({ ...valid, body, confirmed: true })
+    expect(r.ok).toBe(true)
+    expect(r.ok && repo.get(r.file)?.body).toContain(hiEntropyToken)
+  })
+
+  it('confirm 档被拒 → 事件流记 rejected（可观测，不静默）', () => {
+    const { repo, backend } = makeRepo()
+    repo.save({ ...valid, body: `调用时带上 ${hiEntropyToken} 即可` })
+    const last = JSON.parse(backend.events[backend.events.length - 1]!) as MemoryEvent
+    expect(last.kind).toBe('playbook_write')
+    expect(last.rejected).toBe(true)
+  })
+
+  it('已知前缀（sk-）仍硬拒，不降级成 confirm', () => {
+    const { repo } = makeRepo()
+    const r = repo.save({ ...valid, body: '密钥 sk-abcdefghijklmnop' })
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.needsConfirm).toBeUndefined()
   })
 })
 

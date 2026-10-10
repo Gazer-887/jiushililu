@@ -18,6 +18,7 @@ const { tmpdir } = require('node:os')
 // 界面文案按**键**取（K21）：判据里不许写死表内文案 —— 那条文案一旦切语言，
 // 正向断言假红、定位器静默 no-op 让后面整批空转假绿。守卫见 `tests/unit/gate-copy-guard.test.ts`。
 const { textFor, textsFor } = require('./lib/gate-copy.cjs')
+const verifyM02Ui = require('./lib/m02-ui-gate.cjs')
 
 const ROOT = process.cwd()
 
@@ -811,6 +812,7 @@ let playbookEntries = [
 ]
 const playbookSaveCalls = []
 const playbookDeleteCalls = []
+let memoryStatsStub = { survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }
 
 // ── 执行事件流（plan26 S2）的桩状态 ──
 // 契约副本（真源 src/main/agent/exec-events.ts 的 ExecEvent + main/ipc.ts 的 exec-events:list）：
@@ -1397,7 +1399,7 @@ const STUBS = {
     if (n > 0) memoryBroadcast()
     return n
   },
-  'memory:stats': () => ({ survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }),
+  'memory:stats': () => memoryStatsStub,
   // 批 4：用户标记「这条不对」—— 只落事件 + 统计跟着变（契约副本）
   'memory:flag': (name) => {
     memoryFlagCalls.push(name)
@@ -2589,6 +2591,15 @@ app.whenReady().then(async () => {
   }
 
   await enterChat()
+  const runM02Ui = () => verifyM02Ui({ win, openSettings: openSettingsWinStub,
+    setStats: (s) => { memoryStatsStub = s },
+    setPlaybooks: (entries) => { if (entries === null) return playbookEntries.map((e) => ({ ...e })); playbookEntries = entries },
+    checkTrue, shots: SHOTS })
+  if (process.env.M02_UI_ONLY === '1') {
+    await runM02Ui()
+    reportAndExit()
+    return
+  }
   const m1 = await measure()
 
   // —— plan17 G2：输入框「主 Agent」单选（切换真的写进会话保存载荷 —— 它只护渲染侧，真生效由 runner 单测 + 冒烟钉）——
@@ -11236,6 +11247,9 @@ app.whenReady().then(async () => {
       pbPanel.badges.includes('file-edit'),
     { pbNav, ...pbPanel }
   )
+  // 同一套真渲染判据也可由M02_UI_ONLY单独执行，避免变异时重跑无关506项。
+  if (swinPb && !swinPb.isDestroyed()) swinPb.destroy()
+  await runM02Ui()
   // 关设置窗，回到主窗口流程（下面紧接着是抽屉里的记忆面板断言）
   // ⚠️ 必须走主进程 `destroy()`，**不能** `await executeJavaScript('window.api.closeSettingsWindow()')`：
   //    渲染进程发起关窗 → 窗口自我销毁 → executeJavaScript 的回声 promise 永不 resolve

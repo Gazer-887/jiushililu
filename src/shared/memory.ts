@@ -269,12 +269,28 @@ export interface RejectedCandidateView extends MemoryEntry {
   rejectedAt: string
 }
 
-/**
- * 记忆层统计（批 2 §六 · 存活率与使用率）。
- * ⚠️ 全部从事件流算，不读盘 —— 否则"删了又写回"会让数字假性归零。
- * 存活率 = 未删除 / 写入总数；使用率 = 被 recall / 存活。
- * 缺字段 = 没事件可算 → 界面显示「暂无」，**不替它编 0**（与 tier/avoided 同口径）。
- */
+/** 指标算法口径。改变计数定义时递增；它与应用版本一起划分可比样本。 */
+export const MEMORY_STATS_VERSION = 1
+
+export interface MemoryCorrectionVersionStats {
+  /** 旧事件无版本：保留null，不能推断为当前版本 */
+  appVersion: string | null
+  statsVersion: number | null
+  correctedCount: number
+  repeatCorrectedCount: number
+  repeatCorrectionRate: number | null
+}
+
+/** 校准只报告采样，不据此宣布初值已经校准。事件窗口缺样本时比例为null。 */
+export interface MemoryCalibrationStats {
+  rejectedWrites: number
+  rejectionReasons: { reason: string; count: number }[]
+  reflection: { attempted: number; skipped: number; failed: number; hits: number; hitRate: number | null }
+  injection: { samples: number; totalEntries: number; omittedEntries: number; truncatedSamples: number; truncationRate: number | null }
+  queueSamples: { at: string; depth: number; waitDays: number[]; unknownAges: number }[]
+}
+
+/** 从保留事件流统计；缺比例样本返回 null，界面显示「暂无」。 */
 export interface MemoryStats {
   /** 写入总数（含已删除的） */
   written: number
@@ -291,12 +307,15 @@ export interface MemoryStats {
   correctedCount: number
   /** 被纠正 ≥2 次的条目数（重复纠正 = 同一条记忆被二次纠正） */
   repeatCorrectedCount: number
-  /** 被用户 flag 的条目数 */
+  /** 当前事件窗口中有成功写入记录的被flag名称数，按memoryNameKey去重 */
   flaggedCount: number
   /** 重复纠正率（0–1）：repeatCorrectedCount / correctedCount。correctedCount=0 时为 null */
   repeatCorrectionRate: number | null
   /** 误伤率（0–1）：flaggedCount / written。written=0 时为 null */
   falsePositiveRate: number | null
+  /** 按应用版本和指标口径分组；旧接口缺此字段时不补造历史 */
+  correctionByVersion?: MemoryCorrectionVersionStats[]
+  calibration?: MemoryCalibrationStats
 }
 
 /**

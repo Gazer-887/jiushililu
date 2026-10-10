@@ -139,6 +139,21 @@ describe('remember：三条出口', () => {
 
 // ── 批 4：纠正通路（plan19 §九 批 4 的「纠正」定义）────────────────────
 describe('纠正通路：同名改写只在**因果链成立**时放行', () => {
+  it.each(['别忘了用表格', '停一下', '别用表格'])('保守词表不把「%s」当作纠正授权', async (lastUser) => {
+    const s = setup({ lastUser })
+    expect(s.events).toEqual([]) // 消息本身没有写入因果链
+    await s.byName('remember').execute(GOOD)
+    const out = await s.byName('remember').execute({ ...GOOD, description: '换个说法' })
+    expect(out).toContain('没有写入')
+    expect(s.events.map((l) => JSON.parse(l).kind)).not.toContain('correct')
+  })
+
+  it.each(['别这样', '我说的是表格', '这和要求有别'])('现行词表「%s」加同名改写才记纠正', async (lastUser) => {
+    const s = setup({ lastUser })
+    await s.byName('remember').execute(GOOD)
+    await s.byName('remember').execute({ ...GOOD, description: '改过的' })
+    expect(s.events.map((l) => JSON.parse(l).kind)).toContain('correct')
+  })
   it('用户说「不对」+ 同名已存在 → 改写那一条，并落 correct 事件', async () => {
     const s = setup({ lastUser: '不对，我要的是表格不是长段落' })
     await s.byName('remember').execute(GOOD)

@@ -750,6 +750,43 @@ describe('computeStats 扩展（批 4 判据 3/4）', () => {
     expect(s.repeatCorrectionRate).toBeNull()
   })
 
+  it('误伤按写入名称去重，重复标记和孤立标记不使比例超过100%', () => {
+    const s = computeStats([
+      evt('write', 'Alpha', { origin: 'model', cls: 'default' }),
+      evt('flag', 'Alpha'), evt('flag', 'alpha'), evt('flag', 'Alpha'),
+      evt('flag', '日志轮转前的条目')
+    ])
+    expect(s.flaggedCount).toBe(1)
+    expect(s.falsePositiveRate).toBe(1)
+  })
+
+  it('纠正率按应用版本与指标口径分组，旧事件保持未标版本', () => {
+    const s = computeStats([
+      evt('correct', 'a', { appVersion: '0.13.104', statsVersion: 1 }),
+      evt('correct', 'a', { appVersion: '0.13.104', statsVersion: 1 }),
+      evt('correct', 'b', { appVersion: '0.13.104', statsVersion: 1 }),
+      evt('correct', 'a', { appVersion: '0.13.105', statsVersion: 1 }),
+      evt('correct', 'a', { appVersion: '0.13.105', statsVersion: 2 }),
+      evt('correct', 'old'), evt('correct', 'old')
+    ])
+    expect(s.correctionByVersion).toEqual([
+      { appVersion: '0.13.104', statsVersion: 1, correctedCount: 2, repeatCorrectedCount: 1, repeatCorrectionRate: 0.5 },
+      { appVersion: '0.13.105', statsVersion: 1, correctedCount: 1, repeatCorrectedCount: 0, repeatCorrectionRate: 0 },
+      { appVersion: '0.13.105', statsVersion: 2, correctedCount: 1, repeatCorrectedCount: 0, repeatCorrectionRate: 0 },
+      { appVersion: null, statsVersion: null, correctedCount: 1, repeatCorrectedCount: 1, repeatCorrectionRate: 1 }
+    ])
+  })
+
+  it('新事件记录注入的应用版本与指标口径，序列化解析后仍保留', () => {
+    const backend = memBackend()
+    const repo = createMemoryRepo(backend, { appVersion: '0.13.104', now: () => FIXED })
+    repo.save(valid)
+    repo.record({ kind: 'correct', conversationId: 'c1', name: valid.name })
+    for (const line of backend.events) {
+      expect(parseEventLine(line)).toMatchObject({ appVersion: '0.13.104', statsVersion: 1 })
+    }
+  })
+
   it('无写入事件 → falsePositiveRate = null', () => {
     const events: MemoryEvent[] = [evt('flag', 'a')]
     const s = computeStats(events)

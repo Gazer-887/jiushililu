@@ -3,7 +3,7 @@
 // 收敛进设置让右栏只留高频工作面板。样式复用 `.mem-panel`（与记忆页同构，两处渲染一致）。
 
 import { useCallback, useEffect, useState } from 'react'
-import { PLAYBOOK_LIMITS, type PlaybookEntry } from '@shared/playbook'
+import { PLAYBOOK_LIMITS, normalizeTag, matchesPlaybookTags, type PlaybookEntry } from '@shared/playbook'
 import { useAppStore } from '../store'
 import FieldNote from './FieldNote'
 
@@ -20,12 +20,17 @@ export default function PlaybookManager(): JSX.Element {
   const refresh = useAppStore((s) => s.refreshPlaybook)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  const [tagFilter, setTagFilter] = useState('')
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
   const entries = view?.entries ?? []
+  const tags = [...new Set(entries.flatMap((entry) => entry.tags.map(normalizeTag)))].sort()
+  const effectiveFilter = tags.includes(tagFilter) ? tagFilter : ''
+  const filteredEntries = effectiveFilter
+    ? entries.filter((entry) => matchesPlaybookTags(entry.tags, [effectiveFilter])) : entries
 
   const openEdit = useCallback(async (entry: PlaybookEntry): Promise<void> => {
     setDraft({
@@ -57,7 +62,9 @@ export default function PlaybookManager(): JSX.Element {
       ...(draft.file === undefined ? {} : { file: draft.file })
     })
     if (!res.ok) {
-      setNotice({ ok: false, text: res.reason })
+      // D-200①A：confirm 档（同 MemoryManager 记忆手动保存的处理）——
+      // 内容含疑似凭据，提示说清楚「要确认」，不静默吞掉 reason
+      setNotice({ ok: false, text: res.needsConfirm ? `${res.reason}（需用户确认后才能写入）` : res.reason })
       return
     }
     setDraft(null)
@@ -88,10 +95,22 @@ export default function PlaybookManager(): JSX.Element {
         </button>
       </div>
 
+      {tags.length > 0 && (
+        <label className="pb-filter">
+          <span>标签筛选</span>
+          <select className="pb-tag-filter" aria-label="按标签筛选Playbook"
+            value={effectiveFilter} onChange={(event) => setTagFilter(event.target.value)}>
+            <option value="">全部标签</option>
+            {tags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+          </select>
+          <span>显示 {filteredEntries.length} 条</span>
+        </label>
+      )}
+
       {view && view.total > 0 ? (
         <div className="mem-stat">
           共 {view.total} 条
-          {view.omitted > 0 ? `，其中 ${view.omitted} 条因超出注入上限未生效` : ''}
+          {view.omitted > 0 ? `，其中 ${view.omitted} 条未列入当前清单，仍可按任务标签召回` : ''}
         </div>
       ) : null}
 
@@ -112,7 +131,8 @@ export default function PlaybookManager(): JSX.Element {
         </div>
       ) : null}
 
-      {entries.map((e) => (
+      {effectiveFilter && filteredEntries.length === 0 && <div className="pb-filter-empty">当前标签没有匹配条目</div>}
+      {filteredEntries.map((e) => (
         <div key={e.file} className="mem-row">
           <div className="mem-row-main">
             {e.tags.slice(0, 2).map((t) => (

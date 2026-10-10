@@ -47,39 +47,44 @@ export function ContextRing({ used }: { used: number }): JSX.Element {
 /**
  * **真实用量小牌**（plan8 R9）。与圆环是两件事：圆环是本地估算的上下文占用（永远有值），
  * 这块牌是厂商**真实报的** token 账（准确，但厂商不报时就没有）。
- * 故厂商没报时**不渲染**而不是显示 0（0 会让人以为"这轮不要 token"）；只出 token 不出金额。
+ * 厂商没报时不显示厂商数字；全库记忆指标仍可单独显示，来源在tooltip中说明。
  */
 export function UsageChip(): JSX.Element | null {
   const record = useAppStore((s) => (s.activeId ? s.usageByConversation[s.activeId] : undefined))
 
-  // 没会话、或还没拿到过真实用量 → 整块不渲染（工具栏不为"暂无"占位）
-  if (!record || (!record.usageReported && record.avoided <= 0 && record.memory <= 0 && !record.reflectionTotal)) return null
+  const stats = useAppStore((s) => s.memoryStats)
+  const repeat = stats?.repeatCorrectionRate ?? null
+  const reported = record?.usageReported === true
 
-  const { total, last, avoided, memory, reflectionTotal } = record
+  // 所有来源都缺读数才隐藏整块；全库纠正率不依赖当前会话是否有厂商用量。
+  if (repeat === null && (!record || (!reported && record.avoided <= 0 && record.memory <= 0 && !record.reflectionTotal))) return null
+
+  const { total, last, avoided, memory, reflectionTotal } = record ?? { total: { promptTokens: 0, completionTokens: 0, cachedPromptTokens: null, reasoningTokens: null }, last: null, avoided: 0, memory: 0, reflectionTotal: null }
   /**
    * 命中率与思考占比（plan8 R9.1）。`null` = **厂商没报这个数** → 什么都不显示（连 0% 都不写，
    * 写 0% 等于替厂商宣布"一点没命中"）。但 `思考 0%` 会出现：厂商明确报了 0 就是事实，该显示。
    * 这两种 0 走两条路，见 @shared/usage。
    */
-  const hit = record.usageReported ? cacheHitRate(total) : null
-  const think = record.usageReported ? reasoningShare(total) : null
+  const hit = reported ? cacheHitRate(total) : null
+  const think = reported ? reasoningShare(total) : null
   // 口径 A（0.13.104 起）：Anthropic 输入归一为总输入（未缓存 + 缓存读 + 缓存写）。
   // 有没有这个键就是新旧口径的分界：新记录带（值可为 null），旧记录压根没有——不推断历史。
   const normalizedInput = 'cacheWritePromptTokens' in total
   const tip = [
-    record.usageReported ? `主对话已上报合计：${totalTokens(total)} tokens` : '主对话用量：厂商未上报或旧记录来源未知',
-    record.usageReported ? `输入${normalizedInput ? '（含缓存读写入）' : ''} ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}` : '',
-    record.usageReported ? (record.usageComplete === true ? '覆盖：本轮链路各请求均有报告' : record.usageComplete === false ? '覆盖：仅已上报部分，存在未报告请求' : '覆盖：旧记录未记范围') : '',
-    record.usageReported ? (total.cachedPromptTokens == null ? '前缀缓存命中：厂商未上报'
+    repeat !== null ? `重复纠正率（全库累计记忆指标）：${formatRate(repeat)}（${stats!.repeatCorrectedCount} / ${stats!.correctedCount} 条），与厂商用量分开` : '',
+    reported ? `主对话已上报合计：${totalTokens(total)} tokens` : '主对话用量：厂商未上报或旧记录来源未知',
+    reported ? `输入${normalizedInput ? '（含缓存读写入）' : ''} ${formatTokens(total.promptTokens)} · 输出 ${formatTokens(total.completionTokens)}` : '',
+    reported ? (record?.usageComplete === true ? '覆盖：本轮链路各请求均有报告' : record?.usageComplete === false ? '覆盖：仅已上报部分，存在未报告请求' : '覆盖：旧记录未记范围') : '',
+    reported ? (total.cachedPromptTokens == null ? '前缀缓存命中：厂商未上报'
       : `其中前缀缓存命中：${formatTokens(total.cachedPromptTokens)}（${hit === null ? '输入为0，比例不适用' : formatRate(hit)}）`) : '',
-    record.usageReported && typeof total.cacheWritePromptTokens === 'number'
+    reported && typeof total.cacheWritePromptTokens === 'number'
       ? `其中缓存写入：${formatTokens(total.cacheWritePromptTokens)}`
       : '',
-    record.usageReported ? (total.reasoningTokens == null ? '输出里推理（思考）：厂商未上报'
+    reported ? (total.reasoningTokens == null ? '输出里推理（思考）：厂商未上报'
       : `输出里推理（思考）：${formatTokens(total.reasoningTokens)}（${think === null ? '输出为0，比例不适用' : formatRate(think)}）`) : '',
-    last ? `最近一轮已上报：${totalTokens(last)} tokens${record.lastComplete === false ? '（部分）' : ''}` : '',
+    last ? `最近一轮已上报：${totalTokens(last)} tokens${record?.lastComplete === false ? '（部分）' : ''}` : '',
     // 记下"这轮是哪一档跑的" —— 用户比数字时得知道它的出处（plan8 §七②）
-    record.tier ? `省 Token 档位（设置页可修改）：${tierLabel(record.tier)}` : '',
+    record?.tier ? `省 Token 档位（设置页可修改）：${tierLabel(record?.tier)}` : '',
     // ⚠️ 这行必须**说清是估算**：它与上面的"厂商真实值"不同源，不说清用户没法判断哪个数能信。
     avoided > 0 ? `工具输出成形省下（本地估算）：约 ${formatTokens(avoided)} tokens` : '',
     // 注入税（plan19 §5.2）：记忆段每轮占掉的**估算** token —— 它是"越用越重"的直接读数。
@@ -95,7 +100,8 @@ export function UsageChip(): JSX.Element | null {
 
   return (
     <span className="usage-chip" title={tip}>
-      {record.usageReported && <>
+      {repeat !== null && <span className="usage-repeat-correction">重复纠正 {formatRate(repeat)}</span>}
+      {reported && <>
         <span className="usage-total">{formatTokens(totalTokens(total))}</span>
         <span className="usage-unit">tok</span>
       </>}
@@ -103,7 +109,7 @@ export function UsageChip(): JSX.Element | null {
       {hit !== null && <span className="usage-rate">命中 {formatRate(hit)}</span>}
       {think !== null && <span className="usage-rate">思考 {formatRate(think)}</span>}
       {/* 主进程没带这个字段就**不显示** —— 不替它编一个默认档 */}
-      {record.tier && <span className="usage-tier">{tierLabel(record.tier)}</span>}
+      {record?.tier && <span className="usage-tier">{tierLabel(record?.tier)}</span>}
       {avoided > 0 && <span className="usage-saved">省 {formatTokens(avoided)}(估)</span>}
       {/* 注入税（plan19 §5.2）：本地估算，照既有诚实口径标"估" */}
       {memory > 0 && <span className="usage-memory">记忆税 {formatTokens(memory)}(估)</span>}

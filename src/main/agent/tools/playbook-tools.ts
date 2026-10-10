@@ -7,6 +7,11 @@ import type { PlaybookRepo } from '@main/memory/playbook-core'
 export interface PlaybookToolDeps {
   repo: PlaybookRepo
   conversationId: () => string | null
+  /**
+   * D-200①A：确认桥（同 memory-tools）。guard=confirm 的写入经它问用户一句，
+   * 用户同意后才带 confirmed 重调。不传 = 该档写入一律拒绝（宁可拒也不静默入库）。
+   */
+  confirm?: (reason: string, conversationId: string) => Promise<boolean>
 }
 
 export function createPlaybookTools(deps: PlaybookToolDeps): AgentTool[] {
@@ -35,10 +40,31 @@ export function createPlaybookTools(deps: PlaybookToolDeps): AgentTool[] {
       const tagsRaw = Array.isArray(args['tags']) ? args['tags'] : []
       const tags = tagsRaw.filter((t: unknown): t is string => typeof t === 'string')
 
-      const result = deps.repo.save({ name, description, tags, body, origin: 'model' })
-      return result.ok
+      const submit = (confirmed: boolean) =>
+        deps.repo.save({
+          name,
+          description,
+          tags,
+          body,
+          origin: 'model',
+          ...(confirmed ? { confirmed: true } : {})
+        })
+      const first = submit(false)
+      if (first.ok) {
+        return `已保存 Playbook「${name}」（标签：${tags.join(', ')}）。下次遇到同类任务会自动召回。`
+      }
+      // D-200①A：确认档首调不带 confirmed —— core 拒回来带 needsConfirm，
+      // 经确认桥问用户一句，同意才带 confirmed 重调（拒绝则不写，话术说实话）。
+      if (first.needsConfirm !== true) return `没有写入：${first.reason}`
+      if (!deps.confirm) return `没有写入：${first.reason}（此内容需要用户确认后才能写入）`
+      const conversationId = deps.conversationId()
+      if (conversationId === null) return `没有写入：${first.reason}（拿不到会话上下文，无法问用户）`
+      const agreed = await deps.confirm(first.reason, conversationId)
+      if (!agreed) return '用户没有确认，这条没有写入。'
+      const second = submit(true)
+      return second.ok
         ? `已保存 Playbook「${name}」（标签：${tags.join(', ')}）。下次遇到同类任务会自动召回。`
-        : `没有写入：${result.reason}`
+        : `没有写入：${second.reason}`
     }
   }
 

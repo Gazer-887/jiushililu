@@ -9,7 +9,7 @@ import { createPlaybookTools } from '@main/agent/tools/playbook-tools'
 const ROOT = '/evo/playbooks'
 const FIXED = new Date('2026-09-15T01:30:00.000Z')
 
-function setup() {
+function setup(opts: { confirm?: (reason: string, conversationId: string) => Promise<boolean> } = {}) {
   const files = new Map<string, string>()
   const events: string[] = []
   const backend = {
@@ -25,7 +25,11 @@ function setup() {
     onWarn: () => {},
     conversationId: () => 'c1'
   })
-  const tools = createPlaybookTools({ repo, conversationId: () => 'c1' })
+  const tools = createPlaybookTools({
+    repo,
+    conversationId: () => 'c1',
+    ...(opts.confirm ? { confirm: opts.confirm } : {})
+  })
   const byName = (n: string): AgentTool => tools.find((t) => t.schema.name === n)!
   return { repo, events, byName, files }
 }
@@ -65,6 +69,41 @@ describe('save_playbook：写入', () => {
     const out = await byName('save_playbook').execute({ ...GOOD, description: '换个说法' })
     expect(out).toContain('没有写入')
     expect(out).toContain('同名')
+  })
+
+  // D-200①A（B3-D2 修复）：高熵凭据 confirm 档不再被 save 丢弃 —— 工具层经确认桥问一句
+  const HI = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0'
+
+  it('confirm 档 + 无确认桥 → 拒，且话术说明「需要用户确认」', async () => {
+    const { byName, files } = setup()
+    const out = await byName('save_playbook').execute({ ...GOOD, body: `调用时带上 ${HI} 即可` })
+    expect(out).toContain('没有写入')
+    expect(out).toContain('需要用户确认')
+    expect([...files.values()].join('\n').includes(HI)).toBe(false)
+  })
+
+  it('confirm 档 + 用户在桥里拒绝 → 不写入，话术说实话', async () => {
+    const { byName, repo, files } = setup({ confirm: async () => false })
+    const out = await byName('save_playbook').execute({ ...GOOD, body: `调用时带上 ${HI} 即可` })
+    expect(out).toContain('用户没有确认')
+    expect(repo.list().entries).toHaveLength(0)
+    expect([...files.values()].join('\n').includes(HI)).toBe(false)
+  })
+
+  it('confirm 档 + 用户在桥里同意 → 问一次后写入', async () => {
+    const asked: string[] = []
+    const { byName, repo } = setup({
+      confirm: async (reason: string) => {
+        asked.push(reason)
+        return true
+      }
+    })
+    const out = await byName('save_playbook').execute({ ...GOOD, body: `调用时带上 ${HI} 即可` })
+    expect(out).toContain('已保存')
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toContain('凭据')
+    expect(repo.list().entries).toHaveLength(1)
+    expect(repo.list().entries[0]?.body).toContain(HI)
   })
 })
 

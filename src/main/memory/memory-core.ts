@@ -7,6 +7,7 @@ import { parseArchivedFileName, reviewSeenKey, reviewSeenStamp } from '@shared/m
 import {
   MEMORY_CLASSES,
   MEMORY_LIMITS,
+  MEMORY_STATS_VERSION,
   MEMORY_ORIGINS,
   memoryNameKey,
   utf8Bytes,
@@ -24,12 +25,14 @@ import {
   type MemorySaveResult,
   type MemoryApproveResult,
   type MemoryStats,
+  type MemoryCorrectionVersionStats,
   type MemoryRejectBatchResult,
   type MemoryRestoreResult,
   type RejectedCandidateView
 } from '@shared/memory'
 import { injectionKey, serializeEvent, type MemoryEvent, type MemoryEventPayload } from './events'
 import { findDuplicatePairs, findSimilarEntry } from './similarity'
+import { computeMemoryCalibration } from './calibration'
 
 /** 存/取的唯一接缝。⚠️ read/remove 必须自行拒绝 `notes/` 与 `candidates/` 之外的路径（file 来自渲染进程） */
 export interface MemoryBackend {
@@ -326,6 +329,8 @@ export function buildIndex(entries: MemoryEntry[]): MemoryIndex {
 
 export interface MemoryRepoOptions {
   onWarn?: (message: string, extra?: Record<string, unknown>) => void
+  /** 由组合根注入真实应用版本，领域层不import electron或猜版本 */
+  appVersion?: string
   /**
    * 本机平台（`process.platform` 口径），由组合根注入。plan55 片①-b / D-139 R6：
    * 守卫据此拒掉「运行环境为 X」这类**与本机矛盾的事实断言**。缺省 = 不查这一档（单测与隔离进程走这条）。
@@ -621,7 +626,10 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
       if (key === lastInjectKey) return false
       lastInjectKey = key
     }
-    const event = { ...payload, at: now().toISOString() } as MemoryEvent
+    const event = {
+      ...payload, at: now().toISOString(), statsVersion: MEMORY_STATS_VERSION,
+      ...(opts.appVersion ? { appVersion: opts.appVersion } : {})
+    } as MemoryEvent
     backend.appendEvent(serializeEvent(event))
     return true
   }
@@ -1267,12 +1275,17 @@ export function computeStats(events: MemoryEvent[]): MemoryStats {
   const deletedNames = new Set<string>()
   // 批 4：纠正与误伤计数
   const correctedCounts = new Map<string, number>() // name → 纠正次数
-  let flaggedCount = 0
+  const writtenNames = new Set<string>()
+  const flaggedNames = new Set<string>()
+  const versions = new Map<string, { version: Pick<MemoryCorrectionVersionStats, 'appVersion' | 'statsVersion'>; counts: Map<string, number> }>()
 
   for (const e of events) {
     if (e.kind === 'write') {
       const rejected = 'rejected' in e && (e as { rejected?: unknown }).rejected === true
-      if (!rejected) written++
+      if (!rejected) {
+        written++
+        if (typeof e.name === 'string') writtenNames.add(memoryNameKey(e.name))
+      }
     } else if (e.kind === 'delete') {
       // 候选被合并稿吸收 ⇒ 它从未进过 `written` 这笔账，也不许进 `deleted`（同上面 rejected write 的口径）。
       // ⚠️ 认 `candidate` 而不是认 `mergedInto`：后者答的是"为什么走的"，已生效条目将来也可能被并掉。
@@ -1284,8 +1297,20 @@ export function computeStats(events: MemoryEvent[]): MemoryStats {
     } else if (e.kind === 'correct') {
       const name = (e as { name: string }).name
       correctedCounts.set(name, (correctedCounts.get(name) ?? 0) + 1)
+      const knownVersion = typeof e.appVersion === 'string' && e.appVersion.length > 0 &&
+        typeof e.statsVersion === 'number' && Number.isInteger(e.statsVersion) && e.statsVersion > 0
+      const version = knownVersion
+        ? { appVersion: e.appVersion!, statsVersion: e.statsVersion! }
+        : { appVersion: null, statsVersion: null }
+      const key = JSON.stringify([version.appVersion, version.statsVersion])
+      let group = versions.get(key)
+      if (!group) {
+        group = { version, counts: new Map() }
+        versions.set(key, group)
+      }
+      group.counts.set(name, (group.counts.get(name) ?? 0) + 1)
     } else if (e.kind === 'flag') {
-      flaggedCount++
+      if (typeof e.name === 'string') flaggedNames.add(memoryNameKey(e.name))
     }
   }
   const alive = Math.max(0, written - deleted)
@@ -1302,6 +1327,19 @@ export function computeStats(events: MemoryEvent[]): MemoryStats {
     if (count >= 1) correctedCount++
     if (count >= 2) repeatCorrectedCount++
   }
+  // 日志轮转可留下孤立flag：分子只认同窗口内的成功写入，避免样本范围不同而超100%。
+  const flaggedCount = [...flaggedNames].filter((name) => writtenNames.has(name)).length
+  const correctionByVersion: MemoryCorrectionVersionStats[] = [...versions.values()].map(({ version, counts }) => {
+    const correctedCount = counts.size
+    const repeatCorrectedCount = [...counts.values()].filter((count) => count >= 2).length
+    return { ...version, correctedCount, repeatCorrectedCount,
+      repeatCorrectionRate: correctedCount === 0 ? null : repeatCorrectedCount / correctedCount }
+  }).sort((a, b) => {
+    if (a.appVersion === null) return b.appVersion === null ? 0 : 1
+    if (b.appVersion === null) return -1
+    return (a.appVersion < b.appVersion ? -1 : a.appVersion > b.appVersion ? 1 : 0) ||
+      (a.statsVersion! - b.statsVersion!)
+  })
 
   return {
     written,
@@ -1313,6 +1351,8 @@ export function computeStats(events: MemoryEvent[]): MemoryStats {
     repeatCorrectedCount,
     flaggedCount,
     repeatCorrectionRate: correctedCount === 0 ? null : repeatCorrectedCount / correctedCount,
-    falsePositiveRate: written === 0 ? null : flaggedCount / written
+    falsePositiveRate: written === 0 ? null : flaggedCount / written,
+    correctionByVersion,
+    calibration: computeMemoryCalibration(events)
   }
 }

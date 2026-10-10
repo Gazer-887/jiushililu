@@ -57,12 +57,18 @@ export interface PlaybookSaveInput {
   body: string
   origin?: PlaybookOrigin
   file?: string
+  /**
+   * D-200①A：确认档通行证 —— 高熵凭据形状（guard=confirm）的写入必须经用户确认后才放行，
+   * 与记忆侧确认桥同语义（`shared/memory.ts` MemorySaveInput.confirmed）。
+   */
+  confirmed?: boolean
 }
 
 /** 保存结果 */
 export type PlaybookSaveResult =
   | { ok: true; file: string }
-  | { ok: false; reason: string }
+  /** needsConfirm = 该写入落确认档且尚未过确认桥 —— 不是失败，是「去问用户一句再回来」 */
+  | { ok: false; reason: string; needsConfirm?: boolean }
 
 /**
  * 撞名比较的唯一口径（与 memoryNameKey 同语义）。
@@ -77,6 +83,12 @@ const TAG_CHAR = /^[\w\u4e00-\u9fff-]+$/
 /** 标签规范化：trim + 小写（与 playbookNameKey 同口径） */
 export function normalizeTag(tag: string): string {
   return tag.trim().toLowerCase()
+}
+
+/** 召回与管理页共用精确标签交集，避免筛选页另写子串匹配。 */
+export function matchesPlaybookTags(tags: string[], activeTags: string[]): boolean {
+  const active = new Set(activeTags.map(normalizeTag))
+  return tags.some((tag) => active.has(normalizeTag(tag)))
 }
 
 const NAME_FORBIDDEN = /[\\/:*?"<>|\r\n\t]/
@@ -153,4 +165,34 @@ export function validatePlaybookFields(input: {
   }
 
   return { ok: true, guard }
+}
+
+/**
+ * 拉丁关键词用词边界，避免 latest 误命中 test；中文维持包含匹配。
+ * 词表是待校准初值，协议见 plan19 §十二。
+ */
+export const PLAYBOOK_TAG_KEYWORDS: Record<string, readonly string[]> = {
+  'file-edit': ['编辑', '改一下', '修改文件', '重命名', 'edit', 'rename'],
+  debug: ['调试', '报错', 'bug', '为什么失败', '排查', 'debug'],
+  research: ['调研', '查一下', '搜索', '对比', 'research', 'search'],
+  build: ['构建', '打包', '编译', 'build', 'compile'],
+  test: ['测试', '跑测试', '单测', 'test'],
+  refactor: ['重构', '整理代码', '拆分', 'refactor']
+}
+
+/** 单词命中判定：拉丁词整词（词边界），中文包含（无自然边界的第一次近似） */
+function wordHit(lower: string, word: string): boolean {
+  if (!word.length || [...word].some((char) => char.codePointAt(0)! > 127)) return lower.includes(word)
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`\\b${escaped}\\b`).test(lower)
+}
+
+/** 从一句话里推断活跃标签（可多个）。空字符串 → 空数组（不误召回） */
+export function inferActiveTags(text: string): string[] {
+  const lower = text.toLowerCase()
+  const hit: string[] = []
+  for (const [tag, words] of Object.entries(PLAYBOOK_TAG_KEYWORDS)) {
+    if (words.some((w) => wordHit(lower, w.toLowerCase()))) hit.push(tag)
+  }
+  return hit
 }

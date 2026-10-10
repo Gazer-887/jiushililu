@@ -281,7 +281,9 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     ...(hooks.playbook
       ? createPlaybookTools({
           repo: hooks.playbook.repo,
-          conversationId: () => hooks.playbook!.conversationId
+          conversationId: () => hooks.playbook!.conversationId,
+          // D-200①A：确认桥透传（同 memory；B3-D2 修复 confirm 档被丢弃）
+          ...(hooks.playbook.confirm ? { confirm: hooks.playbook.confirm } : {})
         })
       : []),
     // 技能（plan22 D-059）：同理 —— 没有技能时下发 use_skill 只会让模型对着空清单调用。
@@ -399,6 +401,8 @@ export interface ToolHooks {
   playbook?: {
     repo: PlaybookRepo
     conversationId: string
+    /** D-200①A：confirm 档写入的确认桥（同 memory.confirm；不传 = 该档一律拒） */
+    confirm?: (reason: string, conversationId: string) => Promise<boolean>
   }
   /** 技能库（plan22）。不传 = 不下发 use_skill（「有消费者才注册」，D-059）。只读档可用（D-058：纯读操作） */
   skills?: {
@@ -481,6 +485,8 @@ export interface AgentRuntimeContext {
   /** Playbook 库（plan19 批 3）。由组合根注入 —— runner 不许碰 electron-store / fs */
   playbook?: {
     repo: PlaybookRepo
+    /** D-200①A：confirm 档写入的确认桥（同 memory.confirm；不传 = 该档一律拒） */
+    confirm?: (reason: string, conversationId: string) => Promise<boolean>
   }
   /** 技能库（plan22）。由组合根注入（内置 resources/skills + 用户 userData/skills 两层）—— runner 不许碰 fs / electron */
   skills?: {
@@ -1170,6 +1176,8 @@ export function createAgentContext(opts: {
   /** Playbook 库（plan19 批 3）。由组合根注入 —— runner 不许碰 electron-store / fs */
   playbook?: {
     repo: PlaybookRepo
+    /** D-200①A：confirm 档写入的确认桥（同 memory.confirm；不传 = 该档一律拒） */
+    confirm?: (reason: string, conversationId: string) => Promise<boolean>
   }
   /** 技能库（plan22）。由组合根注入（内置 resources/skills + 用户 userData/skills 两层）—— runner 不许碰 fs / electron */
   skills?: {

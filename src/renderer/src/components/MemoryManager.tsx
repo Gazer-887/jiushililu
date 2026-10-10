@@ -343,6 +343,19 @@ export default function MemoryManager(): JSX.Element {
         </div>
       ) : null}
 
+      {stats?.correctionByVersion && stats.correctionByVersion.length > 0 && (
+        <div className="mem-correction-versions">
+          <div>按版本重复纠正率（保留事件样本；仅同口径可比较）</div>
+          {stats.correctionByVersion.map((group) => (
+            <div key={`${group.appVersion ?? '旧记录'}:${group.statsVersion ?? '未知'}`}>
+              {group.appVersion === null ? '未标版本（不可逐版本比较）' : `${group.appVersion} · 口径 ${group.statsVersion}`}
+              {'：'}{group.repeatCorrectionRate === null ? '暂无' : `${Math.round(group.repeatCorrectionRate * 100)}%`}
+              {`（${group.repeatCorrectedCount} / ${group.correctedCount} 条）`}
+            </div>
+          ))}
+        </div>
+      )}
+
       {candidates.length > 0 ? (
         <div className="mem-candidates">
           <div className="mem-candidates-head">

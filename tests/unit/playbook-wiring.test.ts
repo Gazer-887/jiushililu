@@ -166,10 +166,43 @@ describe('注入段进 system prompt（走真 runner）', () => {
   it('注入段是**静态**的：同一份索引两次组装字节级相同（前缀缓存的前提）', () => {
     const repo = fakeRepo()
     repo.save({ name: 'edit-react', description: '编辑组件流程', tags: ['file-edit'], body: '正文' })
-    const a = composePlaybookBlock(repo.list(), ['file-edit'])
-    const b = composePlaybookBlock(repo.list(), ['file-edit'])
+    const a = composePlaybookBlock(repo.recall(['file-edit']))
+    const b = composePlaybookBlock(repo.recall(['file-edit']))
     expect(a).toBe(b)
     expect(a).toContain('edit-react')
+  })
+
+  // B3-D1 回归：截断不再先于匹配 —— 全集索引截掉的最旧匹配条目，注入仍可达
+  it('B3-D1：51 条里最旧的匹配条目被全集索引截掉，recall + compose 仍注得进', () => {
+    const files = new Map<string, string>()
+    let tick = 0
+    const repo = createPlaybookRepo(
+      {
+        listFiles: () => [...files.keys()].sort(),
+        read: (f) => files.get(f) ?? null,
+        write: (f, t) => void files.set(f, t),
+        remove: (f) => files.delete(f),
+        pathFor: (slug) => `/evo/playbooks/${slug}.md`,
+        appendEvent: () => {}
+      },
+      { onWarn: () => {}, now: () => new Date(Date.UTC(2026, 8, 1, 0, tick++)) }
+    )
+    repo.save({ name: 'old-edit', description: '最旧的编辑经验', tags: ['file-edit'], body: 'b' })
+    for (let i = 0; i < 50; i++) {
+      repo.save({ name: `noise-${i}`, description: '无关条目', tags: ['other'], body: 'b' })
+    }
+    // 全集投影确实把它截了（缺陷旧形态的前提）
+    expect(repo.list().entries.map((e) => e.name)).not.toContain('old-edit')
+    // 注入路径不再经过全集投影
+    const matched = repo.recall(['file-edit'])
+    expect(matched.map((e) => e.name)).toEqual(['old-edit'])
+    expect(composePlaybookBlock(matched)).toContain('old-edit')
+  })
+
+  it('B3-D1：不匹配标签 recall 返回空 → 段为 null（不误召回）', () => {
+    const repo = fakeRepo()
+    repo.save({ name: 'edit-react', description: '编辑组件流程', tags: ['file-edit'], body: '正文' })
+    expect(composePlaybookBlock(repo.recall(['debug']))).toBeNull()
   })
 })
 
@@ -210,7 +243,7 @@ describe('演示路径（plan19 批 3 判据 6）：第一次做 → 沉淀 → 
     expect(repo.list().entries.map((e) => e.name)).toContain('edit-react-component')
 
     // ── 第二次做：活跃标签命中 → 组装出段 → 走真 runner 进 system prompt ──
-    const block = composePlaybookBlock(repo.list(), ['file-edit'])
+    const block = composePlaybookBlock(repo.recall(['file-edit']))
     expect(block).not.toBeNull()
     expect(block).toContain('edit-react-component')
 
@@ -233,7 +266,7 @@ describe('演示路径（plan19 批 3 判据 6）：第一次做 → 沉淀 → 
       tags: ['file-edit'],
       body: '正文'
     })
-    const block = composePlaybookBlock(repo.list(), ['debug'])
+    const block = composePlaybookBlock(repo.recall(['debug']))
     expect(block).toBeNull()
 
     await runAgent(makeCtx({ repo }), {

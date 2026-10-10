@@ -56,10 +56,21 @@ export type MemoryEventPayload =
   | { kind: 'playbook_write'; conversationId: string | null; name: string; rejected: true; reason: string }
   | { kind: 'playbook_recall'; conversationId: string | null; name: string; found: boolean }
   | { kind: 'playbook_inject'; conversationId: string | null; names: string[] }
+  /** B3-D3 修复（2026-10-10）：删除归 delete 类，不再借 playbook_recall(found:false) 表达 */
+  | { kind: 'playbook_delete'; conversationId: string | null; name: string }
   // ── 批 4：纠正事件 ──
   | { kind: 'correct'; conversationId: string | null; name: string; turnIndex?: number }
+  // T最小采集：只记数量/状态，不复制会话正文或原话。
+  | { kind: 'injection_sample'; conversationId: string | null; total: number; omitted: number }
+  | { kind: 'reflection_sample'; conversationId: string | null; outcome: 'skipped' | 'completed' | 'failed'; candidates: number }
+  | { kind: 'reflection_queue'; conversationId: string | null; action: 'enqueue' | 'dequeue' | 'sample' | 'rejected'; depth: number; waitDays: number[]; unknownAges: number }
 
-export type MemoryEvent = MemoryEventPayload & { at: string }
+export type MemoryEvent = MemoryEventPayload & {
+  at: string
+  /** 仅新事件记录；旧事件不回填，指标比较按两个字段共同分组 */
+  appVersion?: string
+  statsVersion?: number
+}
 
 /** 注入去重键：名字集合的稳定串（顺序无关 —— 排序后再拼） */
 export function injectionKey(names: string[]): string {
@@ -85,7 +96,8 @@ const KINDS = new Set([
   'write', 'recall', 'delete', 'archive', 'flag', 'inject', 'approve', 'conflict',
   'review_dismissed',
   'playbook_write', 'playbook_recall', 'playbook_inject',
-  'correct'
+  'playbook_delete',
+  'correct', 'injection_sample', 'reflection_sample', 'reflection_queue'
 ])
 
 /**

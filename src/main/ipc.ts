@@ -187,9 +187,11 @@ import type { MemoryStore } from './store/memory-store'
 import type { PlaybookStore } from './store/playbook-store'
 import { composeMemoryBlock, estimateMemoryTokens, sumInjectionTax } from './memory/inject'
 import { composePlaybookBlock, estimatePlaybookTokens } from './memory/playbook-inject'
+import { capPlaybookEntries } from './memory/playbook-core'
 // 过滤口径已收进 `skills-store.activeEntries()`（plan54 #6），这里不再自己滤禁用名单
 import { composeSkillBlock } from '@shared/skills'
 import { composeRulesBlock } from './rules/rules'
+import { inferActiveTags } from '@shared/playbook'
 import type { PlaybookIndex, PlaybookSaveInput, PlaybookSaveResult } from '@shared/playbook'
 import type { MemoryEntry, MemoryIndex, MemorySaveInput, MemorySaveResult, MemoryStats, MemorySwitchResult, MemoryAutoSettings, MemoryRejectBatchResult, MemoryRestoreResult, PrescreenReport } from '@shared/memory'
 import type { AgentSaveInput, AgentSaveResult, AgentsView } from '@shared/agents'
@@ -1413,7 +1415,7 @@ export function registerIpcHandlers(deps: {
     const index = deps.memory.list()
     // 注入事件落在这里：`inject` 去重（集合没变不写）由 repo 负责
     deps.memory.record({ kind: 'inject', conversationId, names: index.entries.map((e) => e.name) })
-    deps.memory.beginTurn()
+    deps.memory.beginTurn(index)
     return composeMemoryBlock(index)
   }
 
@@ -1648,30 +1650,6 @@ export function registerIpcHandlers(deps: {
   //    `runner.ts` 只管拼段），本文件是唯一同时知道"这一轮是谁 + Playbook 库在哪"的地方。
 
   /**
-   * 关键词 → 活跃标签。⚠️ 这是**声明过的无实验支撑初值**（plan19 §十二）：
-   * 只求"可演示、可机器判定"，不求准；后续可升级为工具序列分析而不影响存储格式。
-   * 全部小写比对（`normalizeTag` 同一口径）。
-   */
-  const PLAYBOOK_TAG_KEYWORDS: Record<string, readonly string[]> = {
-    'file-edit': ['编辑', '改一下', '修改文件', '重命名', 'edit', 'rename'],
-    debug: ['调试', '报错', 'bug', '为什么失败', '排查', 'debug'],
-    research: ['调研', '查一下', '搜索', '对比', 'research', 'search'],
-    build: ['构建', '打包', '编译', 'build', 'compile'],
-    test: ['测试', '跑测试', '单测', 'test'],
-    refactor: ['重构', '整理代码', '拆分', 'refactor']
-  }
-
-  /** 从一句话里推断活跃标签（可多个）。空字符串 → 空数组（不误召回） */
-  function inferActiveTags(text: string): string[] {
-    const lower = text.toLowerCase()
-    const hit: string[] = []
-    for (const [tag, words] of Object.entries(PLAYBOOK_TAG_KEYWORDS)) {
-      if (words.some((w) => lower.includes(w))) hit.push(tag)
-    }
-    return hit
-  }
-
-  /**
    * 组装 Playbook 条件召回段。⚠️ 与 `beginMemoryTurn` 各自独立 ——
    * 没有"本轮开始/结束"的配对（Playbook 不需要采集写入痕迹：它是模型显式调用，不是自动写入）。
    * `text` = 用户这一轮的原话（活跃标签的唯一来源）。
@@ -1679,14 +1657,14 @@ export function registerIpcHandlers(deps: {
   function assemblePlaybookBlock(conversationId: string, text: string): string | null {
     const activeTags = inferActiveTags(text)
     if (activeTags.length === 0) return null
-    const index = deps.playbook.list()
-    const block = composePlaybookBlock(index, activeTags)
+    // B3-D1（2026-10-10）：recall 是纯查询（不记事件），注入路径复用它的全集交集；
+    // 预算截断对**匹配集**跑 —— 超员后最旧的匹配条目仍进注入段（可达性不再被注入预算偷吃）。
+    const matched = deps.playbook.recall(activeTags)
+    const { kept } = capPlaybookEntries(matched)
+    const block = composePlaybookBlock(matched)
     if (block !== null) {
-      // 注入事件：只在真的注入了才记（没注入就不该有痕）
-      const matched = index.entries
-        .filter((e) => e.tags.some((t) => activeTags.includes(t)))
-        .map((e) => e.name)
-      deps.playbook.record({ kind: 'playbook_inject', conversationId, names: matched })
+      // 注入事件：只在真的注入了才记（没注入就不该有痕）；names = 预算内 kept
+      deps.playbook.record({ kind: 'playbook_inject', conversationId, names: kept.map((e) => e.name) })
     }
     return block
   }

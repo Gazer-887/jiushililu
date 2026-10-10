@@ -1,7 +1,7 @@
 // Playbook 的**装配层**（plan19 批 3）：数据根 → fs 后端 → repo，跑一次幂等的格式迁移。
-// ⚠️ 数据根**由组合根注入**，本文件既不解析路径也不碰 electron：
-//    Playbook 层因此**物理上**没有通路能碰到 `store/settings.ts`（权限档的唯一真相源）——
-//    与 `memory-store.ts` 同一条架构不变量，由 `architecture.test.ts` 的守卫乙看守。
+// ⚠️ 数据根**由组合根注入**，本文件既不解析路径也不 import electron / settings。
+//    守卫乙只检查 MEMORY_ROOTS 列出的纯逻辑入口（Playbook 的 playbook-core / playbook-inject）；
+//    本装配层和 playbook-fs 不在入口清单内，因此不能称它们已受守卫乙验证。
 
 import { createPlaybookRepo, type PlaybookRepo, type PlaybookRepoOptions } from '../memory/playbook-core'
 import {

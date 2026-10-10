@@ -6579,6 +6579,33 @@ body[data-resizing] {
   font-size: var(--fs-xs);
 }
 
+.pb-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.pb-filter .pb-tag-filter {
+  width: auto;
+  max-width: 220px;
+  min-height: 32px;
+  padding: 4px 8px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.mem-correction-versions {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-loose);
+  overflow-wrap: anywhere;
+}
+
 .mem-empty {
   padding: 12px 4px;
   color: var(--muted);

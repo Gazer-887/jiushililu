@@ -568,9 +568,11 @@ app.whenReady().then(async () => {
   })
 
   // 记忆库（plan19 批 1 + 批 2）：组合根建**一次**，同时给 agent 上下文（工具 + 注入）与 IPC（管理界面）。
-  // ⚠️ 数据根由这里注入 —— 记忆层因此不碰 electron；"记忆改不了权限"那条不变量靠守卫乙守着。
+  // ⚠️ 数据根由这里注入。守卫乙检查 memory-core / inject / reflection 等纯逻辑入口的 import 图；
+  //    本组合根负责使用平台能力并提供依赖，不属于该守卫的受检入口。
   // 批 2：反思执行器也在这里接线 —— 装配层负责取数据 + 组装 system prompt + 注入 chat 接口。
   const memory = createMemoryStore(userDataDir, nodeFsAdapter, {
+    appVersion: app.getVersion(),
     onWarn: (message, extra) => log.warn(message, extra),
     onReflectionLog: (message, extra) => log.info(message, extra),
     dailyLimit: getReflectionDailyLimit(),
@@ -701,7 +703,13 @@ app.whenReady().then(async () => {
     },
     // Playbook（plan19 批 3）：repo 给工具用。⚠️ 无开关 —— 它是模型显式调用的程序记忆，
     // 不像自动记忆那样会自己花钱；"有消费者才注册"（不传就不下发工具）是唯一门槛。
-    playbook: { repo: playbook },
+    playbook: {
+      repo: playbook,
+      // D-200①A：confirm 档写入走确认桥（同 memory；B3-D2 修复 —— 高熵凭据
+      // 不再被静默入库，用户确认后才放行）
+      confirm: (reason: string, conversationId: string) =>
+        confirm.ask({ tool: 'save_playbook', detail: reason, agent: 'Playbook', where: '', conversationId })
+    },
     // 技能（plan22）：只读库，供 use_skill 工具与 system prompt 清单注入。
     // ⚠️ 无开关（D-058：use_skill 是读操作，只读档也可用）；"有消费者才注册"（D-059）在 runner 内判空。
     skills: { store: skillsStore },
@@ -919,14 +927,15 @@ app.whenReady().then(async () => {
       log.info('启动补跑反思队列', { count: pending.length })
       void (async () => {
         for (;;) {
-          const id = memory.dequeueReflection()
-          if (!id) break
-          await memory.runReflection(id).catch((err) => {
+          // D-200②A：出队责任收进 runReflection —— 预出队会让日限额用尽时把队列整段吞掉
+          // （反例 1/2）。无参 = 队首补跑；false = 队列空或日限额满（项保留，下次启动继续）
+          const ran = await memory.runReflection().catch((err) => {
             log.warn('补跑反思失败', {
-              conversationId: id,
               error: err instanceof Error ? err.message : String(err)
             })
+            return false
           })
+          if (!ran) break
         }
       })()
     }

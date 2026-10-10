@@ -4,6 +4,7 @@
 
 import {
   normalizeTag,
+  matchesPlaybookTags,
   playbookNameKey,
   PLAYBOOK_LIMITS,
   PLAYBOOK_ORIGINS,
@@ -133,10 +134,18 @@ export function indexLine(entry: PlaybookEntry): string {
  * 索引与预算截断。与 buildMemoryIndex 同模式：updatedAt 倒序 → 字节/行数双重截断。
  */
 export function buildPlaybookIndex(entries: PlaybookEntry[]): PlaybookIndex {
+  const { kept, omitted } = capPlaybookEntries(entries)
+  return { entries: kept, total: entries.length, omitted, warnings: [] }
+}
+
+/**
+ * 管理页截全集，注入段截匹配集；共用排序与预算算法。
+ * 先截全集再匹配会让预算外的唯一匹配条目失去注入机会。
+ */
+export function capPlaybookEntries(entries: PlaybookEntry[]): { kept: PlaybookEntry[]; omitted: number } {
   const sorted = [...entries].sort((a, b) =>
     a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0
   )
-
   const kept: PlaybookEntry[] = []
   let bytes = 0
   for (const entry of sorted) {
@@ -146,7 +155,7 @@ export function buildPlaybookIndex(entries: PlaybookEntry[]): PlaybookIndex {
     bytes += lineBytes
     kept.push(entry)
   }
-  return { entries: kept, total: entries.length, omitted: entries.length - kept.length, warnings: [] }
+  return { kept, omitted: entries.length - kept.length }
 }
 
 export interface PlaybookRepoOptions {
@@ -218,6 +227,13 @@ export function createPlaybookRepo(backend: PlaybookBackend, opts: PlaybookRepoO
         record({ kind: 'playbook_write', conversationId: currentConversation(), name: input.name, rejected: true, reason: validation.reason })
         return { ok: false, reason: validation.reason }
       }
+      // D-200①A（B3-D2 修复）：高熵凭据 confirm 档 —— 不带 confirmed 即拒。
+      // 修复前只读 validation.ok，guard 被丢弃，凭据形状内容静默入库（撞母本凭证红线）。
+      // 与记忆侧 memory-core.ts 确认桥同构：不建候选地基（④B），同一套「问一句」语义。
+      if (validation.guard.action === 'confirm' && input.confirmed !== true) {
+        record({ kind: 'playbook_write', conversationId: currentConversation(), name: input.name, rejected: true, reason: validation.guard.reason })
+        return { ok: false, reason: validation.guard.reason, needsConfirm: true }
+      }
 
       const existing = loadAll().entries
       let file: string
@@ -256,7 +272,9 @@ export function createPlaybookRepo(backend: PlaybookBackend, opts: PlaybookRepoO
       const before = this.get(file)
       const removed = backend.remove(file)
       if (removed && before) {
-        record({ kind: 'playbook_recall', conversationId: currentConversation(), name: before.name, found: false })
+        // B3-D3 修复（2026-10-10）：删除记 delete 类 —— 曾借 playbook_recall(found:false) 表达，
+        // 事件流因此看不出「删过什么」（recall 的 found:false 语义是「没找到」不是「已删除」）
+        record({ kind: 'playbook_delete', conversationId: currentConversation(), name: before.name })
       }
       return removed
     },
@@ -267,7 +285,7 @@ export function createPlaybookRepo(backend: PlaybookBackend, opts: PlaybookRepoO
       const normalized = activeTags.map(normalizeTag)
       if (normalized.length === 0) return []
       const { entries } = loadAll()
-      return entries.filter((e) => e.tags.some((t) => normalized.includes(normalizeTag(t))))
+      return entries.filter((e) => matchesPlaybookTags(e.tags, normalized))
     }
   }
 }

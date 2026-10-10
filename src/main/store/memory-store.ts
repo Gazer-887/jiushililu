@@ -1,7 +1,7 @@
 // 记忆的**装配层**（plan19 §0.3 条 5 / §3.3）：数据根 → fs 后端 → repo，跑一次幂等的格式迁移。
-// ⚠️ 数据根**由组合根注入**，本文件既不解析路径也不碰 electron：
-//    记忆层因此**物理上**没有通路能碰到 `store/settings.ts`（权限档的唯一真相源）——
-//    这是"记忆改不了权限"那条架构不变量在代码上的落点，由 `architecture.test.ts` 的守卫乙看守。
+// ⚠️ 数据根**由组合根注入**，本文件既不解析路径也不 import electron / settings。
+//    守卫乙检查 MEMORY_ROOTS 中的纯逻辑入口（memory-core / inject / reflection）；
+//    本装配层不在入口清单内，不宣称其 import 图已由该守卫验证。
 
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
@@ -12,6 +12,7 @@ import type { TokenUsage } from '@shared/usage'
 import { createFtsIndex, type FtsIndex } from '../memory/fts'
 import { createMemoryRepo, type MemoryRepo, type MemoryRepoOptions } from '../memory/memory-core'
 import { createReflectionRunner, type ReflectChat, type ReflectOutput } from '../memory/reflection'
+import { queueWaitSample } from '../memory/calibration'
 import {
   PRESCREEN_SYSTEM_PROMPT,
   buildPrescreenPrompt,
@@ -45,6 +46,11 @@ export interface MemoryStoreReflectionOptions {
   onReflectionLog?: (message: string, extra?: Record<string, unknown>) => void
   /** 反思日上限（缺省 20，跨日重置） */
   dailyLimit?: number
+  /**
+   * D-200②A：反思队列容量（缺省 100，独立于 dailyLimit）。
+   * 20 是日执行上限语义，兼作容量会让「超限排队不丢弃」名存实亡（队满即拒）。
+   */
+  queueCapacity?: number
 }
 
 /** FTS 全文索引（plan63 片 2）的装配选项 */
@@ -63,18 +69,19 @@ export interface MemoryStore extends MemoryRepo {
    * 开一轮采集（护栏 2，D-043）。组合根在一轮对话前调它，轮末 `drainTurn()` 取走上报载荷 ——
    * 采集状态住在这里而不是组合根，是为了让"忘了采集"最多丢**痕迹**，绝不丢**落盘**。
    */
-  beginTurn(): void
+  beginTurn(index?: MemoryIndex): void
   drainTurn(): { written: string[]; rejected: { name: string; reason: string }[] }
   // ── 批 2：反思通路 ──
-  /** 入队反思会话（幂等；日上限超了返 false）。⚠️ 不校验会话存在 —— 写队列是投机性操作 */
+  /** 队列未满时重复入队幂等，满容量返 false；日执行额度不限制入队，不校验会话存在。 */
   enqueueReflection(conversationId: string): boolean
   /** 出队一条反思会话（队列空返 null） */
   dequeueReflection(): string | null
   /**
-   * 跑反思。⚠️ **先校验会话存在**（审查 C P1：不重试坏 id，不存在的会话直接跳过 + 出队）。
-   * 候选进 candidates/，不进 notes/；冲突的候选带 conflictWith 指向旧记忆 file。
+   * 有参精确出队，无参取队首；额度满/无目标返 false 且不出队，消费一项（含坏id）返 true。
+   * ⚠️ 调用方不许预出队，否则会跳项或在额度满时吞队列；内部串行防并发透支。
+   * 候选只进 candidates/，冲突指向旧记忆；坏id留痕后跳过，不重试。
    */
-  runReflection(conversationId: string): Promise<void>
+  runReflection(conversationId?: string): Promise<boolean>
   /**
    * plan56 片②：把某条提示标成「看过·留下」。**只消提示，不改条目、不改生效状态**，
    * 也不落 `delete` 事件（存活率因此不动）。正文改动后 `updatedAt` 变了会重新出现。
@@ -100,6 +107,8 @@ export interface MemoryStore extends MemoryRepo {
 
 
 const DEFAULT_REFLECTION_DAILY_LIMIT = 20
+/** D-200②A：队列容量独立于日执行上限（20 兼作容量致队满即拒、判据名存实亡） */
+const DEFAULT_REFLECTION_QUEUE_CAPACITY = 100
 
 function todayString(): string {
   return new Date().toISOString().slice(0, 10)
@@ -223,16 +232,37 @@ export function createMemoryStore(
     ? createReflectionRunner({ chat: opts.reflectChat })
     : null
 
+  function recordQueue(action: 'enqueue' | 'dequeue' | 'sample' | 'rejected', conversationId: string | null): void {
+    const queue = backend.readMeta().reflectionQueue
+    const now = opts.now?.() ?? new Date()
+    const ages = queueWaitSample(queue, backend.readEvents().events, now,
+      action === 'enqueue' && conversationId !== null ? conversationId : undefined)
+    inner.record({ kind: 'reflection_queue', conversationId, action, depth: queue.length, ...ages })
+  }
+
   /** 局部出队（runReflection 和返回对象的方法都用它） */
   function dequeueOne(): string | null {
     const meta = backend.readMeta()
     const next = meta.reflectionQueue.shift()
     if (next === undefined) return null
     backend.writeMeta(meta)
+    recordQueue('dequeue', next)
     return next
   }
 
-  async function runReflection(conversationId: string): Promise<void> {
+  /**
+   * 按调用顺序串行，catch保持后续任务可执行；本次错误仍从返回的run向调用方抛出。
+   */
+  let reflectionChain: Promise<unknown> = Promise.resolve()
+
+  /** 有参 = 精确出队；无参 = 队首补跑。true = 消费了一项；false = 未消费（队列不动）。 */
+  async function runReflection(conversationId?: string): Promise<boolean> {
+    const run = reflectionChain.then(() => runReflectionOnce(conversationId))
+    reflectionChain = run.catch(() => {})
+    return run
+  }
+
+  async function runReflectionOnce(conversationId?: string): Promise<boolean> {
     // ⚠️ 限额检查在出队之前 —— 超限时提前返回，不丢失队列项（队列保持不动）
     const meta = backend.readMeta()
     const today = todayString()
@@ -244,55 +274,72 @@ export function createMemoryStore(
     }
     const limit = opts.dailyLimit ?? DEFAULT_REFLECTION_DAILY_LIMIT
     if (meta.reflectionCount >= limit) {
+      recordQueue('sample', null)
       reflLog('反思已达日上限，本轮跳过（队列项保留）', {
-        conversationId,
+        conversationId: conversationId ?? meta.reflectionQueue[0] ?? null,
         count: meta.reflectionCount,
         limit
       })
-      return
+      return false
     }
 
-    // 出队（限额检查已在上方通过，现在正式消耗队列项）
-    dequeueOne()
+    // 出队（D-200②A 精确出队）：有参取指定 id，无参取队首；取不到 = 已被并发消费，不动队列
+    const target = conversationId ?? meta.reflectionQueue[0]
+    if (target === undefined) {
+      reflLog('反思跳过：队列为空', {})
+      return false
+    }
+    const idx = meta.reflectionQueue.indexOf(target)
+    if (idx < 0) {
+      reflLog('反思跳过：指定会话不在队列（可能已被消费）', { conversationId: target })
+      return false
+    }
+    meta.reflectionQueue.splice(idx, 1)
+    backend.writeMeta(meta)
+    recordQueue('dequeue', target)
 
     // 审查 C P1：先校验会话存在 —— 坏 id 不重试，跳过（不卡住队列）
-    if (opts.conversationsExists && !opts.conversationsExists(conversationId)) {
-      reflLog('反思跳过：会话不存在', { conversationId })
-      return
+    if (opts.conversationsExists && !opts.conversationsExists(target)) {
+      reflLog('反思跳过：会话不存在', { conversationId: target })
+      return true
     }
     if (!opts.getConversationForReflect) {
-      reflLog('反思跳过：未注入会话读取口', { conversationId })
-      return
+      reflLog('反思跳过：未注入会话读取口', { conversationId: target })
+      return true
     }
-    const conv = opts.getConversationForReflect(conversationId)
+    const conv = opts.getConversationForReflect(target)
     if (!conv) {
-      reflLog('反思跳过：会话正文读不出来', { conversationId })
-      return
+      reflLog('反思跳过：会话正文读不出来', { conversationId: target })
+      return true
     }
     if (!reflectionRunner) {
-      reflLog('反思跳过：未注入 reflectChat', { conversationId })
-      return
+      reflLog('反思跳过：未注入 reflectChat', { conversationId: target })
+      return true
     }
 
     let output: ReflectOutput
+    let failed = false
     try {
       output = await reflectionRunner.reflect({
-        id: conversationId,
+        id: target,
         messages: conv.messages,
         bodyBytes: conv.bodyBytes,
         memory: inner
       })
     } catch (err) {
+      failed = true
       reflLog('反思执行器抛错', {
-        conversationId,
+        conversationId: target,
         error: err instanceof Error ? err.message : String(err)
       })
       output = { candidates: [], usage: null }
     }
+    inner.record({ kind: 'reflection_sample', conversationId: target,
+      outcome: output.skipped ? 'skipped' : failed ? 'failed' : 'completed', candidates: output.candidates.length })
 
     // K15：这笔账以前**没有来源** —— 接口声明了、用量牌的「反思 N tokens」也早建好了，
     // 但厂商用量从没被交出来。只在真拿到时才回调：没调用与没报是两种缺省，都不许写成 0。
-    if (output.usage) opts.onReflectionUsage?.(conversationId, output.usage)
+    if (output.usage) opts.onReflectionUsage?.(target, output.usage)
 
     for (const c of output.candidates) {
       const file = inner.saveCandidate(c, c.conflictWith)
@@ -301,7 +348,7 @@ export function createMemoryStore(
         const oldName = oldEntry?.name ?? c.name
         inner.record({
           kind: 'conflict',
-          conversationId,
+          conversationId: target,
           name: c.name,
           oldName
         })
@@ -315,10 +362,11 @@ export function createMemoryStore(
     backend.writeMeta(afterMeta)
 
     reflLog('反思完成', {
-      conversationId,
+      conversationId: target,
       candidates: output.candidates.length,
       todayCount: afterMeta.reflectionCount
     })
+    return true
   }
 
   /** 事件流里读"已看过"集（追加型日志，重放即可；不另开一份状态文件） */
@@ -369,8 +417,11 @@ export function createMemoryStore(
       }
       return n
     },
-    beginTurn: () => {
+    beginTurn: (index) => {
       collecting = { written: [], rejected: [] }
+      const sample = index ?? list()
+      inner.record({ kind: 'injection_sample', conversationId: opts.conversationId?.() ?? null,
+        total: sample.total, omitted: sample.omitted })
     },
     drainTurn: () => {
       const out = collecting ?? { written: [], rejected: [] }
@@ -378,7 +429,7 @@ export function createMemoryStore(
       return out
     },
     enqueueReflection: (conversationId) => {
-      const limit = opts.dailyLimit ?? DEFAULT_REFLECTION_DAILY_LIMIT
+      const capacity = opts.queueCapacity ?? DEFAULT_REFLECTION_QUEUE_CAPACITY
       const meta = backend.readMeta()
       const today = todayString()
       if (meta.reflectionDate !== today) {
@@ -387,17 +438,26 @@ export function createMemoryStore(
       }
       // ⚠️ 队列长度判限（不查 reflectionCount —— reflectionCount 在 runReflection 里是执行限额，
       //    在 enqueueReflection 里用会误杀已执行过但队列还满的情况）
-      if (meta.reflectionQueue.length >= limit) {
+      // ⚠️ D-200②A：判的是**容量**（独立于 dailyLimit，缺省 100）—— 20 兼作容量时
+      //    「超限排队不丢弃」名存实亡（第 21 条被拒之即丢）
+      if (meta.reflectionQueue.length >= capacity) {
+        // ⚠️ 满也落盘：上方跨日重置是局部对象的修改，不写回就把旧值留给下次读
+        backend.writeMeta(meta)
+        recordQueue('rejected', conversationId)
         reflLog('反思入队被拒：队列已达上限', {
           conversationId,
           queueLength: meta.reflectionQueue.length,
-          limit
+          capacity
         })
         return false
       }
-      if (meta.reflectionQueue.includes(conversationId)) return true
+      if (meta.reflectionQueue.includes(conversationId)) {
+        recordQueue('sample', null)
+        return true
+      }
       meta.reflectionQueue.push(conversationId)
       backend.writeMeta(meta)
+      recordQueue('enqueue', conversationId)
       return true
     },
     dequeueReflection: () => dequeueOne(),

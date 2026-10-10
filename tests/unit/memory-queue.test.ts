@@ -69,7 +69,7 @@ describe('队列持久化（判据 4：写队列 → 重启 → 队列仍在）'
   })
 })
 
-describe('日上限（判据 4：队列长度上限 = dailyLimit，默认 20）', () => {
+describe('入队容量（D-200②A：队列容量独立于 dailyLimit，默认 100）', () => {
   let root: string
   let cleanup: () => void
 
@@ -83,20 +83,21 @@ describe('日上限（判据 4：队列长度上限 = dailyLimit，默认 20）'
     cleanup()
   })
 
-  it('队列长度达 20 → 第 21 次返回 false；出队腾位 → 又可入队', () => {
+  it('D-200②A：容量默认 100 与日上限（20）解耦 —— 第 101 条才被拦', () => {
     const store = createMemoryStore(root)
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 100; i++) {
       expect(store.enqueueReflection(`c${i}`)).toBe(true)
     }
-    expect(store.enqueueReflection('c20')).toBe(false)
+    // 旧口径在 21 就被拦 —— 「超限排队不丢弃」名存实亡（D-200②A 修复）
+    expect(store.enqueueReflection('c100')).toBe(false)
     // 出队腾位（不丢）
     expect(store.dequeueReflection()).toBe('c0')
     // 腾位后又能入队
-    expect(store.enqueueReflection('c20')).toBe(true)
+    expect(store.enqueueReflection('c100')).toBe(true)
   })
 
-  it('自定义队列容量（5）→ 第 6 次返回 false', () => {
-    const store = createMemoryStore(root, nodeFsAdapter, { dailyLimit: 5 })
+  it('自定义队列容量 queueCapacity（5）→ 第 6 次返回 false', () => {
+    const store = createMemoryStore(root, nodeFsAdapter, { queueCapacity: 5 })
     for (let i = 0; i < 5; i++) {
       expect(store.enqueueReflection(`c${i}`)).toBe(true)
     }
@@ -115,9 +116,9 @@ describe('日上限（判据 4：队列长度上限 = dailyLimit，默认 20）'
       dailyLimit: 1,
       onReflectionLog: (msg) => logs.push(msg)
     })
-    // dailyLimit=1 → 只能入队 1 条；第 2 条入队失败（队列满）
+    // dailyLimit=1 只限「执行」；入队看容量（默认 100），第 2 条照入（D-200②A）
     store.enqueueReflection('c1')
-    expect(store.enqueueReflection('c2')).toBe(false)
+    expect(store.enqueueReflection('c2')).toBe(true)
     // 跑 c1 → 成功（出队 + 执行 + 计数 = 1）
     await store.runReflection('c1')
     expect(store.backend.readMeta().reflectionCount).toBe(1)
@@ -380,7 +381,8 @@ describe('反思执行器抛错：必须留痕、且不许卡队列（R17）', (
       onReflectionLog: (msg, extra) => logs.push({ msg, extra })
     })
     store.enqueueReflection('c1')
-    await expect(store.runReflection('c1')).resolves.toBeUndefined()
+    // D-200②A：返回 true = 已消费队首项（R17 原判据是「不 reject」，布尔化为接口演进）
+    await expect(store.runReflection('c1')).resolves.toBe(true)
     const fail = logs.find((l) => l.msg.includes('反思执行器抛错'))
     expect(fail, '反思失败被咽掉了 —— 这就是 R17：零候选 + 零日志').toBeDefined()
     expect(String(fail?.extra?.error)).toContain('400 empty text block')
@@ -410,5 +412,90 @@ describe('反思执行器抛错：必须留痕、且不许卡队列（R17）', (
     expect(ok).toEqual(['ran'])
     expect(store.backend.readMeta().reflectionQueue).toEqual([])
     expect(store.backend.readMeta().reflectionCount).toBe(2)
+  })
+})
+
+// ── 反例回归（D-200②A 修复 · B2-登记表-4 五反例转正式判据）────────────────
+describe('反例回归（D-200②A：容量解耦 / 精确出队 / 队首补跑 / 串行链 / 满队落盘）', () => {
+  let root: string
+  let cleanup: () => void
+
+  beforeEach(() => {
+    const t = makeTmpRoot()
+    root = t.root
+    cleanup = t.cleanup
+  })
+  afterEach(() => cleanup())
+
+  function makeRunnerStore(opts: { dailyLimit?: number; queueCapacity?: number } = {}) {
+    const seen: string[] = []
+    const chat = vi.fn(async () => ({ content: '[]' }))
+    const store = createMemoryStore(root, nodeFsAdapter, {
+      reflectChat: chat,
+      // ReflectChat 只收 messages —— 执行顺序从 conversationsExists 钩子采集（每次 run 调一次）
+      conversationsExists: (id) => {
+        seen.push(id)
+        return true
+      },
+      getConversationForReflect: () => ({ messages: msgs, bodyBytes: 4096 }),
+      dailyLimit: opts.dailyLimit,
+      queueCapacity: opts.queueCapacity,
+      onReflectionLog: () => {}
+    })
+    return { store, seen, chat }
+  }
+
+  it('反例 1：启动补跑循环逐条跑完，不跳项（旧实现每次循环多吃一项，b/d 静默消失）', async () => {
+    const { store, seen } = makeRunnerStore({ dailyLimit: 10 })
+    for (const id of ['a', 'b', 'c', 'd']) store.enqueueReflection(id)
+    // 启动循环同款：无参连跑，false 即停
+    for (;;) {
+      const ran = await store.runReflection()
+      if (!ran) break
+    }
+    expect(seen).toEqual(['a', 'b', 'c', 'd'])
+    expect(store.backend.readMeta().reflectionQueue).toEqual([])
+  })
+
+  it('反例 3：runReflection 指定 id 只移除该 id 本身（旧实现 removal 队首，执行 c 却吞 a）', async () => {
+    const { store, seen } = makeRunnerStore({ dailyLimit: 10 })
+    for (const id of ['a', 'b', 'c', 'd']) store.enqueueReflection(id)
+    expect(await store.runReflection('c')).toBe(true)
+    expect(seen).toEqual(['c'])
+    expect(store.backend.readMeta().reflectionQueue).toEqual(['a', 'b', 'd'])
+  })
+
+  it('反例 2：日限额用尽 → 补跑即停，队列项原样保留（旧启动循环把队列整段吞掉）', async () => {
+    const { store, seen } = makeRunnerStore({ dailyLimit: 1 })
+    for (const id of ['a', 'b', 'c']) store.enqueueReflection(id)
+    expect(await store.runReflection()).toBe(true) // 跑 a，额度用尽
+    expect(await store.runReflection()).toBe(false) // 限额满 → 停
+    expect(seen).toEqual(['a'])
+    expect(store.backend.readMeta().reflectionQueue).toEqual(['b', 'c'])
+  })
+
+  it('反例 4：并发两次 runReflection 不突破日上限（串行链，旧实现 count 到 2）', async () => {
+    const { store, seen } = makeRunnerStore({ dailyLimit: 1 })
+    for (const id of ['a', 'b']) store.enqueueReflection(id)
+    const [r1, r2] = await Promise.all([store.runReflection('a'), store.runReflection('b')])
+    expect([r1, r2]).toEqual([true, false])
+    expect(store.backend.readMeta().reflectionCount).toBe(1)
+    expect(seen).toEqual(['a'])
+    expect(store.backend.readMeta().reflectionQueue).toEqual(['b'])
+  })
+
+  it('反例 5：队满入队被拒时，跨日重置仍落盘（不把旧日期旧计数留给下次读）', () => {
+    const store = createMemoryStore(root, nodeFsAdapter, { queueCapacity: 2 })
+    store.backend.writeMeta({
+      ...store.backend.readMeta(),
+      reflectionDate: '2026-10-09',
+      reflectionCount: 7,
+      reflectionQueue: ['x', 'y']
+    })
+    // 已满 + 跨天：入队被拒（容量 2 已满），但上方的跨日重置必须已落盘
+    expect(store.enqueueReflection('z')).toBe(false)
+    const meta = store.backend.readMeta()
+    expect(meta.reflectionCount).toBe(0)
+    expect(meta.reflectionDate).not.toBe('2026-10-09')
   })
 })
