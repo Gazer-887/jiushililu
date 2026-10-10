@@ -64,8 +64,13 @@ describe('事件循环看门狗', () => {
   it('无停滞 → 不产生任何 WARN（看门狗不刷日志）', async () => {
     dir = mkdtempSync(join(tmpdir(), 'jsl-watchdog-'))
     initLogger(dir, 'info')
-    startWatchdog({ intervalMs: 20, thresholdMs: 60 })
-    await sleep(150)
+    // ⚠️ 阈值 250ms，不是正向用例的 60ms：本用例验「安静期不上报」的**机制**，
+    //    灵敏度由上面两条正向用例（60ms 阈值 + 200ms 忙等）覆盖。
+    //    2026-10-10 全量套件实测过一次 flake：共享 worker 里一次约 113ms 的
+    //    事件循环间隔（GC / runner 开销，非应用停滞：块与 crumbs 全空）把 60ms
+    //    阈值打穿。生产阈值 1000ms 同理——环境暂停不该被算成应用停滞。
+    startWatchdog({ intervalMs: 50, thresholdMs: 250 })
+    await sleep(400)
     const content = readLog(dir)
     expect(content).not.toContain('事件循环停滞')
   })
