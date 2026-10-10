@@ -19,6 +19,7 @@ const { tmpdir } = require('node:os')
 // 正向断言假红、定位器静默 no-op 让后面整批空转假绿。守卫见 `tests/unit/gate-copy-guard.test.ts`。
 const { textFor, textsFor } = require('./lib/gate-copy.cjs')
 const verifyM02Ui = require('./lib/m02-ui-gate.cjs')
+const verifyM02Evidence = require('./lib/m02-evidence-ui-gate.cjs')
 
 const ROOT = process.cwd()
 
@@ -813,6 +814,7 @@ let playbookEntries = [
 const playbookSaveCalls = []
 const playbookDeleteCalls = []
 let memoryStatsStub = { survivalRate: 0.8, usageRate: 0.3, written: 5, alive: 4, recalled: 1, correctedCount: 2, repeatCorrectedCount: 1, flaggedCount: 1, repeatCorrectionRate: 0.5, falsePositiveRate: 0.2 }
+let m02EvidenceConversations = null
 
 // ── 执行事件流（plan26 S2）的桩状态 ──
 // 契约副本（真源 src/main/agent/exec-events.ts 的 ExecEvent + main/ipc.ts 的 exec-events:list）：
@@ -1619,7 +1621,7 @@ const STUBS = {
     storageStub = { ...storageStub, pendingDir: null, pendingKind: null }
     return { ok: true, info: { ...storageStub } }
   },
-  'conv:list': () => [
+  'conv:list': () => m02EvidenceConversations ?? [
     {
       id: 'c1',
       title: '打个招呼',
@@ -1643,6 +1645,8 @@ const STUBS = {
     }
   ],
   'conv:get': (id) => {
+    const evidence = m02EvidenceConversations?.find((c) => c.id === id)
+    if (evidence) return evidence
     const which = id === 'c2' ? 'c2' : 'c1'
     return {
       id: which,
@@ -2595,6 +2599,16 @@ app.whenReady().then(async () => {
     setStats: (s) => { memoryStatsStub = s },
     setPlaybooks: (entries) => { if (entries === null) return playbookEntries.map((e) => ({ ...e })); playbookEntries = entries },
     checkTrue, shots: SHOTS })
+  const runM02Evidence = () => verifyM02Evidence({ win,
+    setStats: (s) => { memoryStatsStub = s },
+    setEntries: (entries) => { if (entries === null) return memoryEntries.map((e) => ({ ...e })); memoryEntries = entries },
+    setConversations: (conversations) => { m02EvidenceConversations = conversations },
+    checkTrue, shots: SHOTS })
+  if (process.env.M02_EVIDENCE_ONLY === '1') {
+    await runM02Evidence()
+    reportAndExit()
+    return
+  }
   if (process.env.M02_UI_ONLY === '1') {
     await runM02Ui()
     reportAndExit()
@@ -12298,5 +12312,6 @@ app.whenReady().then(async () => {
     { back: langFlow.back, switchedBack: langFlow.switchedBack }
   )
 
+  await runM02Evidence()
   reportAndExit()
 })
