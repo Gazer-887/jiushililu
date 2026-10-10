@@ -22,16 +22,19 @@ const openaiSpy = vi.fn(async () => ({ text: '完成', toolCalls: [] }))
 /**
  * ⚠️ 这里**故意拦截工具工厂**，记录 runner 交给它的 repo 是谁。
  * 理由：provider 收到的第 4 参是 `ToolSchema[]`（只有 name/description/parameters），
- * 拿不到 `execute` —— 光断言"名字在表里"证明不了"工具接到的是**我们那个** repo"。
+ * 拿不到 `execute` —— 光断言"名字在表里"证明不了"工具接到的是**我们那个** repo。
  * 记下入参就能直接证：runner 把 `ctx.playbook.repo` 原样交给了工厂（接线错位会被抓出）。
+ * `confirms` 同理由（F1）：confirm 桥漏传时工具层单测全绿、生产中确认半边不可达，
+ * 只有记下这一跳的入参才抓得到。
  */
-const hoisted = vi.hoisted(() => ({ repos: [] as unknown[] }))
+const hoisted = vi.hoisted(() => ({ repos: [] as unknown[], confirms: [] as unknown[] }))
 
 vi.mock('@main/agent/tools/playbook-tools', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/agent/tools/playbook-tools')>()
   return {
-    createPlaybookTools: (deps: { repo: unknown; conversationId: () => string | null }) => {
+    createPlaybookTools: (deps: { repo: unknown; conversationId: () => string | null; confirm?: unknown }) => {
       hoisted.repos.push(deps.repo)
+      hoisted.confirms.push(deps.confirm)
       return actual.createPlaybookTools(deps as never)
     }
   }
@@ -277,5 +280,79 @@ describe('演示路径（plan19 批 3 判据 6）：第一次做 → 沉淀 → 
       playbookBlock: block
     })
     expect(systemOf()).not.toContain('edit-react-component')
+  })
+})
+
+// ── F1 修复（2026-10-10）：confirm 桥必须从 ctx 一路透到工具 ──────────────────
+// 病象（独立审查子代理抓出、主审核验属实）：runner 构造 toolHooks 的 Playbook 分支只透传
+// repo/conversationId，漏了 confirm —— 生产中高熵 confirm 档写入恒被拒、用户永不被问
+// （D-200①A 的确认半边不可达；非泄露，repo 层 guard 在任何写盘前已消费）。
+// 本组钉住这条透传链，防再被「顺手漏一个字段」打穿。
+describe('confirm 桥透传（F1：ctx.playbook.confirm → 工具 deps.confirm）', () => {
+  beforeEach(() => {
+    openaiSpy.mockClear()
+    openaiSpy.mockImplementation(async () => ({ text: '完成', toolCalls: [] }))
+    hoisted.confirms.length = 0
+  })
+
+  it('ctx 带 confirm → 工具拿到的 deps.confirm 可达，且调用直达桥上（带会话 id）', async () => {
+    const confirmSpy = vi.fn(async () => true)
+    await runAgent(makeCtx({ repo: fakeRepo(), confirm: confirmSpy }), {
+      settings,
+      apiKey: 'k',
+      conversationId: 'c1',
+      history: [{ role: 'user', content: 'x' }]
+    })
+    const confirm = hoisted.confirms.at(-1)
+    expect(confirm).toBeTypeOf('function')
+    await (confirm as (reason: string, conversationId: string) => Promise<boolean>)('需要确认的理由', 'c1')
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(confirmSpy).toHaveBeenCalledWith('需要确认的理由', 'c1')
+  })
+
+  it('ctx 不带 confirm → deps.confirm 为 undefined（该档一律拒，不假道）', async () => {
+    await runAgent(makeCtx({ repo: fakeRepo() }), {
+      settings,
+      apiKey: 'k',
+      conversationId: 'c1',
+      history: [{ role: 'user', content: 'x' }]
+    })
+    expect(hoisted.confirms.at(-1)).toBeUndefined()
+  })
+
+  it('端到端：模型写高熵内容 → 桥被问恰好一次 → 同意才落盘；拒绝不落盘', async () => {
+    const HI = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0'
+    const toolCall = () => ({
+      text: '',
+      toolCalls: [{
+        id: 't1',
+        name: 'save_playbook',
+        arguments: JSON.stringify({ name: 'hi-entry', description: '摘要', tags: ['debug'], body: `调用时带上 ${HI} 即可` })
+      }]
+    })
+
+    openaiSpy.mockImplementationOnce(toolCall)
+    const agreeSpy = vi.fn(async () => true)
+    const agreed = fakeRepo()
+    await runAgent(makeCtx({ repo: agreed, confirm: agreeSpy }), {
+      settings,
+      apiKey: 'k',
+      conversationId: 'c1',
+      history: [{ role: 'user', content: 'x' }]
+    })
+    expect(agreeSpy).toHaveBeenCalledTimes(1)
+    expect(agreed.list().entries.map((e) => e.name)).toContain('hi-entry')
+
+    openaiSpy.mockImplementationOnce(toolCall)
+    const refuseSpy = vi.fn(async () => false)
+    const refused = fakeRepo()
+    await runAgent(makeCtx({ repo: refused, confirm: refuseSpy }), {
+      settings,
+      apiKey: 'k',
+      conversationId: 'c1',
+      history: [{ role: 'user', content: 'x' }]
+    })
+    expect(refuseSpy).toHaveBeenCalledTimes(1)
+    expect(refused.list().entries.map((e) => e.name)).not.toContain('hi-entry')
   })
 })

@@ -3552,6 +3552,13 @@ label.radio {
   font-size: var(--fs-xs);
 }
 
+/* 重复纠正率（B4-D2）：全库记忆指标，与厂商用量同源不同事 ——
+   同 .usage-rate 用 muted 作注脚色，不抢主账注意力 */
+.usage-repeat-correction {
+  margin-left: var(--sp-2);
+  color: var(--muted);
+}
+
 /* 命中率 / 思考占比（plan8 R9.1 §七①）：厂商报了才渲染，没报**整块不出**（绝不写 0%）。
    色调与"增量"同级 —— 它们是解释数字的注脚，不是主账。 */
 .usage-rate {

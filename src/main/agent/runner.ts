@@ -833,7 +833,11 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       ? {
           playbook: {
             repo: ctx.playbook.repo,
-            conversationId: args.conversationId
+            conversationId: args.conversationId,
+            // F1 修复（2026-10-10）：confirm 桥必须在构造 toolHooks 时转发 —— 漏这一跳时
+            // 生产中 confirm 档写入恒被拒、用户永不被问（D-200①A 的确认半边不可达）。
+            // 签名与 ctx.playbook.confirm 同形（reason, conversationId），直接透传。
+            ...(ctx.playbook.confirm ? { confirm: ctx.playbook.confirm } : {})
           }
         }
       : {}),
