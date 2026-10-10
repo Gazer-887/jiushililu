@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { en, zh } from '@shared/i18n'
 // 门禁与守卫共用同一份解析实现 —— 两处各写一份必然漂移
@@ -23,7 +23,18 @@ const gateCopy = require('../../scripts/lib/gate-copy.cjs') as {
  * ④ 写不出理由的豁免等于把问题改个名字。
  */
 
-const GATE = 'scripts/verify-shot.cjs'
+/**
+ * 扫描范围：门禁主文件 + 门禁 lib 目录（2026-10-10 批 5 扩扫）。
+ * ⚠️ 起因：M02 两处界面缺陷的真渲染回归住在 `scripts/lib/m02-*.cjs` 里，判据文案随之搬进 lib——
+ *    只扫主文件等于给新代码形态开盲区。当前 lib 内零表值命中（扩扫前已自证），扩扫即生效。
+ * ⚠️ `gate-copy.cjs` 自身是**解析器**（运行时读 TS 表），不含表值字面量，无需排除也无命中。
+ */
+const GATE_FILES = [
+  'scripts/verify-shot.cjs',
+  ...readdirSync('scripts/lib')
+    .filter((f) => f.endsWith('.cjs'))
+    .map((f) => `scripts/lib/${f}`)
+]
 
 /** 已登记豁免：表键 → { 门禁里以完整字面量出现的条数, 理由 } */
 const EXEMPT: Record<string, { count: number; reason: string }> = {
@@ -59,11 +70,13 @@ describe('K21 守卫：门禁不许把界面文案写死进判据', () => {
   const hitsByKey = new Map<string, number>()
   for (const table of Object.values(gateCopy.tables) as Array<Record<string, string>>) {
     const valueToKey = new Map(Object.entries(table).map(([k, v]) => [v, k]))
-    for (const line of readFileSync(GATE, 'utf8').split(/\r?\n/)) {
-      if (isComment(line)) continue
-      for (const lit of literalsIn(line)) {
-        const key = valueToKey.get(lit)
-        if (key) hitsByKey.set(key, (hitsByKey.get(key) ?? 0) + 1)
+    for (const file of GATE_FILES) {
+      for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+        if (isComment(line)) continue
+        for (const lit of literalsIn(line)) {
+          const key = valueToKey.get(lit)
+          if (key) hitsByKey.set(key, (hitsByKey.get(key) ?? 0) + 1)
+        }
       }
     }
   }

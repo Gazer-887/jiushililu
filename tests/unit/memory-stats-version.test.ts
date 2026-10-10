@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { expect, it } from 'vitest'
 import { createMemoryStore } from '@main/store/memory-store'
 import { nodeFsAdapter } from '@main/store/conversations-fs'
@@ -20,6 +20,9 @@ it('事件版本随真实落盘保留，重建store不会把旧版本纠正并�
       { appVersion: '0.13.105', statsVersion: 1, correctedCount: 1, repeatCorrectedCount: 0, repeatCorrectionRate: 0 }
     ])
   } finally {
+    // 隔离断言先于删除：根目录判错时抛在 rmSync 之前，防误删真实用户数据（B 批同款纪律）
+    expect(resolve(dirname(root))).toBe(resolve(tmpdir()))
+    expect(basename(root).startsWith('memory-stats-version-')).toBe(true)
     rmSync(root, { recursive: true, force: true })
   }
 })

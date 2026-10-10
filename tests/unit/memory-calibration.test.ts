@@ -1,9 +1,15 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { createMemoryStore } from '@main/store/memory-store'
 import { nodeFsAdapter } from '@main/store/conversations-fs'
+
+/** 隔离断言先于删除：根目录判错时抛在 rmSync 之前，防误删真实用户数据（B 批同款纪律） */
+function assertIsolatedTmp(root: string, prefix: string): void {
+  expect(resolve(dirname(root))).toBe(resolve(tmpdir()))
+  expect(basename(root).startsWith(prefix)).toBe(true)
+}
 
 it('校准采集区分拒写、门前跳过/调用命中、预算截断，落盘重读不丢读数', async () => {
   const root = mkdtempSync(join(tmpdir(), 'memory-calibration-'))
@@ -28,7 +34,7 @@ it('校准采集区分拒写、门前跳过/调用命中、预算截断，落盘
     expect(c?.rejectionReasons.some((x) => x.reason.includes('description') && x.count === 1)).toBe(true)
     expect(c?.reflection).toEqual({ attempted: 1, skipped: 1, failed: 0, hits: 1, hitRate: 1 })
     expect(c?.injection).toMatchObject({ samples: 1, totalEntries: 10, omittedEntries: 4, truncatedSamples: 1, truncationRate: 0.4 })
-  } finally { rmSync(root, { recursive: true, force: true }) }
+  } finally { assertIsolatedTmp(root, 'memory-calibration-'); rmSync(root, { recursive: true, force: true }) }
 })
 
 it('队列积压天数跨重建恢复；旧队列无入队坐标时明确计未知，不能补造年龄', () => {
@@ -46,5 +52,5 @@ it('队列积压天数跨重建恢复；旧队列无入队坐标时明确计未�
     next.enqueueReflection('new')
     const sample = next.getStats()?.calibration?.queueSamples.at(-1)
     expect(sample).toMatchObject({ depth: 3, waitDays: [2, 0], unknownAges: 1 })
-  } finally { rmSync(root, { recursive: true, force: true }) }
+  } finally { assertIsolatedTmp(root, 'memory-calibration-'); rmSync(root, { recursive: true, force: true }) }
 })
