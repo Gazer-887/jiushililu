@@ -68,6 +68,8 @@ export interface MemoryStore extends MemoryRepo {
   /**
    * 开一轮采集（护栏 2，D-043）。组合根在一轮对话前调它，轮末 `drainTurn()` 取走上报载荷 ——
    * 采集状态住在这里而不是组合根，是为了让"忘了采集"最多丢**痕迹**，绝不丢**落盘**。
+   * `index` = 本轮实际注入投影（组合根刚 list() 过，顺带采样截断比例，避免二次全量读）；
+   * 不传 = 自取当前投影（测试与隔离路径）。
    */
   beginTurn(index?: MemoryIndex): void
   drainTurn(): { written: string[]; rejected: { name: string; reason: string }[] }
