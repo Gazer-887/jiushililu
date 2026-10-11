@@ -24,7 +24,7 @@ it('校准采集区分拒写、门前跳过/调用命中、预算截断，落盘
     store.beginTurn({ ...index, total: 10, omitted: 4 })
     store.enqueueReflection('short')
     await store.runReflection('short')
-    expect(store.backend.readMeta().reflectionCount).toBe(1) // 保留既有额度契约；采样另外区分未调用
+    expect(store.backend.readMeta().reflectionCount).toBe(0) // D-214：前置门跳过不计数；采样另外区分未调用
     store.enqueueReflection('long')
     await store.runReflection('long')
     expect(chat).toHaveBeenCalledTimes(1)

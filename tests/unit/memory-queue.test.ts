@@ -248,7 +248,7 @@ describe('runReflection：先校验会话 id 存在（审查 C P1）', () => {
     expect(logs.some((l) => l.includes('反思完成'))).toBe(true)
   })
 
-  it('会话存在 + 正文过前置门（< 2048）→ 不调 chat，但计数仍 +1（一次失败的反思也是一次额度）', async () => {
+  it('D-214：正文过前置门（< 2048）→ 不调 chat、不计数，一次门前跳过不是一次额度', async () => {
     const chat = vi.fn(async () => ({ content: '[]' }))
     const store = createMemoryStore(root, nodeFsAdapter, {
       reflectChat: chat,
@@ -256,9 +256,10 @@ describe('runReflection：先校验会话 id 存在（审查 C P1）', () => {
       getConversationForReflect: () => ({ messages: msgs, bodyBytes: 100 })
     })
     store.enqueueReflection('c1')
-    await store.runReflection('c1')
+    // skipped 仍消费队列项（返回 true）—— 否则启动补跑循环会当成"没跑"而空转
+    await expect(store.runReflection('c1')).resolves.toBe(true)
     expect(chat).not.toHaveBeenCalled()
-    expect(store.backend.readMeta().reflectionCount).toBe(1)
+    expect(store.backend.readMeta().reflectionCount).toBe(0)
   })
 
   it('未注入 reflectChat → 跳过 + 留痕', async () => {

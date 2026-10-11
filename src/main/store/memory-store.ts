@@ -357,17 +357,21 @@ export function createMemoryStore(
       }
     }
 
-    // 计数：⚠️ 即使反思没出候选也要计数 —— 一次失败的反思也是一次额度
+    // 计数（D-214）：前置门返回 skipped:true 的反思不消耗日额度 —— 它没有发生模型调用；
+    // 已尝试的零候选、输出不合格与失败仍是一次额度（⚠️ 即使没出候选也计数）。
     // ⚠️ 重新读 meta（runReflection 是异步的，期间可能被其他调用写过）
-    const afterMeta = backend.readMeta()
-    afterMeta.reflectionCount += 1
-    backend.writeMeta(afterMeta)
-
-    reflLog('反思完成', {
-      conversationId: target,
-      candidates: output.candidates.length,
-      todayCount: afterMeta.reflectionCount
-    })
+    if (!output.skipped) {
+      const afterMeta = backend.readMeta()
+      afterMeta.reflectionCount += 1
+      backend.writeMeta(afterMeta)
+      reflLog('反思完成', {
+        conversationId: target,
+        candidates: output.candidates.length,
+        todayCount: afterMeta.reflectionCount
+      })
+    } else {
+      reflLog('反思前置门跳过，不消耗日额度', { conversationId: target })
+    }
     return true
   }
 
