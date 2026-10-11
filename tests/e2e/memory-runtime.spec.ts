@@ -250,6 +250,13 @@ test('B1-13b ① 手册段为 0：UI 注入税 = 本机捕获记忆段独立估�
     const fake = await startFake()
     srv = fake.srv
 
+    // 平台守卫（与 smoke A 类同源）：saveModel 要经 setProfileKey 用 safeStorage 加密落 Key，
+    // 无系统加密服务的环境（如 CI ubuntu 容器）按产品红线拒绝保存 → 本用例只在本机实跑。
+    const enc1 = await h.app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable())
+    const skip1 = '该平台 safeStorage 不可用，Key 无法加密落盘（产品红线拒绝保存模型档案）；本用例只在有系统加密服务的本机（Windows/macOS）跑，与 smoke A 类同源'
+    if (!enc1) console.log(`B113b-1_SKIP=${JSON.stringify({ encryptionAvailable: enc1, reason: skip1 })}`)
+    test.skip(!enc1, skip1)
+
     const saved = await apiCall<{ id?: string }>(h.page, 'saveModel', {
       name: 'e2e 税替身', providerType: 'openai-compatible',
       baseURL: `http://127.0.0.1:${fake.port}/v1`, stream: true, timeoutMs: 15000,
@@ -303,6 +310,12 @@ test('B1-13b ② 手册段非零：UI 注入税 = 记忆段 + 手册段两段相
     apps.push(h)
     const fake = await startFake()
     srv = fake.srv
+
+    // 平台守卫（与 smoke A 类同源）：同 B1-13b① —— safeStorage 不可用时 saveModel 必被产品红线拒绝
+    const enc2 = await h.app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable())
+    const skip2 = '该平台 safeStorage 不可用，Key 无法加密落盘（产品红线拒绝保存模型档案）；本用例只在有系统加密服务的本机（Windows/macOS）跑，与 smoke A 类同源'
+    if (!enc2) console.log(`B113b-2_SKIP=${JSON.stringify({ encryptionAvailable: enc2, reason: skip2 })}`)
+    test.skip(!enc2, skip2)
 
     const saved = await apiCall<{ id?: string }>(h.page, 'saveModel', {
       name: 'e2e 税替身2', providerType: 'openai-compatible',
@@ -449,8 +462,9 @@ async function startRememberFake(name: string): Promise<{ srv: Server; port: num
   return { srv, port: (srv.address() as AddressInfo).port, bodies }
 }
 
-/** Q5 公共起跑：隔离真应用 + remember 替身 + 假档案激活 + 记忆开 + 审批门关（直写生效） */
-async function startNoticeApp(memName: string): Promise<{
+/** Q5 公共起跑：隔离真应用 + remember 替身 + 假档案激活 + 记忆开 + 审批门关（直写生效）
+ *  @param tag 跳过日志前缀（CI 无 safeStorage 时按 smoke A 类范式显式 skip，原因必须进日志） */
+async function startNoticeApp(tag: string, memName: string): Promise<{
   apps: E2EApp[]
   h: E2EApp
   fake: { srv: Server; port: number; bodies: string[] }
@@ -458,6 +472,17 @@ async function startNoticeApp(memName: string): Promise<{
   const apps: E2EApp[] = []
   const h = await launchApp()
   apps.push(h)
+  // 平台守卫（与 smoke A 类同源）：saveModel 要经 setProfileKey 用 safeStorage 加密落 Key，
+  // 无系统加密服务的环境（CI ubuntu 容器）按产品红线拒绝保存 → 本用例只在本机实跑。
+  // skip 之前先收干净已起的实例：本函数的调用点在 try 外，留下的话 Electron 进程与
+  // 临时目录都要等 worker 退出才回收，那正是"红了还漏一地"的坏味道。
+  const enc = await h.app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable())
+  const skipReason = '该平台 safeStorage 不可用，Key 无法加密落盘（产品红线拒绝保存模型档案）；本用例只在有系统加密服务的本机（Windows/macOS）跑，与 smoke A 类同源'
+  if (!enc) {
+    console.log(`${tag}_SKIP=${JSON.stringify({ encryptionAvailable: enc, reason: skipReason })}`)
+    await cleanupAll(apps)
+    test.skip(!enc, skipReason)
+  }
   const fake = await startRememberFake(memName)
   const saved = await apiCall<{ id?: string }>(h.page, 'saveModel', {
     name: 'e2e 通知替身', providerType: 'openai-compatible',
@@ -473,7 +498,7 @@ async function startNoticeApp(memName: string): Promise<{
 }
 
 test('B1-15 ① 写入通知可见 + 约 12s 轮询消退 + 消息主干零非 user/assistant 行', async () => {
-  const { apps, h, fake } = await startNoticeApp('通知-甲')
+  const { apps, h, fake } = await startNoticeApp('B115-1', '通知-甲')
   const srv = fake.srv
   try {
     const ta = h.page.locator('textarea').first()
@@ -510,7 +535,7 @@ test('B1-15 ① 写入通知可见 + 约 12s 轮询消退 + 消息主干零非 u
 })
 
 test('B1-15 ② A/B 会话隔离：A 写入通知在切到真实 createConversation 建的 B 后不显示', async () => {
-  const { apps, h, fake } = await startNoticeApp('通知-乙')
+  const { apps, h, fake } = await startNoticeApp('B115-2', '通知-乙')
   const srv = fake.srv
   try {
     const ta = h.page.locator('textarea').first()
