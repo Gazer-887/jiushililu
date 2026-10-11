@@ -116,8 +116,10 @@
 次数挡花钱失控，两者会独立地先撞线。
 
 三条顺序容易写反：限额检查在**出队之前**，超限直接返回且队列项原地保留，否则每次熔断都吃掉一条待反思会话；
-计数在**执行之后**且不看结果——一次失败的反思也占一次额度，因为熔断挡的是调用本身而不是产出
-（判据在 `tests/unit/memory-queue.test.ts`）；跨日归零看 [[src/main/store/memory-store.ts#todayString]]，
+计数在**执行之后**且按尝试性质区分（D-214）：已尝试的零候选、输出不合格与失败仍计数——熔断挡的是调用本身
+而不是产出；而前置门返回 `skipped`（会话正文不足、没有发生模型调用）的那次**不计数**，否则本应省调用的
+前置门反过来消耗执行配额（判据在 `tests/unit/memory-daily-quota.test.ts` 与 `tests/unit/memory-queue.test.ts`）；
+跨日归零看 [[src/main/store/memory-store.ts#todayString]]，
 它取 ISO 串前 10 位，即 **UTC 日界**，与本地时区差一个固定偏移，且归零后立刻落盘
 （meta 是局部对象，不写回去下次读又回到旧值）。执行本身是异步的，期间可能有另一次反思写过 meta，故计数前必须重读。
 关窗时入队、启动时补跑队列（[[src/main/index.ts#installFlushBeforeClose]] 那条链），补跑只在两个开关都开着时进行。
