@@ -178,7 +178,7 @@ import { materializeHistory, mediaCountOf, modalityGateError } from '@shared/con
 import { readAttachmentMedia } from './attachments-store'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
-import { sendToAll } from './window-registry'
+import { getWindow, sendToAll } from './window-registry'
 import { loadAgentEntries } from './agent/loader'
 import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './store/agents-store'
 import { saveSkillFile, deleteSkillFile } from './skills/skills-write'
@@ -423,13 +423,14 @@ export function registerIpcHandlers(deps: {
     deps.openSettingsWindow?.()
   })
 
-  // 关设置窗口：**由发起方那个窗口自己关**，不用"按用途取设置窗口"——
-  // 发起关窗的必然是设置窗口（× 只画在它上面），用 `event.sender` 拿到的就是它本人，
-  // 且避免了"用户连点两次 × / 窗口已在关闭路上"时取到 null 的边界。
+  // 关设置窗口：只关「登记在册的设置窗口本人」。预置桥（window.api）在任何渲染进程
+  // 可达 —— 2026-10-11 实机测验实证：从主窗口调 closeSettingsWindow 会把主窗一起
+  // 关掉、应用退出。原实现假设「发起方必是设置窗口」，该假设对调用方不成立；
+  // 故按 window-registry 的用途登记核对 sender：不是设置窗口（或设置窗没开）一律不关。
   ipcMain.handle(IPC.settingsCloseWindow, (event) => {
-    const wc = event.sender
-    const win = BrowserWindow.fromWebContents(wc)
-    if (win && !win.isDestroyed()) win.close()
+    const settingsWin = getWindow('settings')
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (settingsWin && win === settingsWin && !win.isDestroyed()) win.close()
   })
 
   ipcMain.handle(IPC.settingsGet, () => getSettingsView())
