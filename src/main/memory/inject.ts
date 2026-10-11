@@ -40,9 +40,9 @@ export function composeMemoryBlock(index: MemoryIndex): string | null {
 /**
  * 注入税 = 记忆段 + 手册段（K17）。相加放在这一层，是为了能被单测钉住 ——
  * 两个调用点都在 `ipc.ts`，那层起不了真进程，账写在那儿等于没人看。
- * ⚠️ 口径声明：两段的估算函数**刻度不同**（记忆按宽字符逐字、手册按 UTF-8 字节除三），
- * 所以这个数是"两把尺子各自读数之和"，**只能看趋势，不能当精确 token 用**。
- * 要横向比必须先统一成一把尺 —— 那是独立一件事，别顺手改估算口径（会动到既有读数）。
+ * ⚠️ 口径声明：D-206 起两段**同用** `estimateMemoryTokens`（手册侧 `estimatePlaybookTokens`
+ * 即转调它）—— 同一把尺子的两个读数之和；它仍是本地估算，不是厂商精确 token，
+ * 厂商没报用量时注入税照常显示、但两本账互不冒充。
  */
 export function sumInjectionTax(memory: number, playbook: number): number {
   const only = (n: number): number => (Number.isFinite(n) && n > 0 ? Math.round(n) : 0)
