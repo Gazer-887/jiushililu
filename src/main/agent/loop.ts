@@ -13,6 +13,7 @@ import { setWatchdogPhase, traceSync } from '../watchdog'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { historyForModel, trimMessages, type TrimOptions } from './context'
 import type { ExecEventRecorder } from './exec-events'
+import { isAbortError } from '../providers/errors'
 
 // Agent 主循环（plan6；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，直到出最终答案或预算耗尽。
 // 缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停；contextWindow 控历史裁剪。
@@ -26,6 +27,8 @@ import type { ExecEventRecorder } from './exec-events'
 const SELF_MANAGED_TOOLS = new Set(['read_file'])
 
 export interface AgentLoopOptions {
+  /** 用户停止信号：模型和工具派发共用；已完成的副作用不自动回滚。 */
+  signal?: AbortSignal
   systemPrompt: string
   /** 对话历史（不含 system；本循环在最前面补 system）。D-032：带完整历史，多轮有记忆 */
   history: AgentMessage[]
@@ -152,6 +155,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
   async function runRounds(): Promise<AgentLoopResult> {
   for (;;) {
+    opts.signal?.throwIfAborted()
     if (rounds >= maxRounds) {
       stopReason = 'max-rounds'
       return { output: lastText, rounds, stopReason: 'max-rounds', avoidedTokens }
@@ -179,6 +183,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
             summarized = true
           }
         } catch (err) {
+          if (opts.signal?.aborted || isAbortError(err)) throw err
           // 摘要失败不阻塞主链路（fail-soft）—— 机械占位就是兜底
           log.warn('滚动摘要生成失败，本轮退回机械占位', {
             error: err instanceof Error ? err.message : String(err)
@@ -196,7 +201,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       }
     }
 
+    opts.signal?.throwIfAborted()
     const res = await opts.chat(sent, emitText)
+    opts.signal?.throwIfAborted()
     if (res.text) lastText = res.text
     // plan57 K52 B2：本轮请求已把转交图片发出 → 摘掉，不让 base64 在后续轮次里重放
     stripForwardedImageParts(messages)
@@ -219,6 +226,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     })
 
     for (const tc of res.toolCalls) {
+      opts.signal?.throwIfAborted()
       const tool = toolMap.get(tc.name)
       // 带上「这一步在干什么」（从入参提取），否则界面只能显示干巴巴的「执行中…」
       opts.onToolEvent?.({
@@ -242,7 +250,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           output = `错误：未知工具「${tc.name}」。可用工具：${[...toolMap.keys()].join('、') || '（无）'}`
         } else {
           try {
+            opts.signal?.throwIfAborted()
             const raw = await tool.execute(parseArgs(tc.arguments))
+            opts.signal?.throwIfAborted()
             // 工具可以只回文本（绝大多数），也可以回"文本 + 图片引用"（plan44 S2b）。
             // 归一化只在这一处发生：**进模型的一直是 text**，images 只交给界面事件。
             const outcome = typeof raw === 'string' ? { text: raw } : raw
@@ -259,6 +269,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
                   }))
                 : []
           } catch (err) {
+            if (opts.signal?.aborted || isAbortError(err)) throw err
             output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
           }
         }

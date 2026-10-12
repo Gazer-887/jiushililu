@@ -21,9 +21,9 @@ describe('mapHttpError（HTTP 错误翻译成人话）', () => {
     expect(mapHttpError(503, '')).toContain('服务端')
   })
 
-  it('未知状态码带原始片段', () => {
+  it('未知状态码保留状态但不回显上游正文', () => {
     expect(mapHttpError(418, 'teapot')).toContain('418')
-    expect(mapHttpError(418, 'teapot')).toContain('teapot')
+    expect(mapHttpError(418, 'teapot')).not.toContain('teapot')
   })
 })
 

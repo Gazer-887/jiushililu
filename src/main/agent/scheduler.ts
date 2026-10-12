@@ -6,6 +6,7 @@ import type {
   SubagentJobEvent
 } from '@shared/agent'
 import { runAgentLoop } from './loop'
+import { isAbortError } from '../providers/errors'
 import { composeAgentPrompt, TOOL_OUTPUT_TRUST_BASELINE } from './loader'
 import { composeConductRules } from './conduct-rules'
 import type { TokenPolicy } from '@shared/token-tier'
@@ -29,6 +30,8 @@ export interface SubagentJobResult {
 }
 
 export interface SubagentRunOptions {
+  /** 父轮次取消时不再启动下一工具或领取新的子作业。 */
+  signal?: AbortSignal
   definitions: AgentDefinition[]
   /** 统一任务书（所有定义共用） */
   task: string
@@ -69,9 +72,12 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
   const runId = opts.runId ?? `sub-${Date.now().toString(36)}`
   const results: SubagentJobResult[] = new Array(opts.definitions.length)
   let next = 0
+  let cancelled: unknown
 
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (cancelled) throw cancelled
+      opts.signal?.throwIfAborted()
       const index = next
       next++
       if (index >= opts.definitions.length) return
@@ -91,6 +97,7 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
         // 工具集与纪律**同源同次求值**：纪律要按这份实收工具表取舍，分两次算迟早对不上
         const jobTools = opts.toolsFor(def)
         const loop = await runAgentLoop({
+          signal: opts.signal,
           systemPrompt:
             // 拼接走 loader 的纯函数（plan17 D10）：与主循环同式，防两处格式漂移
             composeAgentPrompt(def, 'subagent') +
@@ -135,6 +142,12 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           summary: loop.output.slice(0, SUMMARY_MAX)
         })
       } catch (err) {
+        if (opts.signal?.aborted || isAbortError(err)) {
+          cancelled = err
+          opts.onJobEvent?.({ runId, name: def.name, index, phase: 'error', task: taskBrief,
+            startedAt, endedAt: Date.now(), error: '已停止执行' })
+          throw err
+        }
         const message = err instanceof Error ? err.message : String(err)
         results[index] = {
           name: def.name,
@@ -161,6 +174,9 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
   const workers = Array.from({ length: Math.min(maxConcurrency, opts.definitions.length) }, () =>
     worker()
   )
-  await Promise.all(workers)
+  // 等已在途作业收尾，不让父轮次提前drain而子作业仍在写记忆。
+  const settled = await Promise.allSettled(workers)
+  const rejected = settled.find((result) => result.status === 'rejected')
+  if (rejected?.status === 'rejected') throw rejected.reason
   return results
 }

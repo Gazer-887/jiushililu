@@ -3,6 +3,8 @@
 import { getBootstrapOutcome, releaseBootstrapLock } from './bootstrap-data-dir'
 import { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, session, shell } from 'electron'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { installMediaPermissions } from './media-permissions'
 import { createRequire } from 'node:module'
 import { registerIpcHandlers, getActiveConversationId } from './ipc'
 import { createAgentContext } from './agent/runner'
@@ -68,6 +70,7 @@ import {
   getNetworkCredentials,
   setNetworkCredentials,
   getMemoryEnabled,
+  getVoiceConfig,
   getMemoryApprovalGate,
   getAutoMemoryEnabled,
   getTerminalLoadProfileEnabled,
@@ -431,16 +434,11 @@ app.whenReady().then(async () => {
   const userDataDir = app.getPath('userData')
 
   // 麦克风权限（plan45 R1）：Electron 默认**拒绝**一切权限请求 —— 不放行则 getUserMedia 静默失败。
-  // 只放行"纯音频"的 media 请求（摄像头与其他权限一律维持默认拒绝）。
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
-    const types = 'mediaTypes' in (details ?? {}) ? (details as { mediaTypes?: string[] }).mediaTypes : undefined
-    const audioOnly =
-      permission === 'media' && Array.isArray(types) && types.includes('audio') && !types.includes('video')
-    callback(audioOnly)
-  })
-  session.defaultSession.setPermissionCheckHandler((_wc, permission, _origin, details) => {
-    const media = permission === 'media' && !String(details?.mediaType ?? 'audio').includes('video')
-    return media
+  // 只有已登记主窗口的应用主frame与已确认语音入口可请求音频，远程浏览器不继承资格。
+  const rendererUrl = process.env['ELECTRON_RENDERER_URL'] || pathToFileURL(join(__dirname, '../renderer/index.html')).href
+  installMediaPermissions(session.defaultSession, () => getMainWindow()?.webContents ?? null, rendererUrl, () => {
+    const config = getVoiceConfig()
+    return config.endpoint.trim().length > 0 && config.disclosureAccepted
   })
 
   // ① 日志系统（plan8 R2）：先于一切初始化，让后续所有环节都能留痕

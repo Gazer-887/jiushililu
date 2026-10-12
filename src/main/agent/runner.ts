@@ -583,6 +583,8 @@ export interface RunAgentArgs {
   /** 工具输出被**窗口化**时回调（plan8 R9.1）：非要有这条痕 —— 工具事件是渲染进程内存态、每轮清空、重挂载即丢，只靠界面显示"已压缩 xx%"等于"当时没看见就永远查不到"。 */
   onToolWindowed?: (info: { name: string; beforeTokens: number; afterTokens: number; reason: string }) => void
   signal?: AbortSignal
+  /** IPC本轮绑定的记忆接口；共享资产不复制，通知与事件按本轮归属。 */
+  memoryRepo?: MemoryRepo
   /** 工具输出窗口化开关（plan8 R9.1），不给 = 开；关掉后输出原样进上下文，供 A/B 校准与"怀疑被压糊"复现 */
   toolWindow?: boolean
   /** 省 token 档位（plan8 R9.1 §七②）解析出的开关，**由调用方注入** —— runner 不许碰 electron-store，故"读用户设置"只能发生在组合根（`ipc.ts` / `scheduler.ts`）。 */
@@ -700,6 +702,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
         return `错误：找不到子代理定义「${missing.join('、')}」。已注册的有：${known}`
       }
       const results = await runSubagents({
+        signal: args.signal,
         definitions: jobs.map((j) => registry.definitions.get(j.agent)!),
         task: '',
         tasks: jobs.map((j) => j.task),
@@ -810,7 +813,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     ...(ctx.memory && (ctx.memory.enabled?.() ?? true)
       ? {
           memory: {
-            repo: ctx.memory.repo,
+            repo: args.memoryRepo ?? ctx.memory.repo,
             conversationId: args.conversationId,
             enabled: ctx.memory.enabled,
             // 批 4：纠正识别要"这一轮用户说了什么"。数据只有这里（`args.history`）有 ——
@@ -1071,6 +1074,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   let result: AgentLoopResult
   try {
     result = await runAgentLoop({
+      signal: args.signal,
       systemPrompt: guardedSystem,
       history: args.history,
       tools,

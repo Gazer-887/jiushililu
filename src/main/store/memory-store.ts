@@ -4,6 +4,7 @@
 //    本装配层不在入口清单内，不宣称其 import 图已由该守卫验证。
 
 import { createHash } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { join } from 'node:path'
 import type { ChatMessage } from '@shared/ipc'
 import { reviewSeenKey } from '@shared/memory'
@@ -62,17 +63,28 @@ export interface MemoryStoreFtsOptions {
   ftsPath?: string | null
 }
 
+export interface MemoryTurnResult {
+  written: string[]
+  rejected: { name: string; reason: string }[]
+}
+
+export interface MemoryTurn {
+  /** 模型使用本轮接口；后台和手动操作仍使用共享store，不进入本采集。 */
+  repo: MemoryRepo
+  /** 消费本轮一次，异常收尾与重复调用均不影响其他轮次。 */
+  drain(): MemoryTurnResult
+}
+
 export interface MemoryStore extends MemoryRepo {
   /** 供批 2 的反思队列与告知标记使用（批 1 只保证它存在且持久） */
   backend: FsMemoryBackend
   /**
-   * 开一轮采集（护栏 2，D-043）。组合根在一轮对话前调它，轮末 `drainTurn()` 取走上报载荷 ——
+   * 开一轮采集（护栏 2，D-043）。模型使用返回的repo，轮末调用返回对象的drain ——
    * 采集状态住在这里而不是组合根，是为了让"忘了采集"最多丢**痕迹**，绝不丢**落盘**。
    * `index` = 本轮实际注入投影（组合根刚 list() 过，顺带采样截断比例，避免二次全量读）；
    * 不传 = 自取当前投影（测试与隔离路径）。
    */
-  beginTurn(index?: MemoryIndex): void
-  drainTurn(): { written: string[]; rejected: { name: string; reason: string }[] }
+  beginTurn(index?: MemoryIndex, conversationId?: string | null): MemoryTurn
   // ── 批 2：反思通路 ──
   /** 队列未满时重复入队幂等，满容量返 false；日执行额度不限制入队，不校验会话存在。 */
   enqueueReflection(conversationId: string): boolean
@@ -140,7 +152,8 @@ export function createMemoryStore(
 ): MemoryStore {
   const warn = opts.onWarn ?? (() => {})
   const reflLog = opts.onReflectionLog ?? (() => {})
-  let collecting: { written: string[]; rejected: { name: string; reason: string }[] } | null = null
+  // 只在本轮同步repo操作内进入scope，不用enterWith污染IPC或后台上下文。
+  const scope = new AsyncLocalStorage<{ conversationId: string | null; collecting: MemoryTurnResult | null }>()
 
   // 每次启动都跑一遍（幂等：已是新格式就立刻返回，代价是一次 existsSync + 一次 JSON.parse）
   migrateMemoryFormat(root, fs, warn)
@@ -212,7 +225,9 @@ export function createMemoryStore(
 
   const inner = createMemoryRepo(ftsBackend, {
     ...opts,
+    conversationId: () => scope.getStore()?.conversationId ?? opts.conversationId?.() ?? null,
     onWrite: (info) => {
+      const collecting = scope.getStore()?.collecting
       if (collecting) {
         if (info.ok) collecting.written.push(info.name)
         else collecting.rejected.push({ name: info.name, reason: info.reason ?? '未说明' })
@@ -423,16 +438,24 @@ export function createMemoryStore(
       }
       return n
     },
-    beginTurn: (index) => {
-      collecting = { written: [], rejected: [] }
+    beginTurn: (index, conversationId = opts.conversationId?.() ?? null) => {
+      const state = { conversationId, collecting: { written: [], rejected: [] } as MemoryTurnResult | null }
       const sample = index ?? list()
-      inner.record({ kind: 'injection_sample', conversationId: opts.conversationId?.() ?? null,
+      inner.record({ kind: 'injection_sample', conversationId,
         total: sample.total, omitted: sample.omitted })
-    },
-    drainTurn: () => {
-      const out = collecting ?? { written: [], rejected: [] }
-      collecting = null
-      return out
+      return {
+        repo: {
+          ...inner,
+          list,
+          save: (input) => scope.run(state, () => inner.save(input)),
+          record: (payload) => scope.run(state, () => inner.record({ ...payload, conversationId }))
+        },
+        drain: () => {
+          const out = state.collecting ?? { written: [], rejected: [] }
+          state.collecting = null
+          return out
+        }
+      }
     },
     enqueueReflection: (conversationId) => {
       const capacity = opts.queueCapacity ?? DEFAULT_REFLECTION_QUEUE_CAPACITY

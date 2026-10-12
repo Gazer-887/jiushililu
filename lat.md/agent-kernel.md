@@ -6,6 +6,8 @@
 
 ## 主循环与轮次预算
 
+取消是运行生命周期契约，不只是网络请求参数。[[src/main/agent/loop.ts#runAgentLoop]] 在模型前、模型返回后、每个工具派发前和执行返回后检查本轮信号，取消异常独立传播；普通工具错误仍回灌。[[src/main/agent/runner.ts#runAgent]] 同时传给主循环和 [[src/main/agent/scheduler.ts#runSubagents]]，取消后不再领取子作业，等待已在途子作业收尾后才交还父轮次。这样父轮次的checkpoint finally和记忆drain不会提前完成。取消不承诺回滚已发生副作用，也不恢复整轮墙钟；不支持取消的在途工具仍要等待自身结束。
+
 [[src/main/agent/loop.ts#runAgentLoop]] 是唯一的对话主循环：接收已装配好的 `systemPrompt` 与 `history`，
 按轮次驱动"模型出话 → 执行工具 → 回填结果 → 再问"，直到模型不再要求调用工具或触到 `maxRounds`。
 轮次下限被钳在 1（`Math.max(1, ...)`），因为"允许 0 轮"不是一个可收敛的状态：它会静默产出一条空回答。

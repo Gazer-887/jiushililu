@@ -183,7 +183,7 @@ import { loadAgentEntries } from './agent/loader'
 import { deleteAgentFile, readAgentDefinition, saveAgentDefinition } from './store/agents-store'
 import { saveSkillFile, deleteSkillFile } from './skills/skills-write'
 import { nodeFsAdapter } from './store/conversations-fs'
-import type { MemoryStore } from './store/memory-store'
+import type { MemoryStore, MemoryTurn } from './store/memory-store'
 import type { PlaybookStore } from './store/playbook-store'
 import { composeMemoryBlock, estimateMemoryTokens, sumInjectionTax } from './memory/inject'
 import { composePlaybookBlock, estimatePlaybookTokens } from './memory/playbook-inject'
@@ -738,7 +738,7 @@ export function registerIpcHandlers(deps: {
     let firstSignalAt = 0
 
     // 记忆注入段（plan19 批 1）：组装 + 开采集。放在 `try` **之前** —— 出错时也要能 drain 到已发生的写入。
-    const memoryBlock = beginMemoryTurn(conversationId)
+    const { block: memoryBlock, scope: memoryTurn } = beginMemoryTurn(conversationId)
     // Playbook 条件召回段（plan19 批 3）：活跃标签从**用户这一轮的原话**推断，交集非空才注入。
     const lastUserText = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
     const playbookBlock = assemblePlaybookBlock(conversationId, lastUserText)
@@ -759,6 +759,7 @@ export function registerIpcHandlers(deps: {
     // D-032：单一通道 —— 带工具清单 + 流式，由模型自决"直接回答还是先调工具"；文本增量 → chat:chunk（上屏），工具生命周期 → chat:tool（进度卡片）。
     try {
       const result = await runAgent(deps.agent, {
+        memoryRepo: memoryTurn.repo,
         settings: getSettingsView(),
         apiKey,
         // 引用 → base64 只在这一刻发生（plan57 片③）：存档与内存里都只放引用，
@@ -892,7 +893,7 @@ export function registerIpcHandlers(deps: {
     } finally {
       chatGate.end(conversationId)
       // 护栏 2（D-043）：本轮写了什么 —— 取走上报载荷。空手而归则不推（免界面反复闪"没有写入"）
-      endMemoryTurn(conversationId)
+      endMemoryTurn(conversationId, memoryTurn)
     }
   })
 
@@ -940,6 +941,7 @@ export function registerIpcHandlers(deps: {
       return failResult(req.agentName ?? '内核默认', '已有 Agent 任务在执行，请等待当前任务结束')
     }
     activeAgents.add(e.sender.id)
+    let memoryTurn: MemoryTurn | null = null
     try {
       const settings = getSettingsView()
       if (!settings.baseURL || !settings.model) {
@@ -949,7 +951,10 @@ export function registerIpcHandlers(deps: {
       if (!apiKey) {
         return failResult(req.agentName ?? '内核默认', '尚未保存 API Key：请先到「设置」页填写并保存')
       }
+      const begun = beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
+      memoryTurn = begun.scope
       const result = await runAgent(deps.agent, {
+        memoryRepo: memoryTurn.repo,
         settings,
         apiKey,
         history: [{ role: 'user', content: req.task }],
@@ -979,7 +984,7 @@ export function registerIpcHandlers(deps: {
         // Firecrawl（plan32）：与对话线同一口径 —— 配了就用，没配回落默认源
         firecrawlApiKey: getFirecrawlKey() || null,
         // 一次性任务也注入记忆并采集痕迹（少了它，模型在这里 remember 就没人上报 —— 静默缺口）
-        memoryBlock: beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER),
+        memoryBlock: begun.block,
         // 一次性任务同样走条件召回（任务描述即"用户原话"，活跃标签从它推断）
         playbookBlock: assemblePlaybookBlock(req.conversationId ?? AGENT_TASK_OWNER, req.task),
         // 一次性任务同样注入技能清单（plan22 D-057）
@@ -987,7 +992,6 @@ export function registerIpcHandlers(deps: {
         // 一次性任务同样注入规则（plan24）：约束对一次性任务同样生效
         rulesBlock: assembleRulesBlock()
       })
-      endMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       return {
         ok: result.stopReason === 'completed',
         output: result.output,
@@ -1003,6 +1007,7 @@ export function registerIpcHandlers(deps: {
       return failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err))
     } finally {
       activeAgents.delete(e.sender.id)
+      if (memoryTurn) endMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER, memoryTurn)
     }
   })
 
@@ -1412,17 +1417,17 @@ export function registerIpcHandlers(deps: {
   })
 
   /** 开一轮记忆采集并组装注入段。段在这里组装 —— 组合根才知道记忆库在哪（runner 不许碰 electron-store）。 */
-  function beginMemoryTurn(conversationId: string): string | null {
+  function beginMemoryTurn(conversationId: string): { block: string | null; scope: MemoryTurn } {
     const index = deps.memory.list()
     // 注入事件落在这里：`inject` 去重（集合没变不写）由 repo 负责
     deps.memory.record({ kind: 'inject', conversationId, names: index.entries.map((e) => e.name) })
-    deps.memory.beginTurn(index)
-    return composeMemoryBlock(index)
+    const scope = deps.memory.beginTurn(index, conversationId)
+    return { block: composeMemoryBlock(index), scope }
   }
 
   /** 取走本轮写入痕迹并推给界面（护栏 2，D-043）。空手而归就**不推** —— 免得界面反复闪"没有写入" */
-  function endMemoryTurn(conversationId: string): void {
-    const turn = deps.memory.drainTurn()
+  function endMemoryTurn(conversationId: string, scope: MemoryTurn): void {
+    const turn = scope.drain()
     if (turn.written.length === 0 && turn.rejected.length === 0) return
     sendToAll(IPC.memoryNotice, { conversationId, ...turn })
   }

@@ -5,6 +5,10 @@
 
 ## 共享 shell 会话
 
+媒体权限由 [[src/main/media-permissions.ts#installMediaPermissions]] 安装在真实session，request/check共用已登记主窗口对象、主frame、精确renderer入口和当前语音配置/披露资格。远程view即使同session或同URL字符串也不继承资格，未知frame/媒体类型与视频拒绝。关资格只拒绝新申请，不承诺替renderer停止已获的音轨；现有语音组件负责停止track。
+
+[[src/main/providers/errors.ts#mapHttpError]] 和 [[src/main/providers/errors.ts#ProviderError]] 对HTTP错误只公开状态和固定说明，不将截断正文视为脱敏。中心错误边界覆盖聊天和一次性任务catch，两出口必须都验证；原始body/cause不进入HTTP错误message。非HTTP本地错误与状态0的流式超时仍保留原层级解释，不为安全化丢掉可排查性。
+
 一个 agent run 共用一个常驻壳（[[src/main/agent/tools/shell-session.ts#createShellSession]]），因为每条命令冷启一个 shell
 会让 `cd` / 环境变量 / 环境激活**全都不跨命令存活** —— 那是这类实现最大的坑。代价是同壳上的命令**必须串行**。
 

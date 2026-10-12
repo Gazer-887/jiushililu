@@ -5,14 +5,14 @@ export class ProviderError extends Error {
   readonly status?: number
 
   constructor(message: string, status?: number) {
-    super(message)
+    // HTTP错误只公开状态和固定解释，不允许调用方绕过映射透传正文。
+    super(status !== undefined && status >= 100 ? mapHttpError(status, '') : message)
     this.name = 'ProviderError'
     this.status = status
   }
 }
 
-export function mapHttpError(status: number, body: string): string {
-  const detail = body.slice(0, 200)
+export function mapHttpError(status: number, _body: string): string {
   switch (status) {
     case 401:
       return '认证失败（401）：API Key 无效或未生效，请检查是否复制完整'
@@ -27,7 +27,7 @@ export function mapHttpError(status: number, body: string): string {
     case 503:
       return `服务端异常（HTTP ${status}）：厂商侧问题，稍后重试`
     default:
-      return `请求失败（HTTP ${status}）：${detail}`
+      return `请求失败（HTTP ${status}）：请检查请求参数、模型配置与接口兼容性`
   }
 }
 
