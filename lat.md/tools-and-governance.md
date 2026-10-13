@@ -169,3 +169,23 @@ manifest **增量落盘**（小 JSON，换来中断的轮次仍有一份可用�
 因此回滚与备份都用**那一轮自己记下的 workspace** 拼路径。manifest 还可能来自旧版本或被人工改过，
 故 [[src/shared/checkpoint.ts#isSafeRel]] 与目录前缀比对两处各挡一遍，且 rel **两侧都归一**——
 单侧归一的后果是"匹配不上"，回滚静默无事发生。删除走回收站而不是硬删；没有回收站能力时删除直接被拒。
+
+## 应用通信、协作写入与退出
+
+[[src/main/trusted-ipc.ts#installTrustedIpc]] 将通信注册收在一个入口：已登记的窗口对象、主 frame 与准确页面三者缺一即拒绝。
+事件型通信也经过同一入口；安全安装失败不降级开放。诊断只记录通道，不替代信任判据。
+
+[[src/main/file-revision.ts#withFileCommit]] 按真实路径协调进程内提交；
+[[src/main/workspace-write.ts#createWorkspaceWriter]] 在排队后和快照后重新核内容版本、路径身份。
+界面保存携带读取版本，Agent 整文件覆盖沿用读取版本；精确修改携带本次源内容版本。
+版本不符属于暂停，不是允许模型继续付费重试的普通工具错误。
+新建使用排他创建，导入使用排他复制。队列不能锁住外部编辑器最后一次系统调用，不能宣传为跨进程原子比较交换。
+
+[[src/main/browser.ts#createBrowserTaskAdapter]] 每轮固定真实标签，独立于界面激活标签；同标签操作排队，定位等待后再次核页面身份。
+导航及可识别键盘输入会使旧版本失效；失效后本轮停止，不自动追逐用户新页面。
+检测不等于完整 DOM 仲裁：无导航、无可观察输入事件的任意页面内变化不在版本承诺内。
+
+[[src/main/mcp/mcp-manager.ts#createMcpManager]] 追踪连接中和已连接资源，终止后不接新连接。
+晚到的传输不允许重新登记；释放共享结果，不能只清 Map 留下服务进程。
+[[src/main/quit-lifecycle.ts#createQuitBarrier]] 首次阻止退出，释放完成或五秒上限后放行；再次退出不重复阻止。
+macOS 只关窗口时不终止 MCP，避免重新开窗口拿到永久关闭的管理器。

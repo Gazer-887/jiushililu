@@ -28,7 +28,7 @@ interface Props {
  *  布尔拼起来会出现"既是图片又是错误"这种非法组合，联合类型让非法状态**写不出来**。 */
 type View =
   | { kind: 'loading' }
-  | { kind: 'text'; content: string; truncated: boolean; mtimeMs?: number }
+  | { kind: 'text'; content: string; truncated: boolean; mtimeMs?: number; revision?: string }
   | { kind: 'image'; dataUrl: string }
   /** docx 内嵌预览：主进程解析好的**沙箱 URL**（jsl-preview://mem/<token>），不是 HTML 本体 */
   | { kind: 'docx'; url: string }
@@ -96,7 +96,8 @@ export default function FilePreviewPane({
           kind: 'text',
           content: res.content,
           truncated: res.truncated === true,
-          ...(res.mtimeMs !== undefined ? { mtimeMs: res.mtimeMs } : {})
+          ...(res.mtimeMs !== undefined ? { mtimeMs: res.mtimeMs } : {}),
+          ...(res.revision ? { revision: res.revision } : {})
         })
         // 草稿优先：切回这个页签时，没保存的内容要还在
         setDraft(dirty ?? res.content)
@@ -168,7 +169,8 @@ export default function FilePreviewPane({
       kind: 'text',
       content: res.content,
       truncated: res.truncated === true,
-      ...(res.mtimeMs !== undefined ? { mtimeMs: res.mtimeMs } : {})
+      ...(res.mtimeMs !== undefined ? { mtimeMs: res.mtimeMs } : {}),
+          ...(res.revision ? { revision: res.revision } : {})
     })
     setDraft(res.content)
     setConflict(false)
@@ -185,7 +187,8 @@ export default function FilePreviewPane({
       const res = await window.api.writeWorkspaceFile(
         rel,
         draft,
-        force ? undefined : view.mtimeMs
+        force ? undefined : view.mtimeMs,
+        force ? undefined : view.revision
       )
       if (!res.ok) {
         if (res.conflict) {
@@ -199,7 +202,7 @@ export default function FilePreviewPane({
       setConflict(false)
       setSaveMsg('已保存')
       // 基线跟着更新，否则下次保存会撞上"文件被改过"（其实正是自己刚写的）
-      setView((v) => (v.kind === 'text' ? { ...v, content: draft, mtimeMs: res.mtimeMs } : v))
+      setView((v) => (v.kind === 'text' ? { ...v, content: draft, mtimeMs: res.mtimeMs, revision: res.revision } : v))
       onDirtyChange?.(undefined)
     } finally {
       setSaving(false)

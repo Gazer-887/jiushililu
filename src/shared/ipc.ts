@@ -319,12 +319,24 @@ export type {
 import type { TerminalDataPayload, TerminalSessionSnapshot, TerminalStartResult } from './terminal'
 export type { TerminalChunk, TerminalDataPayload, TerminalSessionSnapshot, TerminalStartResult } from './terminal'
 
+export interface AgentTaskStatus {
+  id: string
+  task: string
+  conversationId?: string
+  status: 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled'
+  startedAt: number
+  endedAt?: number
+  error?: string
+  output?: string
+}
+
 export interface AgentRunResult {
+  taskId?: string
   ok: boolean
   output: string
   rounds: number
   /** error = 调度/配置层失败（未真正执行） */
-  stopReason: 'completed' | 'max-rounds' | 'error'
+  stopReason: 'completed' | 'max-rounds' | 'error' | 'cancelled'
   agent: string
   error?: string
 }
@@ -624,6 +636,8 @@ export const IPC = {
   /** 工具执行生命周期（D-032：界面显示"正在读 xx / 完成 / 失败"） */
   chatTool: 'chat:tool',
   agentRun: 'agent:run',
+  agentTaskList: 'agent:task-list',
+  agentTaskStop: 'agent:task-stop',
   workspaceGet: 'workspace:get',
   workspacePick: 'workspace:pick',
   workspaceSetKnown: 'workspace:set-known',
@@ -828,6 +842,7 @@ export interface FsOpResult {
   conflict?: boolean
   /** 写成功后的新 mtime（毫秒），编辑器拿它当新的冲突基线 */
   mtimeMs?: number
+  revision?: string
 }
 
 export type { TodoItem, TodoStatus, TodoStats } from './todo'
@@ -957,6 +972,8 @@ export interface ApiBridge {
   onChatError(cb: (e: StreamEnvelope<string>) => void): () => void
   onChatTool(cb: (e: StreamEnvelope<import('./agent').ToolEvent>) => void): () => void
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
+  listAgentTasks(): Promise<AgentTaskStatus[]>
+  stopAgentTask(id: string): Promise<boolean>
   getWorkspace(): Promise<WorkspaceInfo>
   pickWorkspace(): Promise<WorkspaceInfo | null>
   /** 切换到"已知工作区"（历史会话用过的路径）——不接受任意路径，收紧权限面 */
@@ -1185,7 +1202,7 @@ export interface ApiBridge {
   /** 用系统默认程序打开工作区内的文件（pptx 等不支持内嵌预览的格式的出口） */
   openWorkspacePathInSystem(rel: string): Promise<FsOpenResult>
   // ── 工作区写操作（plan7 批 A2）──
-  writeWorkspaceFile(rel: string, content: string, expectedMtimeMs?: number): Promise<FsOpResult>
+  writeWorkspaceFile(rel: string, content: string, expectedMtimeMs?: number, expectedRevision?: string): Promise<FsOpResult>
   createWorkspaceDir(rel: string): Promise<FsOpResult>
   renameWorkspacePath(rel: string, nextRel: string): Promise<FsOpResult>
   /** 删除到**回收站**（不是硬删 —— 误删还能自己捞回来） */

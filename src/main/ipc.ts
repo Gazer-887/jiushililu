@@ -1,3 +1,5 @@
+import { createAgentTaskRegistry } from './agent-task-registry'
+import { fileRevision, FileConflictError } from './file-revision'
 import { ipcMain, dialog, BrowserWindow, shell, clipboard } from 'electron'
 import { z } from 'zod'
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
@@ -252,7 +254,8 @@ const MAX_CONCURRENT_CHATS = 3
 /** 进行中的对话**按会话**记（plan11 §2.1）：`同会话重复发送 → 拒绝；跨会话 → 放行`（以前 key 是 `e.sender.id`，一个窗口只能跑一条）。
  *  ⚠️ 闸的逻辑抽在 `./agent/concurrency`（纯函数可单测）：`verify-shot` 把 `chat:send` 整个 stub 掉了，界面上"两条都在跑"与闸的实际值**无关** —— 只有纯单测验得到它。 */
 const chatGate = createChatGate(MAX_CONCURRENT_CHATS)
-const activeAgents = new Set<number>()
+const agentTasks = createAgentTaskRegistry()
+export const abortAgentTasks = (): void => agentTasks.abortAll()
 
 /** 当前待办清单（plan7 批 D）：**主进程内存态，不落盘**（它表达"这一轮干到哪了"的即时视图）；按会话存是因为界面会随视图切换重挂载、且两条会话会互相顶掉。 */
 const todosByConversation = new Map<string, TodoItem[]>()
@@ -916,6 +919,10 @@ export function registerIpcHandlers(deps: {
     return subagentsByConversation.get(id)?.events ?? []
   })
 
+  ipcMain.handle(IPC.agentTaskList, (e) => agentTasks.list(e.sender.id))
+  ipcMain.handle(IPC.agentTaskStop, (e, id: unknown) =>
+    typeof id === 'string' && agentTasks.stop(e.sender.id, id))
+
   const agentRunInput = z.object({
     task: z.string().min(1).max(200000),
     agentName: z.string().max(64).optional(),
@@ -937,19 +944,24 @@ export function registerIpcHandlers(deps: {
       return failResult('内核默认', err instanceof Error ? err.message : String(err))
     }
     // 并发闸（交叉验证提出）：Agent 循环成本高（可跑满轮数 + 命令执行），同时只允许一个
-    if (activeAgents.has(e.sender.id)) {
-      return failResult(req.agentName ?? '内核默认', '已有 Agent 任务在执行，请等待当前任务结束')
+    let task: ReturnType<typeof agentTasks.start>
+    try { task = agentTasks.start(e.sender.id, req.task, req.conversationId) }
+    catch (err) { return failResult(req.agentName ?? '内核默认', String(err)) }
+    const senderClosed = (): void => { agentTasks.stop(e.sender.id, task.id) }
+    e.sender.once('destroyed', senderClosed)
+    const failTask = (error: string): AgentRunResult => {
+      agentTasks.finish(task.id, 'failed', error)
+      return { ...failResult(req.agentName ?? '内核默认', error), taskId: task.id }
     }
-    activeAgents.add(e.sender.id)
     let memoryTurn: MemoryTurn | null = null
     try {
       const settings = getSettingsView()
       if (!settings.baseURL || !settings.model) {
-        return failResult(req.agentName ?? '内核默认', '尚未配置模型：请先到「设置」页填写接口地址、模型名与 API Key')
+        return failTask('尚未配置模型：请先到「设置」页填写接口地址、模型名与 API Key')
       }
       const apiKey = getDecryptedApiKey()
       if (!apiKey) {
-        return failResult(req.agentName ?? '内核默认', '尚未保存 API Key：请先到「设置」页填写并保存')
+        return failTask('尚未保存 API Key：请先到「设置」页填写并保存')
       }
       const begun = beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
       memoryTurn = begun.scope
@@ -958,6 +970,7 @@ export function registerIpcHandlers(deps: {
         settings,
         apiKey,
         history: [{ role: 'user', content: req.task }],
+        signal: task.controller.signal,
         agentName: req.agentName,
         // 权限档必须与对话线同源（plan51 复查抓出）：漏传 = 恒按可写档跑，
         // 于是只读档用户在这个入口上拿到的是可写档的工具集（而子代理现在按声明装配，
@@ -992,21 +1005,34 @@ export function registerIpcHandlers(deps: {
         // 一次性任务同样注入规则（plan24）：约束对一次性任务同样生效
         rulesBlock: assembleRulesBlock()
       })
+      agentTasks.finish(task.id, task.controller.signal.aborted ? 'cancelled' :
+        result.stopReason === 'completed' ? 'completed' : 'failed',
+        result.stopReason === 'max-rounds' ? '已达轮数预算，以下为部分产出' : undefined, result.output)
       return {
-        ok: result.stopReason === 'completed',
+        taskId: task.id,
+        ok: !task.controller.signal.aborted && result.stopReason === 'completed',
         output: result.output,
         rounds: result.rounds,
-        stopReason: result.stopReason,
+        stopReason: task.controller.signal.aborted ? 'cancelled' : result.stopReason,
         agent: result.agent,
         ...(result.stopReason === 'max-rounds'
           ? { error: `已达轮数预算上限（${result.rounds} 轮）并强制停止，以下为部分产出` }
           : {})
       }
     } catch (err) {
+      if (task.controller.signal.aborted) {
+        agentTasks.finish(task.id, 'cancelled')
+        return { ...failResult(req.agentName ?? '内核默认', '任务已停止'), taskId: task.id, stopReason: 'cancelled' }
+      }
+      agentTasks.finish(task.id, 'failed', err instanceof Error ? err.message : '任务执行失败')
       log.error('Agent 任务失败', { agentName: req.agentName, error: err instanceof Error ? err.message : String(err) })
-      return failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err))
+        return { ...failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err)), taskId: task.id }
     } finally {
-      activeAgents.delete(e.sender.id)
+      e.sender.removeListener('destroyed', senderClosed)
+      // 配置提前退出也必须成为终态。
+      const current = agentTasks.list(e.sender.id).find((t) => t.id === task.id)
+      if (current && ['running', 'stopping'].includes(current.status))
+        agentTasks.finish(task.id, task.controller.signal.aborted ? 'cancelled' : 'failed')
       if (memoryTurn) endMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER, memoryTurn)
     }
   })
@@ -2297,7 +2323,8 @@ export function registerIpcHandlers(deps: {
     rel: z.string().min(1).max(1024),
     content: z.string().max(5_000_000),
     /** 冲突基线（编辑时带上；文件树的新建/重命名那条**不带**）：带了就比对 mtime，对不上**不写盘**、回 `conflict: true` 让用户选 —— 不做静默覆盖。 */
-    expectedMtimeMs: z.number().nonnegative().optional()
+    expectedMtimeMs: z.number().nonnegative().optional(),
+    expectedRevision: z.string().regex(/^[a-f0-9]{64}$/).optional()
   })
   const fsRelInput = z.object({ rel: z.string().min(1).max(1024) })
   const fsRenameInput = z.object({
@@ -2324,7 +2351,8 @@ export function registerIpcHandlers(deps: {
     try {
       return { ok: true, message: await fn(writer) }
     } catch (err) {
-      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+      return { ok: false, message: err instanceof Error ? err.message : String(err),
+        ...(err instanceof FileConflictError ? { conflict: true } : {}) }
     } finally {
       deps.agent.checkpoints.finish(runId)
       // ⚠️ 必须在这里广播一次"检查点变了"（面板据此刷新），且**必须走 `createChatEmitter`**：界面自己发起的写操作同样产生轮次，而"逐处退回"刚承诺了"退错了还能再退"，承诺一条**找不到的轮次**就成骗人的话。
@@ -2370,7 +2398,7 @@ export function registerIpcHandlers(deps: {
       }
     }
 
-    const res = await runFsOp('界面 · 写文件', (w) => w.write(p.data.rel, p.data.content))
+    const res = await runFsOp('界面 · 写文件', (w) => w.write(p.data.rel, p.data.content, p.data.expectedRevision))
     if (!res.ok) return res
     // 写成功 → 回新的 mtime 当基线（编辑器据此继续编辑不会立刻自撞"冲突"）
     const abs = resolveInsideWorkspace(workspaceRoot, p.data.rel)
@@ -2382,7 +2410,8 @@ export function registerIpcHandlers(deps: {
         mtimeMs = undefined
       }
     }
-    return { ...res, ...(mtimeMs !== undefined ? { mtimeMs } : {}) }
+    return { ...res, ...(mtimeMs !== undefined ? { mtimeMs } : {}),
+      ...(abs ? { revision: fileRevision(abs) ?? undefined } : {}) }
   })
 
   ipcMain.handle(IPC.fsMkdir, (_e, raw: unknown): Promise<FsOpResult> => {

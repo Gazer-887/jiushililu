@@ -364,6 +364,7 @@ describe('write_file 与检查点的接缝（plan8 R4）', () => {
       }
     })
     const write = tools[1]!
+    await tools[0]!.execute({ path: 'a.txt' })
     await write.execute({ path: 'a.txt', content: '新内容' })
 
     expect(seen).toHaveLength(1)

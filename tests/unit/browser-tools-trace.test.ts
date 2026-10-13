@@ -145,7 +145,7 @@ describe('浏览器工具的异步跨度包装', () => {
         throw new Error('选择器未命中')
       }
     })
-    const out = await byName.get('browser_click')!.execute({ target: '#nope' })
+    const out = await createBrowserTools().find((t) => t.schema.name === 'browser_click')!.execute({ target: '#nope' })
     expect(out).toContain('错误：点击失败')
     expect(out).toContain('选择器未命中')
   })

@@ -4,6 +4,8 @@
 // 见 tests/unit/architecture.test.ts 的守卫）。但浏览器工具必须驱动真实的 WebContentsView。
 // 解法＝依赖倒置：这里只声明接口与一个可注入的槽位，真实实现由 main/index.ts 在启动时注入。
 
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 /** 元素矩形（CSS 像素，相对页面视口左上角） */
 export interface ElementRect {
   x: number
@@ -28,6 +30,9 @@ export interface TabRecord {
 }
 
 export interface BrowserAdapter {
+  /** 每轮独立固定目标；底层由主进程维护页面身份与同标签排队。 */
+  createTask?(signal?: AbortSignal): BrowserAdapter
+  assertReady?(): void
   currentUrl(): string
   navigate(url: string): Promise<{ url: string; title: string }>
   readPage(): Promise<string>
@@ -62,6 +67,10 @@ export interface BrowserAdapter {
 }
 
 let adapter: BrowserAdapter | null = null
+const taskAdapter = new AsyncLocalStorage<BrowserAdapter>()
+export function withBrowserTask<T>(target: BrowserAdapter, action: () => T): T {
+  return taskAdapter.run(target, action)
+}
 
 export function setBrowserAdapter(next: BrowserAdapter): void {
   adapter = next
@@ -69,5 +78,5 @@ export function setBrowserAdapter(next: BrowserAdapter): void {
 
 /** 取当前适配器；未注入时返回 null（工具会给出明确提示而非崩溃） */
 export function getBrowserAdapter(): BrowserAdapter | null {
-  return adapter
+  return taskAdapter.getStore() ?? adapter
 }

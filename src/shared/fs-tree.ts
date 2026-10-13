@@ -37,6 +37,7 @@ export interface FsReadResult {
    * 缺了它，编辑就只能在"盲写"与"永远冲突"之间二选一。
    */
   mtimeMs?: number
+  revision?: string
   /**
    * **不是无损读出来的**：原文非法 UTF-8（GBK 文本 / 二进制），坏字节会被换成 U+FFFD，
    * 再编码回去 ≠ 原字节 —— 所以"读进来再整份写回去"对这类文件是**不可逆损坏**；

@@ -243,6 +243,7 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
       }
       return createBrowserTools({
         browserControlEnabled: true,
+        signal: hooks.signal,
         ...(hooks.attachmentsRoot
           ? {
               saveScreenshot: (pngBase64: string) => {
@@ -335,6 +336,7 @@ function lastUserText(history: AgentMessage[]): string | null {
 
 /** 工具层的可注入钩子（写入服务 / 危险操作确认 / 待办清单 / 子代理） */
 export interface ToolHooks {
+  signal?: AbortSignal
   writer?: WorkspaceWriter
   policy?: TokenPolicy
   /** 路径放行策略（plan29 D-089）：**只有 Agent 线**该传 —— 传 `{ allowOutside: true }` = 完全访问档无边界。
@@ -851,6 +853,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     // plan60 §三.5：内置浏览器开关显式透传（D-119 ①：无条件透传，`=== true` 落地点在消费侧；
     // 缺省=关，见 ToolHooks.browserControl 注释 —— "非 false 即真"会静默放开浏览器操作）。
     browserControl: args.browserControl === true,
+    signal: args.signal,
     ...(ctx.mcp
       ? {
           mcp: {

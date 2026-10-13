@@ -14,6 +14,7 @@ import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/tok
 import { historyForModel, trimMessages, type TrimOptions } from './context'
 import type { ExecEventRecorder } from './exec-events'
 import { isAbortError } from '../providers/errors'
+import { AgentPauseError } from './pause-error'
 
 // Agent 主循环（plan6；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，直到出最终答案或预算耗尽。
 // 缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停；contextWindow 控历史裁剪。
@@ -269,7 +270,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
                   }))
                 : []
           } catch (err) {
-            if (opts.signal?.aborted || isAbortError(err)) throw err
+            if (opts.signal?.aborted || isAbortError(err) || err instanceof AgentPauseError) throw err
             output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
           }
         }

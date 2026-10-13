@@ -4,6 +4,9 @@ import { isExternallyOpenable } from './url-guard'
 import { createLogger } from './log'
 import type { ElementRect } from './agent/browser-bridge'
 import { centerOfRect } from './agent/browser-bridge'
+import type { BrowserAdapter } from './agent/browser-bridge'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { AgentPauseError } from './agent/pause-error'
 import { DIALOG_AUTO_DISMISS_MS, RingBuffer, TRACE_CAP, WAIT_DEFAULT_MS, WAIT_MAX_MS, WAIT_POLL_MS } from './agent/browser-utils'
 
 const log = createLogger('browser')
@@ -22,6 +25,8 @@ interface DialogRecord {
 }
 
 interface Tab {
+  revision: number
+  injecting: boolean
   id: string
   view: WebContentsView
   url: string
@@ -42,6 +47,84 @@ let tabSeq = 0
 
 const tabs = new Map<string, Tab>()
 let activeTabId: string | null = null
+const taskContext = new AsyncLocalStorage<{ tab: Tab; check(): void }>()
+const tabQueues = new Map<string, Promise<unknown>>()
+
+function checkTask(): void { taskContext.getStore()?.check() }
+function sendBrowserInput(t: Tab, event: Parameters<WebContents['sendInputEvent']>[0]): void {
+  checkTask()
+  t.injecting = true
+  try { t.view.webContents.sendInputEvent(event) }
+  finally { t.injecting = false }
+}
+
+/** 每轮固定标签，不跟随界面焦点；同标签操作共享进程内队列。 */
+export function createBrowserTaskAdapter(base: BrowserAdapter, signal?: AbortSignal): BrowserAdapter {
+  let target = activeTab()
+  let revision = target?.revision ?? -1
+  const check = (): void => {
+    signal?.throwIfAborted()
+    if (!target || tabs.get(target.id) !== target || target.view.webContents.isDestroyed())
+      throw new AgentPauseError('目标标签已关闭或不存在，任务已暂停')
+    if (target.revision !== revision) throw new AgentPauseError('页面已变化，任务已暂停；请重新确认目标')
+  }
+  return new Proxy(base, {
+    get(object, property) {
+      if (property === 'createTask') return undefined
+      if (property === 'assertReady') return check
+      if (property === 'listTabs') return browserListTabs
+      if (property === 'currentUrl') return () => { check(); return target!.view.webContents.getURL() }
+      if (property === 'selectTab') return (id: string) => {
+        signal?.throwIfAborted()
+        const next = tabs.get(id)
+        if (!next) return null
+        target = next; revision = next.revision
+        return { id: next.id, url: next.url, title: next.title }
+      }
+      if (property === 'closeTab') return (id: string) => {
+        check()
+        if (id !== target!.id || tabQueues.has(id)) return false
+        return browserCloseTab(id)
+      }
+      const fn = Reflect.get(object, property)
+      if (typeof fn !== 'function') return fn
+      return (...args: unknown[]) => {
+        const tab = target
+        const key = tab?.id ?? 'new-tab'
+        const previous = tabQueues.get(key) ?? Promise.resolve()
+        const operation = previous.catch(() => {}).then(async () => {
+          signal?.throwIfAborted()
+          if (property === 'newTab') {
+            const created = await browserNewTab(args[0] as string | undefined)
+            target = tabs.get(created.id)!; revision = target.revision
+            return created
+          }
+          check()
+          if (target !== tab) throw new Error('任务目标已改变，未执行旧操作')
+          const context = { tab: tab!, check: property === 'navigate' ? () => {
+            signal?.throwIfAborted()
+            if (tabs.get(tab!.id) !== tab) throw new Error('目标标签已关闭')
+          } : check }
+          const result = await taskContext.run(context, () => fn.apply(object, args))
+          if (property === 'navigate') revision = tab!.revision
+          check()
+          return result
+        })
+        tabQueues.set(key, operation)
+        void operation.finally(() => {
+          if (tabQueues.get(key) === operation) tabQueues.delete(key)
+        }).catch(() => {})
+        if (!signal) return operation
+        return new Promise((resolve, reject) => {
+          const aborted = (): void => reject(signal.reason)
+          signal.addEventListener('abort', aborted, { once: true })
+          void operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted))
+          if (signal.aborted) aborted()
+        })
+      }
+    }
+  })
+}
 
 type StateListener = (s: BrowserState) => void
 let onState: StateListener | null = null
@@ -94,9 +177,12 @@ function applyBounds(): void {
 function wireTab(t: Tab): void {
   const wc = t.view.webContents
   wc.on('did-start-loading', () => {
+    t.revision += 1
     t.loading = true
     if (t.id === activeTabId) emit()
   })
+  wc.on('before-input-event', () => { if (!t.injecting) t.revision += 1 })
+  wc.on('did-navigate-in-page', () => { t.revision += 1 })
   wc.on('did-stop-loading', () => {
     t.loading = false
     t.url = wc.getURL()
@@ -247,6 +333,8 @@ export async function browserNewTab(url?: string): Promise<TabInfo> {
     }
   })
   const t: Tab = {
+    revision: 0,
+    injecting: false,
     id,
     view,
     url: url ?? 'about:blank',
@@ -308,7 +396,8 @@ export function browserCloseTab(id: string): boolean {
 // ── 导航（界面按钮与 Agent 工具共用同一实现）───────────────────────────────
 
 function needTab(): Tab {
-  const t = activeTab()
+  checkTask()
+  const t = taskContext.getStore()?.tab ?? activeTab()
   if (!t) throw new Error('浏览器没有打开的标签页')
   return t
 }
@@ -319,7 +408,7 @@ export async function browserNavigate(url: string): Promise<BrowserState> {
   await t.view.webContents.loadURL(normalized)
   t.url = t.view.webContents.getURL()
   t.title = t.view.webContents.getTitle()
-  return getBrowserState()
+  return { ...getBrowserState(), url: t.url, title: t.title }
 }
 
 export function browserGoBack(): BrowserState {
@@ -378,6 +467,7 @@ async function resolveRect(t: Tab, target: string): Promise<ElementRect | null> 
     })()
   `
   const r = (await t.view.webContents.executeJavaScript(script, true)) as ElementRect | null
+  checkTask()
   if (!r || r.width <= 0 || r.height <= 0) return null
   return r
 }
@@ -392,10 +482,9 @@ export async function browserClick(target: string): Promise<string> {
   const rect = await resolveRect(t, target)
   if (!rect) return `未找到可点击的元素：${target}`
   const p = centerOfRect(rect)
-  const wc = t.view.webContents
-  wc.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y })
-  wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 })
-  wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+  sendBrowserInput(t, { type: 'mouseMove', x: p.x, y: p.y })
+  sendBrowserInput(t, { type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+  sendBrowserInput(t, { type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 })
   return `已点击 ${target}（${p.x},${p.y}）`
 }
 
@@ -405,7 +494,7 @@ export async function browserHover(target: string): Promise<string> {
   const rect = await resolveRect(t, target)
   if (!rect) return `未找到可悬停的元素：${target}`
   const p = centerOfRect(rect)
-  t.view.webContents.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y })
+  sendBrowserInput(t, { type: 'mouseMove', x: p.x, y: p.y })
   return `已悬停 ${target}（${p.x},${p.y}）`
 }
 
@@ -413,10 +502,9 @@ export async function browserHover(target: string): Promise<string> {
 export async function browserPressKey(key: string): Promise<string> {
   const t = needTab()
   if (!key) return '错误：key 不能为空'
-  const wc = t.view.webContents
-  wc.sendInputEvent({ type: 'keyDown', keyCode: key })
-  if (key.length === 1) wc.sendInputEvent({ type: 'char', keyCode: key })
-  wc.sendInputEvent({ type: 'keyUp', keyCode: key })
+  sendBrowserInput(t, { type: 'keyDown', keyCode: key })
+  if (key.length === 1) sendBrowserInput(t, { type: 'char', keyCode: key })
+  sendBrowserInput(t, { type: 'keyUp', keyCode: key })
   return `已按键 ${key}`
 }
 
@@ -429,11 +517,10 @@ export async function browserDrag(from: string, to: string): Promise<string> {
   if (!b) return `未找到拖拽终点：${to}`
   const pa = centerOfRect(a)
   const pb = centerOfRect(b)
-  const wc = t.view.webContents
-  wc.sendInputEvent({ type: 'mouseMove', x: pa.x, y: pa.y })
-  wc.sendInputEvent({ type: 'mouseDown', x: pa.x, y: pa.y, button: 'left', clickCount: 1 })
-  wc.sendInputEvent({ type: 'mouseMove', x: pb.x, y: pb.y })
-  wc.sendInputEvent({ type: 'mouseUp', x: pb.x, y: pb.y, button: 'left', clickCount: 1 })
+  sendBrowserInput(t, { type: 'mouseMove', x: pa.x, y: pa.y })
+  sendBrowserInput(t, { type: 'mouseDown', x: pa.x, y: pa.y, button: 'left', clickCount: 1 })
+  sendBrowserInput(t, { type: 'mouseMove', x: pb.x, y: pb.y })
+  sendBrowserInput(t, { type: 'mouseUp', x: pb.x, y: pb.y, button: 'left', clickCount: 1 })
   return `已从 ${from} 拖到 ${to}`
 }
 
@@ -448,26 +535,27 @@ export async function browserType(target: string, text: string): Promise<string>
   if (!rect) return `未找到可输入的元素：${target}`
   const p = centerOfRect(rect)
   const wc = t.view.webContents
-  wc.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y })
-  wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 })
-  wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+  sendBrowserInput(t, { type: 'mouseMove', x: p.x, y: p.y })
+  sendBrowserInput(t, { type: 'mouseDown', x: p.x, y: p.y, button: 'left', clickCount: 1 })
+  sendBrowserInput(t, { type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 })
   const script = `
     (() => {
       const el = document.activeElement;
       if (!el) return 'NO_FOCUS';
       const val = ${JSON.stringify(text)};
-      if ((el as HTMLElement).isContentEditable) { (el as HTMLElement).innerText = val; }
+      if (el.isContentEditable) { el.innerText = val; }
       else {
         const setter = Object.getOwnPropertyDescriptor(
-          (el as HTMLInputElement).constructor.prototype, 'value')?.set;
+          el.constructor.prototype, 'value')?.set;
         if (setter) setter.call(el, val);
-        else (el as HTMLInputElement).value = val;
+        else el.value = val;
       }
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return 'TYPED';
     })()
   `
+  checkTask()
   const res = (await wc.executeJavaScript(script, true)) as string
   return res === 'TYPED' ? `已在 ${target} 输入文本` : `聚焦失败，未输入：${target}`
 }
@@ -556,6 +644,7 @@ export async function browserHandleDialog(action: 'accept' | 'dismiss', promptTe
   const rec = t.pendingDialog
   t.pendingDialog = null
   try {
+    checkTask()
     await t.view.webContents.debugger.sendCommand('Page.handleJavaScriptDialog', {
       accept: action === 'accept',
       ...(promptText !== undefined ? { promptText } : {})
@@ -580,6 +669,7 @@ export async function browserUploadFile(target: string, filePath: string): Promi
       selector: target
     })) as { nodeId: number }
     if (!q.nodeId) return `未找到文件选择框：${target}（只支持 CSS 选择器）`
+    checkTask()
     await dbg.sendCommand('DOM.setFileInputFiles', { nodeId: q.nodeId, files: [filePath] })
     return `已为 ${target} 设置文件：${filePath}`
   } catch (err) {
@@ -600,7 +690,9 @@ export async function browserWaitFor(target: string, timeoutMs: number = WAIT_DE
   `
   const start = Date.now()
   for (;;) {
+    checkTask()
     const hit = (await t.view.webContents.executeJavaScript(script, true)) as boolean
+    checkTask()
     if (hit) return `条件已出现：${target}（${Date.now() - start}ms）`
     if (Date.now() - start >= cap) return `超时未出现：${target}（${cap}ms）`
     await new Promise((r) => setTimeout(r, WAIT_POLL_MS))

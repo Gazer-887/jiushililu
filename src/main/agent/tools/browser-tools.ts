@@ -1,5 +1,5 @@
 import type { AgentTool } from '@shared/agent'
-import { getBrowserAdapter } from '../browser-bridge'
+import { getBrowserAdapter, withBrowserTask } from '../browser-bridge'
 import { traceSpan } from '../../watchdog'
 
 // 浏览器工具（P2）：让 Agent **直接操控内置浏览器** —— 与用户在右抽屉里看到的是同一个页面。
@@ -21,6 +21,7 @@ function str(args: Record<string, unknown>, key: string): string {
 }
 
 export interface BrowserToolDeps {
+  signal?: AbortSignal
   /**
    * 浏览器操作开关本轮值（D-155 B1-a / plan60 §三.5：关 = 整批不下发）。
    * run 层必传显式值；工厂默认开**只为兼容历史单测**（D-119 ① 的"缺省=关"落在 run 入参层，
@@ -38,6 +39,8 @@ export function createBrowserTools(deps: BrowserToolDeps = {}): AgentTool[] {
   // 开关关 = 整批不下发（B1-a 语义；WARN 由装配层发，这里只负责"没有"）。
   if (deps.browserControlEnabled === false) return []
   const saveScreenshot = deps.saveScreenshot
+  const base = getBrowserAdapter()
+  const scoped = base?.createTask?.(deps.signal) ?? base
   const browser_navigate: AgentTool = {
     schema: {
       name: 'browser_navigate',
@@ -162,7 +165,12 @@ export function createBrowserTools(deps: BrowserToolDeps = {}): AgentTool[] {
     return {
       ...t,
       execute: (args: Record<string, unknown>) =>
-        traceSpan(`browser:${t.schema.name}`, () => raw(args))
+        traceSpan(`browser:${t.schema.name}`, async () => {
+          scoped?.assertReady?.()
+          const result = await (scoped ? withBrowserTask(scoped, () => raw(args)) : raw(args))
+          scoped?.assertReady?.()
+          return result
+        })
     }
   })
 }

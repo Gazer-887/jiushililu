@@ -28,7 +28,8 @@ describe('退出清理清单（teardownAll）', () => {
     // 守卫自己也要能红：取不到函数体就等于后面全在空转
     expect(body.length).toBeGreaterThan(50)
     expect(indexSrc).toContain("app.on('window-all-closed', teardownAll)")
-    expect(indexSrc).toContain("app.on('before-quit', teardownAll)")
+    expect(indexSrc).toContain("app.on('before-quit', createQuitBarrier(async () => {")
+    expect(indexSrc).toContain('teardownAll()\n    await mcp.dispose()')
   })
 
   it('常驻 shell 必须在清理清单里（它自己注释承诺"不留没人管的 shell"）', () => {
@@ -43,6 +44,7 @@ describe('退出清理清单（teardownAll）', () => {
       'background.killAll',
       'terminal.killAll',
       'system.dispose'
+      , 'abortAgentTasks'
     ]) {
       expect(body).toContain(disposer)
     }

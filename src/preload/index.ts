@@ -94,6 +94,8 @@ const api: ApiBridge = {
   onChatError: (cb) => subscribe(IPC.chatError, (e) => cb(e as StreamEnvelope<string>)),
   onChatTool: (cb) => subscribe(IPC.chatTool, (e) => cb(e as StreamEnvelope<ToolEvent>)),
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
+  listAgentTasks: () => ipcRenderer.invoke(IPC.agentTaskList),
+  stopAgentTask: (id) => ipcRenderer.invoke(IPC.agentTaskStop, id),
   setModel: (model: string) => ipcRenderer.invoke(IPC.settingsSetModel, model),
   listModels: () => ipcRenderer.invoke(IPC.modelsList),
   saveModel: (input: ModelSaveInput) => ipcRenderer.invoke(IPC.modelsSave, input),
@@ -281,11 +283,12 @@ const api: ApiBridge = {
   previewOffice: (rel) => ipcRenderer.invoke(IPC.officePreview, rel),
   openWorkspacePathInSystem: (rel) => ipcRenderer.invoke(IPC.fsOpenInSystem, rel),
   // 写操作全部走统一写入服务（留检查点、可回滚）
-  writeWorkspaceFile: (rel, content, expectedMtimeMs) =>
+  writeWorkspaceFile: (rel, content, expectedMtimeMs, expectedRevision) =>
     ipcRenderer.invoke(IPC.fsWrite, {
       rel,
       content,
-      ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs })
+      ...(expectedMtimeMs === undefined ? {} : { expectedMtimeMs }),
+      ...(expectedRevision === undefined ? {} : { expectedRevision })
     }),
   createWorkspaceDir: (rel) => ipcRenderer.invoke(IPC.fsMkdir, { rel }),
   renameWorkspacePath: (rel, nextRel) => ipcRenderer.invoke(IPC.fsRename, { rel, nextRel }),

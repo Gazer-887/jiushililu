@@ -6,7 +6,9 @@
 
 ## 分类轴与注入优先级
 
-轮次临时状态不属于共享资产。[[src/main/store/memory-store.ts#createMemoryStore]] 的beginTurn返回独立repo facade和单次drain；[[src/main/ipc.ts#registerIpcHandlers]] 为聊天及一次性任务分别创建并在finally消费，[[src/main/agent/runner.ts#runAgent]] 将本轮repo同时用于主代理与子代理工具。save/record仅在同步操作内以AsyncLocalStorage绑定会话，不用enterWith或全局current槽；后台/用户写入仍走共享store，不加入聊天通知。磁盘真源、审批和FTS逻辑仍只有一份。按会话分组通知不等于按会话共用一个采集槽，同会话不同run亦须持有不同对象，否则交错结束仍会丢/错归属。
+轮次临时状态不属于共享资产。[[src/main/store/memory-store.ts#createMemoryStore]] 的beginTurn返回独立repo facade和单次drain；[[src/main/ipc.ts#registerIpcHandlers]] 为聊天及一次性任务分别创建并在finally消费，[[src/main/agent/runner.ts#runAgent]] 将本轮repo同时用于主代理与子代理工具。save/record仅在同步操作内以AsyncLocalStorage绑定会话，不用enterWith或全局current槽。
+
+后台/用户写入仍走共享store，不加入聊天通知。磁盘真源、审批和FTS逻辑仍只有一份。按会话分组通知不等于按会话共用一个采集槽，同会话不同run亦须持有不同对象，否则交错结束仍会丢/错归属。
 
 [[src/shared/memory.ts#MEMORY_CLASSES]] 一个字段同时决定"怎么注入"和"能不能被自动遗忘"。
 不拆成两个字段，是因为新增一类要同步的地方会从一处变两处——

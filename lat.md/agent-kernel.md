@@ -110,3 +110,11 @@ handler 把补丁合进现存档案**合成整表过同一道 `modelSaveSchema`*
 收口（跑完 / 报错 / 点停止）时还要 [[src/renderer/src/store.ts#settleRuntime]] 把存档里那份的 `streaming` 落回
 false——运行期事件只更新顶层，不补就留下"答完了还在跑"，净效果是侧栏假标记与别条会话的假并发提示。
 收口必须在 `applyToConversation` **已算出的那份存档**上派生，回头拿旧存档再派生一遍会把刚写入的错误原文盖没。
+
+## 一次性任务身份与暂停
+
+[[src/main/agent-task-registry.ts#createAgentTaskRegistry]] 为每次任务创建唯一身份与取消源，窗口所有者不能由载荷自报。
+查询与停止沿实际 IPC、preload 接到 [[src/renderer/src/components/TasksPanel.tsx#TasksPanel]]；旧任务身份不能停止同窗口的新任务。
+停止先成为“正在停止”，内核结束并完成检查点、记忆收尾后才成为终态。
+[[src/main/agent/pause-error.ts#AgentPauseError]] 区分协作条件失效与普通工具错误；
+[[src/main/agent/loop.ts#runAgentLoop]] 不吞暂停异常，因此同帧后续工具与下一轮模型调用都不会继续。

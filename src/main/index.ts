@@ -4,9 +4,11 @@ import { getBootstrapOutcome, releaseBootstrapLock } from './bootstrap-data-dir'
 import { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, session, shell } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { installTrustedIpc } from './trusted-ipc'
+import { createQuitBarrier } from './quit-lifecycle'
 import { installMediaPermissions } from './media-permissions'
 import { createRequire } from 'node:module'
-import { registerIpcHandlers, getActiveConversationId } from './ipc'
+import { registerIpcHandlers, getActiveConversationId, abortAgentTasks } from './ipc'
 import { createAgentContext } from './agent/runner'
 import { resolveWorkspaceRoot } from './store/workspace'
 import { initLogger, createLogger } from './log'
@@ -21,6 +23,7 @@ import { createAskBridge } from './ask'
 import { IPC } from '@shared/ipc'
 import {
   browserClick,
+  createBrowserTaskAdapter,
   browserCloseTab,
   browserConsoleMessages,
   browserCurrentUrl,
@@ -43,7 +46,7 @@ import {
   initBrowser,
   setBrowserStateListener
 } from './browser'
-import { setBrowserAdapter } from './agent/browser-bridge'
+import { setBrowserAdapter, type BrowserAdapter } from './agent/browser-bridge'
 import { createBackgroundTaskStore } from './agent/background-tasks'
 import { createMemoryStore } from './store/memory-store'
 import { createPlaybookStore } from './store/playbook-store'
@@ -436,6 +439,10 @@ app.whenReady().then(async () => {
   // 麦克风权限（plan45 R1）：Electron 默认**拒绝**一切权限请求 —— 不放行则 getUserMedia 静默失败。
   // 只有已登记主窗口的应用主frame与已确认语音入口可请求音频，远程浏览器不继承资格。
   const rendererUrl = process.env['ELECTRON_RENDERER_URL'] || pathToFileURL(join(__dirname, '../renderer/index.html')).href
+  installTrustedIpc(ipcMain, () => ['main', 'settings'].flatMap((role) => {
+    const win = getWindow(role as 'main' | 'settings')
+    return win && !win.isDestroyed() ? [win.webContents] : []
+  }), rendererUrl)
   installMediaPermissions(session.defaultSession, () => getMainWindow()?.webContents ?? null, rendererUrl, () => {
     const config = getVoiceConfig()
     return config.endpoint.trim().length > 0 && config.disclosureAccepted
@@ -884,7 +891,7 @@ app.whenReady().then(async () => {
       sendToAll(IPC.browserChanged, state)
     })
     // 把真实实现注入 agent 层的浏览器接缝（那边不 import electron）
-    setBrowserAdapter({
+    const browserAdapter: BrowserAdapter = {
       currentUrl: browserCurrentUrl,
       navigate: async (url) => {
         const s = await browserNavigate(url)
@@ -908,7 +915,9 @@ app.whenReady().then(async () => {
       closeTab: browserCloseTab,
       uploadFile: (target, filePath) => browserUploadFile(target, filePath),
       waitFor: (target, timeoutMs) => browserWaitFor(target, timeoutMs)
-    })
+    }
+    browserAdapter.createTask = (signal) => createBrowserTaskAdapter(browserAdapter, signal)
+    setBrowserAdapter(browserAdapter)
     log.info('浏览器适配器已注入 agent 接缝')
   } else {
     // plan38 S3：不就绪是**状态**不是"稍后重试能好"的事 —— 留一条硬痕，browser_* 报错时能对上现场
@@ -956,6 +965,7 @@ app.whenReady().then(async () => {
   //    为什么两个都要挂：Electron 文档写得很死 —— 用户按 **Cmd+Q** 或代码调 `app.quit()` 时
   //    **不会**触发 `window-all-closed`（它先关窗口、直接进 `will-quit`）；只挂一个入口，macOS 上每次退出都留个没人管的 shell。
   const teardownAll = (): void => {
+    abortAgentTasks()
     confirm.abortAll('窗口已全部关闭')
     // 提问同理 —— 没人能作答了，按未作答结束，而不是让那条 Agent 干等满 5 分钟
     ask.abortAll('窗口已全部关闭')
@@ -971,7 +981,10 @@ app.whenReady().then(async () => {
   }
 
   app.on('window-all-closed', teardownAll)
-  app.on('before-quit', teardownAll)
+  app.on('before-quit', createQuitBarrier(async () => {
+    teardownAll()
+    await mcp.dispose()
+  }, () => app.quit(), 5000, () => log.warn('资源收尾超时或失败，继续退出')))
   // 数据目录锁正常释放（崩溃时锁文件留在盘上，下次启动靠 pid 存活检测自愈）
   app.on('will-quit', () => releaseBootstrapLock())
 })

@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import type { AgentTaskStatus } from '@shared/ipc'
 import type { SubagentJobEvent } from '@shared/agent'
 import { statusText } from '@shared/background'
 import { useAppStore } from '../store'
@@ -16,6 +17,18 @@ function jobStatus(j: SubagentJobEvent): string {
 }
 
 export default function TasksPanel(): JSX.Element {
+  const [agentTasks, setAgentTasks] = useState<AgentTaskStatus[]>([])
+  const [taskText, setTaskText] = useState('')
+  const [taskError, setTaskError] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    const refresh = (): void => { void window.api.listAgentTasks().then((tasks) => {
+      if (alive) setAgentTasks(tasks)
+    }).catch(() => { if (alive) setTaskError('任务状态读取失败') }) }
+    refresh()
+    const timer = setInterval(refresh, 500)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
   const jobs = useAppStore((s) => s.subagents)
   const bgTasks = useAppStore((s) => s.backgroundTasks)
 
@@ -45,6 +58,36 @@ export default function TasksPanel(): JSX.Element {
 
   return (
     <div className="tasks-panel">
+      <div className="tasks-head"><span className="tasks-title">一次性任务</span></div>
+      <form onSubmit={(event) => {
+        event.preventDefault()
+        if (!taskText.trim()) return
+        setTaskError(null)
+        void window.api.runAgent({ task: taskText.trim(),
+          conversationId: useAppStore.getState().activeId ?? undefined }).then((result) => {
+          if (result.error) setTaskError(result.error)
+          void window.api.listAgentTasks().then(setAgentTasks)
+        }).catch(() => setTaskError('任务启动失败'))
+      }}>
+        <textarea aria-label="一次性任务内容" value={taskText}
+          onChange={(event) => setTaskText(event.target.value)} />
+        <button className="ex-btn" type="submit" disabled={!taskText.trim() ||
+          agentTasks.some((t) => ['running', 'stopping'].includes(t.status))}>执行任务</button>
+      </form>
+      {taskError && <div role="alert">{taskError}</div>}
+      {agentTasks.map((task) => <div key={task.id} className="task-item">
+        <div className="task-body">
+          <div className="task-task">{task.task}</div>
+          <div className="task-status">{{ running: '运行中', stopping: '正在停止',
+            completed: '已完成', failed: '失败', cancelled: '已停止' }[task.status]}</div>
+          {task.error && <div className="task-result">{task.error}</div>}
+          {task.output && <pre className="task-output">{task.output}</pre>}
+          {task.status === 'running' && <button className="ex-btn" onClick={() => {
+            void window.api.stopAgentTask(task.id).then(() => window.api.listAgentTasks())
+              .then(setAgentTasks).catch(() => setTaskError('停止任务失败'))
+          }}>停止任务</button>}
+        </div>
+      </div>)}
       {/* ── 子代理 ── */}
       <div className="tasks-head">
         <span className="tasks-title">子代理</span>

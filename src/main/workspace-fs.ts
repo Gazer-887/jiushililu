@@ -1,3 +1,4 @@
+import { contentRevision } from './file-revision'
 import { open, readdir, readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import type { Attachment } from '@shared/ipc'
@@ -114,6 +115,7 @@ export async function readWorkspaceFile(workspaceRoot: string, rel: string): Pro
       size: st.size,
       // 冲突基线：编辑保存时带回来比对（见 FsReadResult.mtimeMs 的注释）
       mtimeMs: st.mtimeMs,
+      revision: contentRevision(buf),
       ...(truncated ? { truncated: true } : {}),
       // 有损解码判据（plan13 批 B 实测）：原文不是合法 UTF-8（GBK / 二进制）时 `toString('utf8')`
       // 会把坏字节换成 U+FFFD，**再编码回去不等于原字节** → "读进来再写回去"必然损坏它。

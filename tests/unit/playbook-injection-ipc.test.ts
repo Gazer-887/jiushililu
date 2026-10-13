@@ -55,7 +55,7 @@ function setup() {
   const run = async (task: string) => {
     const handler = fixture.handlers.get(IPC.agentRun)
     expect(handler).toBeTypeOf('function')
-    expect(await handler!({ sender: { id: 21 } }, { task, conversationId: 'pb-conversation' })).toMatchObject({ ok: true })
+    expect(await handler!({ sender: { id: 21, once: () => {}, removeListener: () => {} } }, { task, conversationId: 'pb-conversation' })).toMatchObject({ ok: true })
     return (fixture.run.mock.calls.at(-1) as unknown as [unknown, { playbookBlock: string | null }])[1].playbookBlock
   }
   return { playbook, run }

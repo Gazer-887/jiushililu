@@ -60,7 +60,7 @@ function setup() {
 }
 function event(id: number, onSend?: (channel: string, payload: unknown) => void) {
   const messages: Array<{ channel: string; payload: unknown }> = []
-  return { sender: { id, isDestroyed: () => false, send: (channel: string, payload: unknown) => { messages.push({ channel, payload }); onSend?.(channel, payload) } }, messages }
+  return { sender: { id, isDestroyed: () => false, once: () => {}, removeListener: () => {}, send: (channel: string, payload: unknown) => { messages.push({ channel, payload }); onSend?.(channel, payload) } }, messages }
 }
 function requestBody(init?: RequestInit): { messages: Array<{ role: string; content: string }> } {
   return JSON.parse(String(init?.body))
@@ -81,6 +81,32 @@ function remember(name: string) {
 function notice(owner: string) { return f.notices.filter((n) => n.channel === IPC.memoryNotice && n.payload.conversationId === owner) }
 
 describe('聊天和一次性任务实际装配', () => {
+  it.each(['停止', '窗口销毁'])('一次性任务实际装配：%s贯通到Provider取消，释放检查点且不误停其他窗口', async (mode) => {
+    const { agent } = setup()
+    let reached!: () => void
+    const waiting = new Promise<void>((r) => { reached = r })
+    setHttpFetch(async (_url, init) => {
+      reached()
+      return new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener('abort', () => reject(new DOMException('停止', 'AbortError')), { once: true })
+      })
+    })
+    const e = event(71)
+    let onDestroyed: (() => void) | undefined
+    Object.assign(e.sender, { once: vi.fn((_name: string, callback: () => void) => { onDestroyed = callback }),
+      removeListener: vi.fn() })
+    const run = f.handlers.get(IPC.agentRun)!(e, { task: '公共可取消任务' })
+    await waiting
+    const task = f.handlers.get(IPC.agentTaskList)!(e).at(-1)
+    expect(task.status).toBe('running')
+    expect(f.handlers.get(IPC.agentTaskStop)!(event(72), task.id)).toBe(false)
+    if (mode === '停止') expect(f.handlers.get(IPC.agentTaskStop)!(e, task.id)).toBe(true)
+    else { expect(onDestroyed).toBeTypeOf('function'); onDestroyed!() }
+    expect(await run).toMatchObject({ ok: false, stopReason: 'cancelled', taskId: task.id })
+    expect(f.handlers.get(IPC.agentTaskList)!(e).at(-1).status).toBe('cancelled')
+    expect(agent.checkpoints.list().every((run) => run.status !== 'running')).toBe(true)
+    expect(e.sender.removeListener).toHaveBeenCalled()
+  })
   it.each(['chat', 'agent'] as const)('聊天A写完停在模型等待，%s B完成后各归本轮', async (mode) => {
     const { memory } = setup(); const suffix = ++sequence
     const aName = `AlphaEditor${suffix}`; const bName = `BetaBuild${suffix}`
@@ -116,6 +142,8 @@ describe('聊天和一次性任务实际装配', () => {
     } else {
       const first = await f.handlers.get(IPC.agentRun)!(e, { task: '公共错误请求' })
       const second = await f.handlers.get(IPC.agentRun)!(e, { task: '公共错误请求' })
+      expect(first).toHaveProperty('taskId')
+      expect(second).toHaveProperty('taskId')
       expect(JSON.stringify([first, second])).toContain('400'); expect(JSON.stringify([first, second])).not.toContain('PUBLIC_PRIVATE_BODY_MARKER')
       expect(JSON.stringify(second)).not.toContain('已有 Agent')
     }

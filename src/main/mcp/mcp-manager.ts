@@ -106,6 +106,8 @@ export interface McpManager {
   onChange(cb: () => void): () => void
   /** 组合根在启动时调用：全量连接，失败不阻塞（D-063） */
   connectAll(): Promise<void>
+  /** 终止后不再接受连接；并发调用共享同一释放结果。 */
+  dispose(): Promise<void>
 }
 
 export function createMcpManager(deps: {
@@ -120,6 +122,25 @@ export function createMcpManager(deps: {
   const toolsCache = new Map<string, McpServerTool[]>()
   const errors = new Map<string, string>()
   const listeners = new Set<() => void>()
+  let closing = false
+  let disposed: Promise<void> | null = null
+  const resources = new Map<Client, Transport | null>()
+  const releases = new Map<Client, Promise<void>>()
+  const epochs = new Map<string, number>()
+
+  function release(client: Client): Promise<void> {
+    const pending = releases.get(client)
+    if (pending) return pending
+    if (!resources.has(client)) return Promise.resolve()
+    const transport = resources.get(client)
+    resources.delete(client)
+    // SDK 的 close 已释放所绑定的 transport；未绑定的传输才直接关闭。
+    const result = Promise.resolve().then(() => client.transport ? client.close() : transport?.close())
+      .then(() => {})
+    releases.set(client, result)
+    void result.finally(() => releases.delete(client)).catch(() => {})
+    return result
+  }
 
   const notify = (): void => {
     for (const cb of listeners) cb()
@@ -147,13 +168,19 @@ export function createMcpManager(deps: {
   }
 
   async function connectServer(cfg: McpServerConfig): Promise<void> {
+    if (closing) return
+    if (clients.has(cfg.name)) await disconnectServer(cfg.name)
+    if (closing) return
+    const epoch = (epochs.get(cfg.name) ?? 0) + 1
+    epochs.set(cfg.name, epoch)
     const invalid = validateServerConfig(cfg)
     if (invalid) {
       errors.set(cfg.name, invalid)
       return
     }
+    const client = new Client({ name: 'jiushililu-mcp', version: deps.clientVersion }, { capabilities: {} })
+    resources.set(client, null)
     try {
-      const client = new Client({ name: 'jiushililu-mcp', version: deps.clientVersion }, { capabilities: {} })
       const transport = deps.createTransport
         ? await deps.createTransport(cfg)
         : cfg.transport === 'stdio'
@@ -164,8 +191,18 @@ export function createMcpManager(deps: {
               stderr: 'pipe'
             })
           : new SSEClientTransport(new URL(cfg.url!))
+      if (closing || epochs.get(cfg.name) !== epoch) {
+        await transport.close()
+        await release(client)
+        return
+      }
+      resources.set(client, transport)
       await client.connect(transport)
       const tools = await client.listTools()
+      if (closing || epochs.get(cfg.name) !== epoch) {
+        await release(client)
+        return
+      }
       clients.set(cfg.name, client)
       toolsCache.set(
         cfg.name,
@@ -177,6 +214,8 @@ export function createMcpManager(deps: {
       )
       errors.delete(cfg.name)
     } catch (e) {
+      await release(client).catch(() => {})
+      if (closing || epochs.get(cfg.name) !== epoch) return
       // D-063 fail-soft：一个坏 server 拖不垮应用
       errors.set(cfg.name, errText(e))
       warn(`MCP 服务器「${cfg.name}」连接失败：${errText(e)}`)
@@ -184,15 +223,18 @@ export function createMcpManager(deps: {
   }
 
   async function disconnectServer(name: string): Promise<void> {
+    epochs.set(name, (epochs.get(name) ?? 0) + 1)
     const client = clients.get(name)
     if (!client) return
     try {
-      await client.close()
+      await release(client)
     } catch (e) {
       warn(`MCP 服务器「${name}」断开失败（忽略）：${errText(e)}`)
     }
-    clients.delete(name)
-    toolsCache.delete(name)
+    if (clients.get(name) === client) {
+      clients.delete(name)
+      toolsCache.delete(name)
+    }
   }
 
   const manager: McpManager = {
@@ -235,6 +277,7 @@ export function createMcpManager(deps: {
     },
 
     saveServer(input): McpSaveResult {
+      if (closing) return { ok: false, reason: 'MCP 正在关闭' }
       const invalid = validateServerConfig(input)
       if (invalid) return { ok: false, reason: invalid }
       const cfg = readConfig()
@@ -245,6 +288,8 @@ export function createMcpManager(deps: {
     },
 
     deleteServer(name): McpSaveResult {
+      if (closing) return { ok: false, reason: 'MCP 正在关闭' }
+      epochs.set(name, (epochs.get(name) ?? 0) + 1)
       const cfg = readConfig()
       const next = cfg.servers.filter((s) => s.name !== name)
       if (next.length === cfg.servers.length) return { ok: false, reason: `没有名为「${name}」的服务器` }
@@ -254,12 +299,13 @@ export function createMcpManager(deps: {
       clients.delete(name)
       toolsCache.delete(name)
       errors.delete(name)
-      if (client) void client.close().catch(() => {})
+      if (client) void release(client).catch(() => {})
       notify()
       return { ok: true }
     },
 
     async reconnect(name): Promise<McpSaveResult> {
+      if (closing) return { ok: false, reason: 'MCP 正在关闭' }
       const cfg = readConfig().servers.find((s) => s.name === name)
       if (!cfg) return { ok: false, reason: `没有名为「${name}」的服务器（可能已被删除）` }
       await disconnectServer(name)
@@ -274,6 +320,7 @@ export function createMcpManager(deps: {
     },
 
     async callTool(server, tool, args): Promise<McpCallResult> {
+      if (closing) return { text: 'MCP 正在关闭，未执行工具', images: [] }
       const client = clients.get(server)
       if (!client) return { text: `MCP 服务器「${server}」未连接，无法调用 ${tool}。`, images: [] }
       try {
@@ -287,8 +334,21 @@ export function createMcpManager(deps: {
     },
 
     onChange(cb): () => void {
+      if (closing) return () => {}
       listeners.add(cb)
       return () => listeners.delete(cb)
+    },
+
+    dispose(): Promise<void> {
+      if (disposed) return disposed
+      closing = true
+      clients.clear()
+      toolsCache.clear()
+      listeners.clear()
+      disposed = Promise.allSettled([...resources.keys()].map(release).concat([...releases.values()])).then((results) => {
+        if (results.some((r) => r.status === 'rejected')) warn('部分 MCP 资源释放失败')
+      })
+      return disposed
     },
 
     async connectAll(): Promise<void> {

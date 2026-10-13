@@ -1,3 +1,5 @@
+import { contentRevision, fileRevision } from '../../file-revision'
+import { AgentPauseError } from '../pause-error'
 import { readFile } from 'node:fs/promises'
 import type { AgentTool } from '@shared/agent'
 import { estimateTokens } from '@shared/tokens'
@@ -211,6 +213,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
    * ⚠️ 边界策略来自 **writer**（`allowsOutside`），不是工具自己读档位：
    * 档位 → writer 只有一条路径（`runner.ts`），少一条重复的判断就少一处漂移。
    */
+  const revisions = new Map<string, string>()
   const locate = (rel: string): { abs: string; note: string } | null => {
     const r = resolvePathInWorkspace(writer.root, rel, { allowOutside: writer.allowsOutside })
     if (!r) return null
@@ -245,6 +248,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       const { abs, note } = located
       try {
         const buf = await readFile(abs)
+        revisions.set(abs, contentRevision(buf))
         if (buf.byteLength > MAX_READ_BYTES) {
           return `错误：文件超过 ${Math.round(MAX_READ_BYTES / 1024 / 1024)}MB，读取被拒绝`
         }
@@ -297,6 +301,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
 
         return `${note}${body}${footer}${clipNote}`
       } catch (err) {
+        if (err instanceof AgentPauseError) throw err
         return `错误：读取失败——${err instanceof Error ? err.message : String(err)}`
       }
     }
@@ -322,8 +327,13 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       const located = locate(rel)
       if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝写入`
       try {
-        return `${located.note}${await writer.write(rel, content)}`
+        const baseline = revisions.get(located.abs) ?? fileRevision(located.abs)
+        if (baseline !== null && !revisions.has(located.abs)) return '错误：覆盖已有文件前请先用 read_file 读取，避免覆盖人工改动'
+        const result = await writer.write(rel, content, baseline)
+        revisions.set(located.abs, contentRevision(content))
+        return `${located.note}${result}`
       } catch (err) {
+        if (err instanceof AgentPauseError) throw err
         return `错误：${err instanceof Error ? err.message : String(err)}`
       }
     }
@@ -380,6 +390,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       let source: string
       try {
         const buf = await readFile(abs)
+        revisions.set(abs, contentRevision(buf))
         if (buf.byteLength > MAX_EDIT_BYTES) {
           return `错误：文件超过 ${Math.round(MAX_EDIT_BYTES / 1024 / 1024)}MB，edit 拒绝处理（请改用命令行工具）`
         }
@@ -388,6 +399,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         }
         source = buf.toString('utf8')
       } catch (err) {
+        if (err instanceof AgentPauseError) throw err
         const msg = err instanceof Error ? err.message : String(err)
         // 「文件不存在」与「读不了」要分开说：前者该改用 write_file，后者该查权限/占用
         if (/ENOENT/.test(msg)) return `错误：「${rel}」不存在。新建文件请用 write_file`
@@ -403,7 +415,8 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       if (outcome.text === source) return `${note}「${rel}」内容无变化，未写入（替换文本与原文相同）`
 
       try {
-        const wrote = await writer.write(rel, outcome.text)
+        const wrote = await writer.write(rel, outcome.text, contentRevision(source))
+        revisions.set(abs, contentRevision(outcome.text))
         const notes = outcome.applied.map((a) => {
           const sign = a.deltaBytes >= 0 ? `+${a.deltaBytes}` : `${a.deltaBytes}`
           const how = a.matchedBy === 'normalized' ? '，按换行符口径归一后命中' : ''
@@ -415,6 +428,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
           `（首处 - ${preview(edits[0]!.oldText)}\n    + ${preview(edits[0]!.newText)}）`
         )
       } catch (err) {
+        if (err instanceof AgentPauseError) throw err
         return `错误：${err instanceof Error ? err.message : String(err)}`
       }
     }

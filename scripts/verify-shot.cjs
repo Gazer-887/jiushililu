@@ -947,6 +947,10 @@ const fakeDiff = (rel) =>
 let firecrawlHasKeyStub = false
 const memoryAutoStub = { autoMemoryEnabled: undefined, reflectionModel: undefined, reflectionDailyLimit: undefined }
 
+// 专项界面夹具只替换 IPC 外设，不调用真实模型；普通门禁不产生一次性任务。
+const agentUiTasks = process.env.AGENT_TASKS_UI_ONLY === '1'
+  ? [{ id: 'ui-running', task: '本地停止验证任务', status: 'running', startedAt: Date.now() }] : []
+const agentUiCalls = { run: [], stop: [] }
 const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
@@ -1579,7 +1583,22 @@ const STUBS = {
     return undefined
   },
   'chat:abort': () => undefined,
-  'agent:run': () => ({ ok: true, output: '', rounds: 0, stopReason: 'completed', agent: 'x' }),
+  'agent:run': (args) => {
+    if (process.env.AGENT_TASKS_UI_ONLY === '1') {
+      agentUiCalls.run.push(args)
+      agentUiTasks.push({ id: 'ui-completed', task: args.task, status: 'completed',
+        startedAt: Date.now(), endedAt: Date.now(), output: '本地夹具执行完成' })
+    }
+    return { ok: true, output: '', rounds: 0, stopReason: 'completed', agent: 'x' }
+  },
+  'agent:task-list': () => agentUiTasks.map((task) => ({ ...task })),
+  'agent:task-stop': (id) => {
+    agentUiCalls.stop.push(id)
+    const task = agentUiTasks.find((item) => item.id === id)
+    if (!task || task.status !== 'running') return false
+    task.status = 'cancelled'
+    return true
+  },
   'workspace:get': () => ({ ...wsStub }),
   'workspace:pick': () => {
     if (!wsPickNext) return null
@@ -2611,6 +2630,11 @@ app.whenReady().then(async () => {
   }
   if (process.env.M02_UI_ONLY === '1') {
     await runM02Ui()
+    reportAndExit()
+    return
+  }
+  if (process.env.AGENT_TASKS_UI_ONLY === '1') {
+    await require('./lib/agent-task-ui-gate.cjs')({ win, checkTrue, calls: agentUiCalls, shots: SHOTS })
     reportAndExit()
     return
   }

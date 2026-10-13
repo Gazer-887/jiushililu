@@ -1,7 +1,8 @@
-import { existsSync } from 'node:fs'
+import { existsSync, constants } from 'node:fs'
 import { copyFile, mkdir, rename as renameFs, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative } from 'node:path'
 import { isInside, resolvePathInWorkspace, type PathAccess } from './agent/guard'
+import { fileRevision, withFileCommit, FileConflictError, canonicalFilePath } from './file-revision'
 
 // 工作区统一写入服务（plan7 批 A2 的前置 —— 全功能资源管理器的地基）。
 //
@@ -36,7 +37,7 @@ export interface WorkspaceWriter {
    * 既然选择不拦，就必须让人**看得见它出了界**。工具层不该自己去重算一遍策略。
    */
   allowsOutside: boolean
-  write(rel: string, content: string): Promise<string>
+  write(rel: string, content: string, expectedRevision?: string | null): Promise<string>
   mkdir(rel: string): Promise<string>
   rename(rel: string, nextRel: string): Promise<string>
   /** 删除到**回收站**，不是硬删 —— 误删还能自己捞回来 */
@@ -76,13 +77,22 @@ export function createWorkspaceWriter(
     root: workspaceRoot,
     allowsOutside: hooks.pathAccess?.allowOutside === true,
 
-    async write(rel, content) {
+    async write(rel, content, expectedRevision) {
       const abs = absOf(rel)
-      hooks.beforeChange?.(rel, abs)
-      // 父目录不存在则自动创建（调用方不该为 mkdir 单独跑一趟）
-      await mkdir(dirname(abs), { recursive: true })
-      await writeFile(abs, content, 'utf8')
-      return `已写入 ${rel}（${Buffer.byteLength(content, 'utf8')} 字节）${outsideNote(abs)}`
+      const baseline = expectedRevision === undefined ? fileRevision(abs) : expectedRevision
+      const identity = canonicalFilePath(abs)
+      return withFileCommit([abs], async () => {
+        const check = (): void => {
+          if (absOf(rel) !== abs || canonicalFilePath(abs) !== identity || fileRevision(abs) !== baseline)
+            throw new FileConflictError()
+        }
+        check()
+        hooks.beforeChange?.(rel, abs)
+        await mkdir(dirname(abs), { recursive: true })
+        check()
+        await writeFile(abs, content, { encoding: 'utf8', flag: baseline === null ? 'wx' : 'w' })
+        return `已写入 ${rel}（${Buffer.byteLength(content, 'utf8')} 字节）${outsideNote(abs)}`
+      })
     },
 
     async mkdir(rel) {
@@ -95,6 +105,8 @@ export function createWorkspaceWriter(
     async rename(rel, nextRel) {
       const from = absOf(rel)
       const to = absOf(nextRel)
+      const baseline = fileRevision(from)
+      return withFileCommit([from, to], async () => {
       // ⚠️ 目标已存在 → **拒绝**，不静默覆盖。
       //    `fs.rename` 在 POSIX 与 Windows 上都会**直接替换**已存在的目标（Windows 走
       //    MoveFileEx + REPLACE_EXISTING）—— 用户只是改个名，就把另一个文件悄悄冲掉了：
@@ -105,19 +117,27 @@ export function createWorkspaceWriter(
       hooks.beforeChange?.(rel, from)
       hooks.beforeChange?.(nextRel, to)
       await mkdir(dirname(to), { recursive: true })
+      if (absOf(rel) !== from || absOf(nextRel) !== to || fileRevision(from) !== baseline)
+        throw new FileConflictError()
+      if (existsSync(to)) throw new Error(`目标「${nextRel}」已存在，未做改动`)
       await renameFs(from, to)
       return `已重命名 ${rel} → ${nextRel}${outsideNote(from) || outsideNote(to)}`
+      })
     },
 
     async remove(rel) {
       const abs = absOf(rel)
-      hooks.beforeChange?.(rel, abs)
-      await hooks.trash(abs)
-      return `已删除 ${rel}（已移入回收站）${outsideNote(abs)}`
+      return withFileCommit([abs], async () => {
+        if (absOf(rel) !== abs) throw new FileConflictError()
+        hooks.beforeChange?.(rel, abs)
+        await hooks.trash(abs)
+        return `已删除 ${rel}（已移入回收站）${outsideNote(abs)}`
+      })
     },
 
     async copyIn(sourceAbs, rel) {
       const wanted = absOf(rel)
+      return withFileCommit([wanted], async () => {
       const info = await stat(sourceAbs)
       if (!info.isFile()) throw new Error('目前只支持拖入文件（文件夹请逐个拖入）')
       // **不覆盖**已有文件：同名时自动加序号 —— 拖同一个文件两次很常见，静默覆盖会白白丢内容
@@ -125,9 +145,11 @@ export function createWorkspaceWriter(
       const finalRel = to === wanted ? rel : relative(workspaceRoot, to).replace(/\\/g, '/')
       hooks.beforeChange?.(finalRel, to)
       await mkdir(dirname(to), { recursive: true })
-      await copyFile(sourceAbs, to)
+      if (!resolvePathInWorkspace(workspaceRoot, finalRel, hooks.pathAccess)) throw new FileConflictError()
+      await copyFile(sourceAbs, to, constants.COPYFILE_EXCL)
       const renamed = to === wanted ? '' : `（同名文件已存在，另存为 ${finalRel}）`
       return `已导入 ${finalRel}（${info.size} 字节）${renamed}${outsideNote(to)}`
+      })
     }
   }
 }
