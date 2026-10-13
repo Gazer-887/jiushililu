@@ -209,6 +209,12 @@ export interface CheckpointSides {
   lossy: boolean
   /** 当前文件 mtime（逐块退回的冲突基线，防"用户点拒绝的同时 Agent 正在写"）；文件不在则无 */
   mtimeMs?: number
+  /**
+   * **当前内容的 SHA-256 内容版本**（`after` 的 revision）。
+   * 逐处退回的**第二道冲突基线**：mtime 精度粗（FAT 2s / 网络盘）或被人工回拨（utimes）时，
+   * 同 mtime 不同字节会让 mtime 阀失效 —— 退回据此拒绝"依据陈旧差异覆盖未知新内容"（2026-10-13 实测）。
+   */
+  currentRevision?: string
   /** 这一轮还没收尾 —— `running` 时 Agent 可能**正在**写这些文件 */
   runStatus: 'running' | 'done'
 }
@@ -271,6 +277,12 @@ export interface RevertHunkInput {
    * 被改过（Agent 在跑 / 用户自己编辑）时主进程**必须拒绝**，否则"点第 2 处、改掉第 N 处"。
    */
   expectedMtimeMs: number
+  /**
+   * 界面看到"当前内容"时的**内容版本**（sides 的 `currentRevision`）。
+   * 提供时与当前内容的 SHA-256 比对，不等即拒（`changed-on-disk`）—— 覆盖 mtime 相同而字节不同的场景。
+   * 缺省（旧调用）时保持原 mtime 单阀行为。
+   */
+  expectedCurrentRevision?: string
 }
 
 export type RevertHunkResult =

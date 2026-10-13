@@ -1,5 +1,5 @@
 import { createAgentTaskRegistry } from './agent-task-registry'
-import { fileRevision, FileConflictError } from './file-revision'
+import { contentRevision, fileRevision, FileConflictError } from './file-revision'
 import { ipcMain, dialog, BrowserWindow, shell, clipboard } from 'electron'
 import { z } from 'zod'
 import { isSafeRel, selectChanges } from '@shared/checkpoint'
@@ -2196,6 +2196,8 @@ export function registerIpcHandlers(deps: {
         truncated: beforeTruncated || afterTruncated,
         lossy,
         ...(cur.ok && cur.mtimeMs !== undefined ? { mtimeMs: cur.mtimeMs } : {}),
+        // 内容级第二道阀的基线（2026-10-13）：mtime 相同而字节不同时，逐处退回据此拒绝
+        ...(after !== null ? { currentRevision: contentRevision(after) } : {}),
         runStatus: run.status
       }
     }
@@ -2208,17 +2210,24 @@ export function registerIpcHandlers(deps: {
         .object({ runId: z.string().min(1).max(64), rel: z.string().min(1).max(1024).optional() })
         .parse(raw)
       // ⚠️ **回滚也要能"再回滚一次"**：回滚是"把现在的内容换成别的"，它自己不留快照的话，用户退错了就**永远回不去** —— 所以先把"即将被覆盖的当前内容"存成一轮检查点，再动手。
-      const preRunId = deps.agent.checkpoints.snapshotCurrent(
+      // ⚠️ **备份失败的目标不得被覆盖/删除**（独审实测反例：只看"拿到了 preRunId"会漏掉部分目标失败）——
+      //    snapshotCurrent 现在逐目标报告成败，失败的进 exclude：一个字节都不动，且如实计入报告（不标整轮已恢复）。
+      const pre = deps.agent.checkpoints.snapshotCurrent(
         input.runId,
         input.rel,
         '界面：回滚前的自动备份',
         UI_RUN_OWNER
       )
-      const report = deps.agent.checkpoints.rollback(input.runId, input.rel)
+      const report = deps.agent.checkpoints.rollback(
+        input.runId,
+        input.rel,
+        pre.failed.map((f) => f.rel)
+      )
       log.info('执行回滚', {
         runId: input.runId,
         target: input.rel ?? '（整轮）',
-        preRunId: preRunId ?? '（无可备份内容）',
+        preRunId: pre.preRunId ?? '（无可备份内容）',
+        backupFailed: pre.failed.map((f) => ({ rel: f.rel, reason: f.reason })),
         restored: report.restored.length,
         deleted: report.deleted.length,
         failed: report.failed.length,
@@ -2494,7 +2503,8 @@ export function registerIpcHandlers(deps: {
           runId: z.string().min(1).max(64),
           rel: z.string().min(1).max(1024),
           hunkIndex: z.number().int().min(1).max(100000),
-          expectedMtimeMs: z.number()
+          expectedMtimeMs: z.number(),
+          expectedCurrentRevision: z.string().min(1).max(128).optional()
         })
         .safeParse(raw)
       if (!parsed.success) return { ok: false, reason: 'bad-input' }

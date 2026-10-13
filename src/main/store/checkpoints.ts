@@ -6,14 +6,15 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  readSync,
   readdirSync,
+  readSync,
+  realpathSync,
   rmSync,
   statSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import {
   backupName,
   compareRunsNewestFirst,
@@ -61,10 +62,22 @@ export interface CheckpointStore {
   list(): CheckpointRunMeta[]
   get(runId: string): CheckpointRun | null
   readBackup(runId: string, rel: string): ReadBackupResult
-/** 回滚**之前**先把"即将被覆盖的当前内容"另存为一轮检查点：不留的话用户退错了就**永远回不去**（Agent 那一版只存在于磁盘上）。
- *  @returns 新轮次 runId；没有可备份的东西则 `null`（那时不会产生空轮次） */
-  snapshotCurrent(runId: string, rel: string | undefined, label: string, owner: string): string | null
-  rollback(runId: string, rel?: string): RollbackReport
+/** 回滚**之前**先把"即将被覆盖的当前内容"**逐目标**另存为一轮检查点：不留的话用户退错了就**永远回不去**（Agent 那一版只存在于磁盘上）。
+ *  @returns `preRunId` = 备份轮次（一条都没成则 null，不留空轮次）；`failed` = 未能可靠备份的目标及原因
+ *          —— 调用方**必须**据此把这些目标排除出本次回滚（不覆盖、不删除），否则就是"没备份却照样恢复、还报告成功" */
+  snapshotCurrent(
+    runId: string,
+    rel: string | undefined,
+    label: string,
+    owner: string
+  ): {
+    /** 备份轮次 runId；一条都没备份成则为 null（此时不会留下空轮次） */
+    preRunId: string | null
+    /** **未能可靠备份的目标及原因** —— 调用方必须把它们排除出本次回滚（不覆盖、不删除） */
+    failed: Array<{ rel: string; reason: string }>
+  }
+  /** @param exclude 本次**不得**恢复/删除的目标（如回滚前备份失败者）；被排除者如实进报告 failed */
+  rollback(runId: string, rel?: string, exclude?: readonly string[]): RollbackReport
   prune(): number
   forget(runId: string): void
 }
@@ -73,6 +86,58 @@ export function createCheckpointStore(dir: string): CheckpointStore {
   // 运行中的轮次放在内存（收尾时已在盘上），避免每次 record 都重读 manifest
   const active = new Map<string, CheckpointRun>()
   const recorded = new Map<string, Set<string>>()
+
+  /**
+   * 逐目标备份的失败原因（runId → rel → 原因）。`record` 吞异常不阻断写入（用户仍能改文件），
+   * 但**失败必须留痕**：`snapshotCurrent` 据此把该目标排除出回滚 —— 备份失败的目标不许被覆盖/删除。
+   */
+  const recordFailures = new Map<string, Map<string, string>>()
+
+  /**
+   * 真实路径**严格**解析：只对**明确不存在**（ENOENT）的尾部按需上溯；
+   * EACCES/EPERM/未知异常**立即抛**。
+   *
+   * ⚠️ 为什么不能直接用 guard 的 `realpathDeepest`：它把一切异常都当"不存在"继续爬父目录，
+   * 极端情况返回原字符串 —— 真实路径**不可核**（权限/占用/异常联接）时外层收不到错误，
+   * 边界检查就退化成字符串比较，恰好放过 junction 这类真实逃逸（增量独审实证）。
+   */
+  function realpathStrict(abs: string): string {
+    const tail: string[] = []
+    let cur = abs
+    for (;;) {
+      try {
+        const real = realpathSync.native(cur)
+        return tail.length === 0 ? real : join(real, ...tail.reverse())
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+        const parent = dirname(cur)
+        if (parent === cur) throw err
+        tail.push(basename(cur))
+        cur = parent
+      }
+    }
+  }
+
+  /** backup 字段必须是纯编号文件名：manifest 被人工改过时不许拼出越界备份源 */
+  const isPlainBackupName = (name: string): boolean => /^\d+\.bin$/.test(name)
+
+  /** runId 必须是无分隔编号：防止 `../` 之类把 store 根目录拼逃逸 */
+  const isSafeRunId = (id: string): boolean => /^[A-Za-z0-9._-]{1,64}$/.test(id)
+
+  /**
+   * 目标的**真实**路径（symlink/junction 解析后）必须落在真实 root 内。
+   * ⚠️ 只比字符串前缀不够：工作区里的目录被换成指向外部的联接后，resolve 结果看起来还在工作区内，
+   * 读写却会穿到工作区外 —— 独审实测反例（外部私有文件被回滚覆盖）。真实路径核失败一律拒绝（fail-closed）。
+   */
+  const realInsideRoot = (root: string, abs: string): boolean => {
+    try {
+      const realRoot = realpathStrict(root)
+      const realAbs = realpathStrict(abs)
+      return realAbs === realRoot || realAbs.startsWith(realRoot + sep)
+    } catch {
+      return false
+    }
+  }
 
   const runDir = (runId: string): string => join(dir, runId)
 
@@ -125,7 +190,15 @@ export function createCheckpointStore(dir: string): CheckpointStore {
 
       const root = resolve(workspaceRoot)
       const target = resolve(abs)
+      const fail = (reason: string): void => {
+        // 失败**留痕但不阻断写入**（快照属"锦上添花"）：snapshotCurrent 据此把该目标排除出回滚
+        let byRel = recordFailures.get(runId)
+        if (!byRel) recordFailures.set(runId, (byRel = new Map()))
+        byRel.set(key, reason)
+      }
       if (target !== root && !target.startsWith(root + sep)) return
+      // 真实路径核（含联接解析）：目标穿到工作区外时，不得把外部内容纳入备份（备份来源越界）
+      if (!realInsideRoot(root, target)) return fail('目标真实路径越出工作区（含符号联接）')
 
       try {
         let change: FileChange
@@ -146,8 +219,9 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         run.changes = upsertChange(run.changes, change)
         seen?.add(key)
         flush(run)
-      } catch {
-        // 快照失败不能阻断写入（用户仍能改文件，只是这一条回滚不了）
+        recordFailures.get(runId)?.delete(key)
+      } catch (err) {
+        fail(`备份失败：${err instanceof Error ? err.message : String(err)}`)
       }
     },
 
@@ -158,6 +232,7 @@ export function createCheckpointStore(dir: string): CheckpointStore {
       flush(run)
       active.delete(runId)
       recorded.delete(runId)
+      recordFailures.delete(runId)
       store.prune()
     },
 
@@ -204,7 +279,11 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         return { ok: false, reason: 'created' }
       }
 
+      // 备份源必须可信：纯编号文件名 + **真实路径仍在受信 checkpoint 根内**（files 目录被换成
+      // 外部联接时不得把外部内容当恢复源/预览源——增量独审实测反例）
+      if (!isPlainBackupName(change.backup)) return { ok: false, reason: 'backup-missing' }
       const src = join(runDir(runId), 'files', change.backup)
+      if (!realInsideRoot(dir, src)) return { ok: false, reason: 'backup-missing' }
       if (!existsSync(src)) return { ok: false, reason: 'backup-missing' }
 
       try {
@@ -236,20 +315,33 @@ export function createCheckpointStore(dir: string): CheckpointStore {
     },
 
     snapshotCurrent(runId, rel, label, owner) {
+      const empty = { preRunId: null, failed: [] as Array<{ rel: string; reason: string }> }
       const run = store.get(runId)
-      if (!run) return null
+      if (!run) return empty
       const targets = selectChanges(run.changes, rel)
-      if (targets.length === 0) return null
+      if (targets.length === 0) return empty
 
       // 用**那一轮自己记下的工作区**，而不是"当前工作区" —— 用户可能已切过工作区，拿现在这个去拼路径就会指向别处（甚至越界）
       const root = resolve(run.workspace)
+      const refused = new Map<string, string>()
       const preRunId = store.begin(run.workspace, label, owner)
       try {
         for (const c of targets) {
           // 两道防御（与 rollback 同源）：manifest 可能来自旧版本或被人工改过
-          if (!isSafeRel(c.rel)) continue
+          if (!isSafeRel(c.rel)) {
+            refused.set(normalizeRel(c.rel), '路径不安全，已拒绝备份')
+            continue
+          }
           const abs = resolve(root, c.rel)
-          if (abs !== root && !abs.startsWith(root + sep)) continue
+          if (abs !== root && !abs.startsWith(root + sep)) {
+            refused.set(normalizeRel(c.rel), '路径越出工作区，已拒绝备份')
+            continue
+          }
+          // 真实路径核：目标被换成外部联接时不纳入备份（备份来源越界——把外部内容拷进备份本身就是泄露）
+          if (!realInsideRoot(root, abs)) {
+            refused.set(normalizeRel(c.rel), '目标真实路径越出工作区（含符号联接），已拒绝备份')
+            continue
+          }
           store.record(preRunId, run.workspace, c.rel, abs)
         }
       } finally {
@@ -257,22 +349,36 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         store.finish(preRunId)
       }
 
-      // ⚠️ **一条都没备份成时必须返回 null**（审查指出）：`record` 把自己的异常全吞掉（那条设计是对的），但若每条都失败还照交 preRunId，界面就会显示"已备份"、文案还在承诺"退错了还能再退" —— **兜底静默消失而界面仍在承诺它**。
       const backed = store.get(preRunId)
+      const saved = new Set((backed?.changes ?? []).map((c) => normalizeRel(c.rel)))
+      const byRel = recordFailures.get(preRunId)
+      const failed = targets
+        .filter((c) => !saved.has(normalizeRel(c.rel)))
+        .map((c) => {
+          const key = normalizeRel(c.rel)
+          return { rel: c.rel, reason: refused.get(key) ?? byRel?.get(key) ?? '当前内容备份失败' }
+        })
+
+      // ⚠️ **一条都没备份成时必须返回 preRunId=null**：若每条都失败还照交 runId，界面就会显示"已备份"、
+      //    文案还在承诺"退错了还能再退" —— 兜底静默消失而界面仍在承诺它。失败原因逐目标带出。
       if (!backed || backed.changes.length === 0) {
         store.forget(preRunId)
-        return null
+        return { preRunId: null, failed }
       }
-      return preRunId
+      return { preRunId, failed }
     },
 
-    rollback(runId, rel) {
+    rollback(runId, rel, exclude) {
       const report: RollbackReport = {
         runId,
         restored: [],
         deleted: [],
         failed: [],
         rejected: []
+      }
+      if (!isSafeRunId(runId)) {
+        report.failed.push({ rel: '*', reason: '轮次标识不合法，已拒绝' })
+        return report
       }
       const run = store.get(runId)
       if (!run) {
@@ -282,7 +388,16 @@ export function createCheckpointStore(dir: string): CheckpointStore {
       /** 动手之前先记下**这一轮此刻还在不在内存登记里**（收尾时行为不同）：`true` = 正在跑 → 回滚后必须**保持登记**，否则它后续每次写文件都不再留快照；`false` = 崩溃 / 中止残留 → 回滚后从内存里摘掉即可。 */
       const wasActive = active.has(runId)
 
-      const targets = selectChanges(run.changes, rel)
+      const selected = selectChanges(run.changes, rel)
+      const excluded = new Set((exclude ?? []).map(normalizeRel))
+      // 被排除的目标（回滚前备份失败者）：**不写不删**，并如实计入 failed ——
+      // 界面据此不能显示"整轮已恢复"（徽章 + "失败 M 个"是用户读得出的自相矛盾，见下方 rolledBackAt 门槛）
+      for (const c of selected) {
+        if (excluded.has(normalizeRel(c.rel))) {
+          report.failed.push({ rel: c.rel, reason: '回滚前的当前内容备份失败，已保留原样未恢复' })
+        }
+      }
+      const targets = selected.filter((c) => !excluded.has(normalizeRel(c.rel)))
       const root = resolve(run.workspace)
 
       for (const action of planRollback(targets)) {
@@ -296,15 +411,21 @@ export function createCheckpointStore(dir: string): CheckpointStore {
           report.rejected.push(action.rel)
           continue
         }
+        // 真实路径核（含联接解析，fail-closed）：被换成联接的目标一个字节都不许被动（独审实测反例）
+        if (!realInsideRoot(root, abs)) {
+          report.rejected.push(action.rel)
+          continue
+        }
 
         try {
           if (action.op === 'delete') {
             if (existsSync(abs)) unlinkSync(abs)
             report.deleted.push(action.rel)
           } else {
+            // 恢复源必须可信：纯编号文件名 + 真实路径仍在受信 checkpoint 根内（files 被换成外部联接即拒）
             const src = join(runDir(runId), 'files', action.backup)
-            if (!existsSync(src)) {
-              report.failed.push({ rel: action.rel, reason: '备份文件缺失' })
+            if (!isPlainBackupName(action.backup) || !realInsideRoot(dir, src) || !existsSync(src)) {
+              report.failed.push({ rel: action.rel, reason: '备份文件缺失或不可信' })
               continue
             }
             ensureDir(dirname(abs))
@@ -319,8 +440,9 @@ export function createCheckpointStore(dir: string): CheckpointStore {
         }
       }
 
-      // ⚠️ **有失败就不打这个标记**（审查指出）：整轮回滚时原写法不管 `failed` 照样标记，面板上会同时出现「已回滚」徽章和"失败 N 个"的提示，用户会以为退干净了。
-      if (report.failed.length === 0) {
+      // ⚠️ **有失败或拒绝就不打这个标记**（增量独审补 rejected 项）：整轮回滚时原写法只看 `failed`，
+      // 全 rejected（如联接越界）也会被标"已回滚"——面板上出现徽章而目标根本没恢复，是用户读得出的假话。
+      if (report.failed.length === 0 && report.rejected.length === 0) {
         run.rolledBackAt = Date.now()
         if (run.status === 'running') run.status = 'done'
         active.set(runId, run)

@@ -12,7 +12,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const REPO_ROOT = join(__dirname, '../..')
-const MAIN_ENTRY = join(REPO_ROOT, 'out/main/index.js')
 
 /** `require('electron')` 在本机 CJS 工程里直接返回 Electron 可执行文件路径 */
 const ELECTRON_BINARY = require('electron') as string
@@ -86,7 +85,12 @@ export async function launchApp(opts?: { reuseDataDir?: string }): Promise<E2EAp
 
   const app = await electron.launch({
     executablePath: ELECTRON_BINARY,
-    args: [MAIN_ENTRY],
+    // 用**目录启动**（`electron .`，经 package.json main 进 out/main/index.js），不用文件启动：
+    // 文件启动时 app.getAppPath() 指向 out/main，「内置资源」（resources/agents、resources/skills）
+    // 会被解析到 out/main/resources/* 而读空 —— dev（electron .）与安装版（打包分支读
+    // process.resourcesPath）的形态都是「应用目录」。2026-10-13 主工作流批次实证：文件启动下
+    // listAgents() 返回空表（内置 agent 全不可见），目录启动恢复正常。
+    args: ['.'],
     cwd: REPO_ROOT,
     timeout: 90_000,
     env: {

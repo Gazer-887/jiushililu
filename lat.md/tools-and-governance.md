@@ -170,6 +170,19 @@ manifest **增量落盘**（小 JSON，换来中断的轮次仍有一份可用�
 故 [[src/shared/checkpoint.ts#isSafeRel]] 与目录前缀比对两处各挡一遍，且 rel **两侧都归一**——
 单侧归一的后果是"匹配不上"，回滚静默无事发生。删除走回收站而不是硬删；没有回收站能力时删除直接被拒。
 
+逐处退回（[[src/main/revert-flow.ts#revertOneHunk]]）与整轮回滚共用同一批防线，另多两道块级判据：
+mtime 与"界面读数"精确相等，且界面携带的**内容版本**（`CheckpointSides.currentRevision` →
+`RevertHunkInput.expectedCurrentRevision`）与当前磁盘内容 SHA-256 一致。只比 mtime 时，
+精度粗的文件系统或人工回拨的 utimes 会让"同 mtime 不同字节"骗过阀门 —— 块序号建立在界面看到的那份
+内容上，放行的后果是**依据陈旧差异覆盖未知新内容**（2026-10-13 实测补第二道内容阀）。
+
+整轮回滚另有自己的两道门位：回滚前的**逐目标**备份失败者不得被覆盖/删除（`snapshotCurrent` 报
+`failed`、`rollback` 收 `exclude`），恢复源的**真实路径**必须仍在**受信 checkpoint 根**内 —— files 目录
+被换成外部联接、或 manifest 的 backup 字段被改成越界名，都不得把外部内容当恢复源（Diff 预览取快照侧
+同判）；`rolledBackAt` 只在 `failed` 与 `rejected` **都为空**时才打 —— 只标"干净地全部成功"。
+真实路径走**严格解析**：只对 ENOENT 的尾部上溯，EACCES 等一律拒绝——吞掉解析错误会让边界检查退化成
+字符串比较，恰好放过 junction 这类真实逃逸（2026-10-13 增量独审定点补）。
+
 ## 应用通信、协作写入与退出
 
 [[src/main/trusted-ipc.ts#installTrustedIpc]] 将通信注册收在一个入口：已登记的窗口对象、主 frame 与准确页面三者缺一即拒绝。

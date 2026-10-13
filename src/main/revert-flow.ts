@@ -6,6 +6,7 @@ import {
   type RevertHunkResult
 } from '@shared/checkpoint'
 import { computeHunks, revertHunk } from '@shared/text-diff'
+import { contentRevision } from './file-revision'
 import type { CheckpointStore } from './store/checkpoints'
 
 // 逐处退回（plan13 批 B · B4）—— 把"三道闸"从 IPC handler 里搬出来，让它**可单测**。
@@ -91,6 +92,14 @@ export async function revertOneHunk(
   //    —— 恰好落在那一瞬间的写入会让块序号指向**另一块**，而 `applyPatch` 会在它自己声明的偏移处
   //    找到精确匹配 → **静默退错**。（「保存」那条留容差是另一回事：它比的是编辑器打开时的历史值。）
   if (cur.mtimeMs === undefined || cur.mtimeMs !== expectedMtimeMs) {
+    return { ok: false, reason: 'changed-on-disk' }
+  }
+  // ⑤b 内容级安全阀（2026-10-13 实测补）：mtime 精度粗（FAT 2s / 网络盘）或被人工回拨（utimes）时，
+  // 同 mtime 不同字节会骗过上面那道 —— 块序号建立在"界面看到的那份内容"上，内容对不上就必须拒。
+  if (
+    input.expectedCurrentRevision !== undefined &&
+    contentRevision(cur.content) !== input.expectedCurrentRevision
+  ) {
     return { ok: false, reason: 'changed-on-disk' }
   }
 

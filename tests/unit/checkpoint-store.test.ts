@@ -351,8 +351,10 @@ describe('回滚前的自动备份（退错了还能再退）', () => {
     store.finish(runId)
 
     // 用户点「回滚」——界面先自动备份"当前（Agent 改后）"的内容
-    const preRunId = store.snapshotCurrent(runId, 'a.txt', '界面：回滚前的自动备份', 'ui')
-    expect(preRunId).toBeTruthy()
+    const pre = store.snapshotCurrent(runId, 'a.txt', '界面：回滚前的自动备份', 'ui')
+    expect(pre.preRunId).toBeTruthy()
+    expect(pre.failed).toEqual([])
+    const preRunId = pre.preRunId
     if (!preRunId) return
 
     store.rollback(runId, 'a.txt')
@@ -372,8 +374,10 @@ describe('回滚前的自动备份（退错了还能再退）', () => {
     write(ws, 'new.txt', 'Agent 新建的内容')
     store.finish(runId)
 
-    const preRunId = store.snapshotCurrent(runId, 'new.txt', '界面：回滚前的自动备份', 'ui')
-    expect(preRunId).toBeTruthy()
+    const pre = store.snapshotCurrent(runId, 'new.txt', '界面：回滚前的自动备份', 'ui')
+    expect(pre.preRunId).toBeTruthy()
+    expect(pre.failed).toEqual([])
+    const preRunId = pre.preRunId
     if (!preRunId) return
 
     store.rollback(runId, 'new.txt')
@@ -395,20 +399,20 @@ describe('回滚前的自动备份（退错了还能再退）', () => {
     write(ws, 'b.txt', 'B1')
     store.finish(runId)
 
-    const preRunId = store.snapshotCurrent(runId, 'a.txt', '界面：回滚前的自动备份', 'ui')
-    expect(preRunId).toBeTruthy()
-    if (!preRunId) return
-    const pre = store.get(preRunId)
-    expect(pre?.changes.map((c) => c.rel)).toEqual(['a.txt'])
+    const pre = store.snapshotCurrent(runId, 'a.txt', '界面：回滚前的自动备份', 'ui')
+    expect(pre.preRunId).toBeTruthy()
+    if (!pre.preRunId) return
+    const preRun = store.get(pre.preRunId)
+    expect(preRun?.changes.map((c) => c.rel)).toEqual(['a.txt'])
   })
 
   it('**没有可备份的东西就不产生空轮次**（否则面板会被"0 个文件"刷屏）', () => {
     const { ws, store } = setup()
-    expect(store.snapshotCurrent('不存在的轮次', undefined, 'x', 'ui')).toBeNull()
+    expect(store.snapshotCurrent('不存在的轮次', undefined, 'x', 'ui').preRunId).toBeNull()
 
     const runId = store.begin(ws, '内核默认')
     store.finish(runId) // 这一轮一个文件都没改
-    expect(store.snapshotCurrent(runId, undefined, 'x', 'ui')).toBeNull()
+    expect(store.snapshotCurrent(runId, undefined, 'x', 'ui').preRunId).toBeNull()
   })
 
   it('**一条都没备份成时也不许返回"备份轮次"**（审查指出：那会让"退错了还能再退"静默失效）', () => {
@@ -424,8 +428,10 @@ describe('回滚前的自动备份（退错了还能再退）', () => {
     m.changes = [{ rel: '../evil.txt', kind: 'modified', beforeBytes: 0, backup: '0.bin' }]
     writeFileSync(mf, JSON.stringify(m), 'utf8')
 
-    // 一条都没备份成 → 必须如实返回 null（界面才不会显示"已备份"）
-    expect(store.snapshotCurrent(runId, undefined, '界面：回滚前的自动备份', 'ui')).toBeNull()
+    // 一条都没备份成 → 必须如实返回 preRunId=null（界面才不会显示"已备份"），且失败原因逐目标带出
+    const pre = store.snapshotCurrent(runId, undefined, '界面：回滚前的自动备份', 'ui')
+    expect(pre.preRunId).toBeNull()
+    expect(pre.failed.map((f) => f.rel)).toEqual(['../evil.txt'])
   })
 })
 

@@ -16,6 +16,7 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -222,6 +223,42 @@ describe('逐处退回 · 被拦下的情形：**文件一个字都不许被碰*
     const h = harness({ before, after })
     // ⚠️ 留 1ms 容差就是留一个"退错块"的静默窗口（容差写法会让这条绿着通过），所以必须精确比较、不同值一律拒
     await expectRefused(h, { hunkIndex: 1, expectedMtimeMs: h.mtime() + 0.5 }, 'changed-on-disk')
+  })
+
+  it('**mtime 相同而内容变了 → 也拒**（内容版本阀：mtime 精度粗 / 被回拨时的唯一防线）', async () => {
+    const { before, after } = pair()
+    const h = harness({ before, after })
+    // 界面看到差异时，当前内容是 `after` —— 记下它的内容版本
+    const seenRevision = createHash('sha256').update(after).digest('hex')
+    // 用户看差异期间，有程序换了内容、并把 mtime 摆成"没变过"的样子：
+    // 这里直接把"当前 mtime"同时当作界面基线（等价于同 mtime：mtime 阀会放行）
+    const tampered = after.replace('const x = 42', 'const x = 99')
+    writeFileSync(join(h.ws, 'a.txt'), tampered, 'utf8')
+    const r = await revertOneHunk(h.deps, {
+      runId: h.runId,
+      rel: 'a.txt',
+      hunkIndex: 1,
+      expectedMtimeMs: h.mtime(), // mtime 阀放行
+      expectedCurrentRevision: seenRevision // 内容阀必须拦住
+    })
+    expect(r).toEqual({ ok: false, reason: 'changed-on-disk' })
+    expect(read(h.ws, 'a.txt')).toBe(tampered) // 未知新内容一个字都没被碰
+    expect(h.writeRuns).toHaveLength(0)
+  })
+
+  it('**内容版本对得上 → 正常退回**（第二道阀不误伤正常路径）', async () => {
+    const { before, after } = pair()
+    const h = harness({ before, after })
+    const seenRevision = createHash('sha256').update(after).digest('hex')
+    const r = await revertOneHunk(h.deps, {
+      runId: h.runId,
+      rel: 'a.txt',
+      hunkIndex: 1,
+      expectedMtimeMs: h.mtime(),
+      expectedCurrentRevision: seenRevision
+    })
+    expect(r.ok).toBe(true)
+    expect(read(h.ws, 'a.txt')).toContain('const x = 1')
   })
 
   it('**不是合法 UTF-8 → lossy-encoding**（整份重写会把没被退的行也一起弄烂，且不可逆）', async () => {

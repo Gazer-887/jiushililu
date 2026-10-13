@@ -79,7 +79,10 @@ export default function DiffView({ runId, rel, onClose }: Props): JSX.Element {
         runId,
         rel,
         hunkIndex,
-        expectedMtimeMs: mtimeMs
+        expectedMtimeMs: mtimeMs,
+        // 内容级第二道阀（2026-10-13）：把"打开差异时看到的那份内容"的版本随行带上——
+        // mtime 相同而字节不同（精度粗 / 被回拨）时也能拦住，不依据陈旧差异覆盖未知新内容
+        ...(state.sides.currentRevision ? { expectedCurrentRevision: state.sides.currentRevision } : {})
       })
       if (r.ok) {
         setNotice({ ok: true, text: `已退回第 ${hunkIndex} 处` })
