@@ -3,6 +3,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const f = vi.hoisted(() => ({ store: {} as Record<string, unknown> }))
+// CI（ubuntu 容器）没有 Electron 二进制：settings.ts 顶层 import { safeStorage } from 'electron'，
+// 不 mock 会在收集期炸（本机有二进制所以本地不显）——照抄 auto-memory-settings.test.ts 既有范式。
+vi.mock('electron', () => ({ safeStorage: { isEncryptionAvailable: () => false } }))
 vi.mock('electron-store', () => ({
   default: class {
     store = f.store
