@@ -24,6 +24,8 @@ export interface SelfViewInput {
   subagentNames: string[]
   /** 电脑控制开关（用户设置；当前版本无对应工具，如实报状态） */
   computerControl: boolean
+  /** 内置浏览器开关（plan79：所有 Agent 公共能力；关时如实报"未开启"+开启入口，不静默装不存在） */
+  nativeBrowser: boolean
   /**
    * 本会话未开放、但**有可派子代理声明了它**的能力（plan51 F4：缺什么 + 怎么拿到）。
    * 空数组 = 不出现该行 —— 没有出口就不报（约束②：不写拿不到的承诺）。
@@ -43,6 +45,13 @@ export function composeSelfView(input: SelfViewInput): string {
   lines.push(`- 当前模型：${input.model}（协议：${input.providerType === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}）`)
   lines.push(`- 运行端：${platformLabel(input.platform)}`)
   lines.push(`- 电脑控制：${input.computerControl ? '已开启（桌面操作工具由用户配置的 MCP server 提供）' : '未开启'}`)
+  lines.push(
+    `- 内置浏览器：${
+      input.nativeBrowser
+        ? '已开启（所有 Agent 公共可用；提交、上传等外部作用动作会先向用户确认）'
+        : '未开启（设置页「内置浏览器（原生）」可开启）'
+    }`
+  )
   if (input.toolNames.length > 0) {
     lines.push(`- 可用工具（${input.toolNames.length} 个）：${input.toolNames.join('、')}；每件的参数以工具定义为准`)
   }

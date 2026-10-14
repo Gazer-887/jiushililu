@@ -194,6 +194,9 @@ const api: ApiBridge = {
   setComputerControl: (enabled: boolean) => ipcRenderer.invoke(IPC.computerControlSet, enabled),
   getBrowserControl: () => ipcRenderer.invoke(IPC.browserControlGet),
   setBrowserControl: (enabled: boolean) => ipcRenderer.invoke(IPC.browserControlSet, enabled),
+  // 内置原生浏览器开关（plan79；与外部 MCP 的 browser-control 隔离，缺省开）
+  getBrowserNative: () => ipcRenderer.invoke(IPC.browserNativeGet),
+  setBrowserNative: (enabled: boolean) => ipcRenderer.invoke(IPC.browserNativeSet, enabled),
   getComputerUseNotice: () => ipcRenderer.invoke(IPC.computerUseNoticeGet),
   setComputerUseNotice: (seen: boolean) => ipcRenderer.invoke(IPC.computerUseNoticeSet, seen),
   getComputerUseStatus: () => ipcRenderer.invoke(IPC.computerUseStatus),

@@ -64,7 +64,8 @@ const baseInput = {
   toolNames: ['read_file', 'write_file'],
   subagentNames: ['explore'],
   capabilityGaps: [],
-  computerControl: false
+  computerControl: false,
+  nativeBrowser: true
 }
 
 describe('composeSelfView 纯函数', () => {
@@ -92,6 +93,16 @@ describe('composeSelfView 纯函数', () => {
     expect(block).toContain('已开启')
     expect(block).toContain('用户配置的 MCP server 提供')
     expect(block).not.toContain('尚无对应工具')
+  })
+
+  it('内置浏览器开关（plan79）：开着报公共可用与外部作用确认；关着报未开启与开启入口', () => {
+    const on = composeSelfView({ ...baseInput, nativeBrowser: true })
+    expect(on).toContain('内置浏览器：已开启')
+    expect(on).toContain('所有 Agent 公共可用')
+    expect(on).toContain('外部作用动作会先向用户确认')
+    const off = composeSelfView({ ...baseInput, nativeBrowser: false })
+    expect(off).toContain('内置浏览器：未开启')
+    expect(off).toContain('设置页「内置浏览器（原生）」可开启')
   })
 })
 
@@ -122,5 +133,29 @@ describe('runner 接线：自视段进 system', () => {
       history: [{ role: 'user', content: 'x' }]
     })
     expect(systemOf()).toContain('未开启')
+  })
+
+  it('nativeBrowser 透传装配门（防漏传回归）：true → 浏览器工具实际下发；false → 不下发', async () => {
+    await runAgent(makeCtx(), {
+      settings,
+      apiKey: 'k',
+      conversationId: 'c1',
+      nativeBrowser: true,
+      history: [{ role: 'user', content: 'x' }]
+    })
+    const on = systemOf()
+    expect(on).toContain('内置浏览器：已开启')
+    expect(on).toContain('browser_navigate')
+    openaiSpy.mockClear()
+    await runAgent(makeCtx(), {
+      settings,
+      apiKey: 'k',
+      conversationId: 'c1',
+      nativeBrowser: false,
+      history: [{ role: 'user', content: 'x' }]
+    })
+    const off = systemOf()
+    expect(off).toContain('内置浏览器：未开启')
+    expect(off).not.toContain('browser_navigate')
   })
 })

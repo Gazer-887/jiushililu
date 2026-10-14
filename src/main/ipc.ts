@@ -50,7 +50,7 @@ import {
 import { classifyServer } from '@shared/computer-use'
 import { readMcpImageDataUrl, saveMcpImage } from './mcp/artifacts'
 import type { ToolImageRef } from '@shared/agent'
-import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getMemoryApprovalGate, setMemoryApprovalGate, getComputerControlEnabled, setComputerControlEnabled, getBrowserControlEnabled, setBrowserControlEnabled, getComputerUseNoticeSeen, setComputerUseNoticeSeen, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
+import { getPermissionPreset, getTokenTier, setPermissionPreset, setTokenTier, getMemoryEnabled, setMemoryEnabled, getMemoryApprovalGate, setMemoryApprovalGate, getComputerControlEnabled, setComputerControlEnabled, getBrowserControlEnabled, setBrowserControlEnabled, getNativeBrowserEnabled, setNativeBrowserEnabled, getComputerUseNoticeSeen, setComputerUseNoticeSeen, getTerminalLoadProfileEnabled, setTerminalLoadProfileEnabled, getAutoMemoryEnabled, setAutoMemoryEnabled, getReflectionModel, setReflectionModel, getReflectionDailyLimit, setReflectionDailyLimit, getFirecrawlKey, setFirecrawlKey, getSkillsDisabled, setSkillsDisabled, getVoiceConfig, setVoiceConfig, getVoiceApiKey } from './store/settings'
 import { transcribe, testVoiceEndpoint } from './voice/transcribe'
 import type { VoicePatch } from '@shared/voice'
 import type { SystemSettings, SystemView } from '@shared/system'
@@ -779,6 +779,9 @@ export function registerIpcHandlers(deps: {
         computerControl: getComputerControlEnabled(),
         // D-155 B1-a：浏览器操作开关同形状传入（缺省 = 关，见 runner 入口注释）
         browserControl: getBrowserControlEnabled(),
+        // plan79：内置原生浏览器开关（与外部 MCP 的 browserControl 隔离；缺省开）
+        nativeBrowser: getNativeBrowserEnabled(),
+        isNativeBrowserEnabled: getNativeBrowserEnabled,
         // plan44 S2b：MCP 截图落进 userData/mcp-artifacts/，界面按引用读；**不进模型上下文**。
         // 必填（漏传 = 截图静默消失，正是这一片要修的症状），故两处装配都补。
         saveImages: (imgs) =>
@@ -981,6 +984,9 @@ export function registerIpcHandlers(deps: {
         computerControl: getComputerControlEnabled(),
         // D-155 B1-a：同上，浏览器开关同形状
         browserControl: getBrowserControlEnabled(),
+        // plan79：内置原生浏览器开关（与外部 MCP 的 browserControl 隔离；缺省开）
+        nativeBrowser: getNativeBrowserEnabled(),
+        isNativeBrowserEnabled: getNativeBrowserEnabled,
         // plan44 S2b：MCP 截图落进 userData/mcp-artifacts/，界面按引用读；**不进模型上下文**。
         // 必填（漏传 = 截图静默消失，正是这一片要修的症状），故两处装配都补。
         saveImages: (imgs) =>
@@ -1805,6 +1811,14 @@ export function registerIpcHandlers(deps: {
   ipcMain.handle(IPC.browserControlSet, (_e, raw: unknown): boolean => {
     const enabled = z.boolean().parse(raw)
     return setBrowserControlEnabled(enabled)
+  })
+
+  // plan79：内置原生浏览器开关（与外部 MCP 的 browser-control 语义隔离；缺省开、坏值不当 true）
+  ipcMain.handle(IPC.browserNativeGet, (): boolean => getNativeBrowserEnabled())
+
+  ipcMain.handle(IPC.browserNativeSet, (_e, raw: unknown): boolean => {
+    const enabled = z.boolean().parse(raw)
+    return setNativeBrowserEnabled(enabled)
   })
 
   ipcMain.handle(IPC.computerUseNoticeGet, (): boolean => getComputerUseNoticeSeen())

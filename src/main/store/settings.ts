@@ -56,6 +56,12 @@ interface StoredSettings extends ModelSettings {
    */
   browserControlEnabled?: boolean
   /**
+   * **内置原生浏览器开关**（plan79）。与旧 `browserControlEnabled`（外部浏览器类 MCP 总闸）
+   * 语义隔离：原生能力默认开，旧总开关照旧只辖外部 MCP。缺字段 = 新配置按默认开；
+   * 坏值不当 true；旧配置缺字段且旧总开关显式关过时保守保留关闭。
+   */
+  nativeBrowserEnabled?: boolean
+  /**
    * **双开关升级提示已读**（D-155 B1-a 步 4）。设置页顶部横幅只出现一次的落盘位：
    * 缺字段 = 还没见过 → 显示；点"我知道了"后写 true。**纯展示位，不参与任何放行判断。**
    */
@@ -222,6 +228,24 @@ export function getBrowserControlEnabled(): boolean {
 export function setBrowserControlEnabled(enabled: boolean): boolean {
   store.set('browserControlEnabled', enabled)
   return getBrowserControlEnabled()
+}
+
+/**
+ * 原生内置浏览器开关（plan79）：显式 true/false 照办；坏值不当 true（判 false）；
+ * 缺字段看旧总开关——显式关过（===false）保守保留关闭，否则默认开。
+ * 即时生效：每轮 Agent 运行现读（runner 经 hooks 传入），不要求重启。
+ */
+export function getNativeBrowserEnabled(): boolean {
+  const native = store.store.nativeBrowserEnabled
+  if (native === true) return true
+  if (native === false) return false
+  if (native !== undefined) return false // 坏值不当 true
+  return store.store.browserControlEnabled !== false
+}
+
+export function setNativeBrowserEnabled(enabled: boolean): boolean {
+  store.set('nativeBrowserEnabled', enabled)
+  return getNativeBrowserEnabled()
 }
 
 /** 升级提示横幅：只读"见过没见过"，缺字段 = 没见过。 */

@@ -4,6 +4,8 @@ import { isExternallyOpenable } from './url-guard'
 import { createLogger } from './log'
 import type { ElementRect } from './agent/browser-bridge'
 import { centerOfRect } from './agent/browser-bridge'
+import { classifyBrowserAction, TaskAuthorizer, BrowserGateError, type BrowserTargetInfo } from './browser-policy'
+import type { BrowserTaskContext } from './agent/browser-bridge'
 import type { BrowserAdapter } from './agent/browser-bridge'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { AgentPauseError } from './agent/pause-error'
@@ -27,6 +29,9 @@ interface DialogRecord {
 interface Tab {
   revision: number
   injecting: boolean
+  /** 人工输入事实计数（plan79 修正二）：before-input-event 且非 Agent 注入时 +1。
+   *  navigate 采纳新基线前核它——加载期间的人为输入不得被吸收进版本基线。 */
+  humanInputSeq: number
   id: string
   view: WebContentsView
   url: string
@@ -58,34 +63,246 @@ function sendBrowserInput(t: Tab, event: Parameters<WebContents['sendInputEvent'
   finally { t.injecting = false }
 }
 
+/** 适配器方法 → 工具名 的**显式单一映射**（修正 D）：不再按驼峰猜名——猜名曾把
+ *  consoleMessages/networkRequests/waitFor 映射成不存在的工具名，只读动作被误判成 risky 拒掉。 */
+export const BROWSER_METHOD_TOOLS: Record<string, string> = {
+  navigate: 'browser_navigate',
+  readPage: 'browser_read_page',
+  click: 'browser_click',
+  type: 'browser_type',
+  hover: 'browser_hover',
+  pressKey: 'browser_press_key',
+  drag: 'browser_drag',
+  screenshot: 'browser_screenshot',
+  snapshot: 'browser_snapshot',
+  evalScript: 'browser_eval_script',
+  consoleMessages: 'browser_console',
+  networkRequests: 'browser_network',
+  handleDialog: 'browser_dialog',
+  newTab: 'browser_tabs',
+  listTabs: 'browser_tabs',
+  selectTab: 'browser_tabs',
+  closeTab: 'browser_tabs',
+  uploadFile: 'browser_upload',
+  waitFor: 'browser_wait'
+}
+
+/** 元素解析片段（选择器优先、可交互元素文本兜底）：resolveRect 与 describeTarget **共用同一段** ——
+ *  两处解析分岔会让「读到的元素」和「点到的东西」不是同一个（修正 B 的授权前提）。 */
+function resolveElementSnippet(target: string): string {
+  return `
+      const sel = ${JSON.stringify(target)};
+      let el = null;
+      try { el = document.querySelector(sel); } catch (e) { /* 非合法选择器，按文本找 */ }
+      if (!el) {
+        const all = [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link]')];
+        el = all.find(n => ((n.innerText || n.value || n.getAttribute('aria-label') || '').trim()).includes(sel));
+      }`
+}
+
+/** 宿主固定读脚本：读取点击/输入**目标元素的事实**（提交控件/普通字段/链接/未知控件）。
+ *  只读、不改页面；在授权判定前运行，为分类提供宿主侧事实 —— 模型话术与按钮文案不参与分类。 */
+async function describeTarget(t: Tab, target: string): Promise<BrowserTargetInfo | null> {
+  const script = `
+    (() => {
+      /* nb:target-probe */
+      ${resolveElementSnippet(target)}
+      if (!el) return null;
+      // ── 统一事件路径规则（限定修正批，替代逐例补洞）────────────────────────────
+      // ① 沿 parentElement 读**命中节点到根的整条路径**（无硬编码层数截断）；label 另读其
+      //    关联目标的路径。危险事实做 **OR 汇总**——不能在最近的 input/a 上停止。
+      // ② 防护性截断（>512 层）或读取异常 → 返回 null（未知 → 保守按 risky），
+      //    **绝不回退叶节点称普通安全**。
+      // ③ 最近控件身份只用于描述与输入语义（field/link 候选），不决定祖先风险消失。
+      // 只读宿主事实，不扫描注册监听器（合同内不承诺万能分类）。
+      const pathOf = (node) => {
+        const out = [];
+        let cur = node;
+        while (cur) {
+          out.push(cur);
+          if (cur === document.documentElement) return out;
+          cur = cur.parentElement;
+          if (out.length > 512) return null;
+        }
+        return out;
+      };
+      let nodes;
+      try {
+        nodes = pathOf(el);
+        if (nodes) {
+          const lab = nodes.find((n) => n.tagName && n.tagName.toLowerCase() === 'label');
+          if (lab) {
+            const forId = lab.getAttribute('for');
+            const owned = forId ? document.getElementById(forId) : lab.querySelector('input,button,select,textarea');
+            if (owned) {
+              const lp = pathOf(owned);
+              if (!lp) nodes = null;
+              else nodes = nodes.concat(lp);
+            }
+          }
+        }
+      } catch (e) {
+        nodes = null;
+      }
+      if (!nodes) return null;
+      const factsOf = (n) => {
+        const tag = n.tagName.toLowerCase();
+        const type = (n.getAttribute('type') || '').toLowerCase();
+        return {
+          tag,
+          type,
+          role: (n.getAttribute('role') || '').toLowerCase(),
+          onclick: n.hasAttribute('onclick'),
+          editable: n.isContentEditable === true
+        };
+      };
+      let risk = false;
+      let submit = false;
+      let file = false;
+      let editable = false;
+      for (const n of nodes) {
+        const f = factsOf(n);
+        if ((f.tag === 'button' && (f.type === '' || f.type === 'submit')) ||
+            (f.tag === 'input' && (f.type === 'submit' || f.type === 'image'))) {
+          submit = true;
+          risk = true;
+        }
+        if (f.tag === 'input' && f.type === 'file') {
+          file = true;
+          risk = true;
+        }
+        if (f.tag === 'button') risk = true; // 任意 button 祖先/自身：点击会冒泡到它
+        if (f.tag === 'input' && (f.type === 'button' || f.type === 'reset')) risk = true;
+        if (f.onclick) risk = true; // 明确 onclick：DOM 属性可读，不是监听器扫描
+        if (f.role === 'button') risk = true;
+        if (f.editable) {
+          editable = true;
+          risk = true;
+        }
+      }
+      let ctl = el;
+      for (const n of nodes) {
+        const t = n.tagName.toLowerCase();
+        if (t === 'button' || t === 'input' || t === 'a' || t === 'select' || t === 'textarea' || t === 'label') {
+          ctl = n;
+          break;
+        }
+      }
+      if (ctl.tagName.toLowerCase() === 'label') {
+        const forId = ctl.getAttribute('for');
+        const owned = forId ? document.getElementById(forId) : ctl.querySelector('input,button,select,textarea');
+        if (owned) ctl = owned;
+      }
+      const tag = ctl.tagName.toLowerCase();
+      const type = (ctl.getAttribute('type') || '').toLowerCase();
+      const role = (ctl.getAttribute('role') || '').toLowerCase();
+      const form = ctl.closest ? ctl.closest('form') : null;
+      const field = (tag === 'input' || tag === 'textarea' || tag === 'select') && !submit && !file &&
+        !(tag === 'input' && (type === 'button' || type === 'reset'));
+      const link = (tag === 'a' && ctl.hasAttribute('href')) || role === 'link';
+      return {
+        submit, file, field, editable, link,
+        // control = 整条路径已知危险事实的 OR（不被 field/link 身份短路）
+        control: risk,
+        desc: tag + (type ? '[' + type + ']' : '') + (ctl !== el ? '（关联控件）' : ''),
+        formAction: form ? String(form.action || '') : '',
+        formMethod: form ? String(form.method || '').toLowerCase() : ''
+      };
+    })()
+  `
+  const info = (await t.view.webContents.executeJavaScript(script, true)) as BrowserTargetInfo | null
+  return info && typeof info === 'object' ? info : null
+}
+
 /** 每轮固定标签，不跟随界面焦点；同标签操作共享进程内队列。 */
-export function createBrowserTaskAdapter(base: BrowserAdapter, signal?: AbortSignal): BrowserAdapter {
+export function createBrowserTaskAdapter(
+  base: BrowserAdapter,
+  signal?: AbortSignal,
+  ctx?: BrowserTaskContext
+): BrowserAdapter {
   let target = activeTab()
   let revision = target?.revision ?? -1
-  const check = (): void => {
+  /** 开关/取消探针：**每个执行前**的核验都走这里（修正 B：不只在发起确认前核一次） */
+  const assertEnabled = (): void => {
     signal?.throwIfAborted()
+    if (ctx?.isEnabled && !ctx.isEnabled()) {
+      throw new BrowserGateError('内置浏览器已关闭：排队动作已停止（可在设置页重新开启）')
+    }
+  }
+  const assertTargetAlive = (): void => {
     if (!target || tabs.get(target.id) !== target || target.view.webContents.isDestroyed())
       throw new AgentPauseError('目标标签已关闭或不存在，任务已暂停')
-    if (target.revision !== revision) throw new AgentPauseError('页面已变化，任务已暂停；请重新确认目标')
+  }
+  /** 严格核验：开关 + 取消 + 目标身份 + 版本（普通动作的执行前/后） */
+  const check = (): void => {
+    assertEnabled()
+    assertTargetAlive()
+    if (target!.revision !== revision) throw new AgentPauseError('页面已变化，任务已暂停；请重新确认目标')
+  }
+  /** 放宽核验：navigate 自身加载会推高版本，其加载期间只保开关/取消/标签存在 */
+  const checkRelaxed = (): void => {
+    assertEnabled()
+    assertTargetAlive()
+  }
+  // plan79 切片 2 + 修正批：宿主任务门位。readonly 直通（仍过开关核验）；task/risky 经
+  // TaskAuthorizer 问宿主确认桥；缺 ctx/确认服务 = 拒绝，不降级用全局适配器执行。
+  const authorizer = ctx ? new TaskAuthorizer(ctx.confirm) : null
+  const originOf = (url: string): string => {
+    try {
+      return new URL(url).origin
+    } catch {
+      return '(未知站点)'
+    }
+  }
+  const gate = async (prop: string, args: unknown[]): Promise<void> => {
+    const toolName = BROWSER_METHOD_TOOLS[prop] ?? 'browser_unknown'
+    const argMap: Record<string, unknown> = {
+      0: args[0],
+      1: args[1],
+      url: args[0],
+      key: args[0],
+      target: args[0],
+      from: args[0],
+      to: args[1],
+      filePath: args[1],
+      js: args[0],
+      text: args[1]
+    }
+    if (prop === 'newTab') argMap['action'] = 'new'
+    else if (prop === 'listTabs') argMap['action'] = 'list'
+    else if (prop === 'selectTab') argMap['action'] = 'select'
+    else if (prop === 'closeTab') argMap['action'] = 'close'
+    else if (prop === 'handleDialog') argMap['action'] = args[0]
+    assertEnabled()
+    // 点击/输入：先读宿主侧目标事实再分类（只读脚本；不读页面 = 无从区分提交与普通元素）
+    if ((prop === 'click' || prop === 'type') && target) {
+      argMap['targetInfo'] = await describeTarget(target, String(args[0] ?? ''))
+      assertEnabled()
+    }
+    if (classifyBrowserAction(toolName, argMap) === 'readonly') return
+    if (!ctx || !authorizer) {
+      throw new BrowserGateError('浏览器动作缺少宿主任务上下文，已拒绝（不降级执行）')
+    }
+    const site =
+      toolName === 'browser_navigate' || toolName === 'browser_tabs'
+        ? originOf(String(args[0] ?? target?.view.webContents.getURL() ?? ''))
+        : originOf(target?.view.webContents.getURL() ?? '')
+    const r = await authorizer.authorize({
+      tool: toolName,
+      args: argMap,
+      agent: ctx.agent,
+      conversationId: ctx.conversationId,
+      site
+    })
+    if (!r.allowed) throw new BrowserGateError(r.reason ?? '浏览器动作未获授权')
+    // ★ 确认返回后重核（修正 B）：等待期间关开关/取消 → 旧批准不得继续（真实输入零发生）
+    assertEnabled()
   }
   return new Proxy(base, {
     get(object, property) {
       if (property === 'createTask') return undefined
       if (property === 'assertReady') return check
-      if (property === 'listTabs') return browserListTabs
       if (property === 'currentUrl') return () => { check(); return target!.view.webContents.getURL() }
-      if (property === 'selectTab') return (id: string) => {
-        signal?.throwIfAborted()
-        const next = tabs.get(id)
-        if (!next) return null
-        target = next; revision = next.revision
-        return { id: next.id, url: next.url, title: next.title }
-      }
-      if (property === 'closeTab') return (id: string) => {
-        check()
-        if (id !== target!.id || tabQueues.has(id)) return false
-        return browserCloseTab(id)
-      }
       const fn = Reflect.get(object, property)
       if (typeof fn !== 'function') return fn
       return (...args: unknown[]) => {
@@ -95,18 +312,48 @@ export function createBrowserTaskAdapter(base: BrowserAdapter, signal?: AbortSig
         const operation = previous.catch(() => {}).then(async () => {
           signal?.throwIfAborted()
           if (property === 'newTab') {
+            await gate('newTab', args)
             const created = await browserNewTab(args[0] as string | undefined)
             target = tabs.get(created.id)!; revision = target.revision
             return created
           }
+          // selectTab 是**恢复通道**：当前目标已死时也要能切走（只过门位，不先核旧目标）
+          if (property === 'selectTab') {
+            await gate('selectTab', args)
+            assertEnabled()
+            const next = tabs.get(args[0] as string)
+            if (!next) return null
+            target = next; revision = next.revision
+            return { id: next.id, url: next.url, title: next.title }
+          }
+          // listTabs 是纯读：不要求当前目标存活（它就是用来找恢复目标的）
+          if (property === 'listTabs') {
+            await gate('listTabs', args)
+            return browserListTabs()
+          }
+          check()
+          await gate(property as string, args)
+          // ★ 门后重核（修正 B）：确认等待期间人工换页/换目标 → 旧批准不得覆盖
           check()
           if (target !== tab) throw new Error('任务目标已改变，未执行旧操作')
-          const context = { tab: tab!, check: property === 'navigate' ? () => {
-            signal?.throwIfAborted()
-            if (tabs.get(tab!.id) !== tab) throw new Error('目标标签已关闭')
-          } : check }
+          if (property === 'closeTab') {
+            if (args[0] !== target!.id) return false
+            // 本标签还有**更新**的排队操作时不关它（自己不算——闭包体在 operation 初始化后才跑，
+            // 这里引用的是本操作自身的 promise）
+            if (tabQueues.get(target!.id) !== operation) return false
+            return browserCloseTab(args[0] as string)
+          }
+          const context = { tab: tab!, check: property === 'navigate' ? checkRelaxed : check }
+          // 修正二：导航加载期间的人工输入事实（before-input-event）不能被吸收进新基线 ——
+          // 采纳前核对；有介入则暂停且**不更新基线**（后续动作继续暂停，新任务/重读确认可继续）
+          const humanBefore = tab!.humanInputSeq
           const result = await taskContext.run(context, () => fn.apply(object, args))
-          if (property === 'navigate') revision = tab!.revision
+          if (property === 'navigate') {
+            if (tab!.humanInputSeq !== humanBefore) {
+              throw new AgentPauseError('页面已变化，任务已暂停；请重新确认目标')
+            }
+            revision = tab!.revision
+          }
           check()
           return result
         })
@@ -181,7 +428,12 @@ function wireTab(t: Tab): void {
     t.loading = true
     if (t.id === activeTabId) emit()
   })
-  wc.on('before-input-event', () => { if (!t.injecting) t.revision += 1 })
+  wc.on('before-input-event', () => {
+    if (!t.injecting) {
+      t.revision += 1
+      t.humanInputSeq += 1 // 人工输入事实（与 revision 分开记：navigate 要能区分"自身加载演进"与"人介入"）
+    }
+  })
   wc.on('did-navigate-in-page', () => { t.revision += 1 })
   wc.on('did-stop-loading', () => {
     t.loading = false
@@ -335,6 +587,7 @@ export async function browserNewTab(url?: string): Promise<TabInfo> {
   const t: Tab = {
     revision: 0,
     injecting: false,
+    humanInputSeq: 0,
     id,
     view,
     url: url ?? 'about:blank',
@@ -453,13 +706,7 @@ export async function browserReadPage(): Promise<string> {
 async function resolveRect(t: Tab, target: string): Promise<ElementRect | null> {
   const script = `
     (() => {
-      const sel = ${JSON.stringify(target)};
-      let el = null;
-      try { el = document.querySelector(sel); } catch (e) { /* 非合法选择器，按文本找 */ }
-      if (!el) {
-        const all = [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link]')];
-        el = all.find(n => ((n.innerText || n.value || n.getAttribute('aria-label') || '').trim()).includes(sel));
-      }
+      ${resolveElementSnippet(target)}
       if (!el) return null;
       el.scrollIntoView({ block: 'center' });
       const r = el.getBoundingClientRect();
@@ -498,13 +745,42 @@ export async function browserHover(target: string): Promise<string> {
   return `已悬停 ${target}（${p.x},${p.y}）`
 }
 
-/** 真按键：keyDown + keyUp 一对（单字符附带 char，保证 CJK 能进去） */
+/** 命名按键 → Electron Accelerator 键名；sendInputEvent 的 keyCode 只认字符串
+ *  （数字键码整个事件被判「Invalid event object」——plan79 故事二实测断点）。
+ *  Enter 必须补一个 char('\r') 才有 keypress——只发 keyDown 时页面收得到 keydown
+ *  但隐式表单提交不触发（同批探针 V1 vs V3 实证）；单字符同理靠 char 落字。 */
+const KEY_ALIASES: Record<string, string> = {
+  enter: 'Enter',
+  return: 'Enter',
+  tab: 'Tab',
+  escape: 'Escape',
+  esc: 'Escape',
+  backspace: 'Backspace',
+  delete: 'Delete',
+  space: 'Space',
+  arrowup: 'Up',
+  arrowdown: 'Down',
+  arrowleft: 'Left',
+  arrowright: 'Right',
+  up: 'Up',
+  down: 'Down',
+  left: 'Left',
+  right: 'Right'
+}
+
+/** 会产生字符的命名键：char 事件的 keyCode 用这个字符（真实键盘上 Enter 的字符是 CR） */
+const KEY_CHARS: Record<string, string> = { enter: '\r', return: '\r' }
+
 export async function browserPressKey(key: string): Promise<string> {
   const t = needTab()
-  if (!key) return '错误：key 不能为空'
-  sendBrowserInput(t, { type: 'keyDown', keyCode: key })
-  if (key.length === 1) sendBrowserInput(t, { type: 'char', keyCode: key })
-  sendBrowserInput(t, { type: 'keyUp', keyCode: key })
+  const trimmed = key?.trim()
+  if (!trimmed) return '错误：key 不能为空'
+  const low = trimmed.toLowerCase()
+  const code = KEY_ALIASES[low] ?? trimmed
+  sendBrowserInput(t, { type: 'keyDown', keyCode: code })
+  const char = KEY_CHARS[low] ?? (code.length === 1 ? code : null)
+  if (char) sendBrowserInput(t, { type: 'char', keyCode: char })
+  sendBrowserInput(t, { type: 'keyUp', keyCode: code })
   return `已按键 ${key}`
 }
 

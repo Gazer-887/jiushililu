@@ -264,6 +264,8 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const [ccEnabled, setCcEnabled] = useState<boolean | null>(null)
   /** 浏览器操作开关（D-155 B1-a：与电脑控制同形状；关 = 浏览器类整批不下发） */
   const [bcEnabled, setBcEnabled] = useState<boolean | null>(null)
+  /** 内置原生浏览器开关（plan79：所有 Agent 默认可用；与外部 MCP 的 bcEnabled 语义隔离） */
+  const [nbEnabled, setNbEnabled] = useState<boolean | null>(null)
   /** 被拦 server 列表（展示用；空 = 全部下发中，刷新点见 refreshBlocked） */
   const [blocked, setBlocked] = useState<ComputerUseServerStatus[]>([])
   /** 双开关升级提示横幅：只出现一次（缺字段 = 没见过，见 dismissNotice） */
@@ -332,6 +334,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     void window.api.getPermission().then(setPerm)
     void window.api.getComputerControl().then(setCcEnabled)
     void window.api.getBrowserControl().then(setBcEnabled)
+    void window.api.getBrowserNative().then(setNbEnabled)
     void window.api.getComputerUseNotice().then((seen) => setNoticeVisible(!seen))
     void window.api.getComputerUseStatus().then(setBlocked).catch(() => setBlocked([]))
     void window.api.getTerminalProfile().then(setTpEnabled)
@@ -618,6 +621,11 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const chooseBC = async (value: boolean): Promise<void> => {
     setBcEnabled(await window.api.setBrowserControl(value))
     await refreshBlocked()
+  }
+
+  /** 内置原生浏览器开关（plan79）：主进程回显真值（含迁移与坏值判定），不乐观更新 */
+  const chooseNB = async (value: boolean): Promise<void> => {
+    setNbEnabled(await window.api.setBrowserNative(value))
   }
 
   /** 升级提示横幅：点"我知道了"即落盘，下次不再出现 */
@@ -907,6 +915,36 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             {bcEnabled === true && (
               <p className="hint">已开启。浏览器类工具需先在 MCP 设置页添加对应服务并正常启动后才会下发。</p>
             )}
+            {/* 内置原生浏览器（plan79：宿主自带真实浏览器，所有 Agent 默认可用；与外部 MCP 的
+                「浏览器操作」是两个独立开关——原生开不赋予外部 MCP，外部开也不需要原生） */}
+            <div className="field-label field-label-with-note">
+              内置浏览器（原生）
+              <FieldNote
+                text={[
+                  '应用自带的真实浏览器：所有 Agent（含自定义角色与子代理）默认可用，无需选择专用角色、配置 MCP 或开放远程端口。',
+                  '页面内容与截图可能随当前模型请求发送给模型服务商，不是全流程纯本地；提交、上传等外部作用动作会先向你确认，拒绝则不发生。'
+                ]}
+              />
+            </div>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={nbEnabled ?? true}
+                disabled={nbEnabled === null}
+                onChange={(e) => void chooseNB(e.target.checked)}
+              />
+              启用内置浏览器
+            </label>
+            {nbEnabled === true && (
+              <p className="hint">已开启。关闭后排队中的浏览器动作会停止并说明原因；已发出的网络请求无法撤回。</p>
+            )}
+            {nbEnabled === false && (
+              <p className="hint">
+                已关闭：新任务不再下发内置浏览器工具，排队中的动作会在执行点停止。旧版「浏览器操作」
+                开关的显式关闭会被保守保留（勾选即恢复，下一轮生效）。
+              </p>
+            )}
+
             {/* 被拦 server 列表（D-155 B1-a 步 5）：只列被拦的（blocked===false 的不上屏），空 = 全部下发中 */}
             {blocked
               .filter((b) => b.blocked)

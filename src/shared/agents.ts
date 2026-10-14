@@ -26,10 +26,8 @@ export const TOOL_CATALOG: ToolCatalogItem[] = [
   { name: 'run_command', description: '执行系统命令；可写档下每次执行前需确认', group: '命令' },
   { name: 'check_command', description: '查询后台命令的输出与状态', group: '命令' },
   { name: 'kill_command', description: '终止后台命令及其子进程', group: '命令' },
-  { name: 'browser_navigate', description: '在内置浏览器打开网址', group: '浏览器' },
-  { name: 'browser_read_page', description: '读取当前网页正文', group: '浏览器' },
-  { name: 'browser_click', description: '点击网页元素（会改变远端状态）', group: '浏览器' },
-  { name: 'browser_type', description: '向网页输入框填写文字', group: '浏览器' },
+  // 浏览器组不再进目录（plan79）：内置浏览器是宿主原生能力，所有 Agent 默认继承、不按角色声明；
+  // 角色编辑器对该组改展示继承事实与总开关位置（AgentManager 里有对应分支）。
   { name: 'update_todos', description: '维护本轮任务的待办清单', group: '协作' },
   { name: 'set_goal', description: '登记跨轮次的长期目标', group: '协作' },
   { name: 'ask_user', description: '向用户提问并给出选项', group: '协作' },

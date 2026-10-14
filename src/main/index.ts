@@ -909,14 +909,15 @@ app.whenReady().then(async () => {
       consoleMessages: browserConsoleMessages,
       networkRequests: browserNetworkRequests,
       handleDialog: (action, promptText) => browserHandleDialog(action, promptText),
-      listTabs: browserListTabs,
+      // 修正 B：list/select/close 也走任务接缝（适配器接口 async 化，门位统一）
+      listTabs: async () => browserListTabs(),
       newTab: browserNewTab,
-      selectTab: browserSelectTab,
-      closeTab: browserCloseTab,
+      selectTab: async (id) => browserSelectTab(id),
+      closeTab: async (id) => browserCloseTab(id),
       uploadFile: (target, filePath) => browserUploadFile(target, filePath),
       waitFor: (target, timeoutMs) => browserWaitFor(target, timeoutMs)
     }
-    browserAdapter.createTask = (signal) => createBrowserTaskAdapter(browserAdapter, signal)
+    browserAdapter.createTask = (signal, ctx) => createBrowserTaskAdapter(browserAdapter, signal, ctx)
     setBrowserAdapter(browserAdapter)
     log.info('浏览器适配器已注入 agent 接缝')
   } else {

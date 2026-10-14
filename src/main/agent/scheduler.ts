@@ -40,10 +40,17 @@ export interface SubagentRunOptions {
   /**
    * 按定义求该子代理的工具集 —— **不是一个共用数组**：一份共用数组会让 `def.tools` 对子代理
    * 完全不生效（既不收窄也不授予，plan51 F1 修的正是这个）。上限与口径由 runner 侧决定。
+   * ⚠️ 每个 **job** 各调一次（同角色并发两个 job 也各调一次）—— 浏览器工具按 job 身份装配，
+   * 按 def 缓存会让同角色两个 job 共用一个任务适配器（plan79 修正 C）。
    */
   toolsFor: (def: AgentDefinition) => AgentTool[]
-  /** 按定义产出模型通道（生产环境按 def.model 选模型；测试注入 mock） */
-  chatFactory: (def: AgentDefinition) => (messages: AgentMessage[]) => Promise<AgentChatResult>
+  /** 按定义产出模型通道（生产环境按 def.model 选模型；测试注入 mock）。
+   *  ⚠️ 第二个参数是 **scheduler 同一次装配的 jobTools**（修正 C）：schema 与执行工具必须同源，
+   *  实现里不许再自己调一次 toolsFor（浏览器工具两次求值 = 两份适配器，schema 与真工具分岔）。 */
+  chatFactory: (
+    def: AgentDefinition,
+    tools: AgentTool[]
+  ) => (messages: AgentMessage[]) => Promise<AgentChatResult>
   /** 并发上限（D5，默认 3） */
   maxConcurrency?: number
   /** 单代理轮数预算（默认 12） */
@@ -113,7 +120,7 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           history: [{ role: 'user', content: jobTask }],
           tools: jobTools,
           maxRounds: opts.maxRoundsPerAgent,
-          chat: opts.chatFactory(def),
+          chat: opts.chatFactory(def, jobTools),
           // 刻意**不传 `contextWindow`** ⇒ 子代理这条路没有历史折叠与滚动摘要
           // （`agent/loop.ts · runAgentLoop` 里 `trimOpts` 缺参即整段不启用）。取舍：子代理历史短、
           // 轮数封顶兜着（`maxRounds` 默认 12），0.75 阈值多半永不触发，补传却要为折叠多花摘要调用。

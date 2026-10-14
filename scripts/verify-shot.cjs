@@ -856,6 +856,8 @@ let tpEnabled = false
 const tpCalls = []
 /** D-155 B1-a：浏览器操作开关（与 cc 同形状）＋升级提示横幅（与 tp 同形状） */
 let bcEnabled = false
+let nbEnabled = true
+let nbCalls = []
 const bcCalls = []
 let cuNoticeSeen = false
 
@@ -1472,6 +1474,13 @@ const STUBS = {
   'browser-control:set': (enabled) => {
     bcEnabled = enabled
     bcCalls.push(enabled)
+    return enabled
+  },
+  // plan79：内置原生浏览器开关（与 browser-control 外部 MCP 线隔离；缺省开）。
+  'browser-native:get': () => nbEnabled,
+  'browser-native:set': (enabled) => {
+    nbEnabled = enabled
+    nbCalls.push(enabled)
     return enabled
   },
   'computer-use:notice-get': () => cuNoticeSeen,
@@ -6384,6 +6393,8 @@ app.whenReady().then(async () => {
         // （settings.ts import electron，vitest 禁入 —— 见 AGENTS §八；store 侧 === true 与既有 6 个开关同一写法）：
         // 桩回 falsy 时两开关渲染"关着、可点"，不进禁用死角。
         bc: shape(pick('启用浏览器操作')),
+        // plan79：内置原生浏览器开关（缺省开）——与外部「浏览器操作」分层，默认值相反；桩 nbEnabled=true
+        nb: shape(pick('启用内置浏览器')),
         // E5 终端 profile 开关（09-18）
         tp: shape(pick('加载 PowerShell profile')),
         keep: shape(pick('锁屏与熄屏后继续运行')),
@@ -6398,10 +6409,11 @@ app.whenReady().then(async () => {
   `)
   const systemBefore = await systemRead()
   const visible = (box) => box !== null && box.w >= 12 && box.h >= 12
-  checkTrue('通用设置内五组开关：启用电脑控制 / 启用浏览器操作 / 加载 PowerShell profile / 锁屏与熄屏后继续运行 / 开机自启 —— 默认都关着、都可点',
-    systemBefore.labels.length === 5 &&
+  checkTrue('通用设置内六组开关：电脑控制 / 浏览器操作 / 内置浏览器 / PowerShell profile / 锁屏与熄屏后继续运行 / 开机自启 —— 内置浏览器默认开着，其余五组默认关着、都可点',
+    systemBefore.labels.length === 6 &&
       systemBefore.cc !== null && systemBefore.cc.checked === false && systemBefore.cc.disabled === false &&
       systemBefore.bc !== null && systemBefore.bc.checked === false && systemBefore.bc.disabled === false &&
+      systemBefore.nb !== null && systemBefore.nb.checked === true && systemBefore.nb.disabled === false &&
       systemBefore.tp !== null && systemBefore.tp.checked === false && systemBefore.tp.disabled === false &&
       systemBefore.keep !== null && systemBefore.keep.checked === false && systemBefore.keep.disabled === false &&
       systemBefore.auto !== null && systemBefore.auto.checked === false && systemBefore.auto.disabled === false,

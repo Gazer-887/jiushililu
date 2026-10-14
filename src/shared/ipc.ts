@@ -590,6 +590,12 @@ export const IPC = {
   browserControlGet: 'browser-control:get',
   browserControlSet: 'browser-control:set',
   /**
+   * 内置原生浏览器开关（plan79）。与 browser-control（外部浏览器类 MCP）隔离：
+   * 原生缺省开、坏值不当 true、即时生效；旧总开关显式关闭在迁移时保留原生关闭。
+   */
+  browserNativeGet: 'browser-native:get',
+  browserNativeSet: 'browser-native:set',
+  /**
    * 双开关升级提示（D-155 B1-a 步 4）：只读"见过没见过"。设置页顶部横幅只出现一次的落盘位。
    * 被拦 server 列表（步 5）：按配置 server 逐个定级，报被哪个开关拦（展示用，不参与放行）。
    */
@@ -884,7 +890,7 @@ export interface ToolConfirmRequest {
   /** 哪条会话在问（plan11 P0-3）：不标出来，单槽确认框会把 A 的内容换成 B，而用户以为批的是他看过的那一条。 */
   conversationId: string
   /** 确认的种类，界面据此说**不同的话**：文件回滚与会话回滚是两件事，说同一句话用户会以为点一个两个都退（会话回滚的文案里**不许出现"文件"二字**）。缺省视为 `'command'`。 */
-  kind?: 'command' | 'rollback-messages'
+  kind?: 'command' | 'browser' | 'rollback-messages'
 }
 
 /** 会话回滚的结果 */
@@ -1037,6 +1043,9 @@ export interface ApiBridge {
   /** **浏览器操作开关**（D-155 B1-a：与电脑控制同形状；关 = 浏览器类整批不下发） */
   getBrowserControl(): Promise<boolean>
   setBrowserControl(enabled: boolean): Promise<boolean>
+  /** 内置原生浏览器开关（plan79：与外部 MCP 的 browser-control 隔离；缺省开、坏值不当 true） */
+  getBrowserNative(): Promise<boolean>
+  setBrowserNative(enabled: boolean): Promise<boolean>
   /** 双开关升级提示（读"见过没见过"；写返回改后的值）与被拦 server 列表（展示用） */
   getComputerUseNotice(): Promise<boolean>
   setComputerUseNotice(seen: boolean): Promise<boolean>

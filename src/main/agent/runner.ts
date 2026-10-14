@@ -28,6 +28,7 @@ import {
 import type { RuntimeEnv } from './tools/shell-session'
 import { createWebTools } from './tools/web-tools'
 import { createBrowserTools } from './tools/browser-tools'
+import type { ConfirmFn } from '../browser-policy'
 import { saveAttachmentImage } from '../attachments-store'
 import { createTodoTools } from './tools/todo-tools'
 import { createGoalTools } from './tools/goal-tools'
@@ -151,6 +152,28 @@ export function allowedToolsFor(preset: PermissionPreset, declared: string[] | u
 }
 
 /**
+ * 本 Agent 本轮**实际可见工具名**（plan79 切片 1）：在 `allowedToolsFor` 的角色收窄之上，
+ * 注入原生内置浏览器的**公共能力** —— 不依赖角色声明，权限档仍是硬上限。
+ *
+ * - 原生开（nativeBrowser）：union（角色声明 ∩ 已知 ∪ 公共浏览器集 ⊂ 权限档）；
+ *   只读档只注入 READ_ONLY_TOOLS 里的浏览器（navigate/read_page），click/type/eval 等照旧够不到。
+ * - 原生关：把浏览器名从表里**剔除**（不只不装配）——「表有工具装空」是假承诺。
+ */
+export function resolveAgentToolNames(
+  preset: PermissionPreset,
+  declared: string[] | undefined,
+  allNames: string[],
+  nativeBrowser: boolean
+): string[] {
+  const base = allowedToolsFor(preset, declared, allNames)
+  if (!nativeBrowser) return base.filter((n) => !n.startsWith('browser_'))
+  const publicSet = allNames.filter(
+    (n) => n.startsWith('browser_') && (preset !== 'read-only' || READ_ONLY_TOOLS.has(n))
+  )
+  return [...new Set([...base, ...publicSet])]
+}
+
+/**
  * 子代理**一律**拿不到的工具（在权限档之上再加一道"角色上限"）。
  *
  * - `spawn_agents`：它会递归派生，成本失控（既有口径）。
@@ -217,6 +240,34 @@ export function buildCommandTools(
       )
 }
 
+/** 按发起者装配浏览器工具（plan79 修正 C/D 共用）：**每个 job 一份** —— 主代理与每个子代理
+ *  各自经 createTask 得到独立的任务适配器与授权器（同角色并发两个 job 也不共用）；
+ *  确认桥用结构化那份（confirmBrowser），署名写实际发起者。 */
+function buildBrowserToolsFor(hooks: ToolHooks, agentName: string): AgentTool[] {
+  return createBrowserTools({
+    browserControlEnabled: true,
+    signal: hooks.signal,
+    taskContext: {
+      agent: agentName,
+      conversationId: hooks.conversationId,
+      confirm: hooks.confirmBrowser ?? null,
+      ...(hooks.isNativeBrowserEnabled ? { isEnabled: hooks.isNativeBrowserEnabled } : {})
+    },
+    ...(hooks.attachmentsRoot
+      ? {
+          saveScreenshot: (pngBase64: string) => {
+            const saved = saveAttachmentImage(hooks.attachmentsRoot!, {
+              mime: 'image/png',
+              buf: Buffer.from(pngBase64, 'base64'),
+              now: () => new Date()
+            })
+            return saved ? saved.ref : null
+          }
+        }
+      : {})
+  })
+}
+
 export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): AgentTool[] {
   // 没注入写入服务时的默认实现：能写不能删 —— 宁可删不掉，也不能在没有检查点的场景下悄悄硬删
   const writer =
@@ -232,31 +283,19 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
     ...buildCommandTools(workspaceRoot, hooks, hooks.agentLabel),
     ...createWebTools(hooks.webSearchDeps),
     // plan60 §三.5：开关关 = 内置 browser_* 整批不下发 + 一条 WARN（B1-a 语义；MCP 侧见 mcp-tools 门控）。
-    // 开关值走 hooks.browserControl（run 层显式传入，缺省=关）；截图落盘器由 attachmentsRoot 装配。
+    // plan79：**显式原生关优先于旧总开关**（与设置层 getNativeBrowserEnabled 同源 —— 否则
+    // 「旧开关 true + 新开关显式关」会让工具照下发、一调就报已关闭）；未传原生字段的旧调用方
+    // 沿用旧总开关语义（缺省=关，fail-closed）。截图落盘器由 attachmentsRoot 装配。
     ...(() => {
-      if (hooks.browserControl !== true) {
+      const nativeOn = hooks.nativeBrowser ?? (hooks.browserControl === true)
+      if (!nativeOn) {
         if (!browserOffWarned) {
           browserOffWarned = true
-          log.warn('浏览器操作开关已关：本轮不下发 browser_*（设置页可开）')
+          log.warn('内置浏览器开关已关：本轮不下发 browser_*（设置页可开）')
         }
         return []
       }
-      return createBrowserTools({
-        browserControlEnabled: true,
-        signal: hooks.signal,
-        ...(hooks.attachmentsRoot
-          ? {
-              saveScreenshot: (pngBase64: string) => {
-                const saved = saveAttachmentImage(hooks.attachmentsRoot!, {
-                  mime: 'image/png',
-                  buf: Buffer.from(pngBase64, 'base64'),
-                  now: () => new Date()
-                })
-                return saved ? saved.ref : null
-              }
-            }
-          : {})
-      })
+      return buildBrowserToolsFor(hooks, hooks.agentLabel ?? '内核默认')
     })(),
     // 待办清单：**有消费者才注册** —— 没人看的话，这工具就是给模型的假承诺
     ...(hooks.onTodos ? createTodoTools({ update: hooks.onTodos }) : []),
@@ -346,6 +385,12 @@ export interface ToolHooks {
   webSearchDeps?: { firecrawlApiKey: string | null }
   /** 执行 shell 命令前的逐次确认（plan8 R5）；不传 = 不确认 */
   confirmCommand?: CommandConfirm
+  /**
+   * 浏览器**结构化**确认桥（plan79 修正 D）：保留真实 tool/站点/发起者，不经命令字符串包装。
+   * 与 `confirmCommand`（只管可写档的 run_command）分开注入 —— **全权限档都要有**（只读档的
+   * 合法导航、完全访问档的未知风险确认都走它）；不传 = 浏览器外部作用动作一律拒绝。
+   */
+  confirmBrowser?: ConfirmFn
   onTodos?: (todos: TodoItem[]) => void
   /** 目标创建口（plan12 ⑤）；不传 = 不下发 set_goal 工具（「有消费者才注册」，同 todos/ask/subagent） */
   onSetGoal?: (input: { text: string; doneWhen?: string }) => import('@shared/goal').Goal
@@ -373,6 +418,16 @@ export interface ToolHooks {
    * 关 = 内置 `browser_*` 整批不下发（与 MCP 侧 `hooks.mcp.browserControl` 同语义，各管各的线）。
    */
   browserControl?: boolean
+  /**
+   * 内置原生浏览器开关本轮值（plan79）。由组合根每轮现读 settings（缺省=开）：
+   * 原生开 = 所有 Agent 的公共能力（不经角色声明）；关 = 与旧总开关都不开才整批不下发。
+   * 与 `browserControl`（外部浏览器类 MCP 总闸）各管各的线，互不牵连。
+   */
+  nativeBrowser?: boolean
+  /** 本 run 的会话 id（plan79：浏览器授权卡署名与会话归属） */
+  conversationId?: string
+  /** 原生浏览器开关实时探针（plan79 切片 3；组合根传 getter，缺省不拦） */
+  isNativeBrowserEnabled?: () => boolean
   /**
    * 本 run 共享的常驻 shell 槽位。**同一个 run 内所有命令工具实例必须共用一个**：
    * 子代理的确认卡要写自己的名字，所以命令工具按发起者各造一份（见 `buildCommandTools`）；
@@ -504,6 +559,8 @@ export interface AgentRuntimeContext {
     agent: string
     where: string
     conversationId: string
+    /** 确认种类（界面据此说不同的话）：命令/浏览器/回滚 —— 修正 D 让浏览器卡不再伪装成工作区命令 */
+    kind?: 'command' | 'browser' | 'rollback-messages'
   }) => Promise<boolean>
 }
 
@@ -559,7 +616,11 @@ export interface RunAgentArgs {
   history: AgentMessage[]
   /** **这次跑属于哪条会话**（plan11），必填：检查点靠它记归属、危险确认靠它说清"哪条会话在问"；少了它，出事时连这轮是谁的都说不清。 */
   conversationId: string
+  /** 内置原生浏览器开关本轮值（plan79；组合根每轮现读 settings，缺省=开） */
+  nativeBrowser?: boolean
   agentName?: string
+  /** 原生浏览器开关实时探针（plan79 切片 3；用于排队中关停） */
+  isNativeBrowserEnabled?: () => boolean
   permission?: PermissionPreset
   /** Firecrawl 密钥（plan31）：由组合根从设置解密后传入；不传 = web_search 走零密钥默认源 */
   firecrawlApiKey?: string | null
@@ -710,11 +771,12 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
         tasks: jobs.map((j) => j.task),
         toolsFor: toolsForSubagent,
         // 子代理按**自己的 def.model** 建通道（缺省沿用当前会话模型），输出不上屏（只回流给主代理）
-        chatFactory: (d) => {
+        chatFactory: (d, tools) => {
           // 用 `effective` 而非 `args.settings`：档位对思考强度的覆盖（§七③）必须对子代理同样生效，否则轻量档用户派个子代理，那边还在高思考强度空烧
           const model = d.model ? { ...effective, model: d.model } : effective
-          // schema 与执行用的工具**同源同次求值**：两份各算一次迟早分岔（实收 schema 与真工具对不上）
-          const schemas = toolsForSubagent(d).map((t) => t.schema)
+          // schema 取**scheduler 同一次装配**的 jobTools（修正 C）：早前这里再调一次 toolsForSubagent，
+          // 浏览器工具按 job 重建后两次求值会各建一份适配器 —— schema 与执行工具就此分岔
+          const schemas = tools.map((t) => t.schema)
           return (messages: AgentMessage[]) => {
             // 子代理**不再自带整轮墙钟**（plan29 D-090）：原来这里在父 signal 缺席时给一个
             // `AbortSignal.timeout(model.timeoutMs)`，而子代理是并发跑的 —— 等于每个子代理各拿一个
@@ -799,15 +861,34 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       where: workspaceRoot,
       conversationId: args.conversationId
     })
+  /** 浏览器确认桥（修正 D）：**全权限档注入**（只读档的合法导航、完全访问档的未知风险确认都要它）；
+   *  保留真实 tool 名与站点，不发 run_command/工作区包装。署名按实际发起者给（子代理用自己那份）。 */
+  const browserConfirmFor = (label: string): ConfirmFn => (req) =>
+    ctx.confirmCommand!({
+      tool: req.tool,
+      detail: req.detail,
+      agent: req.agent || label,
+      where: req.where,
+      conversationId: args.conversationId,
+      kind: 'browser'
+    })
   const toolHooks: ToolHooks = {
     writer,
+    conversationId: args.conversationId,
+    // plan79：原生开关值必须进 hooks —— 装配门（browserOn）与自视段都从这里取。漏传 = 显式关
+    // 吃不到（旧门「非 false 即真」恰好掩盖过这处漏传，fail-closed 化后由 e2e 故事一/二当场暴露）。
+    ...(args.nativeBrowser !== undefined ? { nativeBrowser: args.nativeBrowser } : {}),
+    ...(args.isNativeBrowserEnabled ? { isNativeBrowserEnabled: args.isNativeBrowserEnabled } : {}),
+    // 发起者标签**无条件挂**（修正 D）：原先绑在 ctx.background 上，缺后台管理器时确认卡失去角色名
+    agentLabel,
     ...(pathAccess ? { pathAccess } : {}),
     webSearchDeps: { firecrawlApiKey: args.firecrawlApiKey ?? null },
     ...(args.policy ? { policy: args.policy } : {}),
-    ...(ctx.background ? { background: ctx.background, agentLabel } : {}),
+    ...(ctx.background ? { background: ctx.background } : {}),
     ...(runtimeEnvForRun ? { resolveRuntimeEnv: () => runtimeEnvForRun } : {}),
     shellSlot,
     ...(ctx.confirmCommand && preset === 'write' ? { confirmCommand: confirmBridgeFor(agentLabel) } : {}),
+    ...(ctx.confirmCommand ? { confirmBrowser: browserConfirmFor(agentLabel) } : {}),
     ...(args.onTodos ? { onTodos: args.onTodos } : {}),
     // 记忆（plan19 批 1）：`conversationId` 在这里补 —— 与 `confirmCommand` 同一手法。
     // ⚠️ 开关在这里**每轮读一次**：关掉就整个不下发 remember / recall（结构性关断，
@@ -901,15 +982,33 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   // 带计划批准闸的 Agent **不许有派发口**（plan51）：子代理现在按自己的声明装配，留着派发口就
   // 等于"批准卡还没弹，写操作已经经子代理落盘"——plan27 那条「先批准、后执行」当场失效。
   // 结构性掐掉，不靠"当前内置 planner 恰好没声明 spawn_agents"这层运气。
-  const allowed = allowedToolsFor(preset, def?.tools, allNames).filter(
-    (n) => !(def?.approval === 'plan' && n === 'spawn_agents')
+  const browserOn = toolHooks.nativeBrowser ?? (toolHooks.browserControl === true)
+  const allowed = resolveAgentToolNames(preset, def?.tools, allNames, browserOn).filter(
+    (n) =>
+      !(def?.approval === 'plan' && n === 'spawn_agents') &&
+      // plan79 修正 A3：**计划批准前**只给规划/读取向的浏览器能力（独审实证：planner 借公共注入
+      // 在计划被拒前真实点击了提交）。外部写作用待批准后由执行阶段承担。
+      !(def?.approval === 'plan' && n.startsWith('browser_') && !READ_ONLY_TOOLS.has(n))
   )
   const gate = new ToolGate(allowed)
   const tools = allTools.filter((t) => gate.check(t.schema.name).ok)
 
   toolsForSubagent = (d) => {
-    const allow = new Set(subagentToolNamesFor(preset, d.tools, allNames))
-    if (!allow.has('run_command')) return allTools.filter((t) => allow.has(t.schema.name))
+    const allow = new Set(
+      resolveAgentToolNames(preset, d.tools, allNames, browserOn).filter(
+        (n) => !SUBAGENT_NEVER.has(n)
+      )
+    )
+    // 浏览器工具**按 job 身份重建**（修正 C）：父 allTools 里那份闭包绑着父的任务上下文，
+    // 直接过滤复用 = 父子共用一个 task adapter / authorizer（独审实证：两个子代理只建 1 个 createTask）。
+    // 每个 job 各自 createBrowserTools → createTask → 独立适配器 + 独立 TaskAuthorizer（同角色并发也独立）。
+    const browserTools = browserOn
+      ? buildBrowserToolsFor(toolHooks, d.name).filter((t) => allow.has(t.schema.name))
+      : []
+    const withoutBrowser = allTools.filter(
+      (t) => allow.has(t.schema.name) && !t.schema.name.startsWith('browser_')
+    )
+    if (!allow.has('run_command')) return [...withoutBrowser, ...browserTools]
     // 命令工具换成**带子代理自己名字**的实例：确认卡的「发起」与后台任务记录的 `agent`
     // 都在建实例时定格，复用主代理那一份会让并发派发的几张卡都写着主代理（K5）。
     // 后台任务存储与确认桥仍是同一批 ⇒ 放行口径、检查点记账都不变。
@@ -920,7 +1019,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     ).filter((t) => t.schema.name === 'run_command')
     // 拿不到就不如实地炸：静默退回主代理那份 = 署名又变回错的，而这正是本段要修的东西
     if (own.length === 0) throw new Error(`命令工具装配异常：${d.name} 的 run_command 未生成，无法为确认卡署名`)
-    return [...allTools.filter((t) => allow.has(t.schema.name) && t.schema.name !== 'run_command'), ...own]
+    return [...withoutBrowser, ...browserTools, ...own]
   }
 
   /** 省 token 档位（§七②③）：**组合根已解析好传进来**；没传（如单测直接调 `runAgent`）按**平衡档**补齐 */
@@ -943,7 +1042,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
           // 按**装配后的实收**判定，不按"名字被声明过"：名字写歪（loader 宽松解析、不验成员）
           // 或被档位滤掉时，`subagentToolNamesFor` 给不出它 —— 那样报出来就又是一次假承诺。
           agents: [...registry.definitions.values()]
-            .filter((d) => subagentToolNamesFor(preset, d.tools, allNames).includes(cap))
+            .filter((d) => resolveAgentToolNames(preset, d.tools, allNames, browserOn).includes(cap))
             .map((d) => d.name)
         }))
         .filter((g) => g.agents.length > 0)
@@ -983,7 +1082,9 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       ? [...registry.definitions.keys()]
       : [],
     capabilityGaps,
-    computerControl: args.computerControl === true
+    computerControl: args.computerControl === true,
+    // plan79：内置浏览器状态如实进自视段（与装配门同源；关时不静默装不存在）
+    nativeBrowser: browserOn
   })
   const guardedSystem = `${systemPrompt}\n\n${selfViewBlock}\n\n${CONDUCT_RULES}\n\n${discipline ? `${discipline}\n\n` : ''}${TOOL_OUTPUT_TRUST_BASELINE}${memoryBlock ? `\n\n${memoryBlock}` : ''}${playbookBlock ? `\n\n${playbookBlock}` : ''}${skillBlock ? `\n\n${skillBlock}` : ''}${rulesBlock ? `\n\n${rulesBlock}` : ''}`
 

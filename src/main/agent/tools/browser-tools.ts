@@ -1,4 +1,5 @@
 import type { AgentTool } from '@shared/agent'
+import type { BrowserTaskContext } from '../browser-bridge'
 import { getBrowserAdapter, withBrowserTask } from '../browser-bridge'
 import { traceSpan } from '../../watchdog'
 
@@ -33,14 +34,36 @@ export interface BrowserToolDeps {
    * 返回落盘 ref 文本（供 images/forward 组装），null = 存失败（工具转人话）。
    */
   saveScreenshot?: (pngBase64: string) => string | null
+  /** plan79：宿主任务上下文（确认桥/身份）；不传 = adapter 层拒绝外部作用动作 */
+  taskContext?: BrowserTaskContext
 }
+
+/** 原生内置浏览器 16 工具的**唯一真源**（plan79：公共能力注入与测试同引一处，不复制名单）。 */
+export const BROWSER_TOOL_NAMES = [
+  'browser_navigate',
+  'browser_read_page',
+  'browser_click',
+  'browser_type',
+  'browser_hover',
+  'browser_press_key',
+  'browser_drag',
+  'browser_screenshot',
+  'browser_snapshot',
+  'browser_eval_script',
+  'browser_console',
+  'browser_network',
+  'browser_dialog',
+  'browser_tabs',
+  'browser_upload',
+  'browser_wait',
+] as const
 
 export function createBrowserTools(deps: BrowserToolDeps = {}): AgentTool[] {
   // 开关关 = 整批不下发（B1-a 语义；WARN 由装配层发，这里只负责"没有"）。
   if (deps.browserControlEnabled === false) return []
   const saveScreenshot = deps.saveScreenshot
   const base = getBrowserAdapter()
-  const scoped = base?.createTask?.(deps.signal) ?? base
+  const scoped = base?.createTask?.(deps.signal, deps.taskContext) ?? base
   const browser_navigate: AgentTool = {
     schema: {
       name: 'browser_navigate',
@@ -417,7 +440,7 @@ function defineTabs(): AgentTool {
       if (!b) return noBrowser()
       try {
         if (action === 'list') {
-          const list = b.listTabs()
+          const list = await b.listTabs()
           return list.length === 0
             ? '当前没有打开的标签页'
             : list.map((t) => `${t.id}：${t.title || '(无标题)'}（${t.url}）`).join('\n')
@@ -430,11 +453,11 @@ function defineTabs(): AgentTool {
         const id = str(args, 'id')
         if (!id) return '错误：select/close 需要 id（先 browser_tabs list 看一眼）'
         if (action === 'select') {
-          const t = b.selectTab(id)
+          const t = await b.selectTab(id)
           return t ? `已切换到 ${t.id}（${t.url}）` : `没有这个标签页：${id}`
         }
         if (action === 'close') {
-          return b.closeTab(id) ? `已关闭标签页 ${id}` : `没有这个标签页：${id}`
+          return (await b.closeTab(id)) ? `已关闭标签页 ${id}` : `没有这个标签页：${id}`
         }
         return '错误：action 只能是 list/new/select/close'
       } catch (err) {

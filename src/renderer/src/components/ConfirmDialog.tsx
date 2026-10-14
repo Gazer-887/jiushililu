@@ -30,6 +30,9 @@ export default function ConfirmDialog(): JSX.Element | null {
   // **两种确认说两种话**（plan10 §六 第 6 条）：文件回滚在右抽屉、会话回滚在消息右键，是两件不同的事。
   // 会话回滚这一路**不许出现"文件"二字**（否则用户以为点一个两个都退；有一条断言专门钉这个）。
   const isRollback = req.kind === 'rollback-messages'
+  // 浏览器确认（plan79 修正 D）：结构化桥进来的页面操作确认 —— 不说"在工作区执行命令"，
+  // 位置栏说的是**站点**（req.where 由桥填真实 origin，不再是文件工作区）。
+  const isBrowser = req.kind === 'browser'
 
   /** 请求来自哪条会话：拿不到标题就退回 id，**绝不显示成"未知"**让人无从追溯 */
   const fromTitle =
@@ -52,14 +55,18 @@ export default function ConfirmDialog(): JSX.Element | null {
     <div className="cf-mask" role="dialog" aria-modal="true" aria-label={isRollback ? '会话回滚确认' : '危险操作确认'}>
       <div className="cf-box">
         <div className="cf-head">
-          <span className="cf-title">{isRollback ? '确认回滚这段对话' : '需要确认'}</span>
+          <span className="cf-title">
+            {isRollback ? '确认回滚这段对话' : isBrowser ? '浏览器操作确认' : '需要确认'}
+          </span>
           <span className="cf-tool">{req.tool}</span>
         </div>
 
         <p className="cf-desc">
           {isRollback
             ? '仅回滚对话消息：该对话中靠后的部分将从界面隐去，工作区文件不受影响。回滚之后可以撤销。'
-            : '即将在工作区执行一条命令。命令的影响范围没有上限，请确认后再决定。'}
+            : isBrowser
+              ? '即将在内置浏览器中执行页面操作。提交、上传等动作可能改变远端状态且无法撤回，请确认后再决定。'
+              : '即将在工作区执行一条命令。命令的影响范围没有上限，请确认后再决定。'}
         </p>
 
         <pre className="cf-cmd">{req.detail}</pre>
@@ -70,7 +77,8 @@ export default function ConfirmDialog(): JSX.Element | null {
           </span>
           <span>发起：{req.agent}</span>
           <span className="cf-where" title={req.where}>
-            位置：{req.where}
+            {isBrowser ? '站点：' : '位置：'}
+            {req.where}
           </span>
         </div>
 

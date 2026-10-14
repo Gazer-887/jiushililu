@@ -33,6 +33,7 @@ vi.mock('@main/store/models', async (original) => ({
 }))
 const { IPC } = await import('@shared/ipc')
 const { registerIpcHandlers } = await import('@main/ipc')
+const { setNativeBrowserEnabled } = await import('@main/store/settings')
 const { createAgentContext } = await import('@main/agent/runner')
 const { createMemoryStore } = await import('@main/store/memory-store')
 const { createPlaybookStore } = await import('@main/store/playbook-store')
@@ -107,6 +108,29 @@ describe('聊天和一次性任务实际装配', () => {
     expect(agent.checkpoints.list().every((run) => run.status !== 'running')).toBe(true)
     expect(e.sender.removeListener).toHaveBeenCalled()
   })
+  it('一次性任务入口真实透传原生浏览器开关：开→工具下发+自视已开启；关→整批不下发', async () => {
+    setup()
+    const bodies: string[] = []
+    setHttpFetch(async (_url, init) => {
+      bodies.push(String(init?.body))
+      return response({ content: '完成' })
+    })
+    // 开关默认开（缺字段 → 新默认）
+    await f.handlers.get(IPC.agentRun)!(event(81), { task: '打开浏览器看看' })
+    const bodyOn = bodies.at(-1)!
+    expect(bodyOn, '开关开：浏览器工具随请求真实下发').toContain('browser_navigate')
+    expect(bodyOn, '自视段如实报已开启').toContain('内置浏览器：已开启')
+    setNativeBrowserEnabled(false)
+    try {
+      await f.handlers.get(IPC.agentRun)!(event(82), { task: '再打开看看' })
+      const bodyOff = bodies.at(-1)!
+      expect(bodyOff, '开关关：整批不下发（不靠运行时兜底）').not.toContain('browser_navigate')
+      expect(bodyOff, '自视段如实报未开启与开启入口').toContain('内置浏览器：未开启')
+    } finally {
+      setNativeBrowserEnabled(true)
+    }
+  })
+
   it.each(['chat', 'agent'] as const)('聊天A写完停在模型等待，%s B完成后各归本轮', async (mode) => {
     const { memory } = setup(); const suffix = ++sequence
     const aName = `AlphaEditor${suffix}`; const bName = `BetaBuild${suffix}`

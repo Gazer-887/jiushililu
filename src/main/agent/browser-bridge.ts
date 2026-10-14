@@ -1,6 +1,7 @@
 // 浏览器适配器接缝（agent 层专用）。
 //
 // 为什么要有这一层：agent 层**不得 import electron**（CI 无 Electron 二进制，一旦引入单测即炸，
+import type { ConfirmFn } from '../browser-policy'
 // 见 tests/unit/architecture.test.ts 的守卫）。但浏览器工具必须驱动真实的 WebContentsView。
 // 解法＝依赖倒置：这里只声明接口与一个可注入的槽位，真实实现由 main/index.ts 在启动时注入。
 
@@ -29,9 +30,23 @@ export interface TabRecord {
   title: string
 }
 
+/** 宿主导入的受控任务上下文（plan79 切片 2）：确认桥与身份；缺失 = 不降级放行外部作用。 */
+export interface BrowserTaskContext {
+  /** 实际发起代理名（确认卡署名）——每个 job 装配自己的上下文，不共用父的可变实例 */
+  agent: string
+  conversationId?: string
+  /** 宿主**结构化**浏览器确认桥（修正 D：保留真实 tool/站点/发起者，不经命令字符串包装）；null = 无确认服务 */
+  confirm: ConfirmFn | null
+  /**
+   * 内置浏览器开关实时探针（plan79 切片 3）：每个执行前核；false = 排队动作立即停止。
+   * 缺省 = 不因未知状态拦截（关停由工具不下发兜底）。
+   */
+  isEnabled?: () => boolean
+}
+
 export interface BrowserAdapter {
   /** 每轮独立固定目标；底层由主进程维护页面身份与同标签排队。 */
-  createTask?(signal?: AbortSignal): BrowserAdapter
+  createTask?(signal?: AbortSignal, ctx?: BrowserTaskContext): BrowserAdapter
   assertReady?(): void
   currentUrl(): string
   navigate(url: string): Promise<{ url: string; title: string }>
@@ -56,10 +71,12 @@ export interface BrowserAdapter {
   networkRequests(): Promise<string>
   /** 处理当前挂起的 dialog（无挂起时报最后一条记录，不抛） */
   handleDialog(action: 'accept' | 'dismiss', promptText?: string): Promise<string>
-  listTabs(): TabRecord[]
+  /** 列标签：走任务接缝（开关核验 + 排队）；async 化是为了统一过门位（修正 B） */
+  listTabs(): Promise<TabRecord[]>
   newTab(url?: string): Promise<TabRecord>
-  selectTab(id: string): TabRecord | null
-  closeTab(id: string): boolean
+  /** 切换任务目标：只过门位不先核旧目标（它是当前目标死亡时的恢复通道） */
+  selectTab(id: string): Promise<TabRecord | null>
+  closeTab(id: string): Promise<boolean>
   /** 文件上传：经 CDP `DOM.setFileInputFiles`（Electron 无原生 file chooser 拦截） */
   uploadFile(target: string, filePath: string): Promise<string>
   /** 等待条件：文本或选择器出现（轮询，超时报"未出现"而非卡死） */

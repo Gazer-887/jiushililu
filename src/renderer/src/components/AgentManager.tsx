@@ -132,18 +132,27 @@ export default function AgentManager(): JSX.Element {
           {TOOL_GROUP_ORDER.map((group) => (
             <div key={group} className="ag-tool-group">
               <span className="ag-tool-group-name">{group}</span>
-              <div className="ag-tool-items">
-                {TOOL_CATALOG.filter((t) => t.group === group).map((t) => (
-                  <label key={t.name} className="ag-tool" title={t.description}>
-                    <input
-                      type="checkbox"
-                      checked={editing.tools.includes(t.name)}
-                      onChange={() => toggleTool(t.name)}
-                    />
-                    <span>{t.name}</span>
-                  </label>
-                ))}
-              </div>
+              {group === '浏览器' ? (
+                // plan79：内置浏览器是宿主原生能力，不按角色声明——展示实际继承事实与开关位置，
+                // 不再摆一排勾了也没用的旧式声明复选框。
+                <span className="ag-note">
+                  宿主原生能力，所有 Agent 默认可用：导航、读取、点击、填写、按键、截图、标签等 16 项。
+                  无需在此声明；提交、上传等外部动作按任务授权确认，总开关在「设置 · 内置浏览器（原生）」。
+                </span>
+              ) : (
+                <div className="ag-tool-items">
+                  {TOOL_CATALOG.filter((t) => t.group === group).map((t) => (
+                    <label key={t.name} className="ag-tool" title={t.description}>
+                      <input
+                        type="checkbox"
+                        checked={editing.tools.includes(t.name)}
+                        onChange={() => toggleTool(t.name)}
+                      />
+                      <span>{t.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
