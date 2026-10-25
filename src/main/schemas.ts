@@ -9,6 +9,7 @@ import {
   OUTBOUND_VIDEO_MIMES
 } from '@shared/content-parts'
 import { BUDGET_ENCODINGS, OFF_ENCODINGS, REASONING_KINDS } from '@shared/ipc'
+import { RUN_RESULT_STATES, OUTCOME_CODES } from '@shared/execution-outcome'
 
 // 入参 schema 独立成文件：纯 zod、不 import electron，可脱离主进程单测。
 // 所有来自渲染进程的入参一律过这里 —— 坏数据挡在主进程门外。
@@ -95,6 +96,26 @@ export const contentPartsSchema = z.array(
     })
   ])
 ).min(1).max(MAX_IMAGES_PER_TURN)
+
+/**
+ * 本地文件引用（plan74）：与 parts **并列**的本地预览载体 —— **不出站**（parts 才是模型内容）。
+ * assetId 形状校验挡路径穿越；读盘在 Gateway，schema 层不碰文件系统（与 contentPartsSchema 同口径）。
+ * 宽松收：未知字段不拒（前端可能带展示用字段），但核心身份字段必严。
+ */
+export const localFileRefSchema = z.object({
+  assetId: z.string().min(1).max(200),
+  name: z.string().min(1).max(500),
+  mime: z.string().min(1).max(200),
+  bytes: z.number().int().nonnegative(),
+  digest: z.string().max(64).optional(),
+  source: z.enum(['history', 'artifact', 'draft']),
+  draftId: z.string().min(1).max(128).optional(),
+  workspaceRel: z.string().max(1000).optional(),
+  outside: z.boolean().optional()
+})
+
+/** localFiles 数组（一条消息可挂多个本地文件，各自独立展开）。 */
+export const localFilesSchema = z.array(localFileRefSchema).max(100)
 
 /**
  * 单条消息（发给模型的通道）：刻意**不含** segments —— 执行分段是本地渲染资产，不随请求出境（plan36 审查坑 2）。
@@ -287,6 +308,13 @@ export const goalActionSchema = z.object({
     .optional()
 })
 
+/** 终态记录的校验（E26b）：白名单校验状态/原因码/httpStatus */
+export const runTerminalSchema = z.object({
+  state: z.enum(RUN_RESULT_STATES),
+  code: z.enum(OUTCOME_CODES).optional(),
+  httpStatus: z.number().int().min(100).max(599).optional()
+})
+
 /** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */
 export const MAX_STORED_CHARS = 2_000_000
 
@@ -301,8 +329,17 @@ export const incomingMessagesSchema = z.array(
     content: z.string().max(200000),
     parts: contentPartsSchema.optional(),
     segments: z.array(z.record(z.string(), z.unknown())).max(1000).optional(),
+    /** plan74：本地文件引用（并列载体，不出站）—— 存档要保住，否则重启历史丢预览 */
+    localFiles: localFilesSchema.optional(),
+    /** plan74：消息身份（供产物卡/媒体进度键稳定引用） */
+    messageId: z.string().max(200).optional(),
     /** plan46：消息时间戳（可选 —— 旧数据无该字段，渲染层据此决定是否显示时间） */
-    createdAt: z.number().int().nonnegative().optional()
+    createdAt: z.number().int().nonnegative().optional(),
+    /**
+     * E30：本地执行终态必须随存档入站。zod 默认 strip 未声明字段——缺这行时
+     * 0 正文失败轮的 terminal 会在 IPC 入口被静默剥掉，随后被 normalizeHistory 整条丢弃。
+     */
+    terminal: runTerminalSchema.optional()
   })
 )
 
@@ -318,7 +355,10 @@ const segmentSchema = z
         phase: z.enum(['start', 'error', 'end']),
         detail: z.string().max(4000).optional(),
         summary: z.string().max(8000).optional(),
-        savedTokens: z.number().int().nonnegative().optional()
+          savedTokens: z.number().int().nonnegative().optional(),
+          artifactPaths: z.array(z.string().min(1).max(1000).refine(path =>
+            !/^(?:[a-zA-Z]:|[\\/])/.test(path) && !path.replace(/\\/g, '/').split('/').some(part => !part || part === '.' || part === '..')
+          )).max(50).optional()
       })
       .optional()
   })
@@ -333,8 +373,8 @@ const segmentSchema = z
 
 /**
  * **落盘**的单条消息（`conv:save`）：与发给模型的 `messageSchema` **刻意分两份**（plan36 审查坑 2）——
- * 落盘侧收 `segments?`，模型侧永远不含。空 `content` 仅当"assistant 且带分段"时合法
- * （中间轮次可能只有思考/工具没有正文；丢了它会让回滚的索引错位，坑 3）。
+ * 落盘侧收 `segments?` 与 `terminal?`，模型侧永远不含。空 `content` 仅当"assistant 且带分段或终态"时合法
+ * （中间轮次可能只有思考/工具没有正文，或只有0字符报错终态；丢了它会让回滚的索引错位，坑 3）。
  */
 export const storedMessageSchema = z
   .object({
@@ -342,15 +382,26 @@ export const storedMessageSchema = z
     content: z.string().max(200000),
     parts: contentPartsSchema.optional(),
     segments: z.array(segmentSchema).max(1000).optional(),
+    /** plan74：本地文件引用（并列载体，不出站）—— 落盘保住，重启仍可预览 */
+    localFiles: localFilesSchema.optional(),
+    /** plan74：消息身份 */
+    messageId: z.string().max(200).optional(),
     /** plan46：消息时间戳（可选 —— 旧存档无此字段，渲染层无则不显示时间，不编造） */
-    createdAt: z.number().int().nonnegative().optional()
+    createdAt: z.number().int().nonnegative().optional(),
+    /** E26b：本地执行终态（仅本地 assistant 记录，不发给模型） */
+    terminal: runTerminalSchema.optional()
   })
   .superRefine((m, ctx) => {
     if (m.segments && m.role !== 'assistant') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'segments 只允许挂在 assistant 上' })
     }
-    if (m.content.trim().length === 0 && !(m.role === 'assistant' && (m.segments?.length ?? 0) > 0)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '空 content 且无分段的消息不落盘' })
+    if (m.terminal && m.role !== 'assistant') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'terminal 只允许挂在 assistant 上' })
+    }
+    const hasSegments = m.role === 'assistant' && (m.segments?.length ?? 0) > 0
+    const hasTerminal = m.role === 'assistant' && !!m.terminal
+    if (m.content.trim().length === 0 && !hasSegments && !hasTerminal) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '空 content 且无分段或终态的消息不落盘' })
     }
   })
 

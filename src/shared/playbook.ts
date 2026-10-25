@@ -180,6 +180,15 @@ export const PLAYBOOK_TAG_KEYWORDS: Record<string, readonly string[]> = {
   refactor: ['重构', '整理代码', '拆分', 'refactor']
 }
 
+/**
+ * 标签是否可参与自动召回：规范标签在词表键内即成立，自定义标签不参与。
+ * ⚠️ 与 inferActiveTags 共用同一份词表，不另建重复表；只判「可能召回」，不承诺一定注入。
+ */
+export function hasAutomaticRecallTag(tags: readonly string[]): boolean {
+  const known = new Set(Object.keys(PLAYBOOK_TAG_KEYWORDS))
+  return tags.some((tag) => known.has(normalizeTag(tag)))
+}
+
 /** 单词命中判定：拉丁词整词（词边界），中文包含（无自然边界的第一次近似） */
 function wordHit(lower: string, word: string): boolean {
   if (!word.length || [...word].some((char) => char.codePointAt(0)! > 127)) return lower.includes(word)

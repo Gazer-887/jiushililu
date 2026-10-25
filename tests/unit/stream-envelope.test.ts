@@ -1,6 +1,41 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import type { WebContents } from 'electron'
+import { IPC, chatErrorMessage, type ChatErrorPayload } from '@shared/ipc'
+import type { TokenUsage } from '@shared/usage'
+import type { RunTerminal } from '@shared/execution-outcome'
+import { createChatEmitter } from '@main/chat-emitter'
+// E26a-R1：运行真实 preload 实现，仅 mock electron 边界。
+import '../../src/preload/index'
+
+const electronMock = vi.hoisted(() => {
+  const listeners = new Map<string, (event: unknown, ...args: unknown[]) => void>()
+  let exposed: unknown = null
+  return {
+    listeners,
+    ipcRenderer: {
+      on: (channel: string, listener: (event: unknown, ...args: unknown[]) => void) => {
+        listeners.set(channel, listener)
+      },
+      removeListener: () => {},
+      invoke: async () => undefined
+    },
+    contextBridge: {
+      exposeInMainWorld: (_key: string, api: unknown) => {
+        exposed = api
+      }
+    },
+    webUtils: { getPathForFile: () => '' },
+    getExposed: () => exposed
+  }
+})
+
+vi.mock('electron', () => ({
+  contextBridge: electronMock.contextBridge,
+  ipcRenderer: electronMock.ipcRenderer,
+  webUtils: electronMock.webUtils
+}))
 
 /**
  * 结构性守卫：**流式事件必须带会话身份**（plan11 §2.5）。
@@ -153,5 +188,209 @@ describe('流式事件必须带会话身份（plan11 §2.5 结构性守卫）', 
       return !new RegExp(`\\b${name}\\s*:`).test(ipcSrc)
     })
     expect(missing, '这些常量在 ipc.ts 里找不到 —— 是不是改名了？那守卫就空转了').toEqual([])
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E26a：错误/收尾封套与单结算（行为测试，不是结构扫描）
+
+type SentEvent = { channel: string; conversationId: string; payload: unknown }
+
+function fakeWin(): { win: WebContents; sent: SentEvent[] } {
+  const sent: SentEvent[] = []
+  const win = {
+    isDestroyed: () => false,
+    send: (channel: string, envelope: { conversationId: string; payload: unknown }) => {
+      sent.push({ channel, conversationId: envelope.conversationId, payload: envelope.payload })
+    }
+  } as unknown as WebContents
+  return { win, sent }
+}
+
+const USAGE: TokenUsage = {
+  promptTokens: 100,
+  completionTokens: 10,
+  cachedPromptTokens: null,
+  cacheWritePromptTokens: null,
+  reasoningTokens: null
+}
+const TERMINAL: RunTerminal = { state: 'failed', code: 'upstream-error' }
+
+describe('E26a 错误/收尾封套与单结算', () => {
+  it('旧路径：error(string) 仍发字符串且带 conversationId', () => {
+    const { win, sent } = fakeWin()
+    const emit = createChatEmitter(win, 'conv-old')
+    emit.error('旧的字符串错误')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ channel: IPC.chatError, conversationId: 'conv-old', payload: '旧的字符串错误' })
+  })
+
+  it('新路径：error(message, details) 携带整轮已知账、完整性与固定终态', () => {
+    const { win, sent } = fakeWin()
+    const emit = createChatEmitter(win, 'conv-new')
+    emit.error('对话执行失败', {
+      terminal: TERMINAL,
+      usage: USAGE,
+      usageComplete: true,
+      avoided: 0,
+      tier: 'balanced',
+      memoryTokens: 12
+    })
+    expect(sent).toHaveLength(1)
+    const payload = sent[0].payload as ChatErrorPayload
+    expect(payload).toMatchObject({
+      message: '对话执行失败',
+      terminal: TERMINAL,
+      usage: USAGE,
+      usageComplete: true,
+      avoided: 0,
+      tier: 'balanced',
+      memoryTokens: 12
+    })
+    // 已知 0 保真：不被 falsy 判断吃掉
+    expect(payload.usage?.completionTokens).toBe(10)
+    expect(payload.avoided).toBe(0)
+  })
+
+  it('新路径：未知 avoided/tier 不造字段；全漏报 usage=null + complete=false', () => {
+    const { win, sent } = fakeWin()
+    const emit = createChatEmitter(win, 'conv-unknown')
+    emit.error('对话执行失败', { terminal: { state: 'unknown', code: 'missing-terminal' }, usage: null, usageComplete: false })
+    const payload = sent[0].payload as ChatErrorPayload
+    expect(payload.usage).toBeNull()
+    expect(payload.usageComplete).toBe(false)
+    expect('avoided' in payload).toBe(false)
+    expect('tier' in payload).toBe(false)
+    expect('memoryTokens' in payload).toBe(false)
+  })
+
+  it('done：只追加可选 terminal；未给时字段不出现', () => {
+    const withTerminal = fakeWin()
+    createChatEmitter(withTerminal.win, 'c1').done(USAGE, 0, undefined, 0, false, { state: 'completed' })
+    expect(withTerminal.sent[0].payload).toMatchObject({ usageComplete: false, terminal: { state: 'completed' } })
+
+    const without = fakeWin()
+    createChatEmitter(without.win, 'c2').done(null, 0, undefined, 0, false)
+    expect('terminal' in (without.sent[0].payload as object)).toBe(false)
+    expect('tier' in (without.sent[0].payload as object)).toBe(false)
+  })
+
+  it('单结算：done/error 先到者生效，后续不重复发终止事件', () => {
+    const first = fakeWin()
+    const emit1 = createChatEmitter(first.win, 'c-done-first')
+    emit1.chunk('过程')
+    emit1.done(USAGE, 0)
+    emit1.done(USAGE, 0)
+    emit1.error('迟到的错误')
+    expect(first.sent.filter((e) => e.channel === IPC.chatDone)).toHaveLength(1)
+    expect(first.sent.filter((e) => e.channel === IPC.chatError)).toHaveLength(0)
+
+    const second = fakeWin()
+    const emit2 = createChatEmitter(second.win, 'c-error-first')
+    emit2.error('先失败', { terminal: TERMINAL, usage: USAGE, usageComplete: true })
+    emit2.done(USAGE, 0)
+    emit2.error('第二次错误')
+    expect(second.sent.filter((e) => e.channel === IPC.chatError)).toHaveLength(1)
+    expect(second.sent.filter((e) => e.channel === IPC.chatDone)).toHaveLength(0)
+  })
+
+  it('chatErrorMessage：旧 string / 新对象 / 坏输入都归一，且不把对象序列化漏给界面', () => {
+    expect(chatErrorMessage('旧错误')).toBe('旧错误')
+    expect(chatErrorMessage({ message: '固定映射', terminal: TERMINAL })).toBe('固定映射')
+    expect(chatErrorMessage({ cause: 'CANARY-SECRET' })).toBe('对话执行失败')
+    expect(chatErrorMessage({ message: 'CANARY-SECRET', cause: 'x' })).toBe('CANARY-SECRET')
+    expect(chatErrorMessage(null)).toBe('对话执行失败')
+    expect(chatErrorMessage(42)).toBe('对话执行失败')
+  })
+
+  it('canary 隐私：结构化错误只保留白名单字段，不带 cause/厂商正文', () => {
+    const { win, sent } = fakeWin()
+    const emit = createChatEmitter(win, 'c-privacy')
+    emit.error('对话执行失败', { terminal: TERMINAL, usage: USAGE, usageComplete: true })
+    const payload = sent[0].payload as Record<string, unknown>
+    expect(Object.keys(payload).sort()).toEqual(['message', 'terminal', 'usage', 'usageComplete'])
+    expect(JSON.stringify(payload)).not.toContain('CANARY-SECRET')
+  })
+})
+
+// E26a-R1：真实 preload 订阅回调 —— 结构化错误事实不得在桥接层被塌成 message
+type PreloadErrorApi = {
+  onChatError: (cb: (e: { conversationId: string; payload: unknown }) => void) => () => void
+}
+
+describe('E26a-R1 preload 错误桥接：结构化事实必须原样保留', () => {
+  const api = (): PreloadErrorApi => electronMock.getExposed() as PreloadErrorApi
+
+  function subscribe(): Array<{ conversationId: string; payload: unknown }> {
+    const got: Array<{ conversationId: string; payload: unknown }> = []
+    api().onChatError((e) => got.push(e))
+    expect(electronMock.listeners.get(IPC.chatError), 'preload 没有注册 chat:error 监听').toBeTruthy()
+    return got
+  }
+
+  function emit(envelope: unknown): void {
+    const listener = electronMock.listeners.get(IPC.chatError)
+    expect(listener, 'chat:error 监听不存在').toBeTruthy()
+    listener!(null, envelope)
+  }
+
+  beforeEach(() => electronMock.listeners.clear())
+
+  it('旧 string 载荷保持 string（旧路径兼容）', () => {
+    const got = subscribe()
+    emit({ conversationId: 'conv-old', payload: '旧字符串错误' })
+    expect(got).toEqual([{ conversationId: 'conv-old', payload: '旧字符串错误' }])
+  })
+
+  it('新结构化载荷：terminal/usage/usageComplete/avoided/tier 经过回调仍在', () => {
+    const payload: ChatErrorPayload = {
+      message: '对话执行失败',
+      terminal: { state: 'failed', code: 'upstream-error' },
+      usage: {
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedPromptTokens: null,
+        cacheWritePromptTokens: null,
+        reasoningTokens: null
+      },
+      usageComplete: false,
+      avoided: 0,
+      tier: 'balanced',
+      memoryTokens: 5
+    }
+    const got = subscribe()
+    emit({ conversationId: 'conv-new', payload })
+    expect(got).toHaveLength(1)
+    expect(got[0].conversationId).toBe('conv-new')
+    // 关键：不能被塌成 message 字符串
+    expect(got[0].payload).toEqual(payload)
+    expect((got[0].payload as ChatErrorPayload).usage?.promptTokens).toBe(0)
+    expect((got[0].payload as ChatErrorPayload).avoided).toBe(0)
+  })
+
+  it('全漏报 usage=null 与 complete=false 原样保留', () => {
+    const payload: ChatErrorPayload = {
+      message: '对话执行失败',
+      terminal: { state: 'unknown', code: 'missing-terminal' },
+      usage: null,
+      usageComplete: false
+    }
+    const got = subscribe()
+    emit({ conversationId: 'conv-null', payload })
+    const received = got[0].payload as ChatErrorPayload
+    expect(received.usage).toBeNull()
+    expect(received.usageComplete).toBe(false)
+    expect('avoided' in received).toBe(false)
+    expect('tier' in received).toBe(false)
+  })
+
+  it('conversationId 在所有载荷类型下都不丢', () => {
+    const got = subscribe()
+    emit({ conversationId: 'conv-string', payload: 'x' })
+    emit({
+      conversationId: 'conv-object',
+      payload: { message: 'y', terminal: { state: 'failed' }, usage: null, usageComplete: false }
+    })
+    expect(got.map((e) => e.conversationId)).toEqual(['conv-string', 'conv-object'])
   })
 })

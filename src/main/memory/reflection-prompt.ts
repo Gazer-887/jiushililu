@@ -85,6 +85,8 @@ export const REFLECTION_SYSTEM_PROMPT = [
   '- description: 一句话概括这条记忆说的是什么',
   '- class: 分类，只能是 "style"（风格偏好）、"default"（通用习惯）、"knowledge"（领域知识）、"profile"（用户画像）',
   '- body: 记忆正文，客观陈述事实',
+  // S2-20：来源指针由程序绑定 —— 模型给出任何会话/轮次都不会被采信，写明以免白花 token 自造。
+  '来源由程序填写：**不要**输出 evidence、conversationId 或 turnIndex 字段，也不要自行编号轮次。',
   PROFILE_INSTRUCTION,
   '如果没有值得记住的事实，返回空数组 []。',
   '只输出 JSON，不要解释。'

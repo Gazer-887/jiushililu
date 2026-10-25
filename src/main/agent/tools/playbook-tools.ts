@@ -2,7 +2,22 @@
 // 依赖倒置（同 memory-tools.ts）：工具层不碰 electron-store 与 IPC，`repo` 由组合根注入。
 
 import type { AgentTool } from '@shared/agent'
+import { hasAutomaticRecallTag, PLAYBOOK_TAG_KEYWORDS } from '@shared/playbook'
 import type { PlaybookRepo } from '@main/memory/playbook-core'
+
+/** 规范标签清单由词表键派生，不另建重复表 */
+const STANDARD_TAG_LIST = Object.keys(PLAYBOOK_TAG_KEYWORDS).join(' / ')
+
+/**
+ * 保存成功回执的唯一出口：首次保存与确认桥第二次保存必须同口径。
+ * ⚠️ 不承诺「一定注入」——规范标签命中仍受任务识别与注入预算限制。
+ */
+function savedReceipt(name: string, tags: string[]): string {
+  const head = `已保存 Playbook「${name}」（标签：${tags.join(', ')}）。`
+  return hasAutomaticRecallTag(tags)
+    ? `${head}含规范标签，遇到匹配任务时可参与自动召回；是否注入仍受任务识别与注入预算限制。`
+    : `${head}这些标签仅支持手动召回，可按标签手动召回（recall_playbook）。`
+}
 
 export interface PlaybookToolDeps {
   repo: PlaybookRepo
@@ -21,7 +36,9 @@ export function createPlaybookTools(deps: PlaybookToolDeps): AgentTool[] {
       description:
         '把一条**可复用的操作步骤或经验**写进 Playbook（程序记忆）。' +
         '与 remember 不同：remember 存的是"用户偏好"（懂你线），save_playbook 存的是"怎么做某类任务"（会做线）。' +
-        'tags 用于条件召回——下次遇到同类任务时，匹配的条目会被自动注入 system prompt。',
+        'tags 用于条件召回：命中任务标签的条目可参与自动注入 system prompt。' +
+        `规范标签共六类：${STANDARD_TAG_LIST}；需要参与自动召回时至少选择一个规范标签。` +
+        '自定义标签同样合法可保存，但仅支持手动召回与按标签筛选。',
       parameters: {
         type: 'object',
         properties: {
@@ -50,9 +67,7 @@ export function createPlaybookTools(deps: PlaybookToolDeps): AgentTool[] {
           ...(confirmed ? { confirmed: true } : {})
         })
       const first = submit(false)
-      if (first.ok) {
-        return `已保存 Playbook「${name}」（标签：${tags.join(', ')}）。下次遇到同类任务会自动召回。`
-      }
+      if (first.ok) return savedReceipt(name, tags)
       // D-200①A：确认档首调不带 confirmed —— core 拒回来带 needsConfirm，
       // 经确认桥问用户一句，同意才带 confirmed 重调（拒绝则不写，话术说实话）。
       if (first.needsConfirm !== true) return `没有写入：${first.reason}`
@@ -62,9 +77,7 @@ export function createPlaybookTools(deps: PlaybookToolDeps): AgentTool[] {
       const agreed = await deps.confirm(first.reason, conversationId)
       if (!agreed) return '用户没有确认，这条没有写入。'
       const second = submit(true)
-      return second.ok
-        ? `已保存 Playbook「${name}」（标签：${tags.join(', ')}）。下次遇到同类任务会自动召回。`
-        : `没有写入：${second.reason}`
+      return second.ok ? savedReceipt(name, tags) : `没有写入：${second.reason}`
     }
   }
 

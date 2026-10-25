@@ -3,6 +3,7 @@ import type { Attachment, SkillInfo } from '@shared/ipc'
 import { DRAG_PATH_MIME } from '@shared/fs-tree'
 import PlusMenu from './PlusMenu'
 import WorkspaceChip from './WorkspaceChip'
+import FilePreviewCard from './FilePreviewCard'
 import { BranchChip, ContextChip, ContextRing, ModelSwitcher, PermissionChip, ReasoningChip, PolishButton, SendButton, UsageChip } from './InputTools'
 import VoiceButton from './VoiceButton'
 
@@ -13,7 +14,7 @@ export interface InputConsoleProps {
   value: string
   onChange: (v: string) => void
   /** 提交（附件由内部管理，一并通过回调交出） */
-  onSubmit: (attachments: Attachment[]) => void
+  onSubmit: (attachments: Attachment[]) => void | boolean | Promise<void | boolean>
   busy?: boolean
   onStop?: () => void
   placeholder?: string
@@ -61,6 +62,8 @@ export default function InputConsole({
 }: InputConsoleProps): JSX.Element {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
+  const submitting = useRef(false)
+  const [submittingUI, setSubmittingUI] = useState(false)
   /** 落点高亮 —— 不亮用户不知道这里能放 */
   const [dragging, setDragging] = useState(false)
 
@@ -222,10 +225,18 @@ export default function InputConsole({
     // 写死依赖就要引 useCallback，否则"闭包过期 → 拖进去的是上一轮附件"更难查。
   })
 
-  const submit = (): void => {
-    if (busy || (!value.trim() && attachments.length === 0)) return
-    onSubmit(attachments)
-    setAttachments([])
+  const submit = async (): Promise<void> => {
+    if (busy || submitting.current || (!value.trim() && attachments.length === 0)) return
+    const batch = attachments
+    submitting.current = true
+    setSubmittingUI(true)
+    setAttachError(null)
+    try {
+      const accepted = await onSubmit(batch)
+      if (accepted === false) setAttachError('尚未发送，输入与附件已保留；请检查模型或会话配置后重试')
+      else setAttachments(current => current.filter(attachment => !batch.includes(attachment)))
+    } catch (err) { setAttachError(cleanError(err)) }
+    finally { submitting.current = false; setSubmittingUI(false) }
   }
 
   return (
@@ -233,27 +244,48 @@ export default function InputConsole({
     <div ref={setConsoleEl} className={`console ${dragging ? 'console-drop' : ''}`}>
       {attachments.length > 0 && (
         <div className="attach-list">
-          {attachments.map((a) => (
-            <span key={a.path} className="attach-chip" title={`${a.path}${a.truncated ? '（内容已截断）' : ''}`}>
-              <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">
-                <path
-                  d="M4 2h5l3 3v9H4V2Z"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.3"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              {a.name}
-              {a.image && <span className="attach-kind">图片</span>}
-              {a.video && <span className="attach-kind">视频</span>}
-              {a.outside && <span className="attach-out">工作区外</span>}
-              {a.truncated && <span className="attach-trunc">截断</span>}
-              <button className="attach-x" title="移除" onClick={() => removeAttachment(a.path)}>
-                ×
-              </button>
-            </span>
-          ))}
+          {attachments.map((a) =>
+            // plan74：非媒体附件（PDF/音频/Office/文本）发送前就地预览（draft 身份）。
+            // 图片/视频仍走 chip（它们的出站引用已在 parts，本地查看沿用既有通路）。
+            a.preview ? (
+              <FilePreviewCard
+                key={a.path}
+                conversationId={undefined}
+                onRemove={() => removeAttachment(a.path)}
+                deliveryNote={a.image || a.video ? '按图片/视频通路提交模型，需端点支持' : a.content ? '文本最多64 KiB发给模型，本地副本保留完整内容' : '仅本地查看，不发给模型'}
+                file={{
+                  assetId: a.preview.assetId,
+                  name: a.name,
+                  mime: a.preview.mime,
+                  bytes: a.bytes,
+                  digest: a.preview.digest,
+                  source: 'draft',
+                  ...(a.preview.draftId ? { draftId: a.preview.draftId } : {}),
+                  ...(a.outside ? { outside: a.outside } : {})
+                }}
+              />
+            ) : (
+              <span key={a.path} className="attach-chip" title={`${a.path}${a.truncated ? '（内容已截断）' : ''}`}>
+                <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M4 2h5l3 3v9H4V2Z"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                {a.name}
+                {a.image && <span className="attach-kind">图片</span>}
+                {a.video && <span className="attach-kind">视频</span>}
+                {a.outside && <span className="attach-out">工作区外</span>}
+                {a.truncated && <span className="attach-trunc">截断</span>}
+                <button className="attach-x" title="移除" onClick={() => removeAttachment(a.path)}>
+                  ×
+                </button>
+              </span>
+            )
+          )}
         </div>
       )}
 
@@ -282,6 +314,20 @@ export default function InputConsole({
         value={value}
         placeholder={placeholder}
         onChange={(e) => handleChange(e.target.value)}
+        onPaste={(event) => {
+          const images = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'))
+          if (!images.length) return // 普通文本粘贴沿用浏览器默认行为。
+          event.preventDefault()
+          void (async () => {
+            try {
+              for (const file of images) {
+                if (file.size > 50 * 1024 * 1024) throw new Error('粘贴图片超过50MiB')
+                const attachment = await window.api.attachPath({ kind: 'clipboard-image', bytes: new Uint8Array(await file.arrayBuffer()) })
+                setAttachments(current => [...current, attachment])
+              }
+            } catch (error) { setAttachError(cleanError(error)) }
+          })()
+        }}
         onKeyDown={(e) => {
           if (slash && slashMatches.length > 0) {
             if (e.key === 'ArrowDown') {
@@ -334,7 +380,7 @@ export default function InputConsole({
           <PolishButton text={value} onPolished={(next) => onChange(next)} />
           <ModelSwitcher />
           <SendButton
-            disabled={busy || (!value.trim() && attachments.length === 0)}
+            disabled={busy || submittingUI || (!value.trim() && attachments.length === 0)}
             busy={busy}
             onSend={submit}
             onStop={() => onStop?.()}

@@ -5,6 +5,27 @@ import { groupByWorkspace, workspaceLabel } from '@shared/conversation-group'
 import { chatMessagesSchema, storedMessagesSchema } from '@main/schemas'
 import type { ChatMessage, ConversationMeta } from '@shared/ipc'
 
+describe('预览引用不因存档预算降级丢失', () => {
+  it('正文及用户快照保留，超长思考可移除但成功产物最小引用仍能回看', () => {
+    const localFiles = [{ assetId: '20261015T020000-0-aabbcc.txt', name: 'snapshot.txt', mime: 'text/plain', bytes: 10, source: 'history' as const }]
+    const input: ChatMessage[] = [
+      { role: 'user', messageId: 'u-owned', content: 'question', localFiles },
+      { role: 'assistant', content: 'FINAL_BODY', segments: [
+        { kind: 'thinking', text: 'x'.repeat(2000) },
+        { kind: 'tool', event: { id: 'actual-write', name: 'write_file', phase: 'end', artifactPaths: ['made.txt'], summary: 'x'.repeat(1000) } },
+        { kind: 'text', text: 'FINAL_BODY' }
+      ] }
+    ]
+    const fitted = fitStoredBudget(input, 400)
+    expect(fitted.messages[0].localFiles).toEqual(localFiles)
+    expect(fitted.messages[0].messageId).toBe('u-owned')
+    expect(fitted.messages[1].content).toBe('FINAL_BODY')
+    expect(fitted.messages[1].segments).toEqual([{ kind: 'tool', event: { id: 'actual-write', name: 'write_file', phase: 'end', artifactPaths: ['made.txt'] } }])
+    expect(storedMessagesSchema.safeParse(fitted.messages).success).toBe(true)
+    expect(input[1].segments?.[0].kind).toBe('thinking')
+  })
+})
+
 function meta(over: Partial<ConversationMeta> & { id: string }): ConversationMeta {
   return {
     title: 't',

@@ -141,6 +141,8 @@ describe('mcp-manager（真协议 · InMemory）', () => {
     const out = await manager.callTool('test', 'no-such-tool', {})
     expect(out.text).toContain('MCP 工具返回错误')
     expect(out.text).toContain('未知工具 no-such-tool')
+    expect(out.outcome).toBe('failed')
+    expect(out.code).toBe('tool-error')
   })
 
   it('连接失败 → state=error，不阻塞其他流程（D-063）', async () => {
@@ -184,8 +186,11 @@ describe('createMcpTools（门控与透传）', () => {
       onGatedDrop: () => {}
     })
     const echo = tools.find((t) => t.schema.name === 'mcp__test__echo')!
-    const out = (await echo.execute({ text: '不该被执行' })) as string
-    expect(out).toContain('用户取消')
+    const out = await echo.execute({ text: '不该被执行' })
+    const outcome = typeof out === 'string' ? { text: out, outcome: undefined, code: undefined } : out
+    expect(outcome.text).toContain('用户取消')
+    expect(outcome.outcome).toBe('denied')
+    expect(outcome.code).toBe('permission-denied')
   })
 
   it('确认通过 → 正常调用；inputSchema 透传给模型（判据 4）', async () => {
@@ -206,9 +211,11 @@ describe('createMcpTools（门控与透传）', () => {
     })
     const echo = tools.find((t) => t.schema.name === 'mcp__test__echo')!
     expect(echo.schema.parameters).toBeDefined()
-    const out = (await echo.execute({ text: '通过' })) as string
+    const out = await echo.execute({ text: '通过' })
+    const outcome = typeof out === 'string' ? { text: out, outcome: undefined } : out
     expect(confirmCalls).toBe(1)
-    expect(out).toBe('echo: 通过')
+    expect(outcome.text).toBe('echo: 通过')
+    expect(outcome.outcome).toBe('succeeded')
   })
 })
 

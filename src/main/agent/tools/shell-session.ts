@@ -261,7 +261,8 @@ class AgentShellSessionImpl implements AgentShellSession {
         let clean = stdout
         const mi = clean.indexOf(marker)
         if (mi !== -1) {
-          const lineStart = clean.lastIndexOf('\n', mi) + 1
+          // POSIX 标记可能紧接无尾换行的正文；整行剥除会吞掉最后一行输出。
+          const lineStart = this.platform === 'win32' ? clean.lastIndexOf('\n', mi) + 1 : mi
           const lineEnd = clean.indexOf('\n', mi)
           clean = lineEnd === -1 ? clean.slice(0, lineStart) : clean.slice(0, lineStart) + clean.slice(lineEnd + 1)
         }

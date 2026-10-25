@@ -4,6 +4,7 @@
 
 import type { ChatMessage } from './ipc'
 import type { MessageSegment, ToolEvent } from './agent'
+import type { RunTerminal } from './execution-outcome'
 
 /** 追加 text 段：尾部同为 text 则合并（流式增量不产生碎段） */
 export function appendSegmentText(segments: MessageSegment[] | undefined, text: string): MessageSegment[] {
@@ -66,4 +67,13 @@ export function applyAssistantThinking(messages: ChatMessage[], text: string): C
 
 export function applyAssistantTool(messages: ChatMessage[], event: ToolEvent): ChatMessage[] {
   return updateTailAssistant(messages, (m) => ({ ...m, segments: upsertSegmentTool(ensureSegments(m), event) }))
+}
+
+/** E27：把整轮终态写到尾部 assistant（无终态/无 assistant 时原样返回）。只改那一条。 */
+export function applyAssistantTerminal(
+  messages: ChatMessage[],
+  terminal: RunTerminal | undefined
+): ChatMessage[] {
+  if (!terminal) return messages
+  return updateTailAssistant(messages, (m) => ({ ...m, terminal }))
 }

@@ -1,9 +1,17 @@
 {
   "name": "jiushililu",
   "version": "0.13.110",
-  "description": "九十里路 —— 一个会自己长经验的全能 AI 工作台",
+  "description": "九十里路：可自定义模型、管理工具与记忆的 AI 桌面工作台",
   "main": "out/main/index.js",
   "author": "Gazer",
+  "homepage": "https://github.com/Gazer-887/jiushililu#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gazer-887/jiushililu.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Gazer-887/jiushililu/issues"
+  },
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -39,6 +47,7 @@
     "mammoth": "^1.12.3",
     "monaco-editor": "^0.56.0",
     "node-pty": "^1.1.0",
+    "pdfjs-dist": "^3.11.174",
     "react-i18next": "^13.5.0",
     "xlsx": "^0.18.5"
   },

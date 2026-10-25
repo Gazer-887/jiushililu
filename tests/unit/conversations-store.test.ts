@@ -1,14 +1,33 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createConversationsRepo,
+  normalizeHistory,
   type ConversationsBackend
 } from '@main/store/conversations-core'
+import { chatMessagesSchema } from '@main/schemas'
+import { useAppStore } from '../../src/renderer/src/store'
 import type {
   ChatMessage,
   Conversation,
   ConversationCreateInput,
   ConversationMeta
 } from '@shared/ipc'
+
+describe('编辑附件只查宿主保留历史，正常读取不暴露回滚尾部', () => {
+  it('includeHidden不移游标、不写库；默认仍只读可见消息', () => {
+    const memory = memBackend()
+    const repo = createConversationsRepo(memory.backend)
+    const conversation = repo.createConversation({ workspace: 'D:/owned', model: 'm', firstMessage: 'first' })
+    repo.saveConversation(conversation.id, [...conversation.messages, { role: 'user', messageId: 'old-edit-message', content: 'second', localFiles: [{ source: 'history', assetId: '20261015T000000-0-abcdef.txt', name: 'saved.txt', mime: 'text/plain', bytes: 10 }] }])
+    repo.rollbackConversation(conversation.id, 1)
+    const writes = memory.stats.messageWrites + memory.stats.metaWrites
+    expect(repo.getConversation(conversation.id)?.messages).toHaveLength(1)
+    expect(repo.getConversation(conversation.id, true)?.messages[1].messageId).toBe('old-edit-message')
+    expect(repo.getConversation(conversation.id, true)?.messageCount).toBe(1)
+    expect(memory.stats.messageWrites + memory.stats.metaWrites).toBe(writes)
+    expect(repo.getConversation('missing', true)).toBeNull()
+  })
+})
 
 // 会话存储六个入口的**行为基线**（plan10 步骤 0 立）：A 批要给会话存储**分层**（正文搬出整表），
 // 除**读盘足迹**（列表不再碰正文）外，六个入口的语义必须一模一样。
@@ -104,7 +123,9 @@ describe('createConversation（新建）', () => {
 
     expect(c.id).toMatch(/^[0-9a-f-]{36}$/) // UUID
     expect(c.createdAt).toBe(c.updatedAt)
-    expect(c.messages).toEqual([{ role: 'user', content: '你好' }])
+    // plan74：首条消息带 messageId（本地引用/产物卡的稳定锚）
+    expect(c.messages).toMatchObject([{ role: 'user', content: '你好' }])
+    expect(typeof c.messages[0]?.messageId).toBe('string')
     expect(c.messageCount).toBe(1)
     expect(dump()[c.id]!.title).toBe('你好')
   })
@@ -422,5 +443,194 @@ describe('读盘足迹：**分层唯一要换来的东西**', () => {
       // 写的是"**最多**"一遍：`create` 零读也合格，要抓的是**重复解析同一份索引**
       expect(m.stats.metaReads, `${name} 读了 ${m.stats.metaReads} 遍 meta`).toBeLessThanOrEqual(1)
     }
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E27：终态保存、重开与 renderer 结算归属
+
+const E27_USAGE = {
+  promptTokens: 10,
+  completionTokens: 2,
+  cachedPromptTokens: null,
+  cacheWritePromptTokens: null,
+  reasoningTokens: null
+}
+const E27_TERMINAL = { state: 'failed' as const, code: 'upstream-error' as const }
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+function emptyRuntime(messages: ChatMessage[] = []): {
+  messages: ChatMessage[]
+  streaming: boolean
+  streamError: string | null
+  reasoning: string
+  toolEvents: []
+  todos: []
+  subagents: []
+} {
+  return { messages, streaming: true, streamError: null, reasoning: '', toolEvents: [], todos: [], subagents: [] }
+}
+
+describe('E27 终态保存/重开与 renderer 结算归属', () => {
+  it('normalizeHistory 保留 terminal-only 的 assistant，并继续拒绝无内容无终态', () => {
+    const terminalOnly: ChatMessage = { role: 'assistant', content: '', terminal: E27_TERMINAL }
+    const plainEmpty: ChatMessage = { role: 'assistant', content: '' }
+    const out = normalizeHistory([{ role: 'user', content: 'x' }, terminalOnly, plainEmpty])
+    expect(out).toContain(terminalOnly)
+    expect(out).not.toContain(plainEmpty)
+  })
+
+  it('保存-重开 roundtrip 保留 terminal 与空正文终态', () => {
+    const { backend, dump } = memBackend({ a: conv({ id: 'a' }) })
+    const repo = createConversationsRepo(backend)
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'x' },
+      { role: 'assistant', content: '', terminal: { state: 'cancelled', code: 'user-stop' } }
+    ]
+    expect(repo.saveConversation('a', messages)!.messageCount).toBe(2)
+    expect(dump()['a']!.messages[1].terminal).toEqual({ state: 'cancelled', code: 'user-stop' })
+    expect(repo.getConversation('a')!.messages[1].terminal).toEqual({ state: 'cancelled', code: 'user-stop' })
+  })
+
+  it('出站只保留协议字段：terminal/segments/messageId/localFiles 不随请求发出', () => {
+    const parsed = chatMessagesSchema.parse([
+      {
+        role: 'assistant',
+        content: 'x',
+        segments: [{ kind: 'text', text: 'x' }],
+        terminal: E27_TERMINAL,
+        messageId: 'm1',
+        localFiles: [{ assetId: 'a', name: 'f.txt', mime: 'text/plain', bytes: 1, source: 'history' }]
+      }
+    ])
+    expect(parsed[0]).toEqual({ role: 'assistant', content: 'x' })
+  })
+
+  it('renderer markDone 消费 terminal/已知账，重复结算不重复累加', () => {
+    vi.stubGlobal('window', { api: { saveConversation: vi.fn(async () => null) } })
+    useAppStore.setState({
+      activeId: 'cE27',
+      messages: [{ role: 'assistant', content: '', segments: [] }],
+      streaming: true,
+      streamError: null,
+      reasoning: '',
+      toolEvents: [],
+      todos: [],
+      subagents: [],
+      runtimes: {},
+      usageByConversation: {}
+    })
+    const payload = { usage: E27_USAGE, usageComplete: true, terminal: { state: 'completed' as const } }
+    useAppStore.getState().markDone({ conversationId: 'cE27', payload })
+    useAppStore.getState().markDone({ conversationId: 'cE27', payload })
+    const st = useAppStore.getState()
+    expect(st.messages[st.messages.length - 1].terminal).toEqual({ state: 'completed' })
+    expect(st.usageByConversation.cE27?.total.promptTokens).toBe(10)
+  })
+
+  it('renderer markError 把终态/已知账归到错误会话，另一会话不受影响', () => {
+    vi.stubGlobal('window', { api: { saveConversation: vi.fn(async () => null) } })
+    useAppStore.setState({
+      activeId: 'cA',
+      messages: [{ role: 'assistant', content: '', segments: [] }],
+      streaming: true,
+      streamError: null,
+      reasoning: '',
+      toolEvents: [],
+      todos: [],
+      subagents: [],
+      runtimes: { cB: emptyRuntime([{ role: 'assistant', content: '', segments: [] }]) },
+      usageByConversation: {}
+    })
+    useAppStore.getState().markError({
+      conversationId: 'cB',
+      payload: {
+        message: '固定映射',
+        terminal: E27_TERMINAL,
+        usage: { ...E27_USAGE, promptTokens: 5, completionTokens: 1 },
+        usageComplete: false
+      }
+    })
+    const st = useAppStore.getState()
+    expect(st.usageByConversation.cB?.total.promptTokens).toBe(5)
+    expect(st.usageByConversation.cA).toBeUndefined()
+    expect(st.runtimes.cB?.messages[0].terminal).toEqual(E27_TERMINAL)
+    expect(st.messages[0].terminal).toBeUndefined()
+    expect(st.runtimes.cB?.streamError).toContain('固定映射')
+  })
+
+  it('stop 后迟到的 markDone 仍写取消终态与已知账；成功不得覆盖取消', async () => {
+    vi.stubGlobal('window', {
+      api: { chatAbort: vi.fn(async () => {}), saveConversation: vi.fn(async () => null) }
+    })
+    useAppStore.setState({
+      activeId: 'cStop',
+      messages: [{ role: 'assistant', content: '', segments: [] }],
+      streaming: true,
+      streamError: null,
+      reasoning: '',
+      toolEvents: [],
+      todos: [],
+      subagents: [],
+      runtimes: {},
+      usageByConversation: {}
+    })
+    await useAppStore.getState().stopStreaming()
+    expect(useAppStore.getState().streaming).toBe(false)
+
+    useAppStore.getState().markDone({
+      conversationId: 'cStop',
+      payload: { usage: E27_USAGE, usageComplete: true, terminal: { state: 'cancelled', code: 'user-stop' } }
+    })
+    const st = useAppStore.getState()
+    expect(st.messages[0].terminal).toEqual({ state: 'cancelled', code: 'user-stop' })
+    expect(st.usageByConversation.cStop?.total.promptTokens).toBe(10)
+
+    // 迟到的成功事件不得把取消覆盖成成功，也不得重复累加
+    useAppStore.getState().markDone({
+      conversationId: 'cStop',
+      payload: { usage: E27_USAGE, usageComplete: true, terminal: { state: 'completed' } }
+    })
+    const st2 = useAppStore.getState()
+    expect(st2.messages[0].terminal).toEqual({ state: 'cancelled', code: 'user-stop' })
+    expect(st2.usageByConversation.cStop?.total.promptTokens).toBe(10)
+  })
+
+  it('stop 后迟到的 markError 仍写失败终态/文案/已知账，且只计一次', async () => {
+    vi.stubGlobal('window', {
+      api: { chatAbort: vi.fn(async () => {}), saveConversation: vi.fn(async () => null) }
+    })
+    useAppStore.setState({
+      activeId: 'cErr',
+      messages: [{ role: 'assistant', content: '', segments: [] }],
+      streaming: true,
+      streamError: null,
+      reasoning: '',
+      toolEvents: [],
+      todos: [],
+      subagents: [],
+      runtimes: {},
+      usageByConversation: {}
+    })
+    await useAppStore.getState().stopStreaming()
+    expect(useAppStore.getState().streaming).toBe(false)
+
+    const payload = {
+      message: '固定映射',
+      terminal: { state: 'failed' as const, code: 'upstream-error' as const },
+      usage: { ...E27_USAGE, promptTokens: 5, completionTokens: 1 },
+      usageComplete: true
+    }
+    useAppStore.getState().markError({ conversationId: 'cErr', payload })
+    const st = useAppStore.getState()
+    expect(st.messages[0].terminal).toEqual(E27_TERMINAL)
+    expect(st.streamError).toContain('固定映射')
+    expect(st.usageByConversation.cErr?.total.promptTokens).toBe(5)
+
+    useAppStore.getState().markError({ conversationId: 'cErr', payload })
+    expect(useAppStore.getState().usageByConversation.cErr?.total.promptTokens).toBe(5)
   })
 })

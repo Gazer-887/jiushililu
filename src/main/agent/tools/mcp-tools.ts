@@ -77,7 +77,14 @@ export function createMcpTools(deps: McpToolDeps): AgentTool[] {
             tool: ref.fullName,
             detail: `调用外部 MCP 工具 ${label}（参数：${JSON.stringify(payload).slice(0, 300)}）`
           })
-          if (!ok) return '用户取消了本次 MCP 工具调用。'
+          if (!ok) {
+            return {
+              text: '错误：用户取消了本次 MCP 工具调用。',
+              outcome: 'denied',
+              code: 'permission-denied',
+              exitCode: null
+            }
+          }
         }
         // D-066：callTool 的错误以人话文本返回（manager 内已处理），模型可读可自纠
         // O2：桌面类只打主屏（display 是工具参数，按 schema 覆写；浏览器类与 other 类直通）
@@ -88,8 +95,13 @@ export function createMcpTools(deps: McpToolDeps): AgentTool[] {
         )
         // 图片只进界面：文本里已经写了"有一张截图"，模型据此知道存在，但**不会**把 base64 读进上下文。
         const saved = res.images.length > 0 ? deps.saveImages(res.images) : []
-        if (saved.length === 0) return res.text
-        const out: ToolOutcome = { text: res.text, images: saved }
+        const out: ToolOutcome = {
+          text: res.text,
+          ...(saved.length > 0 ? { images: saved } : {}),
+          outcome: res.outcome ?? (res.text.startsWith('错误') ? 'failed' : 'succeeded'),
+          ...(res.code ? { code: res.code } : {}),
+          exitCode: null
+        }
         return out
       }
     })

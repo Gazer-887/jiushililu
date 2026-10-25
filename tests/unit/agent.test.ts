@@ -401,3 +401,49 @@ describe('write_file 与检查点的接缝（plan8 R4）', () => {
     expect(msg).toContain('已写入')
   })
 })
+
+describe('E25a · runAgentLoop 工具错误回灌与结构化事件消费', () => {
+  it('工具结构化失败回灌后合法纠正可 completed，旧错误事件与 ToolEvent 结构字段保留', async () => {
+    const events: Array<{ id: string; name: string; phase: string; outcome?: string; code?: string; exitCode?: number | null }> = []
+    let callCount = 0
+    const failingTool = {
+      schema: { name: 'failing_tool', description: 'test', parameters: { type: 'object' } },
+      execute: async () => ({
+        text: '执行出错：参数无效',
+        outcome: 'failed' as const,
+        code: 'command-exit' as const,
+        exitCode: 2
+      })
+    }
+
+    const result = await runAgentLoop({
+      systemPrompt: 'sys',
+      history: [{ role: 'user', content: 'run' }],
+      tools: [failingTool],
+      chat: async () => {
+        if (callCount++ === 0) {
+          return {
+            text: null,
+            toolCalls: [{ id: 'call_1', name: 'failing_tool', arguments: '{}' }]
+          }
+        }
+        return {
+          text: '已根据错误纠正，处理完成',
+          toolCalls: []
+        }
+      },
+      onToolEvent: (e) => events.push(e)
+    })
+
+    expect(result.stopReason).toBe('completed')
+    expect(result.terminal?.state).toBe('completed')
+    expect(events).toHaveLength(2)
+    expect(events[0]!.name).toBe('failing_tool')
+    expect(events[0]!.phase).toBe('start')
+    expect(events[1]!.name).toBe('failing_tool')
+    expect(events[1]!.phase).toBe('error')
+    expect(events[1]!.outcome).toBe('failed')
+    expect(events[1]!.code).toBe('command-exit')
+    expect(events[1]!.exitCode).toBe(2)
+  })
+})

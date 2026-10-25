@@ -80,3 +80,30 @@ function clip(s: string): string {
   const one = s.replace(/\s+/g, ' ').trim()
   return one.length > MAX_DETAIL ? `${one.slice(0, MAX_DETAIL)}…` : one
 }
+
+/** 会产出/改写工作区文件的工具（plan74 Agent 产物入口用）：其 path 入参是可信的产物路径来源。 */
+const ARTIFACT_TOOLS = new Set(['write_file', 'edit'])
+
+/**
+ * 从工具**真实入参**提取产物文件路径（工作区相对路径）。**不是**从 detail 文本猜 ——
+ * 模型随口写的字符串不算可读路径（计划红线"不信模型宣称路径"）。仅写/建类工具有；
+ * 入参解析失败 / 无 path / 不是字符串一律返回空数组（宁可少显示，不猜）。
+ */
+export function toolArtifactPaths(name: string, argsJson: string): string[] {
+  if (!ARTIFACT_TOOLS.has(name)) return []
+  try {
+    const parsed: unknown = JSON.parse(argsJson || '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    const rec = parsed as Record<string, unknown>
+    const rawPath = rec['path']
+    if (typeof rawPath !== 'string' || !rawPath.trim()) return []
+    const p = rawPath.replace(/\\/g, '/')
+    // 只收工作区相对路径：绝对路径 / 盘符 / UNC 不是产物（那是系统文件，交给附件通路）
+    if (p.startsWith('/') || /^[a-zA-Z]:/.test(p) || p.startsWith('\\\\')) return []
+    // 逐段校验：不许含 .. / . 越界段（与预览协议同口径）
+    if (p.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) return []
+    return [p]
+  } catch {
+    return []
+  }
+}

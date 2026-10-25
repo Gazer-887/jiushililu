@@ -325,6 +325,8 @@ export function createCheckpointStore(dir: string): CheckpointStore {
       const root = resolve(run.workspace)
       const refused = new Map<string, string>()
       const preRunId = store.begin(run.workspace, label, owner)
+      /** 本节备份的失败原因局部快照：必须在 finish 前取，finish 会清掉全局记录（见交还说明）。 */
+      let failuresThisRun: Map<string, string> | undefined
       try {
         for (const c of targets) {
           // 两道防御（与 rollback 同源）：manifest 可能来自旧版本或被人工改过
@@ -345,13 +347,15 @@ export function createCheckpointStore(dir: string): CheckpointStore {
           store.record(preRunId, run.workspace, c.rel, abs)
         }
       } finally {
+        failuresThisRun = recordFailures.get(preRunId)
         // 失败也 finish：manifest 是增量落盘的，已经记下的那几条仍然可用
+        // ⚠️ finish 自身（manifest 落盘）失败时**照旧上抛**：拿不到可重开核对的备份，就不得继续回滚
         store.finish(preRunId)
       }
 
       const backed = store.get(preRunId)
       const saved = new Set((backed?.changes ?? []).map((c) => normalizeRel(c.rel)))
-      const byRel = recordFailures.get(preRunId)
+      const byRel = failuresThisRun
       const failed = targets
         .filter((c) => !saved.has(normalizeRel(c.rel)))
         .map((c) => {

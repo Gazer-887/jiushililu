@@ -2,21 +2,23 @@
 //
 // 为什么不并进 `mcp-artifacts/`：那边是**过程资产**（截图，随时可清），这边是用户明确发出去的图，
 // 混进同一个目录就等于"清截图顺手清掉会话里的图"。两条线各自配额、各自清理。
-// 三条硬约束照抄那边并被共享层钉住：① 只收模型真吃得下的类型；② 文件名只由本模块生成，
-// 读取侧按字符白名单校验（ref 从存档来，收路径就是给穿越留门）；③ 数量有上限，超出按 mtime 清。
+// 三条硬约束：① 原模型类型/5MiB图片/20MiB视频上限不扩大；② 文件名受限，读取处核真实路径；
+// ③ 与本地资产共享1GiB预算，不按数量自动删除历史。
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   MAX_OUTBOUND_IMAGE_BYTES,
+  MAX_OUTBOUND_VIDEO_BYTES,
   isSafeAttachmentRef,
   type ImageRef,
   type VideoRef
 } from '@shared/content-parts'
 import { mcpArtifactName } from './mcp/artifacts'
+import { AssetBudget, assetBudgetForRoot, assetsDir, mediaAssetsDir, readAsset, storeAssetBuffer, type AssetPublisher } from './preview-assets'
 
 export const ATTACHMENTS_DIR = 'attachments'
-/** 留最新几张（图片与视频同池）：被清掉的引用在出站时降级成一句人话，不把整段会话卡死（见 `readAttachmentImage`） */
+/** 旧手动清理工具的默认数量，仅保留兼容；保存热路径不调用淘汰。 */
 export const MAX_ATTACHMENTS = 60
 
 const EXT_BY_MIME: Record<string, string> = {
@@ -29,7 +31,7 @@ const EXT_BY_MIME: Record<string, string> = {
 }
 
 export function attachmentsDir(root: string): string {
-  return join(root, ATTACHMENTS_DIR)
+  return mediaAssetsDir(root)
 }
 
 /**
@@ -39,21 +41,24 @@ export function attachmentsDir(root: string): string {
  */
 export function saveAttachmentMedia(
   root: string,
-  opts: { mime: string; buf: Buffer; index?: number; now: () => Date; maxBytes?: number }
+  opts: { mime: string; buf: Buffer; index?: number; now: () => Date; maxBytes?: number; budget?: AssetBudget; publish?: AssetPublisher }
 ): ImageRef | VideoRef | null {
   const ext = EXT_BY_MIME[opts.mime]
   if (ext === undefined) return null
-  const cap = opts.maxBytes ?? MAX_OUTBOUND_IMAGE_BYTES
+  const nativeCap = opts.mime.startsWith('video/') ? MAX_OUTBOUND_VIDEO_BYTES : MAX_OUTBOUND_IMAGE_BYTES
+  const cap = Math.min(opts.maxBytes ?? nativeCap, nativeCap)
   if (opts.buf.length === 0 || opts.buf.length > cap) return null
   const dir = attachmentsDir(root)
-  mkdirSync(dir, { recursive: true })
   // 名字撞车就顺延序号：同一毫秒连存两个（index 都是 0）会算出同一个名字，
   // 后一个把前一个**覆盖掉** —— 于是用户附了两个、模型只看到一个，且不报任何错。
-  let index = opts.index ?? 0
-  let ref = mcpArtifactName(opts.now(), index, ext)
-  while (existsSync(join(dir, ref))) ref = mcpArtifactName(opts.now(), ++index, ext)
-  writeFileSync(join(dir, ref), opts.buf)
-  pruneAttachments(root)
+  const preferred = mcpArtifactName(opts.now(), opts.index ?? 0, ext)
+  const stored = storeAssetBuffer(opts.buf, preferred, dir, opts.budget ?? assetBudgetForRoot(root), preferred, opts.publish)
+  if (!stored.ok) return null
+  const ref = stored.asset.assetId
+  // ⚠️ plan74 R4 修正：**不再自动淘汰**。旧行为每存一张就 prune 到 60 张，第 61 张会删掉
+  // 第 1 张 —— 用户上午发的图下午就没了（Spec R4 反例实测坐实：存 61 份后第一份被删）。
+  // 现按「历史不淘汰」：库可增长，新增由各自上限约束，旧存量一律保留。pruneAttachments
+  // 保留为手动清理工具（设置项/用户主动），不在保存热路径调用。
   const type = opts.mime.startsWith('video/') ? 'video' : 'image'
   return { type, mime: opts.mime, ref, bytes: opts.buf.length } as ImageRef | VideoRef
 }
@@ -61,7 +66,7 @@ export function saveAttachmentMedia(
 /** 图片入口（返回类型收窄，免得调用方到处 `as`） */
 export function saveAttachmentImage(
   root: string,
-  opts: { mime: string; buf: Buffer; index?: number; now: () => Date; maxBytes?: number }
+  opts: { mime: string; buf: Buffer; index?: number; now: () => Date; maxBytes?: number; budget?: AssetBudget; publish?: AssetPublisher }
 ): ImageRef | null {
   const got = saveAttachmentMedia(root, opts)
   return got?.type === 'image' ? got : null
@@ -70,7 +75,7 @@ export function saveAttachmentImage(
 /** 视频入口（同上） */
 export function saveAttachmentVideo(
   root: string,
-  opts: { mime: string; buf: Buffer; index?: number; now: () => Date; maxBytes?: number }
+  opts: { mime: string; buf: Buffer; index?: number; now: () => Date; maxBytes?: number; budget?: AssetBudget; publish?: AssetPublisher }
 ): VideoRef | null {
   const got = saveAttachmentMedia(root, opts)
   return got?.type === 'video' ? got : null
@@ -82,9 +87,7 @@ export function saveAttachmentVideo(
  */
 export function readAttachmentMedia(root: string, ref: string): Buffer {
   if (!isSafeAttachmentRef(ref)) throw new Error('附件引用形状不合法')
-  const file = join(attachmentsDir(root), ref)
-  if (!existsSync(file)) throw new Error(`附件媒体文件不存在：${ref}`)
-  return readFileSync(file)
+  return readAsset(assetsDir(root), ref)
 }
 
 /** 按 mtime 留最新 N 张，返回**实际**删掉的张数（删不动的不算，占用/权限都不该让这次调用失败） */

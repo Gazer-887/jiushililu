@@ -3,12 +3,13 @@ import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { AgentSaveInput } from '@shared/agents'
 import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
 import type { PlaybookSaveInput } from '@shared/playbook'
-import type {
-  ChatDonePayload,
-  ConversationSaveStats,
-  RendererErrorReport,
-  SettingsChangedKind,
-  StreamEnvelope
+import {
+  type ChatDonePayload,
+  type ChatErrorPayload,
+  type ConversationSaveStats,
+  type RendererErrorReport,
+  type SettingsChangedKind,
+  type StreamEnvelope
 } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { FetchAvailableInput, ModelPatchEntryInput, ModelSaveInput } from '@shared/models'
@@ -91,7 +92,9 @@ const api: ApiBridge = {
   onChatChunk: (cb) => subscribe(IPC.chatChunk, (e) => cb(e as StreamEnvelope<string>)),
   onChatReasoning: (cb) => subscribe(IPC.chatReasoning, (e) => cb(e as StreamEnvelope<string>)),
   onChatDone: (cb) => subscribe(IPC.chatDone, (e) => cb(e as StreamEnvelope<ChatDonePayload>)),
-  onChatError: (cb) => subscribe(IPC.chatError, (e) => cb(e as StreamEnvelope<string>)),
+  // E26a-R1：桥接层原样透传 —— 旧主进程 string 与新主进程 ChatErrorPayload 都保留；
+  // 不得为了沿用旧签名把 terminal/usage/usageComplete 等事实塌成 message。
+  onChatError: (cb) => subscribe(IPC.chatError, (e) => cb(e as StreamEnvelope<string | ChatErrorPayload>)),
   onChatTool: (cb) => subscribe(IPC.chatTool, (e) => cb(e as StreamEnvelope<ToolEvent>)),
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
   listAgentTasks: () => ipcRenderer.invoke(IPC.agentTaskList),
@@ -284,7 +287,12 @@ const api: ApiBridge = {
   readWorkspaceBinary: (rel) => ipcRenderer.invoke(IPC.fsReadBinary, rel),
   // Office 内嵌预览：主进程解析，渲染端只拿沙箱 URL（不拿 HTML 本体）
   previewOffice: (rel) => ipcRenderer.invoke(IPC.officePreview, rel),
-  openWorkspacePathInSystem: (rel) => ipcRenderer.invoke(IPC.fsOpenInSystem, rel),
+  openWorkspacePathInSystem: (rel, previewHandleId) => ipcRenderer.invoke(IPC.fsOpenInSystem, rel, ...(previewHandleId ? [previewHandleId] : [])),
+  // ── 对话内文件预览（plan74）：Gateway 统一只读加载缝 ──
+  previewOpen: (req) => ipcRenderer.invoke(IPC.previewOpen, req),
+  previewRelease: (handleId) => ipcRenderer.invoke(IPC.previewRelease, handleId),
+  previewRead: (handleId) => ipcRenderer.invoke(IPC.previewRead, handleId),
+  previewIngestDraft: (input) => ipcRenderer.invoke(IPC.previewIngestDraft, input),
   // 写操作全部走统一写入服务（留检查点、可回滚）
   writeWorkspaceFile: (rel, content, expectedMtimeMs, expectedRevision) =>
     ipcRenderer.invoke(IPC.fsWrite, {

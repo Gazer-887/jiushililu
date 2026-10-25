@@ -1,9 +1,12 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { createConfirmBridge } from '@main/confirm'
 import { createSystemToolsWithConfirm, createSystemTools } from '@main/agent/tools/system-tools'
+import type { ToolOutcome } from '@shared/agent'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+const toText = (res: string | ToolOutcome): string => (typeof res === 'string' ? res : res.text)
 
 // 危险操作逐次确认（plan8 R5）
 // 盯的是一条安全属性：**没人答复必须拒绝** —— 任何"等不到答复就放行"的实现等于没有确认机制
@@ -147,17 +150,26 @@ describe('run_command 的确认接缝', () => {
       asked = command
       return false
     })
-    const out = await cmdTool(tools).execute({ command: 'echo 不该执行' })
+    const res = await cmdTool(tools).execute({ command: 'echo 不该执行' })
+    const out = toText(res)
 
     expect(asked).toBe('echo 不该执行')
     expect(out).toContain('用户拒绝执行')
     expect(out).not.toContain('不该执行\n') // 确实没跑（否则会有 stdout 段）
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('failed')
+      expect(res.code).toBe('permission-denied')
+    }
   })
 
   it('用户允许 → 命令正常执行并回显输出', async () => {
     const tools = createSystemToolsWithConfirm(dir, async () => true)
-    const out = await cmdTool(tools).execute({ command: 'echo hello-from-confirm' })
+    const res = await cmdTool(tools).execute({ command: 'echo hello-from-confirm' })
+    const out = toText(res)
     expect(out).toContain('hello-from-confirm')
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('succeeded')
+    }
   })
 
   it('空 command 直接报错，**不惊动用户**（没必要为无效输入弹窗）', async () => {
@@ -166,14 +178,23 @@ describe('run_command 的确认接缝', () => {
       calls++
       return true
     })
-    const out = await cmdTool(tools).execute({ command: '   ' })
+    const res = await cmdTool(tools).execute({ command: '   ' })
+    const out = toText(res)
     expect(out).toContain('command 不能为空')
     expect(calls).toBe(0)
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('failed')
+      expect(res.code).toBe('tool-error')
+    }
   })
 
   it('不注入确认时保持旧行为（CLI/单测场景不受影响）', async () => {
     const tools = createSystemTools(dir)
-    const out = await cmdTool(tools).execute({ command: 'echo no-confirm-needed' })
+    const res = await cmdTool(tools).execute({ command: 'echo no-confirm-needed' })
+    const out = toText(res)
     expect(out).toContain('no-confirm-needed')
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('succeeded')
+    }
   })
 })

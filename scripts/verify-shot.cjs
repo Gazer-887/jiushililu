@@ -623,7 +623,9 @@ let memoryCandidates = [
     description: '偏好深色界面',
     class: 'style',
     origin: 'reflection',
-    evidence: null,
+    // S2-40：合成会话 evidence —— 门禁要验「来源会话：」可读且几何可见；
+    // 另一条候选（fix-flaky-tests）保持 null，用来验「来源未记录」。
+    evidence: { conversationId: 'gate-synthetic-session-A' },
     createdAt: '2026-09-15T02:00:00.000Z',
     updatedAt: '2026-09-15T02:00:00.000Z',
     body: '从历史会话提炼：用户多次切换到深色主题。',
@@ -956,6 +958,12 @@ const agentUiCalls = { run: [], stop: [] }
 const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
+  // plan74 对话内预览桩：门禁只验结构渲染（卡能挂载、句柄生命周期不炸），
+  // 不验真实字节 —— 真实 Gateway/协议安全由单测与 e2e 负责。open 回一个确定的假句柄。
+  'preview:open': () => ({ ok: true, handleId: 'gate-stub-handle', url: 'jsl-preview://asset/gate-stub-handle', capabilities: { text: true }, sourceLabel: 'history', boundedText: '' }),
+  'preview:release': () => {},
+  'preview:read': () => new Uint8Array(),
+  'preview:ingest-draft': () => ({ ok: true, assetId: 'gate-stub-asset', bytes: 0, digest: '0'.repeat(16) }),
   // plan60：内置浏览器桩（有状态标签页）。面板挂载即拉 state；动作后 state 带 tabs 回，
   // 面板不自己记 tabs（唯一真相源在"主进程"那头，面板只渲染 —— 与 GoalPanel 跨窗广播同口径）。
   // 初始零标签（空态不断言"强留空白标签"，关到零个回空态是 plan60 定死的形态）。
@@ -1977,8 +1985,10 @@ const STUBS = {
       }
     }
     if (/\.(mov|avi|webm|bmp|svg)$/i.test(name)) {
-      // 真源：`workspace-fs.readAttachment`。主语必须是本应用通路，不许甩锅给模型（09-27 装机点验的教训）
-      throw new Error(`「${name}」是二进制文件（含 NUL 字节），当前附件通路只支持文本、图片（png/jpg/gif/webp）与视频（mp4）`)
+      // 真源：`workspace-fs.readAttachment`。主语必须是本应用通路，不许甩锅给模型（09-27 装机点验的教训）。
+      // ⚠️ 桩按扩展名镜像拒绝，文案与现行产品**同义**；门禁断言只依赖「文件名 + 二进制」两个片段
+      //   （见下方 DRAG_REJECT 判据），所以这里保持与 readAttachment 同一产品口径即可。
+      throw new Error(`「${name}」是无法识别的二进制文件，当前附件通路只支持文本、图片（png/jpg/gif/webp）、视频（mp4）与可本地预览的文档/音频`)
     }
     const content = '氧化铈粉 120kg\n碳酸钠 45kg'
     return {
@@ -9426,7 +9436,7 @@ app.whenReady().then(async () => {
         chipBadges: chips.map((c) => Array.from(c.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean).join('/')),
         // 界面任何一处露出字节 = 引用制破了（chip 的 title 是最容易漏的地方）
         chipLeak: document.querySelector('.attach-list')?.textContent?.includes('iVBOR') === true,
-        imgChip: !!document.querySelector('.msg-attach-image'),
+        imgChip: !!bubble?.querySelector('.fp-card[data-preview-mime^="image/"] .fp-card-head'),
         bubbleText: (bubble?.textContent ?? '').trim().slice(0, 120),
         bubbleLeak: (bubble?.textContent ?? '').includes('iVBOR')
       };
@@ -9435,7 +9445,7 @@ app.whenReady().then(async () => {
   const imgSend = chatSendCalls[chatSendCalls.length - 1]
   const imgTurn = (imgSend?.messages ?? []).filter((m) => m.role === 'user').pop()
   checkTrue(
-    '片③ 图片附件：输入框与气泡各给一枚「图片」chip，且界面上看不到字节',
+    '片③ 图片附件：输入附件标识与历史同窗图片卡存在，界面不泄漏编码字节',
     imgFlow.ok === true &&
       imgFlow.imgChip === true &&
       imgFlow.chipBadges.some((b) => b.includes('图片')) &&
@@ -9477,10 +9487,10 @@ app.whenReady().then(async () => {
       return {
         ok: true,
         badges,
-        // 按**结构**断，不按字：气泡里的角标显示具体类型（mp4 / png），比"视频"更有信息
-        bubbleVideoChip: !!bubble?.querySelector('.msg-attach-video'),
-        bubbleBadge: Array.from(bubble?.querySelectorAll('.msg-attach-kind') ?? [])
-          .map((s) => s.textContent || ''),
+        // 芯片已升级为文件卡：从真实卡片读类型，不再要求退役的角标class。
+        bubbleVideoChip: !!bubble?.querySelector('.fp-card[data-preview-mime="video/mp4"] .fp-card-head'),
+        bubbleBadge: Array.from(bubble?.querySelectorAll('.fp-card[data-preview-mime]') ?? [])
+          .map((s) => s.getAttribute('data-preview-mime')),
         bubbleLeak: (bubble?.textContent ?? '').includes('AAAA')
       };
     })()
@@ -9488,11 +9498,11 @@ app.whenReady().then(async () => {
   const vidSend = chatSendCalls[chatSendCalls.length - 1]
   const vidTurn = (vidSend?.messages ?? []).filter((m) => m.role === 'user').pop()
   checkTrue(
-    '片⑤ 视频附件：输入框与气泡各给一枚「视频」chip，界面上看不到字节',
+    '片⑤ 视频附件：输入附件标识与历史MP4文件卡存在，界面不泄漏编码字节',
     vidFlow.ok === true &&
       vidFlow.badges.some((b) => b.includes('视频')) &&
       vidFlow.bubbleVideoChip === true &&
-      vidFlow.bubbleBadge.includes('mp4') &&
+      vidFlow.bubbleBadge.includes('video/mp4') &&
       vidFlow.bubbleLeak === false,
     vidFlow
   )
@@ -11034,6 +11044,20 @@ app.whenReady().then(async () => {
           // plan56 片①：折叠态与展开态必须**各自可判** —— 只采行数判不出"折起后还剩什么在屏上"
           entriesToggle: p.querySelector('.mem-entries-toggle')?.textContent.trim() ?? null,
           rowCount: p.querySelectorAll('.mem-row').length,
+          // S2-40：来源只读行（mem-evidence 类）—— 文本、几何、是否溢出面板三样分开采，
+          // 只采文本就分不出“渲染了但在屏外”那一类假可见。
+          evidenceTexts: Array.from(p.querySelectorAll('.mem-evidence')).map((n) => n.textContent.trim()),
+          evidenceBoxes: Array.from(p.querySelectorAll('.mem-evidence')).map((n) => {
+            const b = n.getBoundingClientRect();
+            return { w: Math.round(b.width), h: Math.round(b.height) };
+          }),
+          evidenceOverflow: (() => {
+            const pr = p.getBoundingClientRect();
+            return Array.from(p.querySelectorAll('.mem-evidence')).filter((n) => {
+              const b = n.getBoundingClientRect();
+              return b.right > pr.right + 1 || b.left < pr.left - 1;
+            }).length;
+          })(),
           archivedToggle: p.querySelector('.mem-archived-toggle')?.textContent.trim() ?? null,
           // plan56 片③：一键拒绝的口、回收站的折叠标题、展开后的行与按钮，各自可采
           rejectBulkLabel: p.querySelector('.mem-reject-unclustered')?.textContent.trim() ?? null,
@@ -11095,6 +11119,24 @@ app.whenReady().then(async () => {
     { expanded, rows: memList.rowCount, actions: memList.actions }
   )
   console.log('MEMORY_LIST=' + JSON.stringify(memList))
+
+  // ── S2-40：来源只读展示（有会话 → “来源会话：”；无来源 → “来源未记录”）──
+  checkTrue(
+    'S2-40：候选/条目的来源行同时出现“来源会话：”与“来源未记录”两种文案',
+    memList.evidenceTexts.some((t) => t.startsWith('来源会话：')) &&
+      memList.evidenceTexts.includes('来源未记录'),
+    memList.evidenceTexts
+  )
+  checkTrue(
+    'S2-40：来源行有可见几何（宽高均 > 0）',
+    memList.evidenceBoxes.length > 0 && memList.evidenceBoxes.every((b) => b.w > 0 && b.h > 0),
+    memList.evidenceBoxes
+  )
+  checkTrue(
+    'S2-40：来源行不溢出记忆面板（长 ID 不得撑破布局）',
+    memList.evidenceOverflow === 0,
+    { overflow: memList.evidenceOverflow, texts: memList.evidenceTexts }
+  )
   checkTrue(
     '记忆页签：列出条目并给出分类徽标（空态不算通过）',
     memReady === true &&
@@ -11296,6 +11338,61 @@ app.whenReady().then(async () => {
       pbPanel.names.includes('edit-react-component') &&
       pbPanel.badges.includes('file-edit'),
     { pbNav, ...pbPanel }
+  )
+
+  // ── S2-40：编辑表单里的自动召回边界说明（六类规范标签 + 仅自定义标签手动召回）──
+  // ⚠️ S2-40-R1：点击与读取必须**分两次** executeJavaScript —— 点完立刻读，React 还没重绘，
+  //    会稳定读到「表单不存在」（S2-40V 实测 hasField=false 的假红）。
+  const pbFormOpened = swinPb
+    ? await swinPb.webContents.executeJavaScript(`
+        (() => {
+          const p = Array.from(document.querySelectorAll('.mem-panel'))
+            .find((n) => (n.querySelector('.mem-title')?.textContent || '').trim() === 'Playbook');
+          if (!p) return false;
+          const create = Array.from(p.querySelectorAll('button'))
+            .find((b) => b.textContent.trim() === '新建');
+          if (create) create.click();
+          return !!create;
+        })()
+      `)
+    : false
+  await new Promise((r) => setTimeout(r, 400))
+  const pbHint = swinPb && pbFormOpened
+    ? await swinPb.webContents.executeJavaScript(`
+        (() => {
+          const p = Array.from(document.querySelectorAll('.mem-panel'))
+            .find((n) => (n.querySelector('.mem-title')?.textContent || '').trim() === 'Playbook');
+          if (!p) return { opened: true, hasField: false };
+          const field = Array.from(p.querySelectorAll('.mem-field'))
+            .find((f) => (f.querySelector('span')?.textContent || '').trim() === '标签');
+          if (!field) return { opened: true, hasField: false };
+          const spans = Array.from(field.querySelectorAll('span'))
+            .filter((s) => (s.textContent || '').trim().length > 0);
+          const boxes = spans.map((s) => {
+            const b = s.getBoundingClientRect();
+            return { w: Math.round(b.width), h: Math.round(b.height), text: s.textContent.trim() };
+          });
+          // 退出表单用位置取（表单动作恒为 [保存, 退出]）：
+          // 不按文案取，避免在门禁里再写一份 i18n 表值（K21 守卫会多记一条硬编码）。
+          const cancel = p.querySelectorAll('.mem-form-actions button')[1];
+          if (cancel) cancel.click();
+          return { opened: true, hasField: true, text: field.textContent || '', boxes };
+        })()
+      `)
+    : { opened: false }
+  await new Promise((r) => setTimeout(r, 300))
+  checkTrue(
+    'S2-40：Playbook 编辑表单列出六类规范标签与“仅自定义标签只能手动召回”边界',
+    pbHint.opened === true &&
+      pbHint.hasField === true &&
+      ['file-edit', 'debug', 'research', 'build', 'test', 'refactor'].every((t) => (pbHint.text || '').includes(t)) &&
+      (pbHint.text || '').includes('手动召回'),
+    { opened: pbHint.opened, hasField: pbHint.hasField, text: pbHint.text }
+  )
+  checkTrue(
+    'S2-40：Playbook 标签说明行有可见几何（不是零高零宽的隐形节点）',
+    Array.isArray(pbHint.boxes) && pbHint.boxes.length > 0 && pbHint.boxes.every((b) => b.w > 0 && b.h > 0),
+    pbHint.boxes
   )
   // 同一套真渲染判据也可由M02_UI_ONLY单独执行，避免变异时重跑无关506项。
   if (swinPb && !swinPb.isDestroyed()) swinPb.destroy()

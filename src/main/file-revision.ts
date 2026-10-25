@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { AgentPauseError } from './agent/pause-error'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 
 /** 内容版本与进程内提交队列；不声称能锁住外部编辑器的系统调用。 */
@@ -19,15 +19,28 @@ export function fileRevision(path: string): string | null {
   }
 }
 
+/** 只有 ENOENT 当"未建出来"；ENOTDIR 与权限/未知失败必须抛出（不用 existsSync，它对 EACCES 也返回 false）。 */
+function existsStrict(abs: string): boolean {
+  try {
+    statSync(abs)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
+  }
+}
+
 export function canonicalFilePath(path: string): string {
   let parent = resolve(path)
   const tail: string[] = []
-  while (!existsSync(parent)) {
+  while (!existsStrict(parent)) {
     tail.unshift(basename(parent))
     const next = dirname(parent)
     if (next === parent) throw new Error('无法解析文件真实路径')
     parent = next
   }
+  // 未存在的尾部必须挂在目录之下：普通文件之下不可能有子项
+  if (tail.length > 0 && !statSync(parent).isDirectory()) throw new Error('无法解析文件真实路径：祖先不是目录')
   const key = join(realpathSync(parent), ...tail)
   return process.platform === 'win32' ? key.toLowerCase() : key
 }

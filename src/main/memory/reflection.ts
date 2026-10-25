@@ -87,6 +87,9 @@ export function createReflectionRunner(opts: { chat: ReflectChat }): {
         if (!item || typeof item !== 'object') continue
         const c = normalizeCandidate(item as Record<string, unknown>)
         if (c === null) continue
+        // S2-20：来源只由宿主绑定 —— 模型自报的 conversationId / turnIndex 一律丢弃。
+        // ⚠️ 本轮没有可信的轮次映射，故不写 turnIndex：不从 messages 下标猜，也不填 0。
+        c.evidence = { conversationId: input.id }
         // 找冲突填 conflictWith（撞名就标，让用户决定是覆盖还是放弃）
         const conflict = input.memory.findConflict(c.name)
         if (conflict) {
@@ -115,7 +118,9 @@ function stripCodeFence(text: string): string {
 // ⚠️ 此前这里硬编码三类，扩 class 时若不改它，反思通路会把新分类静默降级成 default。
 const VALID_CLASSES: ReadonlySet<MemoryClass> = new Set(MEMORY_CLASSES)
 
-/** 把松散的对象收敛成 MemoryCandidate；不合法返回 null */
+/** 把松散的对象收敛成 MemoryCandidate；不合法返回 null
+ *  ⚠️ 只管正文/分类校验：来源（evidence）由调用方按输入会话绑定，不信模型自报。
+ */
 function normalizeCandidate(raw: Record<string, unknown>): MemoryCandidate | null {
   const name = typeof raw['name'] === 'string' ? raw['name'] : ''
   const description = typeof raw['description'] === 'string' ? raw['description'] : ''
@@ -125,23 +130,10 @@ function normalizeCandidate(raw: Record<string, unknown>): MemoryCandidate | nul
   const cls: MemoryClass = typeof classRaw === 'string' && VALID_CLASSES.has(classRaw as MemoryClass)
     ? (classRaw as MemoryClass)
     : 'default'
-  const evidence = normalizeEvidence(raw['evidence'])
   return {
     name,
     description,
     class: cls,
-    body,
-    ...(evidence ? { evidence } : {})
+    body
   }
-}
-
-function normalizeEvidence(raw: unknown): { conversationId: string; turnIndex?: number } | null {
-  if (!raw || typeof raw !== 'object') return null
-  const r = raw as Record<string, unknown>
-  const conversationId = typeof r['conversationId'] === 'string' ? r['conversationId'] : ''
-  if (conversationId.length === 0) return null
-  const turnRaw = r['turnIndex']
-  const turnIndex =
-    typeof turnRaw === 'number' && Number.isInteger(turnRaw) && turnRaw >= 0 ? turnRaw : undefined
-  return turnIndex === undefined ? { conversationId } : { conversationId, turnIndex }
 }

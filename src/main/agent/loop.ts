@@ -4,16 +4,18 @@ import type {
   AgentLoopResult,
   AgentTool,
   ToolEvent,
-  ToolImageRef
+  ToolImageRef,
+  ToolOutcome
 } from '@shared/agent'
-import { toolCallDetail } from '@shared/tool-detail'
+import type { RunTerminal } from '@shared/execution-outcome'
+import { toolCallDetail, toolArtifactPaths } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
 import { setWatchdogPhase, traceSync } from '../watchdog'
 import { DEFAULT_TOKEN_TIER, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
 import { historyForModel, trimMessages, type TrimOptions } from './context'
 import type { ExecEventRecorder } from './exec-events'
-import { isAbortError } from '../providers/errors'
+import { AgentRunFailure, ProviderError, isAbortError } from '../providers/errors'
 import { AgentPauseError } from './pause-error'
 
 // Agent 主循环（plan6；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，直到出最终答案或预算耗尽。
@@ -54,6 +56,11 @@ export interface AgentLoopOptions {
   policy?: TokenPolicy
   /** 工具执行生命周期（界面显示"正在读 xx / 完成 / 失败"） */
   onToolEvent?: (evt: ToolEvent) => void
+  /**
+   * 本轮实际执行的 Agent 标签（E30-P2）：run_start 的 agentName 用它。
+   * 必须与结果里的 `agent` 同源（unknown/默认 = 「内核默认」），不得另造显示名。
+   */
+  agentLabel?: string
   /**
    * 执行事件流（plan26 D-077）：工具/裁剪/起止的结构化留痕，落盘由组合根装配。
    * **可选依赖** —— 不传 = 不记录（单测与既有路径零影响）。
@@ -111,6 +118,14 @@ export function stripForwardedImageParts(messages: AgentMessage[]): number {
 /** 主循环的日志器（§七④：像"前缀缓存失效"这类**值得但必须知情**的代价要留痕） */
 const log = createLogger('agent-loop')
 
+/** E28-R1：异常路径的整轮终态。只读固定事实，不从错误文本猜。 */
+function terminalOfError(err: unknown): RunTerminal {
+  if (isAbortError(err)) return { state: 'cancelled', code: 'user-stop' }
+  if (err instanceof ProviderError && err.facts?.terminal) return err.facts.terminal
+  if (err instanceof AgentRunFailure && err.facts?.terminal) return err.facts.terminal
+  return { state: 'unknown' }
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const maxRounds = Math.max(1, opts.maxRounds ?? 12)
   const toolMap = new Map(opts.tools.map((t) => [t.schema.name, t]))
@@ -138,11 +153,21 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
   // ── 执行事件流（plan26 D-077）：run_start / run_end（finally 补发，error 路径不丢）──
   const startedAt = Date.now()
-  opts.execEvents?.record('run_start')
+  opts.execEvents?.record('run_start', opts.agentLabel ? { agentName: opts.agentLabel } : undefined)
   let stopReason: AgentLoopResult['stopReason'] | undefined
+  // E28-R1：整轮终态 —— 正常返回取 result.terminal，异常取固定 facts；旧路径仍可为 undefined。
+  let roundTerminal: RunTerminal | undefined
 
   try {
-    return await runRounds()
+    const result = await runRounds()
+    roundTerminal = result.terminal
+    return result
+  } catch (err) {
+    roundTerminal = terminalOfError(err)
+    if (err && typeof err === 'object' && avoidedTokens > 0) {
+      ;(err as Record<string, unknown>).avoidedTokens = avoidedTokens
+    }
+    throw err
   } finally {
     // plan57 K52 B2：异常中断也摘（中途挂掉的转交图不留 base64 在内存历史里；纯数组操作，不抛）
     stripForwardedImageParts(messages)
@@ -150,7 +175,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     opts.execEvents?.record('run_end', {
       rounds,
       durationMs: Date.now() - startedAt,
-      ...(stopReason ? { stopReason } : {})
+      ...(stopReason ? { stopReason } : {}),
+      ...(roundTerminal ? { terminal: roundTerminal } : {})
     })
   }
 
@@ -159,7 +185,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     opts.signal?.throwIfAborted()
     if (rounds >= maxRounds) {
       stopReason = 'max-rounds'
-      return { output: lastText, rounds, stopReason: 'max-rounds', avoidedTokens }
+      return {
+        output: lastText,
+        rounds,
+        stopReason: 'max-rounds',
+        avoidedTokens,
+        terminal: { state: 'max-rounds', code: 'token-limit' }
+      }
     }
     rounds++
 
@@ -212,7 +244,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     // 没有工具调用 = 模型认为任务完成，文本即最终交付
     if (res.toolCalls.length === 0) {
       stopReason = 'completed'
-      return { output: res.text ?? '', rounds, stopReason: 'completed', avoidedTokens }
+      return {
+        output: res.text ?? '',
+        rounds,
+        stopReason: 'completed',
+        avoidedTokens,
+        terminal: { state: 'completed' }
+      }
     }
 
     // 回灌 assistant（含 tool_calls），再逐个执行并把结果以 tool 角色回灌
@@ -230,6 +268,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       opts.signal?.throwIfAborted()
       const tool = toolMap.get(tc.name)
       // 带上「这一步在干什么」（从入参提取），否则界面只能显示干巴巴的「执行中…」
+      let artifactPaths: string[] = []
       opts.onToolEvent?.({
         id: tc.id,
         name: tc.name,
@@ -246,18 +285,29 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       // 看门狗标记（plan37 S0）：save/restore 回前值 —— 单槽阶段硬写 'idle' 会抹平并发路径（见 watchdog.ts）
       const prevPhase = setWatchdogPhase(`tool:${tc.name}`)
       let output: string
+      let outcomeState: ToolOutcome['outcome']
+      let outcomeCode: ToolOutcome['code']
+      let outcomeExitCode: ToolOutcome['exitCode']
       try {
         if (!tool) {
           output = `错误：未知工具「${tc.name}」。可用工具：${[...toolMap.keys()].join('、') || '（无）'}`
+          outcomeState = 'failed'
+          outcomeCode = 'tool-error'
         } else {
           try {
             opts.signal?.throwIfAborted()
-            const raw = await tool.execute(parseArgs(tc.arguments))
+            const args = parseArgs(tc.arguments)
+            const raw = await tool.execute(args)
             opts.signal?.throwIfAborted()
             // 工具可以只回文本（绝大多数），也可以回"文本 + 图片引用"（plan44 S2b）。
             // 归一化只在这一处发生：**进模型的一直是 text**，images 只交给界面事件。
             const outcome = typeof raw === 'string' ? { text: raw } : raw
             output = outcome.text
+            outcomeState = outcome.outcome
+            outcomeCode = outcome.code
+            outcomeExitCode = outcome.exitCode
+            // 工具确认实际落盘后才消费；入参或模型文字不能提前生成“已产出”卡。
+            artifactPaths = (tool.takeProducedFiles?.(args) ?? []).flatMap(path => toolArtifactPaths(tc.name, JSON.stringify({ path })))
             toolImages = outcome.images ?? []
             // plan57 K52 B2：opt-in 交图 —— 只有显式要交的工具才挂 parts 进模型（MCP 等老工具不受影响）
             forwarded =
@@ -272,6 +322,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           } catch (err) {
             if (opts.signal?.aborted || isAbortError(err) || err instanceof AgentPauseError) throw err
             output = `错误：工具执行异常——${err instanceof Error ? err.message : String(err)}`
+            outcomeState = 'failed'
+            outcomeCode = 'tool-error'
           }
         }
       } finally {
@@ -315,22 +367,35 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         }
       }
 
-      const failed = output.startsWith('错误')
+      const failed = outcomeState !== undefined
+        ? outcomeState !== 'succeeded'
+        : output.startsWith('错误')
+
+      const finalOutcome = outcomeState ?? (failed ? 'failed' : 'succeeded')
+
       opts.onToolEvent?.({
         id: tc.id,
         name: tc.name,
         phase: failed ? 'error' : 'end',
         summary: summarize(output),
         ...(saved > 0 ? { savedTokens: saved } : {}),
-        ...(toolImages.length > 0 ? { images: toolImages } : {})
+        ...(toolImages.length > 0 ? { images: toolImages } : {}),
+        ...(!failed && artifactPaths.length > 0 ? { artifactPaths } : {}),
+        outcome: finalOutcome,
+        ...(outcomeCode ? { code: outcomeCode } : {}),
+        ...(outcomeExitCode !== undefined ? { exitCode: outcomeExitCode } : {})
       })
       // plan26 D-077：tool_result 只记元数据 —— bytes 是输出大小、**正文不进事件流**
+      // E28-R1：传真实 ToolResult 事实；没有 outcome 的旧工具不补，不从文本猜状态。
       opts.execEvents?.record('tool_result', {
         tool: tc.name,
         ok: !failed,
         ms: Date.now() - toolStartedAt,
         bytes: Buffer.byteLength(output, 'utf8'),
-        windowed: saved > 0
+        windowed: saved > 0,
+        ...(outcomeState ? { outcome: outcomeState } : {}),
+        ...(outcomeCode ? { code: outcomeCode } : {}),
+        ...(outcomeExitCode !== undefined ? { exitCode: outcomeExitCode } : {})
       })
 
       // 注入边界标记：工具产出（文件内容/网页/命令输出）一律是**数据**，不是指令

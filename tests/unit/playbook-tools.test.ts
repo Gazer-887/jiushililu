@@ -141,3 +141,70 @@ describe('recall_playbook：按标签召回', () => {
     expect(last.found).toBe(true)
   })
 })
+
+// S2-10：保存端必须说清「自动召回 / 仅手动召回」两种口径，且不得承诺保证注入。
+const STANDARD_TAGS = ['file-edit', 'debug', 'research', 'build', 'test', 'refactor']
+const HI_CONFIRM = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0'
+
+describe('save_playbook：召回边界回执', () => {
+  it('六类规范标签逐一给出自动召回口径', async () => {
+    for (const tag of STANDARD_TAGS) {
+      const { byName } = setup()
+      const out = await byName('save_playbook').execute({ ...GOOD, name: `pb-${tag}`, tags: [tag] })
+      expect(out).toContain('已保存')
+      expect(out).toContain('可参与自动召回')
+    }
+  })
+
+  it('自动召回口径仍受任务识别与注入预算限制，不承诺保证注入', async () => {
+    const { byName } = setup()
+    const out = await byName('save_playbook').execute(GOOD)
+    expect(out).toContain('预算')
+    expect(out).not.toContain('保证')
+    expect(out).not.toContain('一定')
+  })
+
+  it('仅自定义标签 → 手动召回口径，且不排斥自定义标签', async () => {
+    const { byName, repo } = setup()
+    const out = await byName('save_playbook').execute({ ...GOOD, tags: ['react', 'ui'] })
+    expect(out).toContain('已保存')
+    expect(out).toContain('可按标签手动召回')
+    expect(out).not.toContain('可参与自动召回')
+    expect(repo.list().entries[0]?.tags).toEqual(['react', 'ui'])
+  })
+
+  it('混合标签 → 按自动召回口径', async () => {
+    const { byName } = setup()
+    const out = await byName('save_playbook').execute({ ...GOOD, tags: ['react', 'Debug'] })
+    expect(out).toContain('可参与自动召回')
+  })
+
+  it('schema 描述列出六类规范标签并要求至少选一个', () => {
+    const { byName } = setup()
+    const tool = byName('save_playbook')
+    const desc = `${tool.schema.description}`
+    for (const tag of STANDARD_TAGS) expect(desc).toContain(tag)
+    expect(desc).toContain('至少选择一个规范标签')
+    expect(desc).not.toContain('自定义标签无效')
+  })
+
+  it('确认桥同意后的第二次回执与首次自动口径一致', async () => {
+    const { byName } = setup({ confirm: async () => true })
+    const out = await byName('save_playbook').execute({ ...GOOD, body: `调用时带上 ${HI_CONFIRM} 即可` })
+    expect(out).toContain('已保存')
+    expect(out).toContain('可参与自动召回')
+    expect(out).toContain('预算')
+  })
+
+  it('确认桥同意后的第二次回执与首次自定义口径一致', async () => {
+    const { byName } = setup({ confirm: async () => true })
+    const out = await byName('save_playbook').execute({
+      ...GOOD,
+      tags: ['react'],
+      body: `调用时带上 ${HI_CONFIRM} 即可`
+    })
+    expect(out).toContain('已保存')
+    expect(out).toContain('可按标签手动召回')
+    expect(out).not.toContain('可参与自动召回')
+  })
+})

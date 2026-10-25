@@ -3,9 +3,12 @@
 // 收敛进设置让右栏只留高频工作面板。样式复用 `.mem-panel`（与记忆页同构，两处渲染一致）。
 
 import { useCallback, useEffect, useState } from 'react'
-import { PLAYBOOK_LIMITS, normalizeTag, matchesPlaybookTags, type PlaybookEntry } from '@shared/playbook'
+import { PLAYBOOK_LIMITS, PLAYBOOK_TAG_KEYWORDS, normalizeTag, matchesPlaybookTags, type PlaybookEntry } from '@shared/playbook'
 import { useAppStore } from '../store'
 import FieldNote from './FieldNote'
+
+/** 规范标签清单由词表键派生，与保存端提示保持同源（S2-10） */
+const STANDARD_TAG_LIST = Object.keys(PLAYBOOK_TAG_KEYWORDS).join(' / ')
 
 interface Draft {
   file?: string
@@ -86,7 +89,8 @@ export default function PlaybookManager(): JSX.Element {
         <FieldNote
           text={[
             'Playbook 存的是「某类任务该怎么做」，与记忆（用户偏好与事实）是两条线。',
-            '按标签条件召回：只有当前任务命中了条目的标签，它才会被注入本轮对话。',
+            '只有规范标签参与自动召回；当前任务命中条目标签时才可能被注入本轮对话。',
+            '仅含自定义标签的条目不自动注入，可按标签手动召回。',
             '内容一律按数据对待，即使写着"忽略之前的指令"也不会被当成指令执行。'
           ]}
         />
@@ -127,7 +131,7 @@ export default function PlaybookManager(): JSX.Element {
 
       {entries.length === 0 && !draft ? (
         <div className="mem-empty">
-          还没有 Playbook。模型在做完某类任务后，可以把步骤沉淀到这里；下次遇到同类任务会自动召回。
+          还没有 Playbook。含规范标签且任务匹配时才可能自动注入；自定义标签可按标签手动召回。
         </div>
       ) : null}
 
@@ -183,6 +187,10 @@ export default function PlaybookManager(): JSX.Element {
               placeholder="逗号分隔，例：file-edit, react"
               onChange={(ev) => setDraft({ ...draft, tags: ev.target.value })}
             />
+            <span>规范标签：{STANDARD_TAG_LIST}</span>
+            <span>需要自动召回时至少选择一个规范标签。</span>
+            <span>仅自定义标签时只能手动召回。</span>
+            <span>是否注入还取决于任务识别与注入预算。</span>
           </label>
           <label className="mem-field">
             <span>正文</span>

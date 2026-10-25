@@ -190,3 +190,15 @@ Anthropic输入是否归一为未缓存输入加缓存读写仍待裁，当前�
   （挂在 [[src/renderer/src/store.ts#useAppStore]] 上）比一次 `conversationId` 守住，
   主进程那边靠过滤守住。两侧各有判据（`goal-agent-apply.test.ts` / `goal-store.test.ts`），**互不替代**：
   门禁的 `goal:list` 是单会话桩，给不出"两条会话"这个形状，所以那条判据只能在单测或真入口里成立。
+
+## 本地预览引用不是可降级的过程缓存
+
+[[src/main/store/conversations-core.ts#fitStoredBudget]] 超预算时可去掉思考和工具长摘要，
+但用户的localFiles/messageId和成功工具的最小artifactPaths必须保留。
+只剩文件工具段时，界面仍从content显示正文，不能把“保卡片”变成“正文空白”。
+
+回滚只移游标。[[src/main/store/conversations-core.ts#createConversationsRepo]] 默认getConversation
+依旧只返回可见消息；仅宿主预览和编辑存档核身份时显式查含隐藏尾部的原消息。
+编辑重发沿用原messageId、媒体parts与本地引用，宿主仍按同一会话/消息/资产边核对；
+不是把全局资产存在当成许可，不重读已经变化的原文件。
+发送失败保留编辑附件，切会话清空编辑状态；恢复游标不改原资产。

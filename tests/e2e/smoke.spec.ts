@@ -153,6 +153,7 @@ test.describe('A 类 · 需要 Key（本机 Windows 跑）', () => {
         res.writeHead(200, { 'content-type': 'text/event-stream' })
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: fake.slice(0, 5) } }] })}\n\n`)
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: fake.slice(5) } }] })}\n\n`)
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`)
         res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 5 } })}\n\n`)
         res.end('data: [DONE]\n\n')
         req.resume()

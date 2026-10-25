@@ -5,7 +5,10 @@
 
 import { useEffect, useState } from 'react'
 import type { MessageSegment, ToolEvent, ToolImageRef } from '@shared/agent'
+import type { OutcomeCode, ToolResultState } from '@shared/execution-outcome'
+import { toolOutcomeText } from '@shared/exec-events'
 import MessageMarkdown from './MessageMarkdown'
+import FilePreviewCard from './FilePreviewCard'
 
 function ThinkingBlock({ text }: { text: string }): JSX.Element {
   // 展开态是**每段独立**的（旧版全局 showReasoning 在多段时会一起开关）
@@ -61,17 +64,51 @@ function ToolShot({ img }: { img: ToolImageRef }): JSX.Element {
   )
 }
 
-function ToolBlock({ event }: { event: ToolEvent }): JSX.Element {
+function toolIcon(outcome: ToolResultState, code?: OutcomeCode): string {
+  if (outcome === 'succeeded') return '✓'
+  if (code === 'token-limit' || code === 'output-limit') return '✂'
+  switch (outcome) {
+    case 'failed':
+      return '✗'
+    case 'denied':
+    case 'cancelled':
+      return '⊘'
+    case 'unknown':
+      return '?'
+    default:
+      return '·'
+  }
+}
+
+export function toolStatus(event: Pick<ToolEvent, 'phase' | 'outcome' | 'code'>): {
+  icon: string
+  text: string
+  className: string
+} {
+  const text = toolOutcomeText(event.outcome, event.code)
+  const icon =
+    event.phase === 'start' ? '◌' : event.outcome ? toolIcon(event.outcome, event.code) : event.phase === 'error' ? '✗' : '✓'
+  return {
+    icon,
+    text,
+    className: `tool-item tool-${event.phase}${event.outcome ? ` tool-outcome-${event.outcome}` : ''}`
+  }
+}
+
+function ToolBlock({ event, conversationId }: { event: ToolEvent; conversationId?: string }): JSX.Element {
   // MCP 来源徽标（plan44 决策 5）：mcp__<server>__<tool> 是 D-061 命名法 —— 拆出 server 挂徽标，
   // 名字区只留工具本名；"这是外部服务器的动作"必须一眼可辨
   const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(event.name)
   const displayName = mcp ? mcp[2] : event.name
+  // E28：phase 旧三值保持兼容；有 outcome 时以细分为准，旧事件不推断“肯定成功”。
+  const status = toolStatus(event)
   return (
     <div className="tool-log">
-      <div className={`tool-item tool-${event.phase}`}>
-        <span className="tool-icon">{event.phase === 'start' ? '◌' : event.phase === 'end' ? '✓' : '✗'}</span>
+      <div className={status.className}>
+        <span className="tool-icon">{status.icon}</span>
         {mcp && <span className="tool-mcp-badge">MCP·{mcp[1]}</span>}
         <span className="tool-name">{displayName}</span>
+        {status.text && <span className="tool-outcome">{status.text}</span>}
         <span className="tool-desc">
           {event.phase === 'start' ? event.detail || '执行中…' : event.summary ?? event.detail ?? ''}
         </span>
@@ -83,11 +120,36 @@ function ToolBlock({ event }: { event: ToolEvent }): JSX.Element {
           ))}
         </div>
       ) : null}
+      {/* plan74 Agent 产物入口：写/建类工具的可信路径 → 就地预览卡（读所属会话工作区当前文件） */}
+      {event.phase === 'end' && event.artifactPaths && event.artifactPaths.length > 0 ? (
+        <div className="tool-artifacts">
+          {event.artifactPaths.map((rel) => (
+            <FilePreviewCard
+              key={rel}
+              conversationId={conversationId}
+              file={{
+                assetId: '',
+                name: rel.split('/').pop() || rel,
+                mime: 'text/plain',
+                bytes: 0,
+                source: 'artifact',
+                workspaceRel: rel
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
 
-export default function MessageSegments({ segments }: { segments: MessageSegment[] }): JSX.Element {
+export default function MessageSegments({
+  segments,
+  conversationId
+}: {
+  segments: MessageSegment[]
+  conversationId?: string
+}): JSX.Element {
   return (
     <>
       {segments.map((sg, i) =>
@@ -98,7 +160,7 @@ export default function MessageSegments({ segments }: { segments: MessageSegment
         ) : sg.kind === 'thinking' ? (
           <ThinkingBlock key={i} text={sg.text} />
         ) : (
-          <ToolBlock key={i} event={sg.event} />
+          <ToolBlock key={i} event={sg.event} conversationId={conversationId} />
         )
       )}
     </>

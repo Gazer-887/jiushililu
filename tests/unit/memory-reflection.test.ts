@@ -17,6 +17,7 @@ import type { MemoryCandidate } from '@shared/memory'
 import { createMemoryRepo, serializeMemory } from '@main/memory/memory-core'
 import type { MemoryBackend } from '@main/memory/memory-core'
 import { createReflectionRunner } from '@main/memory/reflection'
+import { REFLECTION_SYSTEM_PROMPT } from '@main/memory/reflection-prompt'
 import { createArchiveMock } from '../helpers/memory-archive-mock'
 
 const ROOT = '/mem/notes'
@@ -205,7 +206,10 @@ describe('产出候选：解析模型输出', () => {
     expect(out.candidates[0]?.name).toBe('ok')
   })
 
-  it('normalizeCandidate：evidence 可选；不传时不带 evidence 字段', async () => {
+  // S2-20（2026-10-25）改写理由：这两条旧断言钉的是**缺陷**——输入会话 c1、模型自报 c9，
+  // 旧实现让 c9/turnIndex 3 直接落进候选。会话来源必须由程序绑定 ReflectInput.id，
+  // 模型自报的 conversationId 与 turnIndex 一律不可信，故改为「每条都只有 c1、且无轮次」。
+  it('模型自报 evidence（c9 / turnIndex 3）→ 来源仍只能是输入会话 c1，且无轮次', async () => {
     const chat = vi.fn(async () => ({
       content: JSON.stringify([
         { name: 'x', description: 'd', class: 'style', body: 'b' },
@@ -215,20 +219,54 @@ describe('产出候选：解析模型输出', () => {
     const { repo } = makeRepo()
     const runner = createReflectionRunner({ chat })
     const out = await runner.reflect({ id: 'c1', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
-    expect(out.candidates[0]?.evidence).toBeUndefined()
-    expect(out.candidates[1]?.evidence).toEqual({ conversationId: 'c9', turnIndex: 3 })
+    expect(out.candidates[0]?.evidence).toEqual({ conversationId: 'c1' })
+    expect(out.candidates[1]?.evidence).toEqual({ conversationId: 'c1' })
+    expect(out.candidates[1]?.evidence?.turnIndex).toBeUndefined()
+    expect(JSON.stringify(out.candidates)).not.toContain('c9')
   })
 
-  it('normalizeEvidence：conversationId 缺失 → 不带 evidence（不允许半指针）', async () => {
+  it('半步指针（只给 turnIndex / 空 conversationId）→ 仍绑定 c1，不保留任何轮次', async () => {
     const chat = vi.fn(async () => ({
       content: JSON.stringify([
-        { name: 'x', description: 'd', class: 'style', body: 'b', evidence: { turnIndex: 3 } }
+        { name: 'x', description: 'd', class: 'style', body: 'b', evidence: { turnIndex: 3 } },
+        { name: 'y', description: 'd', class: 'style', body: 'b', evidence: { conversationId: '', turnIndex: 9 } }
       ])
     }))
     const { repo } = makeRepo()
     const runner = createReflectionRunner({ chat })
     const out = await runner.reflect({ id: 'c1', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
-    expect(out.candidates[0]?.evidence).toBeUndefined()
+    expect(out.candidates).toHaveLength(2)
+    for (const c of out.candidates) {
+      expect(c.evidence).toEqual({ conversationId: 'c1' })
+    }
+  })
+
+  it('模型完全不报 evidence → 每条仍绑定 c1（来源不依赖模型合作）', async () => {
+    const chat = vi.fn(async () => ({
+      content: JSON.stringify([{ name: 'x', description: 'd', class: 'style', body: 'b' }])
+    }))
+    const { repo } = makeRepo()
+    const runner = createReflectionRunner({ chat })
+    const out = await runner.reflect({ id: 'c1', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
+    expect(out.candidates[0]?.evidence).toEqual({ conversationId: 'c1' })
+  })
+
+  it('多个候选 → 每条都绑定同一会话，且都不带轮次（不从 messages 下标猜）', async () => {
+    const chat = vi.fn(async () => ({
+      content: JSON.stringify([
+        { name: 'a', description: 'd', class: 'style', body: 'b' },
+        { name: 'b', description: 'd', class: 'knowledge', body: 'b' },
+        { name: 'c', description: 'd', class: 'profile', body: 'b' }
+      ])
+    }))
+    const { repo } = makeRepo()
+    const runner = createReflectionRunner({ chat })
+    // 会话 id 与消息条数故意不同，防止实现用数组下标冒充轮次
+    const out = await runner.reflect({ id: 'sess-42', messages: msgs, bodyBytes: BIG_BYTES, memory: repo })
+    expect(out.candidates).toHaveLength(3)
+    for (const c of out.candidates) {
+      expect(c.evidence).toEqual({ conversationId: 'sess-42' })
+    }
   })
 })
 
@@ -346,6 +384,21 @@ describe('判据 2：反思产出候选 → list().entries 不含 → 批准后�
 // 09-25 实测：候选区**刻意不进 buildIndex** ⇒ 只把"已生效索引"喂给反思挡不住候选间重复
 // （盘上 71 条候选里 40+ 条落在 8 个同义簇，正是这条漏洞的产物）。
 // 所以本组钉的是：**两段都要在**，且**只带 name+description，正文一律不出境**。
+// S2-20：来源由程序绑定，提示词必须明确禁止模型自造来源/轮次。
+describe('反思提示词：来源由程序填写（S2-20）', () => {
+  it('明确写出来源由程序填写，并禁止生成 evidence / conversationId / turnIndex', () => {
+    expect(REFLECTION_SYSTEM_PROMPT).toContain('来源由程序填写')
+    expect(REFLECTION_SYSTEM_PROMPT).toContain('evidence')
+    expect(REFLECTION_SYSTEM_PROMPT).toContain('conversationId')
+    expect(REFLECTION_SYSTEM_PROMPT).toContain('turnIndex')
+  })
+
+  it('提示词不引导模型自报会话或轮次（不提供可伪造的字段模板）', () => {
+    expect(REFLECTION_SYSTEM_PROMPT).not.toContain('请给出 evidence')
+    expect(REFLECTION_SYSTEM_PROMPT).not.toContain('conversationId:')
+  })
+})
+
 describe('片②：反思请求同时带「已生效索引」与「当前候选清单」', () => {
   const noteText = (name: string, desc: string, body = '这条的正文内容不应出境。'): string =>
     serializeMemory({

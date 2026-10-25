@@ -63,10 +63,10 @@ describe('列号换算与截断', () => {
     expect(clipRange('A1:C5', 500, 50)).toBe('A1:C5') // 没超限原样返回
   })
 
-  it('畸形 / 空引用返回 null（空 sheet 的 !ref 就是 undefined）', () => {
+  it('畸形 / 空引用返回 null；单格A1是有效范围，不当空表', () => {
     expect(clipRange(undefined, 500, 50)).toBeNull()
     expect(clipRange('乱写', 500, 50)).toBeNull()
-    expect(clipRange('A1', 500, 50)).toBeNull()
+    expect(clipRange('A1', 500, 50)).toBe('A1')
   })
 
   it('截断上限是"正常表格不受影响"的量级', () => {
@@ -90,8 +90,16 @@ describe('内存预览 URL / token', () => {
 // ── 内存预览表（TTL / 上限 / 过期）────────────────────────────────────
 
 describe('createMemPreviewStore', () => {
+  it('所属句柄过期或撤销时，HTML不能靠自身更晚的TTL继续读取', () => {
+    let valid = true
+    const store = createMemPreviewStore()
+    const token = store.register('<p>OWNED_HTML_SENTINEL</p>', () => valid)
+    expect(store.get(token)).toContain('OWNED_HTML_SENTINEL')
+    valid = false
+    expect(store.get(token)).toBeNull()
+  })
   it('注册后能取回原文', () => {
-    let t = 0
+    const t = 0
     const store = createMemPreviewStore({ now: () => t })
     const token = store.register('<p>你好</p>')
     expect(store.get(token)).toBe('<p>你好</p>')

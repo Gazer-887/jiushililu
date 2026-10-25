@@ -6,6 +6,7 @@ import {
   type ArchivedEntry,
   type MemoryClass,
   type MemoryEntry,
+  type MemoryEvidence,
   type MemoryReviewItem,
   type RejectedCandidateView
 } from '@shared/memory'
@@ -22,6 +23,18 @@ const CLASS_LABEL: Record<MemoryClass, string> = {
   default: '默认',
   knowledge: '知识',
   profile: '画像'
+}
+
+/**
+ * 来源只读文案（S2-20）：有会话 ID 才写来源，可信轮次可附；没有就如实写缺失。
+ * ⚠️ 纯文本，不带链接、跳转或执行入口；来源只表示「从哪次会话提炼」，不证明正文为真。
+ */
+function evidenceLabel(evidence: MemoryEvidence | null | undefined): string {
+  const id = typeof evidence?.conversationId === 'string' ? evidence.conversationId.trim() : ''
+  if (id.length === 0) return '来源未记录'
+  const turn = evidence?.turnIndex
+  const hasTurn = typeof turn === 'number' && Number.isInteger(turn) && turn >= 0
+  return hasTurn ? `来源会话：${id} · 第 ${turn} 轮` : `来源会话：${id}`
 }
 
 interface Draft {
@@ -396,6 +409,7 @@ export default function MemoryManager(): JSX.Element {
               <span className="mem-name">{g.draft.name}</span>
               <span className="mem-desc">{g.draft.description}</span>
               {conflictLabel(g.draft)}
+              <span className="mem-evidence">{evidenceLabel(g.draft.evidence)}</span>
               <div className="mem-candidate-actions">
                 <button type="button" onClick={() => void approve(g.draft)}>
                   批准这一簇
@@ -415,6 +429,7 @@ export default function MemoryManager(): JSX.Element {
                     <div key={s.file} className="mem-cluster-source">
                       <span className="mem-name">{s.name}</span>
                       <span className="mem-desc">{s.description}</span>
+                      <span className="mem-evidence">{evidenceLabel(s.evidence)}</span>
                     </div>
                   ))
                 : null}
@@ -430,6 +445,7 @@ export default function MemoryManager(): JSX.Element {
               <span className="mem-name">{c.name}</span>
               <span className="mem-desc">{c.description}</span>
               {conflictLabel(c)}
+              <span className="mem-evidence">{evidenceLabel(c.evidence)}</span>
               <div className="mem-candidate-actions">
                 <button type="button" onClick={() => void approve(c)}>
                   批准
@@ -639,6 +655,7 @@ export default function MemoryManager(): JSX.Element {
                 <span className="mem-badge">{CLASS_LABEL[e.class]}</span>
                 <span className="mem-name">{e.name}</span>
                 <span className="mem-desc">{e.description}</span>
+                <span className="mem-evidence">{evidenceLabel(e.evidence)}</span>
               </div>
               <div className="mem-row-actions">
                 <button

@@ -5,8 +5,9 @@ import type {
   AgentTool,
   SubagentJobEvent
 } from '@shared/agent'
+import type { RunTerminal } from '@shared/execution-outcome'
 import { runAgentLoop } from './loop'
-import { isAbortError } from '../providers/errors'
+import { AgentRunFailure, ProviderError, isAbortError } from '../providers/errors'
 import { composeAgentPrompt, TOOL_OUTPUT_TRUST_BASELINE } from './loader'
 import { composeConductRules } from './conduct-rules'
 import type { TokenPolicy } from '@shared/token-tier'
@@ -27,6 +28,7 @@ export interface SubagentJobResult {
   stopReason: AgentStopReason | 'error'
   /** 失败原因（调度层错误，如模型通道异常） */
   error?: string
+  terminal?: RunTerminal
 }
 
 export interface SubagentRunOptions {
@@ -130,12 +132,15 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           // plan26 D-077：子代理执行事件标 'sub'（tool_call/tool_result/run_start/run_end 全覆盖）
           ...(opts.execEvents ? { execEvents: withAgentScope(opts.execEvents, 'sub') } : {})
         })
+        const terminal: RunTerminal | undefined =
+          loop.terminal ?? (loop.stopReason === 'completed' ? { state: 'completed' } : undefined)
         results[index] = {
           name: def.name,
           ok: true,
           output: loop.output,
           rounds: loop.rounds,
-          stopReason: loop.stopReason
+          stopReason: loop.stopReason,
+          ...(terminal ? { terminal } : {})
         }
         opts.onJobEvent?.({
           runId,
@@ -146,14 +151,31 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           startedAt,
           endedAt: Date.now(),
           rounds: loop.rounds,
-          summary: loop.output.slice(0, SUMMARY_MAX)
+          summary: loop.output.slice(0, SUMMARY_MAX),
+          ...(terminal ? { terminal } : {})
         })
       } catch (err) {
         if (opts.signal?.aborted || isAbortError(err)) {
           cancelled = err
-          opts.onJobEvent?.({ runId, name: def.name, index, phase: 'error', task: taskBrief,
-            startedAt, endedAt: Date.now(), error: '已停止执行' })
+          const cancelTerminal: RunTerminal = { state: 'cancelled', code: 'user-stop' }
+          opts.onJobEvent?.({
+            runId,
+            name: def.name,
+            index,
+            phase: 'error',
+            task: taskBrief,
+            startedAt,
+            endedAt: Date.now(),
+            error: '已停止执行',
+            terminal: cancelTerminal
+          })
           throw err
+        }
+        let terminal: RunTerminal | undefined
+        if (err instanceof AgentRunFailure && err.facts?.terminal) {
+          terminal = err.facts.terminal
+        } else if (err instanceof ProviderError && err.facts?.terminal) {
+          terminal = err.facts.terminal
         }
         const message = err instanceof Error ? err.message : String(err)
         results[index] = {
@@ -162,7 +184,8 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           output: '',
           rounds: 0,
           stopReason: 'error',
-          error: message
+          error: message,
+          ...(terminal ? { terminal } : {})
         }
         opts.onJobEvent?.({
           runId,
@@ -172,7 +195,8 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           task: taskBrief,
           startedAt,
           endedAt: Date.now(),
-          error: message.slice(0, SUMMARY_MAX)
+          error: message.slice(0, SUMMARY_MAX),
+          ...(terminal ? { terminal } : {})
         })
       }
     }

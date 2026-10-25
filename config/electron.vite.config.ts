@@ -37,10 +37,10 @@ const CSP_PROD = [
   "style-src 'self'",
   "style-src-elem 'self' 'unsafe-inline'",
   "style-src-attr 'unsafe-inline'",
-  "img-src 'self' data: blob: https:", // markdown 外链图片（README 常见），仅图片只读
+  "img-src 'self' data: blob: https: jsl-preview:", // 受控资产缩略图；原markdown外链图片口径保留
   "font-src 'self' data:",
   "connect-src 'self'", // 渲染进程零直连网络，全部经 IPC 交主进程（已 grep 确认）
-  "media-src 'self'",
+  "media-src 'self' jsl-preview:",
   "object-src 'none'", // 禁插件（Electron 不需要）
   "base-uri 'self'", // 防 <base> 劫持相对路径
   "form-action 'none'",
@@ -55,9 +55,10 @@ const CSP_DEV = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'", // Fast Refresh 注入内联脚本
   "style-src 'self' 'unsafe-inline'", // vite dev 注入内联样式
-  "img-src 'self' data: blob: https:",
+  "img-src 'self' data: blob: https: jsl-preview:",
   "font-src 'self' data:",
   "connect-src 'self' ws: wss: http://localhost:*", // HMR websocket
+  "media-src 'self' jsl-preview:",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-src 'self' jsl-preview:"

@@ -2,7 +2,7 @@ import { createAgentTaskRegistry } from './agent-task-registry'
 import { contentRevision, fileRevision, FileConflictError } from './file-revision'
 import { ipcMain, dialog, BrowserWindow, shell, clipboard } from 'electron'
 import { z } from 'zod'
-import { isSafeRel, selectChanges } from '@shared/checkpoint'
+import { isSafeRel, normalizeRel, selectChanges } from '@shared/checkpoint'
 import { FONT_SCALE_KEYS, THEME_IDS, UI_FONT_MAX, LOCALE_KEYS } from '@shared/splitter'
 import { revertOneHunk, samePath } from './revert-flow'
 import {
@@ -45,8 +45,12 @@ import {
   type McpServerConfig,
   type McpServerStatus,
   type ComputerUseServerStatus,
-  type SettingsChangedKind
+  type SettingsChangedKind,
+  type ChatErrorDetails
 } from '@shared/ipc'
+import type { RunTerminal } from '@shared/execution-outcome'
+import type { TokenUsage } from '@shared/usage'
+import { AgentRunFailure, ProviderError, isAbortError, mapHttpError } from './providers/errors'
 import { classifyServer } from '@shared/computer-use'
 import { readMcpImageDataUrl, saveMcpImage } from './mcp/artifacts'
 import type { ToolImageRef } from '@shared/agent'
@@ -104,6 +108,7 @@ import {
   modelPatchEntrySchema,
   goalActionSchema,
   goalCreateSchema,
+  localFilesSchema,
   modelSaveSchema,
   mcpServerSchema,
   settingsSchema,
@@ -178,6 +183,7 @@ import type { ExecEventListResult } from '@shared/exec-events'
 import type { SubagentJobEvent } from '@shared/agent'
 import { materializeHistory, mediaCountOf, modalityGateError } from '@shared/content-parts'
 import { readAttachmentMedia } from './attachments-store'
+import { openPreview, releasePreview, readPreview, openPreviewInSystem, ingestDraft, ingestClipboardImage, getAssetBudget, observePreviewOwner, attachmentPreviewPublisher, preparePreviewMessages, commitPreviewMessages } from './preview-assemble'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { getWindow, sendToAll } from './window-registry'
@@ -318,10 +324,20 @@ function friendlyParse<T>(schema: z.ZodType<T>, raw: unknown): T {
 }
 
 function friendlyChatError(err: unknown): string {
-  // ⚠️ 这里**不再有**「请求超时（Xms）：可在设置页调大超时时间」那一档（plan29 D-091）：
-  // 它指向的是一个从不存在的实体 —— 超的从来不是「请求」，而且那个数字已被删除。
-  // 现在超时由 provider 层分型上报（首包 / 流中断），带具体层级的原话，直接透传即可。
-  if (err instanceof Error && err.name === 'AbortError') return '已停止生成'
+  // ⚠️ 取消优先识别（plan29 / E26b）：通过 isAbortError 或结构化 cancelled 状态统一收口为「已停止生成」
+  if (isAbortError(err)) return '已停止生成'
+  if (err instanceof AgentRunFailure) {
+    if (err.facts.terminal.httpStatus !== undefined) {
+      return mapHttpError(err.facts.terminal.httpStatus, err.message)
+    }
+    return err.message
+  }
+  if (err instanceof ProviderError) {
+    if (err.status !== undefined) {
+      return mapHttpError(err.status, err.message)
+    }
+    return err.message
+  }
   return err instanceof Error ? err.message : String(err)
 }
 
@@ -886,7 +902,8 @@ export function registerIpcHandlers(deps: {
         result.avoidedTokens ?? 0,
         result.tokenTier,
         sumInjectionTax(estimateMemoryTokens(memoryBlock), estimatePlaybookTokens(playbookBlock)),
-        result.usageComplete
+        result.usageComplete,
+        result.terminal
       )
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
@@ -895,7 +912,17 @@ export function registerIpcHandlers(deps: {
         model: settings.model,
         error: err instanceof Error ? err.message : String(err)
       })
-      emit.error(friendlyChatError(err))
+      const errorDetails: ChatErrorDetails | undefined =
+        err instanceof AgentRunFailure
+          ? {
+              terminal: err.facts.terminal,
+              usage: err.facts.usage,
+              usageComplete: err.facts.usageComplete,
+              ...(err.facts.avoidedTokens !== undefined ? { avoided: err.facts.avoidedTokens } : {}),
+              ...(err.facts.tokenTier ? { tier: err.facts.tokenTier } : {})
+            }
+          : undefined
+      emit.error(friendlyChatError(err), errorDetails)
     } finally {
       chatGate.end(conversationId)
       // 护栏 2（D-043）：本轮写了什么 —— 取走上报载荷。空手而归则不推（免界面反复闪"没有写入"）
@@ -957,8 +984,9 @@ export function registerIpcHandlers(deps: {
       return { ...failResult(req.agentName ?? '内核默认', error), taskId: task.id }
     }
     let memoryTurn: MemoryTurn | null = null
+    let liveOutput = ''
+    const settings = getSettingsView()
     try {
-      const settings = getSettingsView()
       if (!settings.baseURL || !settings.model) {
         return failTask('尚未配置模型：请先到「设置」页填写接口地址、模型名与 API Key')
       }
@@ -966,7 +994,30 @@ export function registerIpcHandlers(deps: {
       if (!apiKey) {
         return failTask('尚未保存 API Key：请先到「设置」页填写并保存')
       }
-      const begun = beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
+      const owner = req.conversationId ?? AGENT_TASK_OWNER
+      // E30-P2：一次性任务与聊天线同源接执行事件/子代理登记（main scope；子代理由 scheduler 派生 sub）
+      const execEvents = createExecEventRecorder({
+        sink: deps.execEventSink,
+        conversationId: owner,
+        agentScope: 'main',
+        onDropped: (kind, keys) => log.warn('执行事件含白名单外字段，已丢弃', { kind, keys })
+      })
+      const onSubagentEvent = (evt: SubagentJobEvent): void => {
+        const state = subagentsByConversation.get(owner) ?? { runId: null, events: [] }
+        if (state.runId !== evt.runId) {
+          state.runId = evt.runId
+          state.events = []
+        }
+        const idx = state.events.findIndex((x) => x.name === evt.name && x.index === evt.index)
+        const next = state.events.slice()
+        if (idx >= 0) next[idx] = evt
+        else next.push(evt)
+        state.events = next
+        subagentsByConversation.set(owner, state)
+        // 现有公开通道（subagent:changed）同一信封，不新增测试 IPC
+        createChatEmitter(e.sender, owner).subagents(next)
+      }
+      const begun = beginMemoryTurn(owner)
       memoryTurn = begun.scope
       const result = await runAgent(deps.agent, {
         memoryRepo: memoryTurn.repo,
@@ -975,6 +1026,8 @@ export function registerIpcHandlers(deps: {
         history: [{ role: 'user', content: req.task }],
         signal: task.controller.signal,
         agentName: req.agentName,
+        execEvents,
+        onSubagentEvent,
         // 权限档必须与对话线同源（plan51 复查抓出）：漏传 = 恒按可写档跑，
         // 于是只读档用户在这个入口上拿到的是可写档的工具集（而子代理现在按声明装配，
         // 这条路的工具集会随所选 Agent 变化，档位不同源就成了实质越权）
@@ -1009,11 +1062,21 @@ export function registerIpcHandlers(deps: {
         // 一次性任务同样注入技能清单（plan22 D-057）
         skillBlock: assembleSkillBlock(),
         // 一次性任务同样注入规则（plan24）：约束对一次性任务同样生效
-        rulesBlock: assembleRulesBlock()
+        rulesBlock: assembleRulesBlock(),
+        onText: (delta) => {
+          liveOutput += delta
+        }
       })
-      agentTasks.finish(task.id, task.controller.signal.aborted ? 'cancelled' :
-        result.stopReason === 'completed' ? 'completed' : 'failed',
-        result.stopReason === 'max-rounds' ? '已达轮数预算，以下为部分产出' : undefined, result.output)
+      const finalTerminal: RunTerminal | undefined = task.controller.signal.aborted
+        ? { state: 'cancelled', code: 'user-stop' }
+        : result.terminal
+      agentTasks.finish(
+        task.id,
+        task.controller.signal.aborted ? 'cancelled' : result.stopReason === 'completed' ? 'completed' : 'failed',
+        result.stopReason === 'max-rounds' ? '已达轮数预算，以下为部分产出' : undefined,
+        result.output,
+        finalTerminal
+      )
       return {
         taskId: task.id,
         ok: !task.controller.signal.aborted && result.stopReason === 'completed',
@@ -1021,18 +1084,46 @@ export function registerIpcHandlers(deps: {
         rounds: result.rounds,
         stopReason: task.controller.signal.aborted ? 'cancelled' : result.stopReason,
         agent: result.agent,
+        ...(finalTerminal ? { terminal: finalTerminal } : {}),
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        ...(result.usageComplete !== undefined ? { usageComplete: result.usageComplete } : {}),
         ...(result.stopReason === 'max-rounds'
           ? { error: `已达轮数预算上限（${result.rounds} 轮）并强制停止，以下为部分产出` }
           : {})
       }
     } catch (err) {
-      if (task.controller.signal.aborted) {
-        agentTasks.finish(task.id, 'cancelled')
-        return { ...failResult(req.agentName ?? '内核默认', '任务已停止'), taskId: task.id, stopReason: 'cancelled' }
+      log.error('一次性任务执行失败', {
+        task: req.task,
+        model: settings.model,
+        error: err instanceof Error ? err.message : String(err)
+      })
+      let errorTerminal: RunTerminal | undefined
+      let usage: TokenUsage | null | undefined
+      let usageComplete: boolean | undefined
+      if (err instanceof AgentRunFailure) {
+        errorTerminal = err.facts.terminal
+        usage = err.facts.usage
+        usageComplete = err.facts.usageComplete
+      } else if (isAbortError(err) || task.controller.signal.aborted) {
+        errorTerminal = { state: 'cancelled', code: 'user-stop' }
+      } else {
+        errorTerminal = { state: 'failed', code: 'upstream-error' }
       }
-      agentTasks.finish(task.id, 'failed', err instanceof Error ? err.message : '任务执行失败')
-      log.error('Agent 任务失败', { agentName: req.agentName, error: err instanceof Error ? err.message : String(err) })
-        return { ...failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err)), taskId: task.id }
+      agentTasks.finish(
+        task.id,
+        errorTerminal,
+        friendlyChatError(err),
+        liveOutput
+      )
+      return {
+        ...failResult(req.agentName ?? '内核默认', friendlyChatError(err)),
+        taskId: task.id,
+        output: liveOutput,
+        stopReason: task.controller.signal.aborted ? 'cancelled' : 'error',
+        ...(errorTerminal ? { terminal: errorTerminal } : {}),
+        ...(usage !== undefined ? { usage } : {}),
+        ...(usageComplete !== undefined ? { usageComplete } : {})
+      }
     } finally {
       e.sender.removeListener('destroyed', senderClosed)
       // 配置提前退出也必须成为终态。
@@ -1120,10 +1211,12 @@ export function registerIpcHandlers(deps: {
     agentName: z.string().max(64).optional(),
     skills: z.array(z.string().max(64)).max(50).optional(),
     firstMessage: z.string().max(200000).optional(),
-    firstParts: contentPartsSchema.optional()
+    firstParts: contentPartsSchema.optional(),
+    // plan74：首条本地文件引用（并列载体、不出站）—— 带附件的新会话首条也要能预览
+    firstLocalFiles: localFilesSchema.optional()
   })
 
-  ipcMain.handle(IPC.convCreate, (_e, raw: unknown): Conversation => {
+  ipcMain.handle(IPC.convCreate, (e, raw: unknown): Conversation => {
     const input = convCreateInput.parse(raw)
     // 会话工作区必须来自"已被授权过的目录"或当前工作区，防止渲染层随意指定
     const current = getWorkspaceInfo(deps.userDataDir).path
@@ -1132,15 +1225,22 @@ export function registerIpcHandlers(deps: {
     }
     // **绑定"当前端点的当前模型"**（plan7 F5.1）：`modelProfileId` 记端点（用哪条连接 + 哪把 Key）、`modelEntryId` 记目录里的哪一条 —— 渲染端不用关心，它此刻用的就是这一对。
     const active = getActiveEntry()
-    return createConversation({
+    const owner = input.firstLocalFiles?.length ? observePreviewOwner(e.sender) : 0
+    const localFiles = input.firstLocalFiles?.length
+      ? preparePreviewMessages([{ role: 'user', content: input.firstMessage ?? '', messageId: 'initial-draft', localFiles: input.firstLocalFiles }], [], owner)[0].localFiles
+      : undefined
+    const conversation = createConversation({
       ...input,
+      ...(localFiles ? { firstLocalFiles: localFiles } : {}),
       ...(active
         ? { model: active.entry.model, modelProfileId: active.profile.id, modelEntryId: active.entry.id }
         : {})
     })
+    commitPreviewMessages(conversation.messages, owner)
+    return conversation
   })
 
-  const convSaveCore = (raw: unknown): ConversationMeta | null => {
+  const convSaveCore = (raw: unknown, getOwner: () => number): ConversationMeta | null => {
     // **先松收下 → 规整 → 再严格校验**：① 流式占位（`content` 为空）是**合法中间状态**，先收得下来；② 丢掉没内容的消息；③ 落盘前严格把关。
     // ⚠️ 以前是"直接严格 parse"，于是"流式没吐字就切会话/点停止/关窗口"这几条路**保存必然被拒**，而调用方 `void persistActive()` —— 静默、丢数据、无从解释。
     const input = z
@@ -1167,7 +1267,8 @@ export function registerIpcHandlers(deps: {
         agentName: z.string().max(64).optional()
       })
       .parse(raw)
-    const normalized = normalizeHistory(input.messages as ChatMessage[])
+    const owner = input.messages.some(message => message.localFiles?.length) ? getOwner() : 0
+    const normalized = normalizeHistory(preparePreviewMessages(input.messages as ChatMessage[], getConversation(input.id, true)?.messages ?? [], owner))
     // 超预算先丢分段保正文（plan36）；丢完仍超（正文本身超）才让 strict 审整条拒
     const { messages, stripped } = fitStoredBudget(normalized, MAX_STORED_CHARS)
     if (stripped > 0) {
@@ -1204,16 +1305,17 @@ export function registerIpcHandlers(deps: {
       bodyBytes
     })
     // 智能标题（plan26 D-080）：首答刚落盘时触发一次（条件收在 maybeGenerateSmartTitle 内部）
+    if (savedMeta) commitPreviewMessages(parsed.data as ChatMessage[], owner)
     if (savedMeta && parsed.data.length === 2 && parsed.data.some((m) => m.role === 'assistant')) {
       maybeGenerateSmartTitle(input.id)
     }
     return savedMeta
   }
   // 看门狗标记（plan37 S0）：会话保存是同步 fs 链；回存前值而非硬写 idle（单槽坑，见 watchdog.ts）
-  ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {
+  ipcMain.handle(IPC.convSave, (e, raw: unknown): ConversationMeta | null => {
     const prevPhase = setWatchdogPhase('conversation:save')
     try {
-      return convSaveCore(raw)
+      return convSaveCore(raw, () => observePreviewOwner(e.sender))
     } finally {
       setWatchdogPhase(prevPhase)
     }
@@ -2042,15 +2144,19 @@ export function registerIpcHandlers(deps: {
     }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     if (res.canceled || res.filePaths.length === 0) return null
-    return readAttachment(ws, res.filePaths[0]!, deps.userDataDir)
+    return readAttachment(ws, res.filePaths[0]!, deps.userDataDir, getAssetBudget(), attachmentPreviewPublisher(e.sender))
   })
 
   // 拖拽进来的文件：相对路径来自工作区文件树（必须在工作区内），绝对路径来自系统资源管理器（明确拖入即放行）；边界规则与理由集中在 `workspace-fs.readAttachment`，这里只管留痕。
-  ipcMain.handle(IPC.attachPath, async (_e, raw: unknown): Promise<Attachment> => {
+  ipcMain.handle(IPC.attachPath, async (e, raw: unknown): Promise<Attachment> => {
+    if (typeof raw !== 'string') {
+      const input = z.object({ kind: z.literal('clipboard-image'), bytes: z.custom<Uint8Array>(value => value instanceof Uint8Array && value.byteLength > 0 && value.byteLength <= 50 * 1024 * 1024) }).strict().parse(raw)
+      return ingestClipboardImage(input.bytes, e.sender)
+    }
     const pathOrRel = z.string().min(1).max(4096).parse(raw)
     const ws = getWorkspaceInfo(deps.userDataDir).path
     try {
-      return await readAttachment(ws, pathOrRel, deps.userDataDir)
+      return readAttachment(ws, pathOrRel, deps.userDataDir, getAssetBudget(), attachmentPreviewPublisher(e.sender))
     } catch (err) {
       // **留痕**：附件被拒以前是静默的 —— 界面上看到一句"越界"、日志里什么都没有，事后只能靠猜。带上载荷与边界就够定位了。
       log.warn('附件被拒', {
@@ -2237,6 +2343,14 @@ export function registerIpcHandlers(deps: {
         input.rel,
         pre.failed.map((f) => f.rel)
       )
+      // 逐目标具体原因补回报告：rollback 的 exclude 只收 rel 列表，原因在 pre.failed 里（见交还说明）
+      if (pre.failed.length > 0) {
+        const reasonOf = new Map(pre.failed.map((f) => [normalizeRel(f.rel), f.reason]))
+        for (const item of report.failed) {
+          const specific = reasonOf.get(normalizeRel(item.rel))
+          if (specific) item.reason = `${specific}（已保留原样，未恢复）`
+        }
+      }
       log.info('执行回滚', {
         runId: input.runId,
         target: input.rel ?? '（整轮）',
@@ -2340,6 +2454,33 @@ export function registerIpcHandlers(deps: {
     const rel = z.string().min(1).max(1024).parse(raw)
     return renderOfficePreview(deps.agent.getWorkspaceRoot(), rel)
   })
+
+  // ── 对话内文件预览（plan74）：Gateway 统一只读加载缝 ──
+  // 入参 zod 校验（不信渲染端）；open 交 Gateway 裁定，ingest 先落资产副本。
+  const previewOpenInput = z.object({
+    source: z.enum(['history', 'artifact', 'draft']),
+    conversationId: z.string().min(1).max(64).optional(),
+    messageId: z.string().min(1).max(64).optional(),
+    draftId: z.string().min(1).max(128).optional(),
+    assetId: z.string().min(1).max(128).optional(),
+    workspaceRel: z.string().min(1).max(1024).optional(),
+    name: z.string().min(1).max(1024),
+    mime: z.string().min(1).max(255),
+    bytes: z.number().nonnegative().optional()
+  })
+  const previewIngestInput = z.object({
+    sourceAbs: z.string().min(1).max(4096),
+    name: z.string().min(1).max(1024),
+    mime: z.string().min(1).max(255),
+    draftId: z.string().min(1).max(128)
+  })
+  ipcMain.handle(IPC.previewOpen, (e, raw: unknown) => openPreview(previewOpenInput.parse(raw), observePreviewOwner(e.sender)))
+  ipcMain.handle(IPC.previewRelease, (e, raw: unknown) => {
+    const handleId = z.string().min(1).max(128).parse(raw)
+    releasePreview(handleId, observePreviewOwner(e.sender))
+  })
+  ipcMain.handle(IPC.previewRead, (e, raw: unknown) => readPreview(z.string().min(1).max(128).parse(raw), observePreviewOwner(e.sender)))
+  ipcMain.handle(IPC.previewIngestDraft, (e, raw: unknown) => ingestDraft(previewIngestInput.parse(raw), observePreviewOwner(e.sender)))
 
   // 工作区写操作（plan7 批 A2）：① 全部走**统一写入服务**（界面与 Agent 同一条写入路径）；② 每个操作**各开一个检查点轮次**，于是界面里删掉/改掉的东西同样出现在「文件变更记录」里、同样退得回；③ 删除走回收站，不是硬删。
   const fsWriteInput = z.object({
@@ -2583,7 +2724,11 @@ export function registerIpcHandlers(deps: {
 
   // 用系统默认程序打开（pptx 等不支持内嵌预览的格式的出口）。与 fsReveal 同一条边界：
   // 只开工作区内（resolveInsideWorkspace，含符号链接防逃逸），越界一律拒绝。
-  ipcMain.handle(IPC.fsOpenInSystem, async (_e, raw: unknown): Promise<FsOpenResult> => {
+  ipcMain.handle(IPC.fsOpenInSystem, async (e, raw: unknown, rawHandle?: unknown): Promise<FsOpenResult> => {
+    if (rawHandle !== undefined) {
+      const id = z.string().regex(/^[a-f0-9]{32}$/).safeParse(rawHandle)
+      return id.success ? openPreviewInSystem(id.data, observePreviewOwner(e.sender)) : { ok: false, error: '预览身份不合法' }
+    }
     const p = fsRelInput.safeParse(raw)
     if (!p.success) return { ok: false, error: '路径不合法' }
     const abs = resolveInsideWorkspace(deps.agent.getWorkspaceRoot(), p.data.rel)

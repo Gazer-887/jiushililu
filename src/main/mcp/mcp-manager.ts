@@ -9,6 +9,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { ToolResultState, OutcomeCode } from '@shared/execution-outcome'
 import type {
   McpSaveResult,
   McpServerConfig,
@@ -86,6 +87,8 @@ export interface McpImagePart {
 export interface McpCallResult {
   text: string
   images: McpImagePart[]
+  outcome?: ToolResultState
+  code?: OutcomeCode
 }
 
 export interface McpManager {
@@ -320,16 +323,43 @@ export function createMcpManager(deps: {
     },
 
     async callTool(server, tool, args): Promise<McpCallResult> {
-      if (closing) return { text: 'MCP 正在关闭，未执行工具', images: [] }
+      if (closing) {
+        return {
+          text: '错误：MCP 正在关闭，未执行工具',
+          images: [],
+          outcome: 'failed',
+          code: 'tool-error'
+        }
+      }
       const client = clients.get(server)
-      if (!client) return { text: `MCP 服务器「${server}」未连接，无法调用 ${tool}。`, images: [] }
+      if (!client) {
+        return {
+          text: `错误：MCP 服务器「${server}」未连接，无法调用 ${tool}。`,
+          images: [],
+          outcome: 'failed',
+          code: 'tool-error'
+        }
+      }
       try {
         const result = await client.callTool({ name: tool, arguments: args })
         const { text, images } = contentToParts(result.content)
+        const isError = result.isError === true
+        const outcome: ToolResultState = isError ? 'failed' : 'succeeded'
+        const code: OutcomeCode | undefined = isError ? 'tool-error' : undefined
         // D-066：isError 以人话返回（不抛异常）—— 让模型看到错误并自纠
-        return { text: result.isError ? `MCP 工具返回错误：${text}` : text, images }
+        return {
+          text: isError ? `错误：MCP 工具返回错误：${text}` : text,
+          images,
+          outcome,
+          ...(code ? { code } : {})
+        }
       } catch (e) {
-        return { text: `MCP 调用失败（${server}/${tool}）：${errText(e)}`, images: [] }
+        return {
+          text: `错误：MCP 调用失败（${server}/${tool}）：${errText(e)}`,
+          images: [],
+          outcome: 'unknown',
+          code: 'tool-error'
+        }
       }
     },
 

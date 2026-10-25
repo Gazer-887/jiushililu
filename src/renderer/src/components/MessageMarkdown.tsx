@@ -18,12 +18,13 @@ import remarkGfm from 'remark-gfm'
 const CACHE_MAX = 80
 const parseCache = new Map<string, JSX.Element>()
 
-function MessageMarkdownImpl({ content }: { content: string }): JSX.Element {
-  const hit = parseCache.get(content)
+function MessageMarkdownImpl({ content, readonlyPreview = false }: { content: string; readonlyPreview?: boolean }): JSX.Element {
+  const cacheKey = `${readonlyPreview ? 'local' : 'message'}\u0000${content}`
+  const hit = parseCache.get(cacheKey)
   if (hit) {
     // 触碰即续期（Map 迭代序 = 插入序，删了重插 = LRU）
-    parseCache.delete(content)
-    parseCache.set(content, hit)
+    parseCache.delete(cacheKey)
+    parseCache.set(cacheKey, hit)
     return hit
   }
   const el = (
@@ -47,13 +48,15 @@ function MessageMarkdownImpl({ content }: { content: string }): JSX.Element {
             )
           },
           a({ href, children }) {
+            if (readonlyPreview) return <span title="本地预览不自动打开外部链接">{children}</span>
             // 外链交给系统浏览器打开由主进程处理；此处仅标注，避免应用内跳转丢上下文
             return (
               <a href={href} target="_blank" rel="noreferrer noopener">
                 {children}
               </a>
             )
-          }
+          },
+          ...(readonlyPreview ? { img: ({ alt }: { alt?: string }) => <span className="fp-md-image-disabled">[图片未加载：{alt ?? '图片'}]</span> } : {})
         }}
       >
         {content}
@@ -64,7 +67,7 @@ function MessageMarkdownImpl({ content }: { content: string }): JSX.Element {
     const oldest = parseCache.keys().next().value
     if (oldest !== undefined) parseCache.delete(oldest)
   }
-  parseCache.set(content, el)
+  parseCache.set(cacheKey, el)
   return el
 }
 

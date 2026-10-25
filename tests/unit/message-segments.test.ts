@@ -4,12 +4,13 @@ import type { ToolEvent } from '@shared/agent'
 import {
   appendSegmentText,
   appendSegmentThinking,
-  applyAssistantChunk,
-  applyAssistantThinking,
   applyAssistantTool,
   textFromSegments,
   upsertSegmentTool
 } from '@shared/message-segments'
+import type { ExecEvent } from '@shared/exec-events'
+// E29：run_end 摘要判定必须来自真实 TimelinePanel 导出，禁止复制实现给测试
+import { runEndSummary } from '../../src/renderer/src/components/TimelinePanel'
 
 // plan36 S2：分段构建的纯函数回归 + store 流式顺序回归（交错序列是卖点本体，此前零覆盖）。
 
@@ -59,6 +60,51 @@ describe('message-segments 纯函数', () => {
   })
 })
 
+// ── E29：run_end 时间线摘要按 terminal 显示，旧事件不推断成功 ───────────────────
+// 判据：真实终态合同 §四「TimelinePanel 消费真实状态；旧事件无新字段不推断肯定成功」。
+// terminal 优先于 stopReason：二者并存时取 terminal（stopReason 只是旧摘要残料）；
+// 文本含 error/success 的运行不得反转 —— 不看正文、不猜状态。
+
+describe('E29 run_end 时间线摘要（runEndSummary 纯函数）', () => {
+  const base: Omit<ExecEvent, 'kind' | 'at' | 'conversationId' | 'agentScope'> = {
+    rounds: 2,
+    durationMs: 1500
+  }
+  const runEnd = (extra: Record<string, unknown>): ExecEvent =>
+    ({ ...base, ...extra, kind: 'run_end', at: '', conversationId: 'A', agentScope: 'main' }) as ExecEvent
+
+  it('六类 terminal 显示准确文字：完成/失败/已取消/已拒绝/未确认/已截断', () => {
+    expect(runEndSummary(runEnd({ terminal: { state: 'completed' } }))).toContain('已完成')
+    expect(runEndSummary(runEnd({ terminal: { state: 'failed' } }))).toContain('失败')
+    expect(runEndSummary(runEnd({ terminal: { state: 'cancelled' } }))).toContain('已取消')
+    expect(runEndSummary(runEnd({ terminal: { state: 'denied' } }))).toContain('已拒绝')
+    expect(runEndSummary(runEnd({ terminal: { state: 'unknown' } }))).toContain('未确认')
+    expect(runEndSummary(runEnd({ terminal: { state: 'truncated' } }))).toContain('已截断')
+  })
+
+  it('max-rounds 不显示为成功（预算耗尽 ≠ 完成）', () => {
+    const s = runEndSummary(runEnd({ terminal: { state: 'max-rounds', code: 'token-limit' } }))
+    expect(s).toContain('轮次耗尽')
+    expect(s).not.toContain('已完成')
+  })
+
+  it('terminal 优先：与 completed 的 stopReason 并存时按 terminal 显示，文本含 error/success 不反转', () => {
+    // 运行正文含 error/success 字样不影响判定：结构事实优先于文本
+    expect(runEndSummary(runEnd({ stopReason: 'completed' }))).not.toContain('已完成')
+    expect(runEndSummary(runEnd({ stopReason: 'completed', terminal: { state: 'cancelled' } }))).toContain('已取消')
+    expect(
+      runEndSummary(runEnd({ stopReason: 'completed', terminal: { state: 'failed', code: 'http-error' } }))
+    ).toContain('失败')
+  })
+
+  it('旧事件无 terminal 保持旧摘要（stopReason 原文），无 stopReason 显示中断，绝不推断成功', () => {
+    expect(runEndSummary(runEnd({ stopReason: 'max-rounds' }))).toContain('max-rounds')
+    expect(runEndSummary(runEnd({}))).toContain('中断')
+    expect(runEndSummary(runEnd({}))).not.toContain('已完成')
+    expect(runEndSummary(runEnd({}))).not.toContain('成功')
+  })
+})
+
 // ── store 流式路径：交错顺序必须长在消息上 ──────────────────────────────
 
 const saved: { id: string; messages: ChatMessage[] }[] = []
@@ -94,7 +140,7 @@ const fakeApi = {
 }
 vi.stubGlobal('window', { api: fakeApi })
 
-// eslint-disable-next-line import/first -- 先立假桥再引 store（与 conversation-routing 同法）
+// 先立假桥再引 store（与 conversation-routing 同法）
 import { useAppStore } from '../../src/renderer/src/store'
 
 const tail = (): ChatMessage => {

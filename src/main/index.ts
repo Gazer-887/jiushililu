@@ -83,6 +83,7 @@ import {
   getSkillsDisabled
 } from './store/settings'
 import { installPreviewProtocol, registerPreviewScheme } from './preview-protocol'
+import { previewHandles, seedBudgetFromDisk } from './preview-assemble'
 import { createChatEmitter } from './chat-emitter'
 import { isExternallyOpenable, isInternalUrl } from './url-guard'
 // 窗口登记制（2026-09-13）：取代散落各处的 `getAllWindows()[0]` —— 多窗口后那个前提不再成立
@@ -138,6 +139,7 @@ if (!gotTheLock) {
 
 // HTML 预览协议：**必须赶在 ready 之前**注册（迟了就只是个普通死链）
 registerPreviewScheme()
+// 资产预览协议（plan74）与 doc/mem 共用同一 scheme，已在 registerPreviewScheme 一并注册 stream 权限
 
 /** 提问归属哨兵：`AskRequest.conversationId` 是可选字段（桥是通用的），但**绝不留空** ——
  *  空值查不出"这条问题是谁问的"（同 `ipc.ts` 的 `UI_RUN_OWNER` 口径）。 */
@@ -876,7 +878,10 @@ app.whenReady().then(async () => {
     }
   })
   // HTML 沙箱预览：`jsl-preview://doc/<相对路径>` → 工作区文件，带断脚本/断网响应头（真源见 src/shared/html-preview.ts）
-  installPreviewProtocol(() => agentCtx.getWorkspaceRoot())
+  // 同一 scheme 唯一处理器：内部按 host 分发 doc/mem/asset —— 曾分两处安装导致真实 Electron 主窗口创建前抛错（Spec R1）
+  installPreviewProtocol(() => agentCtx.getWorkspaceRoot(), previewHandles())
+  // 启动时把已落盘预览资产计入预算占用（未知旧资产保守保留）
+  seedBudgetFromDisk()
   createWindow()
 
   // 内置浏览器：真 Chromium 视图，用户与 Agent 共用同一实例

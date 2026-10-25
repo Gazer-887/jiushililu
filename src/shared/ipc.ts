@@ -5,6 +5,7 @@ import type { TodoItem } from './todo'
 import type { Goal } from './goal'
 import type { TokenUsage } from './usage'
 import type { TokenSaverTier } from './token-tier'
+import type { RunTerminal } from './execution-outcome'
 import type { SubagentJobEvent, MessageSegment } from './agent'
 import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult, FsOpenResult } from './fs-tree'
@@ -13,6 +14,7 @@ import type { AskRequest, AskResult } from './ask'
 import type { SystemSettings, SystemView } from './system'
 import type { NetworkPatch, NetworkView } from './network'
 import type { ContentPart, ImageRef, InputModality, VideoRef } from './content-parts'
+import type { LocalFileRef } from './conversation-preview'
 import type { SystemFontsResult } from './font-names'
 import type { GitChange } from './git-status'
 
@@ -155,6 +157,23 @@ export interface ChatMessage {
    * 渲染层据此决定是否显示时间戳（无则不显示，不编造）。与 segments 同理属本地渲染资产，**不发给模型**。
    */
   createdAt?: number
+  /**
+   * 本地预览文件引用（plan74 执行补充 4.1）：用户这条消息附带的、**仅本地查看**的文件。
+   *
+   * ⚠️ 与 `parts` 物理分离但**引用同一份字节资产**：图片/视频的 localFiles 与 parts 指向同一 assetId，
+   * 不复制两份内容。parts 描述"发给模型"，localFiles 描述"本地怎么看"——音频/PDF/Office 只在
+   * localFiles，**不进 parts、不出站**（模型出站是显式白名单，见 conversation-preview-outbound 测试）。
+   *
+   * 旧存档没有该字段 → 原样兼容，不批量搬迁、不从已变原文件伪造快照。
+   */
+  localFiles?: LocalFileRef[]
+  /**
+   * 稳定消息身份（plan74 4.1）：预览引用需要知道"这条消息是谁"。旧存档缺失时可生成稳定本地身份，
+   * 但不搬历史内容、不伪造快照。
+   */
+  messageId?: string
+  /** E26b：本地执行终态（仅本地 assistant 记录，不发给模型） */
+  terminal?: RunTerminal
 }
 
 export interface TestResult {
@@ -225,7 +244,16 @@ export interface Attachment {
   image?: ImageRef
   /** 视频附件（plan57 片⑤ / K54）：与图片同构，只是 MIME 与上限不同；同样只带引用 */
   video?: VideoRef
+  /**
+   * 本地预览身份（plan74）：非媒体文件（PDF/音频/Office/文本）已摄取到资产库，
+   * 这里带 assetId + digest。发送前即可预览，发送时该身份进消息的 localFiles。
+   * ⚠️ 与 image/video 不同：这只服务**本地查看**，不出站给模型。
+   */
+  preview?: { assetId: string; digest: string; mime: string; draftId?: string }
 }
+
+/** 用户主动粘贴的图片字节；不携带任意磁盘路径或客户端MIME授权。 */
+export interface ClipboardImageInput { kind: 'clipboard-image'; bytes: Uint8Array }
 
 export interface GitInfo {
   branch: string
@@ -328,6 +356,8 @@ export interface AgentTaskStatus {
   endedAt?: number
   error?: string
   output?: string
+  /** E26b：任务细终态（可选，旧数据无则不补造） */
+  terminal?: RunTerminal
 }
 
 export interface AgentRunResult {
@@ -339,6 +369,12 @@ export interface AgentRunResult {
   stopReason: 'completed' | 'max-rounds' | 'error' | 'cancelled'
   agent: string
   error?: string
+  /** E26b：真实运行终态（结构化分类） */
+  terminal?: RunTerminal
+  /** E26b：本轮整笔真实用量（null = 厂商未报） */
+  usage?: TokenUsage | null
+  /** E26b：用量报告是否完整 */
+  usageComplete?: boolean
 }
 
 
@@ -413,6 +449,8 @@ export interface ConversationCreateInput {
   firstMessage?: string
   /** 首条消息的图片引用（plan57 片③）：与 `firstMessage` 同源，纯文本时不带 */
   firstParts?: ContentPart[]
+  /** plan74：首条消息的本地文件引用（并列载体、不出站）—— 带附件的新会话首条也要能预览 */
+  firstLocalFiles?: LocalFileRef[]
 }
 
 export interface SkillInfo {
@@ -774,6 +812,15 @@ export const IPC = {
   officePreview: 'office:preview',
   /** 用系统默认程序打开工作区内的文件（pptx 等不支持内嵌的格式的出口；shell.openPath） */
   fsOpenInSystem: 'fs:open-in-system',
+  // ── 对话内文件预览（plan74）：Gateway 统一只读加载缝 ──
+  // 打开一个预览引用（history/artifact/draft）→ 主进程裁定来源与能力 → 签发会话绑定句柄。
+  previewOpen: 'preview:open',
+  // 释放预览句柄（幂等）。切会话/关窗口时撤销临时读取能力，不误删持久资产。
+  previewRelease: 'preview:release',
+  /** 可信宿主PDF绘制读取：只认本窗口签发的句柄，不接受文件路径。 */
+  previewRead: 'preview:read',
+  // 发送前摄取外部文件到资产库（工作区外显式导入）：先落受限副本拿 assetId 再预览。
+  previewIngestDraft: 'preview:ingest-draft',
   // ── 工作区写操作（plan7 批 A2）：全部走统一写入服务 + 各开一个检查点轮次 ──
   fsWrite: 'fs:write',
   fsMkdir: 'fs:mkdir',
@@ -873,6 +920,41 @@ export interface ChatDonePayload {
   tier?: TokenSaverTier
   /** **注入税**（plan19 §5.2）：本轮记忆段占掉的**本地估算** token。缺/为 0 = 没有记忆段 → 界面**不显示**，不显示 0。 */
   memoryTokens?: number
+  /** E26a：本轮业务终态。缺字段 = 老主进程，不替它编成功/失败。 */
+  terminal?: RunTerminal
+}
+
+/** E26a：错误结算的可选细节。缺省时仍走旧字符串路径，保证旧调用与旧消费者不变。 */
+export interface ChatErrorDetails {
+  terminal: RunTerminal
+  usage: TokenUsage | null
+  usageComplete: boolean
+  /** 有真实已观测值才带；未知不造 0。 */
+  avoided?: number
+  /** 同上：未知不造默认档。 */
+  tier?: TokenSaverTier
+  memoryTokens?: number
+}
+
+/** E26a：结构化错误封套（沿补正 V2 §三）。`message` 只放固定本地映射，不放厂商正文/cause。 */
+export interface ChatErrorPayload extends ChatDonePayload {
+  message: string
+  terminal: RunTerminal
+  usageComplete: boolean
+}
+
+/**
+ * E26a：把新旧错误载荷归一成界面可显示的一句话。
+ * 旧主进程发 string、新主进程发 `ChatErrorPayload`；两者都保留 `conversationId`（由信封负责）。
+ * 坏输入回固定本地文案，不把对象序列化/厂商正文漏到界面。
+ */
+export function chatErrorMessage(payload: unknown): string {
+  if (typeof payload === 'string') return payload
+  if (payload && typeof payload === 'object') {
+    const message = (payload as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return '对话执行失败'
 }
 
 export interface StreamEnvelope<T> {
@@ -975,7 +1057,8 @@ export interface ApiBridge {
   onChatChunk(cb: (e: StreamEnvelope<string>) => void): () => void
   onChatReasoning(cb: (e: StreamEnvelope<string>) => void): () => void
   onChatDone(cb: (e: StreamEnvelope<ChatDonePayload>) => void): () => void
-  onChatError(cb: (e: StreamEnvelope<string>) => void): () => void
+  /** E26a-R1：旧主进程发 string、新主进程发 ChatErrorPayload；桥接原样透传，由渲染端按需归一文案。 */
+  onChatError(cb: (e: StreamEnvelope<string | ChatErrorPayload>) => void): () => void
   onChatTool(cb: (e: StreamEnvelope<import('./agent').ToolEvent>) => void): () => void
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
   listAgentTasks(): Promise<AgentTaskStatus[]>
@@ -1146,7 +1229,7 @@ export interface ApiBridge {
   /** 选文件入附件；`kind:'image'` 只影响选择框的过滤提示（真闸在主进程 readAttachment：mime / 5MB / 每轮 8 张） */
   attachFile(kind?: 'image'): Promise<Attachment | null>
   /** 按路径取附件 —— 与 `attachFile` **共用同一份读取与边界规则**（只差"路径从哪来"）。 */
-  attachPath(pathOrRel: string): Promise<Attachment>
+  attachPath(pathOrRel: string | ClipboardImageInput): Promise<Attachment>
   polishPrompt(text: string): Promise<string>
   getBrowserState(): Promise<BrowserState>
   browserNavigate(url: string): Promise<BrowserState>
@@ -1209,7 +1292,16 @@ export interface ApiBridge {
    *  渲染端只许用 `<iframe sandbox="">` 加载 —— HTML 是用户文件内容，不许进主文档。 */
   previewOffice(rel: string): Promise<FsOfficeResult>
   /** 用系统默认程序打开工作区内的文件（pptx 等不支持内嵌预览的格式的出口） */
-  openWorkspacePathInSystem(rel: string): Promise<FsOpenResult>
+  openWorkspacePathInSystem(rel: string, previewHandleId?: string): Promise<FsOpenResult>
+  // ── 对话内文件预览（plan74）：Gateway 统一只读加载缝 ──
+  /** 打开一个预览引用（history=已发快照 / artifact=Agent 当前产物 / draft=发送前草稿）。
+   *  主进程裁定来源与能力，成功返回会话绑定句柄 + 预览 URL；失败返回受限错误码。 */
+  previewOpen(req: import('./preview-ipc-types').PreviewOpenInput): Promise<import('./preview-ipc-types').PreviewOpenOutput>
+  /** 释放预览句柄（幂等）。切会话/关窗口时撤销临时读取能力，不误删持久资产。 */
+  previewRelease(handleId: string): Promise<void>
+  previewRead(handleId: string): Promise<Uint8Array>
+  /** 发送前摄取外部文件到资产库（工作区外显式导入）：先落受限副本拿 assetId 再预览。 */
+  previewIngestDraft(input: import('./preview-ipc-types').PreviewIngestInput): Promise<import('./preview-ipc-types').PreviewIngestOutput>
   // ── 工作区写操作（plan7 批 A2）──
   writeWorkspaceFile(rel: string, content: string, expectedMtimeMs?: number, expectedRevision?: string): Promise<FsOpResult>
   createWorkspaceDir(rel: string): Promise<FsOpResult>

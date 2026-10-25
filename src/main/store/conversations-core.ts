@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import {
   addUsage,
   emptyUsage,
@@ -53,7 +53,7 @@ export interface ConversationsBackend {
 
 export interface ConversationsRepo {
   listConversations(): ConversationMeta[]
-  getConversation(id: string): Conversation | null
+  getConversation(id: string, includeHidden?: boolean): Conversation | null
   createConversation(input: ConversationCreateInput): Conversation
   /**
    * 保存消息体。第三个参数是**可选统计**（plan8 R9 用量 / R9.1 省下的量）：给了就更新，不给就**保持原值** ——
@@ -119,7 +119,9 @@ export interface RollbackOutcome {
  */
 export function normalizeHistory(messages: ChatMessage[]): ChatMessage[] {
   return messages.filter(
-    (m) => m.content.trim().length > 0 || (m.role === 'assistant' && (m.segments?.length ?? 0) > 0)
+    (m) =>
+      m.content.trim().length > 0 ||
+      (m.role === 'assistant' && ((m.segments?.length ?? 0) > 0 || !!m.terminal))
   )
 }
 
@@ -140,7 +142,12 @@ export function fitStoredBudget<T extends ChatMessage>(messages: T[], maxChars: 
   const out = messages.map((m) => ({ ...m }))
   for (let i = 0; i < out.length && size(out) > maxChars; i++) {
     if (out[i].segments && out[i].content.trim().length > 0) {
-      delete out[i].segments
+      // 思考/过程详情可降级；已展示的成功文件引用不是可清过程缓存。
+      const files = out[i].segments!.flatMap(segment => segment.kind === 'tool' && segment.event.phase === 'end' && segment.event.artifactPaths?.length
+        ? [{ kind: 'tool' as const, event: { id: segment.event.id, name: segment.event.name, phase: 'end' as const, artifactPaths: segment.event.artifactPaths } }]
+        : [])
+      if (files.length) out[i].segments = files
+      else delete out[i].segments
       stripped++
     }
   }
@@ -216,10 +223,18 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
     },
 
     /** 取一条：meta + **可见**正文（游标之后的部分是"被回滚掉的尾巴"，不给界面） */
-    getConversation(id) {
+    getConversation(id, includeHidden = false) {
       const meta = backend.readMeta()[id]
       if (!meta) return null
-      return { ...meta, messages: visibleOf(meta, backend.readMessages(id)) }
+      const log = backend.readMessages(id)
+      // 仅宿主预览/编辑重发查原始消息身份；普通界面/模型仍只拿游标内历史。
+      const messages = (includeHidden ? log : visibleOf(meta, log)).map((message, index) => {
+        if (message.messageId || (!message.localFiles?.length && !message.parts?.some(part => part.type !== 'text'))) return message
+        // 旧存档只读兼容：赋稳定视图身份，不为预览重写用户历史或丢媒体。
+        const digest = createHash('sha256').update(`${id}\u0000${index}\u0000${message.role}\u0000${message.content}`).digest('hex').slice(0, 24)
+        return { ...message, messageId: `legacy-${digest}` }
+      })
+      return { ...meta, messages }
     },
 
     createConversation(input) {
@@ -229,7 +244,13 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
             {
               role: 'user',
               content: input.firstMessage.trim(),
-              ...(input.firstParts ? { parts: input.firstParts } : {})
+              // plan74：首条消息身份（本地引用/产物卡的稳定锚）
+              messageId: `u-${now}-${Math.random().toString(36).slice(2, 8)}`,
+              ...(input.firstParts ? { parts: input.firstParts } : {}),
+              // plan74：本地文件引用（并列载体、不出站）—— 首条带附件时随会话持久化
+              ...(input.firstLocalFiles && input.firstLocalFiles.length > 0
+                ? { localFiles: input.firstLocalFiles }
+                : {})
             }
           ]
         : []

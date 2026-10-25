@@ -6,11 +6,12 @@ import { usageFromOpenAIChunk } from './usage-parsers'
 import { effortToSend, openaiReasoningFields } from '@shared/reasoning'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
+import { attachmentTextForModel } from '@shared/attachment-block'
 
 // 纯函数：构造请求体（单元测试覆盖）
 /** 只留协议字段：`parts` / `segments` / `createdAt` 是我们的扩展，漏一个给严格端点就是一个未知的 400 */
 function toChatWireMessage(m: ChatMessage): { role: ChatMessage['role']; content: string } {
-  return { role: m.role, content: m.content }
+  return { role: m.role, content: m.role === 'user' ? attachmentTextForModel(m.content) : m.content }
 }
 
 export function buildOpenAIChatBody(

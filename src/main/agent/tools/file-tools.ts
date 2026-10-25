@@ -3,9 +3,11 @@ import { AgentPauseError } from '../pause-error'
 import { readFile } from 'node:fs/promises'
 import type { AgentTool } from '@shared/agent'
 import { estimateTokens } from '@shared/tokens'
-import { resolvePathInWorkspace } from '../guard'
+import { inspectPathInWorkspace } from '../guard'
 import type { WorkspaceWriter } from '../../workspace-write'
 import type { TokenPolicy } from '@shared/token-tier'
+import { relative } from 'node:path'
+import { toolArtifactPaths } from '@shared/tool-detail'
 
 // 内置工具第一批（plan6）：文件读写。两条硬边界：① 路径必须落在 workspaceRoot 内（防逃逸）
 // ② 读取按**行窗口**给而非全文（防撑爆上下文）。
@@ -214,10 +216,25 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
    * 档位 → writer 只有一条路径（`runner.ts`），少一条重复的判断就少一处漂移。
    */
   const revisions = new Map<string, string>()
-  const locate = (rel: string): { abs: string; note: string } | null => {
-    const r = resolvePathInWorkspace(writer.root, rel, { allowOutside: writer.allowsOutside })
-    if (!r) return null
-    return { abs: r.abs, note: r.outside ? `【工作区外：${r.abs}】\n` : '' }
+  const produced = new WeakMap<Record<string, unknown>, string[]>()
+  const recordProduced = (args: Record<string, unknown>, abs: string): void => {
+    const paths = toolArtifactPaths('write_file', JSON.stringify({ path: relative(writer.root, abs).replace(/\\/g, '/') }))
+    if (paths.length) produced.set(args, paths)
+  }
+  const takeProducedFiles = (args: Record<string, unknown>): string[] => {
+    const paths = produced.get(args) ?? []
+    produced.delete(args)
+    return paths
+  }
+
+  /** 解析绝对路径 + 越界提示 + 失败分类；策略来自 writer，不在这里重算档位。 */
+  const locate = (rel: string, verb: string): { abs: string; note: string } | { error: string } => {
+    const r = inspectPathInWorkspace(writer.root, rel, { allowOutside: writer.allowsOutside })
+    if (r.ok) return { abs: r.abs, note: r.outside ? `【工作区外：${r.abs}】\n` : '' }
+    if (r.reason === 'unresolvable') {
+      return { error: `错误：路径「${rel}」无法确认真实位置（权限或文件系统解析失败），拒绝${verb}` }
+    }
+    return { error: `错误：路径「${rel}」越出工作区边界，拒绝${verb}` }
   }
 
   /** 档位说明（与 system-tools 同口径）：既然完全访问档没有边界，就别让模型还按"我只能看工作区"猜 */
@@ -243,12 +260,12 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
     },
     async execute(args) {
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
-      const located = locate(rel)
-      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝读取`
+      const located = locate(rel, '读取')
+      if ('error' in located) return located.error
       const { abs, note } = located
       try {
         const buf = await readFile(abs)
-        revisions.set(abs, contentRevision(buf))
+        // 资格只在这次读取被接受时提交；被拒的读取不得留下覆盖资格（见交还说明）
         if (buf.byteLength > MAX_READ_BYTES) {
           return `错误：文件超过 ${Math.round(MAX_READ_BYTES / 1024 / 1024)}MB，读取被拒绝`
         }
@@ -299,6 +316,8 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         const clipNote =
           clipped.length > 0 ? `\n（其中第 ${clipped.join('、')} 行**超长已掐断**，如需完整内容请针对性读取）` : ''
 
+        // 读取被接受后才提交内容版本资格
+        revisions.set(abs, contentRevision(buf))
         return `${note}${body}${footer}${clipNote}`
       } catch (err) {
         if (err instanceof AgentPauseError) throw err
@@ -308,6 +327,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
   }
 
   const write_file: AgentTool = {
+    takeProducedFiles,
     schema: {
       name: 'write_file',
       description: '把文本内容写入工作区内的一个文件（覆盖式写入，路径不存在会自动创建）' + scopeHint,
@@ -321,16 +341,18 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       }
     },
     async execute(args) {
+      produced.delete(args)
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
       const content = typeof args['content'] === 'string' ? args['content'] : null
       if (content === null) return '错误：缺少 content 参数'
-      const located = locate(rel)
-      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝写入`
+      const located = locate(rel, '写入')
+      if ('error' in located) return located.error
       try {
         const baseline = revisions.get(located.abs) ?? fileRevision(located.abs)
         if (baseline !== null && !revisions.has(located.abs)) return '错误：覆盖已有文件前请先用 read_file 读取，避免覆盖人工改动'
         const result = await writer.write(rel, content, baseline)
         revisions.set(located.abs, contentRevision(content))
+        recordProduced(args, located.abs)
         return `${located.note}${result}`
       } catch (err) {
         if (err instanceof AgentPauseError) throw err
@@ -340,6 +362,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
   }
 
   const edit: AgentTool = {
+    takeProducedFiles,
     schema: {
       name: 'edit',
       description:
@@ -373,6 +396,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       }
     },
     async execute(args) {
+      produced.delete(args)
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
       const rawEdits = args['edits']
       if (!Array.isArray(rawEdits)) return '错误：缺少 edits 参数（应为替换列表）'
@@ -384,13 +408,13 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         }
       })
 
-      const located = locate(rel)
-      if (!located) return `错误：路径「${rel}」越出工作区边界，拒绝修改`
+      const located = locate(rel, '修改')
+      if ('error' in located) return located.error
       const { abs, note } = located
       let source: string
       try {
         const buf = await readFile(abs)
-        revisions.set(abs, contentRevision(buf))
+        // 同 read_file：大小/NUL 被拒不得留下读取资格
         if (buf.byteLength > MAX_EDIT_BYTES) {
           return `错误：文件超过 ${Math.round(MAX_EDIT_BYTES / 1024 / 1024)}MB，edit 拒绝处理（请改用命令行工具）`
         }
@@ -405,6 +429,8 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         if (/ENOENT/.test(msg)) return `错误：「${rel}」不存在。新建文件请用 write_file`
         return `错误：读取失败——${msg}`
       }
+      // 读被接受（大小/NUL 通过）：这次内部读取是合法的，提交资格供后续写操作比对
+      revisions.set(abs, contentRevision(source))
 
       const outcome = applyExactEdits(source, edits)
       if (!outcome.ok) {
@@ -417,6 +443,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       try {
         const wrote = await writer.write(rel, outcome.text, contentRevision(source))
         revisions.set(abs, contentRevision(outcome.text))
+        recordProduced(args, abs)
         const notes = outcome.applied.map((a) => {
           const sign = a.deltaBytes >= 0 ? `+${a.deltaBytes}` : `${a.deltaBytes}`
           const how = a.matchedBy === 'normalized' ? '，按换行符口径归一后命中' : ''

@@ -1,13 +1,50 @@
-/**
- * 执行事件流 —— **跨层共享的类型定义**（plan26 D-077）。
- *
- * 这里是纯类型与常量（渲染层与 preload 都要 import）；recorder/落盘/读取逻辑在
- * `src/main/agent/exec-events.ts`。分层理由与 memory/playbook 同款：shared 只放形状。
- *
- * ⚠️ **隐私口径**：事件的 payload 只含元数据（工具名/耗时/字节数/审批结论/droppedCount），
- * 工具入参、工具输出正文、用户消息正文、摘要文本**一律不进事件流** ——
- * 白名单在 main 侧（EXEC_PAYLOAD_WHITELIST）强制执行，这里只描述形状。
- */
+// 执行事件流 —— 跨层共享的类型与常量（plan26 D-077）。
+// E28：工具卡/任务卡/时间线共用同一套终态文本，避免三处各写一份映射后漂移。
+
+import type { OutcomeCode, RunTerminal, ToolResultState } from './execution-outcome'
+
+export type { OutcomeCode, RunTerminal, ToolResultState } from './execution-outcome'
+
+/** 工具结果终态文本：`outcome` 是细分事实；`code` 只用于把 token/output 截断单独标出。 */
+export function toolOutcomeText(outcome?: ToolResultState, code?: OutcomeCode): string {
+  if (outcome === 'succeeded') return '成功'
+  if (code === 'token-limit' || code === 'output-limit') return '已截断'
+  switch (outcome) {
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '已取消'
+    case 'denied':
+      return '已拒绝'
+    case 'unknown':
+      return '未确认'
+    default:
+      return ''
+  }
+}
+
+/** 任务/运行终态文本：`max-rounds` 不得显示为成功（预算耗尽 ≠ 完成）。 */
+export function runTerminalText(terminal?: RunTerminal): string {
+  if (!terminal) return ''
+  switch (terminal.state) {
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '已取消'
+    case 'denied':
+      return '已拒绝'
+    case 'unknown':
+      return '未确认'
+    case 'truncated':
+      return '已截断'
+    case 'max-rounds':
+      return '轮次耗尽'
+    default:
+      return ''
+  }
+}
 
 export const EXEC_EVENT_KINDS = ['run_start', 'tool_call', 'tool_result', 'approve', 'trim', 'run_end'] as const
 
