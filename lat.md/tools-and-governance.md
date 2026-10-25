@@ -356,3 +356,9 @@ WirePart的内部ref只在进程中定位字节，不序列化进厂商HTTP字�
 [[src/main/preview-assemble.ts#ingestClipboardImage]] 在宿主解码转PNG，之后共用预算和可撤销登记；
 超原模型5MiB但在本地50MiB内只落本地引用，普通文本粘贴不被截获。
 测试不读写用户系统剪贴板，只将合成ClipboardEvent送到真实输入组件。
+
+### 命令输出的末行保留
+
+[[src/main/agent/tools/shell-session.ts#createShellSession]] 在 POSIX 非交互壳中仅移除结束标记本身，
+不以整行清理吞掉与标记相邻、没有尾换行的 stdout；退出码仍取协议标记，正文不参与成功判定。
+Windows 提示符与回声清理保留原行为。真实 shell 回归同时覆盖零/非零退出、无尾换行和连续命令隔离。

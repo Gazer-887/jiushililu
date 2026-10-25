@@ -57,6 +57,26 @@ describe('shell 会话 · 状态跨步存活（D-085 的核心诉求）', () => 
 })
 
 describe('shell 会话 · 失败分型与生命周期', () => {
+  it('stdout 无尾换行时保留末行正文，协议标记不能连正文一起删除', async () => {
+    const s = makeSession()
+    const result = await s.run('node -e "process.stdout.write(\'HEAD\\nTAIL_NO_LF\')"', 10_000)
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('HEAD\nTAIL_NO_LF')
+    expect(result.stdout).not.toContain('@JSL-DONE')
+  })
+
+  it('非零退出也保留无尾换行正文，下一条命令不串入旧输出', async () => {
+    const s = makeSession()
+    const result = await s.run('node -e "process.stdout.write(\'FAILED_NO_LF\'); process.exitCode=7"', 10_000)
+    expect(result.exitCode).toBe(7)
+    expect(result.stdout).toContain('FAILED_NO_LF')
+    expect(result.stdout).not.toContain('@JSL-DONE')
+    const next = await s.run('node -e "process.stdout.write(\'NEXT_ONLY\')"', 10_000)
+    expect(next.exitCode).toBe(0)
+    expect(next.stdout).toContain('NEXT_ONLY')
+    expect(next.stdout).not.toContain('FAILED_NO_LF')
+  })
+
   it('命令失败 → 退出码如实带出，会话还活着（下一条照常跑）', async () => {
     const s = makeSession()
     // 子 shell 里失败：cmd 用 `cmd /c exit 3`（只设 ERRORLEVEL 不杀会话）；bash 用子 shell

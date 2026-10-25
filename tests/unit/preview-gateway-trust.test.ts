@@ -2,11 +2,12 @@
 // 直接 import 真实 Gateway + 真实 readAsset，喂真实夹具 —— 不用假数据、不 mock 规则。
 // 先红后绿：修前缺会话/伪消息/未登记草稿放行、junction 越界可读（审查端反例实测坐实）。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createPreviewGateway, type PreviewGatewayDeps, type PreviewHandle } from '../../src/main/preview-gateway'
 import { readAsset } from '../../src/main/preview-assets'
+import { isSafeAssetId } from '../../src/shared/conversation-preview'
 
 let root: string
 let outside: string
@@ -90,17 +91,23 @@ describe('受信加载缝：身份核（R3 反例3）', () => {
 })
 
 describe('readAsset 真实边界：junction 越界拒读（R3 反例4）', () => {
-  it('目录联接指向根外 → 抛越界（修前成功读到 OUTSIDE_SENTINEL）', () => {
+  it('目录联接指向根外 → 抛越界（修前成功读到 OUTSIDE_SENTINEL）', ({ skip }) => {
     // 在资产根里放一个指向外部的联接（symlink；Windows junction 同族）
-    const linkPath = join(root, '20261014T120000-1-link.txt')
+    const assetId = '20261014T120000-1-abc124.txt'
+    expect(isSafeAssetId(assetId)).toBe(true)
+    const linkPath = join(root, assetId)
     writeFileSync(join(outside, 'secret.txt'), 'OUTSIDE_SENTINEL')
     try {
       symlinkSync(join(outside, 'secret.txt'), linkPath, 'file')
-    } catch {
-      // 无权限建 symlink 的环境跳过（CI 容器常见）
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'EPERM' && code !== 'EACCES') throw error
+      console.log(`PREVIEW_SYMLINK_SKIP=${JSON.stringify({ code, reason: '当前身份无文件符号链接创建权限' })}`)
+      skip()
       return
     }
-    expect(() => readAsset(root, '20261014T120000-1-link.txt')).toThrow(/越界|无法解析/)
+    expect(readFileSync(linkPath, 'utf8')).toBe('OUTSIDE_SENTINEL')
+    expect(() => readAsset(root, assetId)).toThrow(/越界|无法解析/)
   })
 
   it('根内正常文件 → 可读', () => {
