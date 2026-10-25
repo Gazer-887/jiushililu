@@ -257,8 +257,11 @@ test.describe('首批安全读写 · 界面线', () => {
       // ② 切到编辑并真打字（Monaco：Ctrl+A 全选后覆盖输入）
       await h.page.locator('.fp-mode').click()
       await h.page.waitForSelector('.monaco-editor', { timeout: 20_000 })
-      await h.page.locator('.monaco-editor').first().click()
-      await h.page.keyboard.press('Control+A')
+      const input = h.page.locator('.fp .monaco-editor .native-edit-context, .fp .monaco-editor textarea.inputarea').first()
+      await input.waitFor({ state: 'attached', timeout: 20_000 })
+      await input.focus()
+      await expect(input, '键盘输入前必须取得 Monaco 输入面焦点').toBeFocused()
+      await h.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
       await h.page.keyboard.type('EDITED_BY_UI')
       await expect(h.page.locator('.fp-dirty'), '打字后应显示未保存').toBeVisible({ timeout: 10_000 })
 

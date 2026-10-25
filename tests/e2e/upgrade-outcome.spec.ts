@@ -14,7 +14,28 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { launchApp, apiCall, type E2EApp } from './helpers'
+import { launchApp as launchBaseApp, apiCall, type E2EApp } from './helpers'
+
+/** 模型档案必须使用真实加密服务，不可用时按 smoke 约定明确跳过并清理实例。 */
+async function launchApp(options?: Parameters<typeof launchBaseApp>[0]): Promise<E2EApp> {
+  const h = await launchBaseApp(options)
+  let available: boolean
+  try {
+    available = await h.app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable())
+  } catch (error) {
+    await h.close()
+    await h.cleanup()
+    throw error
+  }
+  if (!available) {
+    const reason = 'safeStorage 不可用：测试模型 Key 无法加密落盘，须在有加密服务的平台验证四故事'
+    console.log(`E30_SKIP=${JSON.stringify({ encryptionAvailable: false, reason })}`)
+    await h.close()
+    await h.cleanup()
+    test.skip(true, reason)
+  }
+  return h
+}
 
 /**
  * 证据域：**必须**由 runner 通过 `E30_EVIDENCE` 注入；缺省落系统 tmp。
@@ -406,15 +427,25 @@ function hits(haystack: string, canary: string): boolean {
 // ─────────────────────────────────────────────────────────────
 // 进程身份：真 Electron 主进程非提权（合同 How1）
 // ─────────────────────────────────────────────────────────────
-test('身份：真实 Electron 主进程 TokenElevation=0 且完整性级别非 High', async () => {
-  const h = await launchApp()
+test('身份：真实 Electron 主进程 Windows Token 非提权 / POSIX 非 root', async () => {
+  const h = await launchBaseApp()
   try {
     const pid = mainPid(h)
-    const ev = tokenEvidence(pid)
+    const ev: Record<string, unknown> = process.platform === 'win32'
+      ? tokenEvidence(pid)
+      : await h.app.evaluate(() => ({ ok: true, pid: process.pid, uid: process.getuid?.(), euid: process.geteuid?.() }))
     writeFileSync(join(EVIDENCE, '身份回执.json'), JSON.stringify(ev, null, 2), 'utf8')
     mark({ story: 'identity', pid, ev })
     expect(pid).toBeGreaterThan(0)
     expect(ev['ok']).toBe(true)
+    if (process.platform !== 'win32') {
+      expect(ev['pid']).toBe(pid)
+      expect(typeof ev['uid']).toBe('number')
+      expect(typeof ev['euid']).toBe('number')
+      expect(Number(ev['uid'])).toBeGreaterThan(0)
+      expect(ev['euid']).toBe(ev['uid'])
+      return
+    }
     expect(String(ev['tokenElevation'])).toBe('0')
     // 完整性级别按 **RID 数值**判定（不依赖 PowerShell switch 语义）：
     // 4096=Low 8192=Medium 8448=MediumPlus 12288=High 16384=System
