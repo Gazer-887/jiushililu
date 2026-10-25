@@ -434,6 +434,7 @@ test('身份：真实 Electron 主进程 Windows Token 非提权 / POSIX 非 roo
     const ev: Record<string, unknown> = process.platform === 'win32'
       ? tokenEvidence(pid)
       : await h.app.evaluate(() => ({ ok: true, pid: process.pid, uid: process.getuid?.(), euid: process.geteuid?.() }))
+    mkdirSync(EVIDENCE, { recursive: true })
     writeFileSync(join(EVIDENCE, '身份回执.json'), JSON.stringify(ev, null, 2), 'utf8')
     mark({ story: 'identity', pid, ev })
     expect(pid).toBeGreaterThan(0)
