@@ -17,7 +17,7 @@ import { composeSelfView } from './self-view'
 import { composeConductRules } from './conduct-rules'
 import { createWorkspaceWriter, type WorkspaceWriter } from '../workspace-write'
 import { createFileTools } from './tools/file-tools'
-import { outputDisciplinePrompt, resolvePolicy, type TokenPolicy } from '@shared/token-tier'
+import { outputDisciplinePrompt, resolvePolicy, type TokenPolicy, type TokenSaverTier } from '@shared/token-tier'
 import {
   createShellSlot,
   createSystemTools,
@@ -56,7 +56,10 @@ import {
 import type { PlanApprovalBridge } from './plan-approval'
 import { runAgentLoop } from './loop'
 import { createLogger } from '../log'
-import { addUsage, emptyUsage, type TokenUsage } from '@shared/usage'
+import { addUsage, type TokenUsage } from '@shared/usage'
+import { AgentRunFailure, ProviderError, isAbortError } from '../providers/errors'
+import type { RunTerminal } from '@shared/execution-outcome'
+import { AgentPauseError } from './pause-error'
 import type { CheckpointStore } from '../store/checkpoints'
 import { createCheckpointStore } from '../store/checkpoints'
 import { streamWithToolsOpenAI } from '../providers/openai-agent'
@@ -1101,6 +1104,15 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   let usageAcc: TokenUsage | null = null
   let usageComplete = true
 
+  const recordRequestUsage = (usage: TokenUsage | null | undefined, isComplete?: boolean): void => {
+    if (usage) {
+      usageAcc = usageAcc ? addUsage(usageAcc, usage) : { ...usage }
+    }
+    if (!usage || isComplete === false) {
+      usageComplete = false
+    }
+  }
+
   const chat = async (messages: AgentMessage[], onText: (delta: string) => void): Promise<AgentChatResult> => {
     // plan29 D-090：**这里原来有一层整轮墙钟**（`args.signal ?? AbortSignal.timeout(settings.timeoutMs)`），
     // 已删除，两条理由：
@@ -1132,11 +1144,14 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
               args.onReasoning
             )
     } catch (error) {
-      usageComplete = false
+      if (error instanceof ProviderError && error.facts?.scope === 'request') {
+        recordRequestUsage(error.facts.usage, error.facts.usageComplete)
+      } else {
+        usageComplete = false
+      }
       throw error
     }
-    if (res.usage) usageAcc = addUsage(usageAcc ?? emptyUsage(), res.usage)
-    else usageComplete = false
+    recordRequestUsage(res.usage, res.usageComplete)
     return res
   }
 
@@ -1163,21 +1178,23 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
         effective.providerType === 'anthropic'
           ? await streamWithToolsAnthropic(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
           : await streamWithToolsOpenAI(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
-      if (res.usage) usageAcc = addUsage(usageAcc ?? emptyUsage(), res.usage)
-      else usageComplete = false
+      recordRequestUsage(res.usage, res.usageComplete)
       const text = (res.text ?? '').trim()
       if (!text) return null
       args.summaryCache?.set(args.conversationId, text)
       return text
-    } catch {
-      usageComplete = false
+    } catch (err) {
+      if (err instanceof ProviderError && err.facts?.scope === 'request') {
+        recordRequestUsage(err.facts.usage, err.facts.usageComplete)
+      } else {
+        usageComplete = false
+      }
       return null // fail-soft 内聚：回调自己兜底；loop 侧还有一层 catch（防注入回调不守约）
     }
   }
 
-  let result: AgentLoopResult
   try {
-    result = await runAgentLoop({
+    const result = await runAgentLoop({
       signal: args.signal,
       systemPrompt: guardedSystem,
       history: args.history,
@@ -1185,6 +1202,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       maxRounds: args.settings.maxToolRounds || 12,
       contextWindow: args.settings.contextWindow || 65536,
       chat,
+      agentLabel,
       ...(args.onText ? { onText: args.onText } : {}),
       ...(args.onToolEvent ? { onToolEvent: args.onToolEvent } : {}),
       ...(args.onToolWindowed ? { onToolWindowed: args.onToolWindowed } : {}),
@@ -1195,71 +1213,132 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       // plan26 D-080：滚动摘要 —— 只在组合根给了缓存时启用（没缓存 = 机械占位，零退化）
       ...(args.summaryCache ? { summarize } : {})
     })
+
+    const changedFiles = ctx.checkpoints.get(runId)?.changes.length ?? 0
+    let final: AgentRunResult = {
+      ...result,
+      agent: def?.name ?? '内核默认',
+      runId,
+      changedFiles,
+      usage: usageAcc,
+      usageComplete: usageAcc !== null && usageComplete,
+      tokenTier: policy.tier
+    }
+    let planApproved: boolean | undefined
+
+    // ── 计划批准闸（plan27）──────────────────────────────────────────────
+    // 位置说明（三条都已核过，别再挪）：
+    //  · 只能放这里：**子代理走 scheduler.ts 的 `runAgentLoop`，根本不进本函数** ⇒ 天然不会被卡住等批准；
+    //  · 不放 ipc.ts：那是薄层，且它那套整轮墙钟正被 plan29 删掉 —— 依赖它会跟着坏；
+    //  · 不做成工具（如 submit_plan）：工具是**模型可选调用**的，模型不调就永远停不下来，
+    //    「必须停下来等我点头」这条核心价值会当场失守。
+    if (def?.approval === 'plan' && ctx.planApproval && !args.skipPlanApproval) {
+      const plan = (result.output ?? '').trim()
+      // 空方案不弹卡：对空气等批准是荒谬交互，也免得用户白等一场
+      if (plan.length > 0) {
+        planApproved = await ctx.planApproval.request(
+          { agent: def.name, plan, conversationId: args.conversationId },
+          args.signal ? { signal: args.signal } : undefined
+        )
+
+        if (planApproved) {
+          // 二次 runAgent（D-082）：executor 有自己的 `def.model` / 工具集 / 检查点，全部复用现有 machinery。
+          // 为什么**不**在同一轮里把写工具塞回去：planner 的「只读」是靠**没有写工具**保证的硬事实——
+          // 中途换工具集等于亲手拆掉这条保证；而且自视段会先报只读后报可写，模型自己都会糊涂。
+          // ⚠️ 这条保证现在还需要另一半才闭合：planner 也没有派发口（否则它能借子代理写 —— 见上面 `allowed` 的裁剪）。
+          const execResult = await runAgent(ctx, {
+            ...args,
+            agentName: pickExecutor(def.executor, registry),
+            history: [
+              ...args.history,
+              { role: 'assistant', content: result.output },
+              { role: 'user', content: '请按上述方案执行（已获用户批准）。' }
+            ],
+            // 双保险之一（另一半是 executor 自身不带 approval:plan）：防「批准完又弹一张卡」的无限套娃
+            skipPlanApproval: true
+          })
+          const mergedUsage = execResult.usage
+            ? (usageAcc ? addUsage(usageAcc, execResult.usage) : { ...execResult.usage })
+            : usageAcc
+          const mergedComplete = final.usageComplete && execResult.usageComplete
+          const totalAvoided = (result.avoidedTokens ?? 0) + (execResult.avoidedTokens ?? 0)
+
+          final = {
+            ...execResult,
+            // 用量**求和**：两轮都花了钱，账单必须与厂商对得上（归并口径见 PLAN/plan27_计划批准.md D-082）。
+            // 其余账目（runId / changedFiles / stopReason）以 **executor 那轮**为准 —— planner 无写操作，检查点空转。
+            usage: mergedUsage,
+            usageComplete: mergedUsage !== null && mergedComplete,
+            ...(totalAvoided > 0 ? { avoidedTokens: totalAvoided } : {}),
+            // agent 仍报**用户启用的那个**：他看到的应是「我选的 agent 干了这件事」，而不是「偷偷换了个人」
+            agent: def.name
+          }
+          log.info('计划已批准，转交执行', { 方案来自: def.name, 实际执行: execResult.agent })
+        } else {
+          log.info('计划未获批准，本轮不执行', { 方案来自: def.name })
+        }
+      }
+    }
+
+    return { ...final, ...(planApproved === undefined ? {} : { planApproved }) }
+  } catch (err) {
+    if (err instanceof AgentRunFailure && err.facts.scope === 'run' && err.facts.runId === runId) {
+      throw err
+    }
+    if (err instanceof AgentPauseError) {
+      throw err
+    }
+
+    let terminal: RunTerminal
+    let childUsage: TokenUsage | null = null
+    let childUsageComplete = true
+    let childAvoided: number | undefined
+    let childTokenTier: TokenSaverTier | undefined
+
+    if (err instanceof AgentRunFailure && err.facts.scope === 'run') {
+      terminal = err.facts.terminal
+      childUsage = err.facts.usage
+      childUsageComplete = err.facts.usageComplete
+      childAvoided = err.facts.avoidedTokens
+      childTokenTier = err.facts.tokenTier
+    } else if (err instanceof ProviderError && err.facts?.terminal) {
+      terminal = err.facts.terminal
+    } else if (isAbortError(err) || args.signal?.aborted) {
+      terminal = { state: 'cancelled', code: 'user-stop' }
+    } else if (err instanceof ProviderError) {
+      terminal = {
+        state: 'failed',
+        code: 'upstream-error',
+        ...(err.status !== undefined ? { httpStatus: err.status } : {})
+      }
+    } else {
+      terminal = { state: 'failed', code: 'upstream-error' }
+    }
+
+    const mergedUsage = childUsage
+      ? (usageAcc ? addUsage(usageAcc, childUsage) : { ...childUsage })
+      : usageAcc
+    const mergedComplete = (usageAcc !== null ? usageComplete : true) && childUsageComplete
+    const localAvoided = (err && typeof err === 'object' ? ((err as Record<string, unknown>).avoidedTokens as number | undefined) : undefined) ?? 0
+    const totalAvoided = (childAvoided ?? 0) + localAvoided
+
+    throw new AgentRunFailure({
+      scope: 'run',
+      runId,
+      terminal,
+      usage: mergedUsage,
+      usageComplete: mergedUsage !== null && mergedComplete,
+      ...(totalAvoided > 0 ? { avoidedTokens: totalAvoided } : {}),
+      ...(childTokenTier !== undefined
+        ? { tokenTier: childTokenTier }
+        : policy.tier
+          ? { tokenTier: policy.tier }
+          : {})
+    })
   } finally {
     // 无论正常结束、抛异常还是被中止都要收尾 —— 否则 manifest 停在 running，界面把完成的轮次显示成"中断"（即便没收尾，快照也已增量落盘、仍可回滚）。
     ctx.checkpoints.finish(runId)
   }
-
-  const changedFiles = ctx.checkpoints.get(runId)?.changes.length ?? 0
-  let final: AgentRunResult = {
-    ...result,
-    agent: def?.name ?? '内核默认',
-    runId,
-    changedFiles,
-    usage: usageAcc,
-    usageComplete: usageAcc !== null && usageComplete,
-    tokenTier: policy.tier
-  }
-  let planApproved: boolean | undefined
-
-  // ── 计划批准闸（plan27）──────────────────────────────────────────────
-  // 位置说明（三条都已核过，别再挪）：
-  //  · 只能放这里：**子代理走 scheduler.ts 的 `runAgentLoop`，根本不进本函数** ⇒ 天然不会被卡住等批准；
-  //  · 不放 ipc.ts：那是薄层，且它那套整轮墙钟正被 plan29 删掉 —— 依赖它会跟着坏；
-  //  · 不做成工具（如 submit_plan）：工具是**模型可选调用**的，模型不调就永远停不下来，
-  //    「必须停下来等我点头」这条核心价值会当场失守。
-  if (def?.approval === 'plan' && ctx.planApproval && !args.skipPlanApproval) {
-    const plan = (result.output ?? '').trim()
-    // 空方案不弹卡：对空气等批准是荒谬交互，也免得用户白等一场
-    if (plan.length > 0) {
-      planApproved = await ctx.planApproval.request(
-        { agent: def.name, plan, conversationId: args.conversationId },
-        args.signal ? { signal: args.signal } : undefined
-      )
-
-      if (planApproved) {
-        // 二次 runAgent（D-082）：executor 有自己的 `def.model` / 工具集 / 检查点，全部复用现有 machinery。
-        // 为什么**不**在同一轮里把写工具塞回去：planner 的「只读」是靠**没有写工具**保证的硬事实——
-        // 中途换工具集等于亲手拆掉这条保证；而且自视段会先报只读后报可写，模型自己都会糊涂。
-        // ⚠️ 这条保证现在还需要另一半才闭合：planner 也没有派发口（否则它能借子代理写 —— 见上面 `allowed` 的裁剪）。
-        const execResult = await runAgent(ctx, {
-          ...args,
-          agentName: pickExecutor(def.executor, registry),
-          history: [
-            ...args.history,
-            { role: 'assistant', content: result.output },
-            { role: 'user', content: '请按上述方案执行（已获用户批准）。' }
-          ],
-          // 双保险之一（另一半是 executor 自身不带 approval:plan）：防「批准完又弹一张卡」的无限套娃
-          skipPlanApproval: true
-        })
-        final = {
-          ...execResult,
-          // 用量**求和**：两轮都花了钱，账单必须与厂商对得上（归并口径见 PLAN/plan27_计划批准.md D-082）。
-          // 其余账目（runId / changedFiles / stopReason）以 **executor 那轮**为准 —— planner 无写操作，检查点空转。
-          usage: execResult.usage ? addUsage(usageAcc ?? emptyUsage(), execResult.usage) : usageAcc,
-          usageComplete: final.usageComplete && execResult.usageComplete,
-          // agent 仍报**用户启用的那个**：他看到的应是「我选的 agent 干了这件事」，而不是「偷偷换了个人」
-          agent: def.name
-        }
-        log.info('计划已批准，转交执行', { 方案来自: def.name, 实际执行: execResult.agent })
-      } else {
-        log.info('计划未获批准，本轮不执行', { 方案来自: def.name })
-      }
-    }
-  }
-
-  return { ...final, ...(planApproved === undefined ? {} : { planApproved }) }
 }
 
 /** 组装运行上下文。工作区用**惰性解析函数**（P2：用户可在界面切换目录，每次运行前重新解析，无需重启）。⚠️ 本模块的 electron 禁令见文件头。 */

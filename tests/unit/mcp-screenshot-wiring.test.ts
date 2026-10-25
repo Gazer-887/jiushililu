@@ -95,14 +95,24 @@ describe('MCP 工具层：交图给装配根注入的落盘函数', () => {
     const out = await tools[0]!.execute({})
     expect(seen).toHaveLength(1)
     expect(seen[0]?.[0]?.base64).toBe(PNG)
-    expect(out).toEqual({ text: '屏幕已捕获', images: [ref] })
+    expect(out).toMatchObject({ text: '屏幕已捕获', images: [ref] })
+    if (typeof out !== 'string') {
+      expect(out.text).toBe('屏幕已捕获')
+      expect(out.images).toEqual([ref])
+      expect(out.outcome).toBe('succeeded')
+    }
   })
 
   it('落盘被拒（类型不收 / 超上限，返回空引用）→ 退回纯文本，不造一个空 images 骗界面', async () => {
     const seen: McpImagePart[][] = []
     const tools = createMcpTools(depsOf([], seen))
     const out = await tools[0]!.execute({})
-    expect(typeof out).toBe('string')
-    expect(out).toBe('屏幕已捕获')
+    const text = typeof out === 'string' ? out : out.text
+    expect(text).toBe('屏幕已捕获')
+    // 关键：落盘被拒时不得存在 images 字段（空数组也算"有截图"是假账），不得造空 images 骗界面
+    if (typeof out !== 'string') {
+      expect('images' in out).toBe(false)
+      expect(out.images).toBeUndefined()
+    }
   })
 })

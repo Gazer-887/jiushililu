@@ -691,6 +691,14 @@ describe('可单测的模块不许 import electron（CI 的 quality job 没有�
     })
   }
 
+  /**
+   * 只剥「整句 `import type ... from 'electron'`」——TS 编译期擦除，运行时不存在。
+   * ⚠️ 豁免不许扩大：`import { app }`、`import { type X, app }`、`require('electron')`、
+   * `import('electron')` 都不在剥离范围内（值导入照旧判红）。
+   */
+  const stripTypeOnlyElectronImports = (code: string): string =>
+    code.replace(/^[ \t]*import\s+type\s*\{[^}]*\}\s*from\s*['"]electron['"]\s*;?[ \t]*$/gm, '')
+
   it('前提成立：真的扫到了一批模块（扫不到 = 这条判据空转）', () => {
     expect(unitImportsMain().length, '一个 @main 模块都没扫到 ⇒ 扫描范围错了').toBeGreaterThan(3)
   })
@@ -698,9 +706,24 @@ describe('可单测的模块不许 import electron（CI 的 quality job 没有�
   it('★ 被单测 import 的模块一律不许 import electron', () => {
     for (const p of unitImportsMain()) {
       // 逐行剥掉注释再查：解释"为什么这里不能 import electron"的注释里可能就写着这个词
-      const code = stripComments(repo(p))
-      expect(code, `${p} 被 tests/unit import，却 import 了 electron`).not.toMatch(/from\s*'electron'/)
+      // 再剥掉 type-only 导入：`import type { WebContents }` 编译期擦除，不把二进制拖进单测。
+      // ⚠️ 只认 `import type ... from 'electron'` 整句；值导入/require/动态 import 都不豁免。
+      const code = stripTypeOnlyElectronImports(stripComments(repo(p)))
+      expect(code, `${p} 被 tests/unit import，却 import 了 electron`).not.toMatch(/from\s*['"]electron['"]/)
     }
+  })
+
+  it('★ 反例：值导入 electron 的合成源码仍判红；type-only 才可豁免', () => {
+    const valueImport = "import { app } from 'electron'"
+    const typeOnly = "import type { WebContents } from 'electron'"
+    expect(stripTypeOnlyElectronImports(valueImport), '值导入被误豁免').toMatch(/from\s*['"]electron['"]/)
+    expect(stripTypeOnlyElectronImports(typeOnly), 'type-only 应被剥离').not.toMatch(/from\s*['"]electron['"]/)
+    // 内联 type 仍是运行时导入（含值导入），不许剥
+    const inlineType = "import { type WebContents, app } from 'electron'"
+    expect(stripTypeOnlyElectronImports(inlineType)).toMatch(/from\s*['"]electron['"]/)
+    // require / 动态 import 不在豁免内（现有禁止范围不缩小）
+    expect(stripTypeOnlyElectronImports("const e = require('electron')")).toContain("require('electron')")
+    expect(stripTypeOnlyElectronImports("await import('electron')")).toContain("import('electron')")
   })
 
   it('★ 阳性对照：electron 那半**确实**在另一个文件里（拆开不是把功能拆没了）', () => {

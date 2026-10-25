@@ -11,7 +11,8 @@
  * 盯着"**每个豁免项旁边都写了理由**"。
  */
 import type { WebContents } from 'electron'
-import { IPC, type PlanApprovalRequest, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
+import { IPC, type ChatErrorDetails, type ChatErrorPayload, type PlanApprovalRequest, type StreamEnvelope, type ToolConfirmRequest } from '@shared/ipc'
+import type { RunTerminal } from '@shared/execution-outcome'
 import type { AskRequest } from '@shared/ask'
 import type { ToolEvent } from '@shared/agent'
 import type { TodoItem } from '@shared/todo'
@@ -53,9 +54,11 @@ export interface ChatEmitter {
     avoided?: number,
     tier?: TokenSaverTier,
     memoryTokens?: number,
-    usageComplete?: boolean
+    usageComplete?: boolean,
+    terminal?: RunTerminal
   ): void
-  error(message: string): void
+  /** E26a：`details` 缺省 = 旧字符串路径；有 details 才发结构化 `ChatErrorPayload`。 */
+  error(message: string, details?: ChatErrorDetails): void
   /** 危险操作确认（也带会话身份 —— 用户要知道是**哪条会话**在问） */
   confirm(req: ToolConfirmRequest): void
   /** Agent 提问（同确认：带会话身份 —— 用户要知道自己在答**哪条会话**的问题） */
@@ -77,6 +80,17 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     win.send(channel, envelope)
   }
 
+  /**
+   * E26a 单结算：done 与 error 争用同一个出口，先到者生效；后续调用直接丢弃。
+   * chunk/tool 等过程事件不受影响，只锁终止事件。
+   */
+  let settled = false
+  const settle = <T>(channel: StreamChannel, payload: T): void => {
+    if (settled) return
+    settled = true
+    send(channel, payload)
+  }
+
   return {
     conversationId,
     chunk: (delta) => send(IPC.chatChunk, delta),
@@ -86,16 +100,33 @@ export function createChatEmitter(win: WebContents, conversationId: string): Cha
     goal: (goal) => send(IPC.goalChanged, goal),
     subagents: (list) => send(IPC.subagentChanged, list),
     checkpoint: (runId) => send(IPC.checkpointChanged, runId),
-    done: (usage, avoided = 0, tier, memoryTokens, usageComplete) =>
-      send(IPC.chatDone, {
+    done: (usage, avoided = 0, tier, memoryTokens, usageComplete, terminal) =>
+      settle(IPC.chatDone, {
         usage,
         avoided,
         ...(usageComplete !== undefined ? { usageComplete } : {}),
         // 注入税（plan19 §5.2）：**本地估算**，只在真有记忆段时才带 —— 没有就不带，界面也就不显示
         ...(memoryTokens && memoryTokens > 0 ? { memoryTokens } : {}),
-        ...(tier ? { tier } : {})
+        ...(tier ? { tier } : {}),
+        ...(terminal ? { terminal } : {})
       }),
-    error: (message) => send(IPC.chatError, message),
+    error: (message, details) => {
+      if (!details) {
+        settle(IPC.chatError, message)
+        return
+      }
+      const payload: ChatErrorPayload = {
+        message,
+        terminal: details.terminal,
+        usage: details.usage,
+        usageComplete: details.usageComplete,
+        // 未知就不带：不造 0、不造默认档（合同 V2 §3.2）
+        ...(details.avoided !== undefined ? { avoided: details.avoided } : {}),
+        ...(details.tier ? { tier: details.tier } : {}),
+        ...(details.memoryTokens && details.memoryTokens > 0 ? { memoryTokens: details.memoryTokens } : {})
+      }
+      settle(IPC.chatError, payload)
+    },
     confirm: (req) => {
       if (win.isDestroyed()) return
       win.send(IPC.confirmRequest, { ...req, conversationId })

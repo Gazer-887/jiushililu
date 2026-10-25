@@ -11,7 +11,7 @@ test('真实会话保存失败保留原输入和草稿，修复磁盘前提后�
   const server = createServer((_req, res) => {
     _req.resume(); _req.on('end', () => {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
-      res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'RETRY_ACCEPTED_SENTINEL' } }] })}\n\ndata: [DONE]\n\n`)
+      res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'RETRY_ACCEPTED_SENTINEL' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`)
     })
   })
   const meta = join(h.dataDir, 'conversations.json')

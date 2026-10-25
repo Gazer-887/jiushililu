@@ -2,7 +2,7 @@ import { createAgentTaskRegistry } from './agent-task-registry'
 import { contentRevision, fileRevision, FileConflictError } from './file-revision'
 import { ipcMain, dialog, BrowserWindow, shell, clipboard } from 'electron'
 import { z } from 'zod'
-import { isSafeRel, selectChanges } from '@shared/checkpoint'
+import { isSafeRel, normalizeRel, selectChanges } from '@shared/checkpoint'
 import { FONT_SCALE_KEYS, THEME_IDS, UI_FONT_MAX, LOCALE_KEYS } from '@shared/splitter'
 import { revertOneHunk, samePath } from './revert-flow'
 import {
@@ -45,8 +45,12 @@ import {
   type McpServerConfig,
   type McpServerStatus,
   type ComputerUseServerStatus,
-  type SettingsChangedKind
+  type SettingsChangedKind,
+  type ChatErrorDetails
 } from '@shared/ipc'
+import type { RunTerminal } from '@shared/execution-outcome'
+import type { TokenUsage } from '@shared/usage'
+import { AgentRunFailure, ProviderError, isAbortError, mapHttpError } from './providers/errors'
 import { classifyServer } from '@shared/computer-use'
 import { readMcpImageDataUrl, saveMcpImage } from './mcp/artifacts'
 import type { ToolImageRef } from '@shared/agent'
@@ -320,10 +324,20 @@ function friendlyParse<T>(schema: z.ZodType<T>, raw: unknown): T {
 }
 
 function friendlyChatError(err: unknown): string {
-  // ⚠️ 这里**不再有**「请求超时（Xms）：可在设置页调大超时时间」那一档（plan29 D-091）：
-  // 它指向的是一个从不存在的实体 —— 超的从来不是「请求」，而且那个数字已被删除。
-  // 现在超时由 provider 层分型上报（首包 / 流中断），带具体层级的原话，直接透传即可。
-  if (err instanceof Error && err.name === 'AbortError') return '已停止生成'
+  // ⚠️ 取消优先识别（plan29 / E26b）：通过 isAbortError 或结构化 cancelled 状态统一收口为「已停止生成」
+  if (isAbortError(err)) return '已停止生成'
+  if (err instanceof AgentRunFailure) {
+    if (err.facts.terminal.httpStatus !== undefined) {
+      return mapHttpError(err.facts.terminal.httpStatus, err.message)
+    }
+    return err.message
+  }
+  if (err instanceof ProviderError) {
+    if (err.status !== undefined) {
+      return mapHttpError(err.status, err.message)
+    }
+    return err.message
+  }
   return err instanceof Error ? err.message : String(err)
 }
 
@@ -888,7 +902,8 @@ export function registerIpcHandlers(deps: {
         result.avoidedTokens ?? 0,
         result.tokenTier,
         sumInjectionTax(estimateMemoryTokens(memoryBlock), estimatePlaybookTokens(playbookBlock)),
-        result.usageComplete
+        result.usageComplete,
+        result.terminal
       )
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
@@ -897,7 +912,17 @@ export function registerIpcHandlers(deps: {
         model: settings.model,
         error: err instanceof Error ? err.message : String(err)
       })
-      emit.error(friendlyChatError(err))
+      const errorDetails: ChatErrorDetails | undefined =
+        err instanceof AgentRunFailure
+          ? {
+              terminal: err.facts.terminal,
+              usage: err.facts.usage,
+              usageComplete: err.facts.usageComplete,
+              ...(err.facts.avoidedTokens !== undefined ? { avoided: err.facts.avoidedTokens } : {}),
+              ...(err.facts.tokenTier ? { tier: err.facts.tokenTier } : {})
+            }
+          : undefined
+      emit.error(friendlyChatError(err), errorDetails)
     } finally {
       chatGate.end(conversationId)
       // 护栏 2（D-043）：本轮写了什么 —— 取走上报载荷。空手而归则不推（免界面反复闪"没有写入"）
@@ -959,8 +984,9 @@ export function registerIpcHandlers(deps: {
       return { ...failResult(req.agentName ?? '内核默认', error), taskId: task.id }
     }
     let memoryTurn: MemoryTurn | null = null
+    let liveOutput = ''
+    const settings = getSettingsView()
     try {
-      const settings = getSettingsView()
       if (!settings.baseURL || !settings.model) {
         return failTask('尚未配置模型：请先到「设置」页填写接口地址、模型名与 API Key')
       }
@@ -968,7 +994,30 @@ export function registerIpcHandlers(deps: {
       if (!apiKey) {
         return failTask('尚未保存 API Key：请先到「设置」页填写并保存')
       }
-      const begun = beginMemoryTurn(req.conversationId ?? AGENT_TASK_OWNER)
+      const owner = req.conversationId ?? AGENT_TASK_OWNER
+      // E30-P2：一次性任务与聊天线同源接执行事件/子代理登记（main scope；子代理由 scheduler 派生 sub）
+      const execEvents = createExecEventRecorder({
+        sink: deps.execEventSink,
+        conversationId: owner,
+        agentScope: 'main',
+        onDropped: (kind, keys) => log.warn('执行事件含白名单外字段，已丢弃', { kind, keys })
+      })
+      const onSubagentEvent = (evt: SubagentJobEvent): void => {
+        const state = subagentsByConversation.get(owner) ?? { runId: null, events: [] }
+        if (state.runId !== evt.runId) {
+          state.runId = evt.runId
+          state.events = []
+        }
+        const idx = state.events.findIndex((x) => x.name === evt.name && x.index === evt.index)
+        const next = state.events.slice()
+        if (idx >= 0) next[idx] = evt
+        else next.push(evt)
+        state.events = next
+        subagentsByConversation.set(owner, state)
+        // 现有公开通道（subagent:changed）同一信封，不新增测试 IPC
+        createChatEmitter(e.sender, owner).subagents(next)
+      }
+      const begun = beginMemoryTurn(owner)
       memoryTurn = begun.scope
       const result = await runAgent(deps.agent, {
         memoryRepo: memoryTurn.repo,
@@ -977,6 +1026,8 @@ export function registerIpcHandlers(deps: {
         history: [{ role: 'user', content: req.task }],
         signal: task.controller.signal,
         agentName: req.agentName,
+        execEvents,
+        onSubagentEvent,
         // 权限档必须与对话线同源（plan51 复查抓出）：漏传 = 恒按可写档跑，
         // 于是只读档用户在这个入口上拿到的是可写档的工具集（而子代理现在按声明装配，
         // 这条路的工具集会随所选 Agent 变化，档位不同源就成了实质越权）
@@ -1011,11 +1062,21 @@ export function registerIpcHandlers(deps: {
         // 一次性任务同样注入技能清单（plan22 D-057）
         skillBlock: assembleSkillBlock(),
         // 一次性任务同样注入规则（plan24）：约束对一次性任务同样生效
-        rulesBlock: assembleRulesBlock()
+        rulesBlock: assembleRulesBlock(),
+        onText: (delta) => {
+          liveOutput += delta
+        }
       })
-      agentTasks.finish(task.id, task.controller.signal.aborted ? 'cancelled' :
-        result.stopReason === 'completed' ? 'completed' : 'failed',
-        result.stopReason === 'max-rounds' ? '已达轮数预算，以下为部分产出' : undefined, result.output)
+      const finalTerminal: RunTerminal | undefined = task.controller.signal.aborted
+        ? { state: 'cancelled', code: 'user-stop' }
+        : result.terminal
+      agentTasks.finish(
+        task.id,
+        task.controller.signal.aborted ? 'cancelled' : result.stopReason === 'completed' ? 'completed' : 'failed',
+        result.stopReason === 'max-rounds' ? '已达轮数预算，以下为部分产出' : undefined,
+        result.output,
+        finalTerminal
+      )
       return {
         taskId: task.id,
         ok: !task.controller.signal.aborted && result.stopReason === 'completed',
@@ -1023,18 +1084,46 @@ export function registerIpcHandlers(deps: {
         rounds: result.rounds,
         stopReason: task.controller.signal.aborted ? 'cancelled' : result.stopReason,
         agent: result.agent,
+        ...(finalTerminal ? { terminal: finalTerminal } : {}),
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        ...(result.usageComplete !== undefined ? { usageComplete: result.usageComplete } : {}),
         ...(result.stopReason === 'max-rounds'
           ? { error: `已达轮数预算上限（${result.rounds} 轮）并强制停止，以下为部分产出` }
           : {})
       }
     } catch (err) {
-      if (task.controller.signal.aborted) {
-        agentTasks.finish(task.id, 'cancelled')
-        return { ...failResult(req.agentName ?? '内核默认', '任务已停止'), taskId: task.id, stopReason: 'cancelled' }
+      log.error('一次性任务执行失败', {
+        task: req.task,
+        model: settings.model,
+        error: err instanceof Error ? err.message : String(err)
+      })
+      let errorTerminal: RunTerminal | undefined
+      let usage: TokenUsage | null | undefined
+      let usageComplete: boolean | undefined
+      if (err instanceof AgentRunFailure) {
+        errorTerminal = err.facts.terminal
+        usage = err.facts.usage
+        usageComplete = err.facts.usageComplete
+      } else if (isAbortError(err) || task.controller.signal.aborted) {
+        errorTerminal = { state: 'cancelled', code: 'user-stop' }
+      } else {
+        errorTerminal = { state: 'failed', code: 'upstream-error' }
       }
-      agentTasks.finish(task.id, 'failed', err instanceof Error ? err.message : '任务执行失败')
-      log.error('Agent 任务失败', { agentName: req.agentName, error: err instanceof Error ? err.message : String(err) })
-        return { ...failResult(req.agentName ?? '内核默认', err instanceof Error ? err.message : String(err)), taskId: task.id }
+      agentTasks.finish(
+        task.id,
+        errorTerminal,
+        friendlyChatError(err),
+        liveOutput
+      )
+      return {
+        ...failResult(req.agentName ?? '内核默认', friendlyChatError(err)),
+        taskId: task.id,
+        output: liveOutput,
+        stopReason: task.controller.signal.aborted ? 'cancelled' : 'error',
+        ...(errorTerminal ? { terminal: errorTerminal } : {}),
+        ...(usage !== undefined ? { usage } : {}),
+        ...(usageComplete !== undefined ? { usageComplete } : {})
+      }
     } finally {
       e.sender.removeListener('destroyed', senderClosed)
       // 配置提前退出也必须成为终态。
@@ -2254,6 +2343,14 @@ export function registerIpcHandlers(deps: {
         input.rel,
         pre.failed.map((f) => f.rel)
       )
+      // 逐目标具体原因补回报告：rollback 的 exclude 只收 rel 列表，原因在 pre.failed 里（见交还说明）
+      if (pre.failed.length > 0) {
+        const reasonOf = new Map(pre.failed.map((f) => [normalizeRel(f.rel), f.reason]))
+        for (const item of report.failed) {
+          const specific = reasonOf.get(normalizeRel(item.rel))
+          if (specific) item.reason = `${specific}（已保留原样，未恢复）`
+        }
+      }
       log.info('执行回滚', {
         runId: input.runId,
         target: input.rel ?? '（整轮）',

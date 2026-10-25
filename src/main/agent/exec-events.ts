@@ -37,10 +37,10 @@ export type { AgentScope, ExecEvent, ExecEventKind }
 export const EXEC_PAYLOAD_WHITELIST: Record<ExecEventKind, readonly string[]> = {
   run_start: ['agentName'],
   tool_call: ['tool'],
-  tool_result: ['tool', 'ok', 'ms', 'bytes', 'windowed'],
+  tool_result: ['tool', 'ok', 'ms', 'bytes', 'windowed', 'outcome', 'code', 'exitCode'],
   approve: ['tool', 'allowed', 'reason'],
   trim: ['droppedCount', 'bytes', 'summarized'],
-  run_end: ['rounds', 'durationMs', 'stopReason']
+  run_end: ['rounds', 'durationMs', 'stopReason', 'terminal']
 }
 
 /** 落盘通道（注入式，单测用内存 sink；主进程用 createFsExecEventSink） */
@@ -84,6 +84,10 @@ export function createExecEventRecorder(opts: ExecEventRecorderOptions): ExecEve
         else dropped.push(k)
       }
       if (dropped.length > 0) opts.onDropped?.(kind, dropped)
+      // E28：tool_result 的 ok 只由 succeeded 派生 —— 调用方传错不落“假成功”。
+      if (kind === 'tool_result' && typeof kept.outcome === 'string') {
+        kept.ok = kept.outcome === 'succeeded'
+      }
       const event: ExecEvent = {
         at: now().toISOString(),
         kind,

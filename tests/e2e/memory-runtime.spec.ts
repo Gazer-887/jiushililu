@@ -177,6 +177,7 @@ async function startFake(): Promise<{ srv: Server; port: number; bodies: string[
       bodies.push(raw)
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '好的，明白了' } }] })}\n\n`)
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`)
       res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 5 } })}\n\n`)
       res.end('data: [DONE]\n\n')
     })
@@ -450,8 +451,10 @@ async function startRememberFake(name: string): Promise<{ srv: Server; port: num
             ]
           })}\n\n`
         )
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] })}\n\n`)
       } else {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '已经记住了。' } }] })}\n\n`)
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`)
       }
       res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 5 } })}\n\n`)
       res.end('data: [DONE]\n\n')

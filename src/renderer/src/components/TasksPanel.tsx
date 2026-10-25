@@ -2,16 +2,23 @@ import { useEffect, useState } from 'react'
 import type { AgentTaskStatus } from '@shared/ipc'
 import type { SubagentJobEvent } from '@shared/agent'
 import { statusText } from '@shared/background'
+import { runTerminalText } from '@shared/exec-events'
 import { useAppStore } from '../store'
 
 // 右栏「任务」页签（plan7 批 D，2026-09-12 用户意见：任务管理改为子代理 + 后台任务查看，学 DSH）。
 // 两块：① 子代理运行记录（谁在跑、几轮、结果，同一批次内就地更新）② 后台任务（进度、输出、一键终止）。
 // 空态要说明"怎么才会有" —— 比一句"暂无数据"有用得多。
 
-/** 一行状态文本：进行中 / 已完成（几轮 · 几秒）/ 失败 */
-function jobStatus(j: SubagentJobEvent): string {
+/** 一行状态文本：细分类（terminal）优先；旧事件没有 terminal 时沿用旧 phase 判据。 */
+export function jobStatusText(j: SubagentJobEvent): string {
   if (j.phase === 'start') return '进行中'
   const secs = j.endedAt ? ((j.endedAt - j.startedAt) / 1000).toFixed(1) : '?'
+  const terminalText = runTerminalText(j.terminal)
+  if (terminalText) {
+    return terminalText === '已完成'
+      ? `已完成 · ${j.rounds ?? 0} 轮 · ${secs}s`
+      : `${terminalText} · ${secs}s`
+  }
   if (j.phase === 'error') return `失败 · ${secs}s`
   return `已完成 · ${j.rounds ?? 0} 轮 · ${secs}s`
 }
@@ -107,7 +114,7 @@ export default function TasksPanel(): JSX.Element {
               <div className="task-body">
                 <div className="task-row">
                   <span className="task-name">{j.name}</span>
-                  <span className="task-status">{jobStatus(j)}</span>
+                  <span className="task-status">{jobStatusText(j)}</span>
                 </div>
                 <div className="task-task" title={j.task}>
                   {j.task}

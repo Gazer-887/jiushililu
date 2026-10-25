@@ -48,6 +48,7 @@ function sseOf(frames: Frame[]): string {
 function textReply(text: string): string {
   return sseOf([
     { choices: [{ delta: { content: text } }] },
+    { choices: [{ delta: {}, finish_reason: 'stop' }] },
     { choices: [], usage: { prompt_tokens: 2, completion_tokens: 2 } }
   ])
 }
@@ -62,6 +63,7 @@ function toolReply(name: string, args: Record<string, unknown>, callId: string):
         }
       ]
     },
+    { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
     { choices: [], usage: { prompt_tokens: 2, completion_tokens: 2 } }
   ])
 }

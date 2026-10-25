@@ -5,7 +5,9 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { createSystemTools } from '@main/agent/tools/system-tools'
 import { parseDuckResults, parseFirecrawlResults, unwrapDuckHref } from '@main/agent/tools/web-tools'
 import { disposeAllShellSessions } from '@main/agent/tools/shell-session'
-import type { AgentTool } from '@shared/agent'
+import type { AgentTool, ToolOutcome } from '@shared/agent'
+
+const toText = (res: string | ToolOutcome): string => (typeof res === 'string' ? res : res.text)
 
 // plan31 D-095/D-096：run_command 机器可判尾标（exit_code / error_class / elapsed_ms）
 // 与 web_search 的离线解析。
@@ -21,21 +23,37 @@ afterAll(() => {
 
 describe('run_command · 机器可判尾标（D-095）', () => {
   it('成功 → 末行 exit_code=0 error_class=ok（机器可正则）', async () => {
-    const out = await cmd(root).execute({ command: 'node -e "console.log(12345)"' })
+    const res = await cmd(root).execute({ command: 'node -e "console.log(12345)"' })
+    const out = toText(res)
     expect(out).toContain('12345')
     expect(out).toMatch(/exit_code=0 error_class=ok elapsed_ms=\d+\s*$/)
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('succeeded')
+    }
   })
 
   it('真出错 → 末行 exit_code=<数字> error_class=error', async () => {
-    const out = await cmd(root).execute({ command: 'node -e "process.exit(3)"' })
+    const res = await cmd(root).execute({ command: 'node -e "process.exit(3)"' })
+    const out = toText(res)
     expect(out).toContain('命令执行出错')
     expect(out).toMatch(/exit_code=3 error_class=error elapsed_ms=\d+\s*$/)
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('failed')
+      expect(res.code).toBe('command-exit')
+      expect(res.exitCode).toBe(3)
+    }
   })
 
   it('超时 → exit_code=null error_class=timeout（被杀没有退出码，如实给 null）', async () => {
-    const out = await cmd(root).execute({ command: 'node -e "setInterval(function(){},1000)"', timeoutMs: 2000 })
+    const res = await cmd(root).execute({ command: 'node -e "setInterval(function(){},1000)"', timeoutMs: 2000 })
+    const out = toText(res)
     expect(out).toContain('命令超时')
     expect(out).toMatch(/exit_code=null error_class=timeout elapsed_ms=\d+\s*$/)
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('unknown')
+      expect(res.code).toBe('command-timeout')
+      expect(res.exitCode).toBeNull()
+    }
   })
 })
 

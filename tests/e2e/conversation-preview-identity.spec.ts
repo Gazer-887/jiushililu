@@ -72,7 +72,7 @@ test('真实输入区发送并重启：历史身份与旧字节可见，最终HT
       req.on('end', () => {
         bodies.push(body)
         res.writeHead(200, { 'content-type': 'text/event-stream' })
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'LOCAL_IDENTITY_REPLY' } }] })}\n\n`)
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'LOCAL_IDENTITY_REPLY' }, finish_reason: 'stop' }] })}\n\n`)
         res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 6, completion_tokens: 3 } })}\n\n`)
         res.end('data: [DONE]\n\n')
       })
@@ -241,7 +241,7 @@ test('假文本二进制（文本扩展名+含NUL）拖入后真实HTTP用户正
       req.on('end', () => {
         bodies.push(body)
         res.writeHead(200, { 'content-type': 'text/event-stream' })
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'FAKE_TEXT_NUL_REPLY' } }] })}\n\n`)
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'FAKE_TEXT_NUL_REPLY' }, finish_reason: 'stop' }] })}\n\n`)
         res.end('data: [DONE]\n\n')
       })
     })

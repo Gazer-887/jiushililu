@@ -1,12 +1,21 @@
 import { readdirSync } from 'node:fs'
 import { exec } from 'node:child_process'
-import type { AgentTool } from '@shared/agent'
+import type { AgentTool, ToolOutcome } from '@shared/agent'
+import type { OutcomeCode } from '@shared/execution-outcome'
 import { statusText } from '@shared/background'
 import { buildSearchSpec, SearchQueryError } from '@shared/search-query'
 import { runSearch, renderSearchOutcome } from '../../retrieval/search'
 import type { BackgroundTaskStore } from '../background-tasks'
 import { resolvePathInWorkspace, type PathAccess } from '../guard'
 import { createShellSession, type AgentShellSession, type RuntimeEnv } from './shell-session'
+
+/**
+ * 结构化失败返回（E24a）：**结构优先于文字**。
+ * 文字仍给人看，`outcome`/`code` 给机器判 —— 界面与存档不再靠正则猜"这行是不是错误"。
+ */
+function failTool(text: string, code: OutcomeCode, exitCode?: number | null): ToolOutcome {
+  return { text, outcome: 'failed', code, ...(exitCode !== undefined ? { exitCode } : {}) }
+}
 
 // 系统类工具（P1 工具层补全）：列目录 / 文本搜索 / 命令执行。
 // 前三者默认只在 workspaceRoot 内活动，跳过依赖与构建产物目录。
@@ -269,7 +278,7 @@ function buildSystemTools(
     },
     async execute(args) {
       const command = typeof args['command'] === 'string' ? args['command'] : ''
-      if (command.trim().length === 0) return '错误：command 不能为空'
+      if (command.trim().length === 0) return failTool('错误：command 不能为空', 'tool-error')
 
       // 超时口径（plan28 D-086）：越界**拒绝并回报**，不静默夹取 ——
       // 静默夹取会让模型以为"我设了 5 分钟"，实际 30 秒就断了，然后它按"命令失败了"往下推理。
@@ -278,12 +287,13 @@ function buildSystemTools(
       if (rawTimeout !== undefined && rawTimeout !== null) {
         const n = typeof rawTimeout === 'number' ? rawTimeout : Number(rawTimeout)
         if (!Number.isFinite(n)) {
-          return `错误：timeoutMs 必须是数字，收到 ${JSON.stringify(rawTimeout)}`
+          return failTool(`错误：timeoutMs 必须是数字，收到 ${JSON.stringify(rawTimeout)}`, 'tool-error')
         }
         if (n < MIN_COMMAND_TIMEOUT_MS || n > MAX_COMMAND_TIMEOUT_MS) {
-          return (
+          return failTool(
             `错误：timeoutMs=${n} 超出允许范围（${MIN_COMMAND_TIMEOUT_MS}~${MAX_COMMAND_TIMEOUT_MS} 毫秒）。` +
-            `需要更长时间请用 background=true 转后台执行。`
+              `需要更长时间请用 background=true 转后台执行。`,
+            'tool-error'
           )
         }
         timeoutMs = Math.floor(n)
@@ -294,12 +304,15 @@ function buildSystemTools(
       if (confirm) {
         const allowed = await confirm(command)
         if (!allowed) {
-          return '错误：用户拒绝执行该命令。请改用其它方式完成任务，或向用户说明为何需要执行它。'
+          return failTool(
+            '错误：用户拒绝执行该命令。请改用其它方式完成任务，或向用户说明为何需要执行它。',
+            'permission-denied'
+          )
         }
       }
 
       if (args['background'] === true) {
-        if (!background) return '错误：当前环境不支持后台执行，请去掉 background 参数'
+        if (!background) return failTool('错误：当前环境不支持后台执行，请去掉 background 参数', 'tool-error')
         try {
           // plan43 S3：后台与前台**同源**用同一个运行环境（否则会出现"前台用 3.12、后台用系统默认"的分歧）
           const runtime = resolveRuntimeEnv()
@@ -311,9 +324,14 @@ function buildSystemTools(
               ? { env: { ...process.env, PATH: runtime.pathOverride } }
               : {})
           })
-          return `已在后台启动：${task.id}\n命令：${command}\n用 check_command 查看输出与状态。`
+          // 后台只证明**已启动**，不宣称命令已完成；退出码此时未知，故不填 exitCode。
+          return {
+            text: `已在后台启动：${task.id}\n命令：${command}\n用 check_command 查看输出与状态。`,
+            outcome: 'succeeded',
+            code: 'command-exit'
+          }
         } catch (err) {
-          return `错误：${err instanceof Error ? err.message : String(err)}`
+          return failTool(`错误：${err instanceof Error ? err.message : String(err)}`, 'tool-error')
         }
       }
 
@@ -321,7 +339,7 @@ function buildSystemTools(
       const r = await getShell().run(command, timeoutMs)
       // 会话起不来（spawn 失败的怪环境）→ 回落一次性 exec，能力不打折
       if (r.spawnError !== null) {
-        return await new Promise<string>((resolvePromise) => {
+        return await new Promise<ToolOutcome>((resolvePromise) => {
           exec(
             command,
             { cwd: workspaceRoot, timeout: timeoutMs, maxBuffer: MAX_COMMAND_OUTPUT, windowsHide: true },
@@ -333,12 +351,16 @@ function buildSystemTools(
                 const code = (error as NodeJS.ErrnoException).code
                 if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
                   const mb = Math.round(MAX_COMMAND_OUTPUT / 1024 / 1024)
-                  resolvePromise(
-                    `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
+                  resolvePromise({
+                    text:
+                      `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
                       `以下是终止前收到的前 ${mb}MB：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
                       `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）\n` +
-                      `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`
-                  )
+                      `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`,
+                    outcome: 'unknown',
+                    code: 'output-limit',
+                    exitCode: null
+                  })
                   return
                 }
                 const errSignal = (error as { signal?: NodeJS.Signals | null }).signal ?? null
@@ -347,25 +369,49 @@ function buildSystemTools(
                   errSignal !== null &&
                   elapsed >= timeoutMs - 100
                 if (timedOut) {
-                  resolvePromise(
-                    `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
+                  resolvePromise({
+                    text:
+                      `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
                       `已收到的部分输出：\n[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
                       `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）\n` +
-                      `exit_code=null error_class=timeout elapsed_ms=${elapsed}`
-                  )
+                      `exit_code=null error_class=timeout elapsed_ms=${elapsed}`,
+                    outcome: 'unknown',
+                    code: 'command-timeout',
+                    exitCode: null
+                  })
                   return
                 }
+                // 有可信数字退出码 → failed/command-exit；拿不到 → unknown/unknown-exit（不猜成功）
                 const exitCode = typeof error.code === 'number' ? error.code : null
                 resolvePromise(
-                  `命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}\n` +
-                    `exit_code=${exitCode ?? 'null'} error_class=error elapsed_ms=${elapsed}`
+                  exitCode !== null
+                    ? {
+                        text:
+                          `命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}\n` +
+                          `exit_code=${exitCode} error_class=error elapsed_ms=${elapsed}`,
+                        outcome: 'failed',
+                        code: 'command-exit',
+                        exitCode
+                      }
+                    : {
+                        text:
+                          `命令执行出错（exit=${error.code ?? '?'}）\n[stdout]\n${out}\n[stderr]\n${errText}\n` +
+                          `exit_code=null error_class=error elapsed_ms=${elapsed}`,
+                        outcome: 'unknown',
+                        code: 'unknown-exit',
+                        exitCode: null
+                      }
                 )
                 return
               }
-              resolvePromise(
-                `[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
-                  `exit_code=0 error_class=ok elapsed_ms=${elapsed}`
-              )
+              resolvePromise({
+                text:
+                  `[stdout]\n${out}${errText ? `\n[stderr]\n${errText}` : ''}\n` +
+                  `exit_code=0 error_class=ok elapsed_ms=${elapsed}`,
+                outcome: 'succeeded',
+                code: 'command-exit',
+                exitCode: 0
+              })
             }
           )
         })
@@ -375,31 +421,58 @@ function buildSystemTools(
       if (r.exceeded) {
         // plan28 D-088：超限不是命令失败，如实分型。会话已被掐掉重开（与旧行为"超限即杀"同语义）
         const mb = Math.round(MAX_COMMAND_OUTPUT / 1024 / 1024)
-        return (
-          `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
+        return {
+          text:
+            `命令输出超过 ${mb}MB 上限，**已被终止**（这不是命令本身失败——是我们的输出上限掐的）。\n` +
             `以下是终止前收到的前 ${mb}MB：\n[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
             `（建议：把输出重定向到文件（如 \`... > build.log 2>&1\`）再分段读取，或改用 background=true）\n` +
-            `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`
-        )
+            `exit_code=null error_class=output_exceeded elapsed_ms=${elapsed}`,
+          outcome: 'unknown',
+          code: 'output-limit',
+          exitCode: null
+        }
       }
       if (r.timedOut) {
-        return (
-          `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
+        return {
+          text:
+            `命令超时（${timeoutMs}ms）已终止，**不代表命令失败**——可能只是没跑完。\n` +
             `已收到的部分输出：\n[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
             `（需要更长时间请传更大的 timeoutMs，上限 ${MAX_COMMAND_TIMEOUT_MS}ms；或改用 background=true 转后台）\n` +
-            `exit_code=null error_class=timeout elapsed_ms=${elapsed}`
-        )
+            `exit_code=null error_class=timeout elapsed_ms=${elapsed}`,
+          outcome: 'unknown',
+          code: 'command-timeout',
+          exitCode: null
+        }
       }
       if (r.exitCode !== 0 && r.exitCode !== null) {
-        return (
-          `命令执行出错（exit=${r.exitCode}）\n[stdout]\n${r.stdout}\n[stderr]\n${r.stderr}\n` +
-            `exit_code=${r.exitCode} error_class=error elapsed_ms=${elapsed}`
-        )
+        return {
+          text:
+            `命令执行出错（exit=${r.exitCode}）\n[stdout]\n${r.stdout}\n[stderr]\n${r.stderr}\n` +
+            `exit_code=${r.exitCode} error_class=error elapsed_ms=${elapsed}`,
+          outcome: 'failed',
+          code: 'command-exit',
+          exitCode: r.exitCode
+        }
       }
-      return (
-        `[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
-          `exit_code=${r.exitCode ?? 0} error_class=ok elapsed_ms=${elapsed}`
-      )
+      // 到这里只剩两种：明确 0（成功）或 null（无可信退出码 → unknown，绝不能当成功）
+      if (r.exitCode === null) {
+        return {
+          text:
+            `[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
+            `exit_code=null error_class=unknown_exit elapsed_ms=${elapsed}`,
+          outcome: 'unknown',
+          code: 'unknown-exit',
+          exitCode: null
+        }
+      }
+      return {
+        text:
+          `[stdout]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}\n` +
+          `exit_code=0 error_class=ok elapsed_ms=${elapsed}`,
+        outcome: 'succeeded',
+        code: 'command-exit',
+        exitCode: 0
+      }
     }
   }
 
@@ -415,7 +488,7 @@ function buildSystemTools(
       }
     },
     async execute(args) {
-      if (!background) return '错误：当前环境不支持后台任务'
+      if (!background) return failTool('错误：当前环境不支持后台任务', 'tool-error')
       const id = typeof args['id'] === 'string' ? args['id'].trim() : ''
       if (!id) {
         const list = background.list()
@@ -423,11 +496,39 @@ function buildSystemTools(
         return list.map((t) => `${t.id}  [${statusText(t)}]  ${t.command}`).join('\n')
       }
       const t = background.get(id)
-      if (!t) return `错误：没有 id 为 ${id} 的后台任务`
+      if (!t) return failTool(`错误：没有 id 为 ${id} 的后台任务`, 'tool-error')
       const tail = t.truncated ? '\n（输出过长，只保留了末尾部分）' : ''
-      return `任务 ${t.id} —— ${statusText(t)}\n命令：${t.command}\n[输出]\n${
+      const text = `任务 ${t.id} —— ${statusText(t)}\n命令：${t.command}\n[输出]\n${
         t.output || '（暂无输出）'
       }${tail}`
+      // 结构化映射（E24a）：**只报已发生的真实事实**。
+      // running → 未结算（succeeded 仅指"查询动作成功"）；done → 成功；killed → cancelled；
+      // failed 且 exitCode 缺失 → unknown/unknown-exit（子进程被信号杀死/崩溃，无可信退出码）；
+      // failed 且有数字退出码 → failed/command-exit。
+      if (t.status === 'running') {
+        return { text, outcome: 'succeeded', code: 'command-exit' }
+      }
+      if (t.status === 'done') {
+        return {
+          text,
+          outcome: 'succeeded',
+          code: 'command-exit',
+          exitCode: typeof t.exitCode === 'number' ? t.exitCode : 0
+        }
+      }
+      if (t.status === 'killed') {
+        return {
+          text,
+          outcome: 'cancelled',
+          code: 'user-stop',
+          exitCode: typeof t.exitCode === 'number' ? t.exitCode : null
+        }
+      }
+      // failed
+      if (typeof t.exitCode === 'number') {
+        return { text, outcome: 'failed', code: 'command-exit', exitCode: t.exitCode }
+      }
+      return { text, outcome: 'unknown', code: 'unknown-exit', exitCode: null }
     }
   }
 

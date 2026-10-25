@@ -245,11 +245,20 @@ describe('runner：摘要闭包的关键行为（源码守卫）', () => {
     expect(runner).toContain('summaryCache?.set(args.conversationId, text)')
   })
 
-  it('摘要调用计入 usageAcc（D-080：账单数字与厂商对得上）', () => {
+  it('摘要成功路径把用量记入本轮账（recordRequestUsage，D-080）', () => {
     const at = runner.indexOf('const summarize =')
     expect(at).toBeGreaterThan(-1)
-    const around = runner.slice(at, at + 1400)
-    expect(around).toContain('usageAcc = addUsage')
+    const around = runner.slice(at, at + 1800)
+    // 现行实现：统一走 recordRequestUsage，成功路径必须显式带 res 的两个事实
+    expect(around).toContain('recordRequestUsage(res.usage, res.usageComplete)')
+    // 失败路径也记（已有账不丢）
+    expect(around).toContain('recordRequestUsage(err.facts.usage, err.facts.usageComplete)')
+    // 业务意图不变：recordRequestUsage 最终把用量累加进本轮 usageAcc（不是只返回文本）
+    const recAt = runner.indexOf('const recordRequestUsage =')
+    expect(recAt).toBeGreaterThan(-1)
+    const recBody = runner.slice(recAt, recAt + 600)
+    expect(recBody).toContain('usageAcc =')
+    expect(recBody).toContain('addUsage(')
   })
 
   it('摘要有超时兜底（30s）且不带工具（空 schema）', () => {

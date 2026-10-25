@@ -409,12 +409,14 @@ const AGENT_LINE_FILES = [
   'src/main/workspace-write.ts'
 ]
 
-describe('Agent 线只走 resolvePathInWorkspace（不允许再有第二个入口）', () => {
+describe('Agent 线只走带策略的入口（不允许再有第二个入口）', () => {
   it('三个 Agent 线模块里**没有任何** resolveInsideWorkspace(...) 调用', () => {
+    // 守卫意图不变：Agent 线只用带策略的两个入口之一，绝不调无策略版本
+    const POLICY_ENTRY = /(?:resolvePathInWorkspace|inspectPathInWorkspace)\(/
     for (const rel of AGENT_LINE_FILES) {
       const src = readSrc(join(process.cwd(), rel), 'utf8')
       expect(src.includes('resolveInsideWorkspace('), `${rel} 仍在调无策略版本`).toBe(false)
-      expect(src, `${rel} 应改用带策略版本`).toContain('resolvePathInWorkspace')
+      expect(POLICY_ENTRY.test(src), `${rel} 应改用带策略版本`).toBe(true)
     }
   })
 })

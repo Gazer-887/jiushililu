@@ -119,7 +119,9 @@ export interface RollbackOutcome {
  */
 export function normalizeHistory(messages: ChatMessage[]): ChatMessage[] {
   return messages.filter(
-    (m) => m.content.trim().length > 0 || (m.role === 'assistant' && (m.segments?.length ?? 0) > 0)
+    (m) =>
+      m.content.trim().length > 0 ||
+      (m.role === 'assistant' && ((m.segments?.length ?? 0) > 0 || !!m.terminal))
   )
 }
 

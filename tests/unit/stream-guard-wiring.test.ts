@@ -51,7 +51,12 @@ const hangUntilAbort = (signal: AbortSignal | null | undefined): Promise<never> 
 
 function fakeRes(init: RequestInit, reader: () => Promise<{ done: boolean; value?: Uint8Array }>): Response {
   void init
-  return { ok: true, body: { getReader: () => ({ read: reader }) } } as unknown as Response
+  // E33：补齐真实 Response 的最小形状（headers + reader 清理），守卫时序不变。
+  return {
+    ok: true,
+    headers: new Headers({ 'content-type': 'text/event-stream' }),
+    body: { getReader: () => ({ read: reader, cancel: async () => {}, releaseLock: () => {} }) }
+  } as unknown as Response
 }
 
 const sse = (obj: unknown): Uint8Array => new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`)
@@ -107,7 +112,9 @@ describe('provider 真的接上了守卫（OpenAI 通道）', () => {
       fakeRes(init, () => {
         n += 1
         if (n === 1) return Promise.resolve({ done: false, value: sse({ choices: [{ delta: { content: '你好' } }] }) })
-        if (n === 2) return Promise.resolve({ done: false, value: new TextEncoder().encode('data: [DONE]\n\n') })
+        // E33：正常结束样本补业务终帧；负例（首包/idle/停止/401）不加。
+        if (n === 2) return Promise.resolve({ done: false, value: sse({ choices: [{ delta: {}, finish_reason: 'stop' }] }) })
+        if (n === 3) return Promise.resolve({ done: false, value: new TextEncoder().encode('data: [DONE]\n\n') })
         return Promise.resolve({ done: true })
       })
     )

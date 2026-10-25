@@ -3,12 +3,13 @@ import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import type { AgentSaveInput } from '@shared/agents'
 import type { MemoryNoticeEvent, MemorySaveInput } from '@shared/memory'
 import type { PlaybookSaveInput } from '@shared/playbook'
-import type {
-  ChatDonePayload,
-  ConversationSaveStats,
-  RendererErrorReport,
-  SettingsChangedKind,
-  StreamEnvelope
+import {
+  type ChatDonePayload,
+  type ChatErrorPayload,
+  type ConversationSaveStats,
+  type RendererErrorReport,
+  type SettingsChangedKind,
+  type StreamEnvelope
 } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { FetchAvailableInput, ModelPatchEntryInput, ModelSaveInput } from '@shared/models'
@@ -91,7 +92,9 @@ const api: ApiBridge = {
   onChatChunk: (cb) => subscribe(IPC.chatChunk, (e) => cb(e as StreamEnvelope<string>)),
   onChatReasoning: (cb) => subscribe(IPC.chatReasoning, (e) => cb(e as StreamEnvelope<string>)),
   onChatDone: (cb) => subscribe(IPC.chatDone, (e) => cb(e as StreamEnvelope<ChatDonePayload>)),
-  onChatError: (cb) => subscribe(IPC.chatError, (e) => cb(e as StreamEnvelope<string>)),
+  // E26a-R1：桥接层原样透传 —— 旧主进程 string 与新主进程 ChatErrorPayload 都保留；
+  // 不得为了沿用旧签名把 terminal/usage/usageComplete 等事实塌成 message。
+  onChatError: (cb) => subscribe(IPC.chatError, (e) => cb(e as StreamEnvelope<string | ChatErrorPayload>)),
   onChatTool: (cb) => subscribe(IPC.chatTool, (e) => cb(e as StreamEnvelope<ToolEvent>)),
   runAgent: (request: AgentRunRequest) => ipcRenderer.invoke(IPC.agentRun, request),
   listAgentTasks: () => ipcRenderer.invoke(IPC.agentTaskList),

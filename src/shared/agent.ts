@@ -1,5 +1,7 @@
 import type { TokenUsage } from './usage'
 import type { WirePart } from './content-parts'
+import type { OutcomeCode, RunTerminal, ToolResultState } from './execution-outcome'
+import type { TokenSaverTier } from './token-tier'
 
 // Agent 内核共享类型（plan6 D1-D8）：工具、消息、循环结果。
 // 协议采用 OpenAI tool-calls 格式（DeepSeek 全系原生兼容）。
@@ -47,6 +49,12 @@ export interface AgentChatResult {
   toolCalls: ToolCall[]
   /** 这一轮的真实用量（plan8 R9）；厂商不报就没有这个字段——上层据此决定用真值还是退回估算 */
   usage?: TokenUsage | null
+  /**
+   * 这一笔用量报告**是否完整**（真实终态合同 §四）。
+   * ⚠️ 与「本轮成功/失败」相互独立：已拿到完整有效报告后发生业务截断，这里仍是 `true`；
+   * 只有阶段输入或缺少最终输出时才不能自称完整。缺失 ≠ false，未观测就不写这一位。
+   */
+  usageComplete?: boolean
 }
 
 export interface ToolEvent {
@@ -72,6 +80,16 @@ export interface ToolEvent {
    * 读的是所属会话原工作区的当前文件。仅写/建类工具有；其余为空。
    */
   artifactPaths?: string[]
+  /**
+   * 结构化执行结果（E24a）：**结构优先于文字**，界面与存档据此展示真实状态。
+   * ⚠️ `phase` 保持旧三值不变；`outcome` 才是细分（failed/cancelled/denied/unknown 都走 phase=error）。
+   * 老事件不填 ⇒ 沿用旧判据，不推断「肯定成功」。
+   */
+  outcome?: ToolResultState
+  /** 固定原因码；只在真实观测到时出现。 */
+  code?: OutcomeCode
+  /** 命令的可信退出码；`null` = 无可信退出码（unknown），与明确 0 是两回事。 */
+  exitCode?: number | null
 }
 
 /**
@@ -100,6 +118,18 @@ export interface ToolOutcome {
    * MCP 等老工具不填这位 ⇒ 行为与从前逐字一致。
    */
   forwardImagesToModel?: Array<{ mime: string; ref: string; base64: string }>
+  /**
+   * 结构化执行结果（E24a）。**结构优先于文字**：有本字段就不再靠文本正则判状态。
+   * 老工具不填 ⇒ 行为与从前逐字一致。
+   */
+  outcome?: ToolResultState
+  /** 固定原因码；只在真实观测到时出现，不补默认值。 */
+  code?: OutcomeCode
+  /**
+   * 命令的**可信退出码**。`null` = 无可信退出码（被信号杀死/超时/超限/启动失败），
+   * 与「明确报 0」是两回事 —— 前者是 unknown，后者是成功。
+   */
+  exitCode?: number | null
 }
 
 /**
@@ -128,6 +158,7 @@ export interface SubagentJobEvent {
   rounds?: number
   summary?: string
   error?: string
+  terminal?: RunTerminal
 }
 
 export interface AgentLoopResult {
@@ -140,4 +171,16 @@ export interface AgentLoopResult {
    * 故单独一个字段、绝不并进 `TokenUsage`；`0` = 这一轮没压（工具输出都不大，属正常）。
    */
   avoidedTokens?: number
+  /**
+   * 本轮结算终态（真实终态合同 §四）。可选：旧调用方不填即沿用 `stopReason` 粗判。
+   * ⚠️ 有它时**以它为准** —— `stopReason` 表达不了 truncated / denied / unknown。
+   */
+  terminal?: RunTerminal
+  /**
+   * 本轮整笔用量报告是否完整。语义同 `AgentChatResult.usageComplete`：
+   * 与终态成功/失败独立，未观测就不写。
+   */
+  usageComplete?: boolean
+  /** 本轮生效的省 token 档位（真实观测才写；未观测省略，不填默认档）。 */
+  tokenTier?: TokenSaverTier
 }

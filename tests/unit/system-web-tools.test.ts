@@ -4,6 +4,9 @@ import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { createSystemTools } from '@main/agent/tools/system-tools'
 import { assertHttpUrl, htmlToText } from '@main/agent/tools/web-tools'
+import type { ToolOutcome } from '@shared/agent'
+
+const toText = (res: string | ToolOutcome): string => (typeof res === 'string' ? res : res.text)
 
 const tools = createSystemTools(tmpdir())
 const [listDir, searchFiles, runCommand] = tools
@@ -61,18 +64,33 @@ describe('search_files（文本搜索工具）', () => {
 
 describe('run_command（命令执行工具）', () => {
   it('执行并返回 stdout', async () => {
-    const msg = await runCommand.execute({ command: 'echo jsl-ok' })
+    const res = await runCommand.execute({ command: 'echo jsl-ok' })
+    const msg = toText(res)
     expect(msg).toContain('jsl-ok')
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('succeeded')
+    }
   }, 15000)
 
   it('非零退出返回错误信息与输出', async () => {
-    const msg = await runCommand.execute({ command: 'node -e "process.exit(3)"' })
+    const res = await runCommand.execute({ command: 'node -e "process.exit(3)"' })
+    const msg = toText(res)
     expect(msg).toContain('exit=3')
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('failed')
+      expect(res.code).toBe('command-exit')
+      expect(res.exitCode).toBe(3)
+    }
   }, 15000)
 
   it('空命令拒绝', async () => {
-    const msg = await runCommand.execute({ command: '  ' })
+    const res = await runCommand.execute({ command: '  ' })
+    const msg = toText(res)
     expect(msg).toContain('不能为空')
+    if (typeof res !== 'string') {
+      expect(res.outcome).toBe('failed')
+      expect(res.code).toBe('tool-error')
+    }
   })
 })
 

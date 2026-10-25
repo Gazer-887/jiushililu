@@ -127,11 +127,37 @@ describe('片③ 图片附件：落盘给引用，绝不把 base64 带回渲染�
     expect(readFileSync(join(attachmentsDir(userData), a.image!.ref))).toEqual(PNG_BYTES)
   })
 
-  it('★ 出境形状里不许有 base64：附件载荷整个 JSON 化后不含图字节', async () => {
+  it('★ 出境形状里不许有 base64：附件载荷结构只含引用字段', async () => {
     const a = await readAttachment(root, 'shot.png', userData)
+    // ① 原安全判据（与临时目录长度无关）：整个 JSON 化载荷不含图片字节
     const wire = JSON.stringify(a)
     expect(wire).not.toContain(PNG_BYTES.toString('base64'))
-    expect(wire.length).toBeLessThan(400)
+
+    // ② 顶层字段白名单：path 只是数据，不再用「绝对字符数」当判据
+    //    （旧判据 `wire.length < 400` 会被长临时目录误伤，且不能证明出境形状）
+    expect(Object.keys(a).sort()).toEqual(
+      ['bytes', 'content', 'image', 'name', 'path', 'preview', 'truncated'].sort()
+    )
+    // preview 是本地查看身份（不出站）：只允许 assetId/digest/mime，且同样不得含 base64/dataUrl/data:
+    expect(Object.keys(a.preview!).sort()).toEqual(['assetId', 'digest', 'mime'])
+    const previewWire = JSON.stringify(a.preview)
+    for (const forbidden of ['base64', 'dataUrl', 'data:', 'Buffer']) {
+      expect(previewWire, `preview 里出现了 ${forbidden}`).not.toContain(forbidden)
+      expect(Object.keys(a.preview!), `preview 字段里出现了 ${forbidden}`).not.toContain(forbidden)
+    }
+
+    // ③ 媒体附件正文恒为空串；图片只带 type/mime/ref/bytes 四件引用
+    expect(a.content).toBe('')
+    expect(Object.keys(a.image!).sort()).toEqual(['bytes', 'mime', 'ref', 'type'])
+    expect(a.image).toMatchObject({ type: 'image', mime: 'image/png', bytes: PNG_BYTES.length })
+    expect(a.image!.ref).toMatch(/\.png$/)
+
+    // ④ 任何形态都不得出现 base64 / data URL / 原始字节
+    const imageWire = JSON.stringify(a.image)
+    for (const forbidden of ['base64', 'dataUrl', 'data:', 'Buffer']) {
+      expect(imageWire, `图片引用里出现了 ${forbidden}`).not.toContain(forbidden)
+      expect(Object.keys(a.image!), `图片引用字段里出现了 ${forbidden}`).not.toContain(forbidden)
+    }
   })
 
   it('★ 同一毫秒连存两张（时钟冻结）⇒ 序号顺延，后一张不许把前一张覆盖掉', () => {

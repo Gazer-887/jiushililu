@@ -14,6 +14,7 @@ import MemoryNotice from '../components/MemoryNotice'
 import MemoryCapture from '../components/MemoryCapture'
 import TimelinePanel from '../components/TimelinePanel'
 import { copyText } from '../clipboard'
+import { runTerminalText } from '@shared/exec-events'
 
 // 对话页（D-032：单一通道）——用不用工具由模型自己决定，界面只负责让过程可见（工具执行卡片）。
 // 输入框为控制台形态（InputConsole）：模型/权限/进度/拓展/发送全在框内。
@@ -21,6 +22,14 @@ import { copyText } from '../clipboard'
 
 /** 贴底容差（px）：留一点余量，否则缩放/滚动条亚像素会让"贴底"判定抖个不停 */
 const STICK_BOTTOM_PX = 80
+
+/**
+ * E29：助手消息的终态展示文字（与时间线同源 runTerminalText）。
+ * 旧消息无 terminal 返回空串 —— 不造状态、不推断"肯定成功"；文本不参与判定。
+ */
+export function assistantTerminalText(m: Pick<ChatMessage, 'terminal'>): string {
+  return runTerminalText(m.terminal)
+}
 
 export default function ChatView() {
   const messages = useAppStore((s) => s.messages)
@@ -525,6 +534,14 @@ export default function ChatView() {
             {/* 操作条（plan46）：**常驻**显示（用户裁决），平时浅灰、悬停才加深。
                 时间戳只在消息带 createdAt 时显示 —— 旧存档没有该字段，不编造 */}
             <div className="msg-actions">
+              {m.role === 'assistant' && assistantTerminalText(m) && (
+                <span
+                  className={`msg-time msg-terminal msg-terminal-${m.terminal?.state}`}
+                  data-terminal-state={m.terminal?.state}
+                >
+                  {assistantTerminalText(m)}
+                </span>
+              )}
               {m.createdAt !== undefined && (
                 <span className="msg-time" title={new Date(m.createdAt).toLocaleString()}>
                   {formatTime(m.createdAt)}

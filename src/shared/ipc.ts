@@ -5,6 +5,7 @@ import type { TodoItem } from './todo'
 import type { Goal } from './goal'
 import type { TokenUsage } from './usage'
 import type { TokenSaverTier } from './token-tier'
+import type { RunTerminal } from './execution-outcome'
 import type { SubagentJobEvent, MessageSegment } from './agent'
 import type { BackgroundTask } from './background'
 import type { FsBinaryResult, FsListResult, FsReadResult, FsOpenResult } from './fs-tree'
@@ -171,6 +172,8 @@ export interface ChatMessage {
    * 但不搬历史内容、不伪造快照。
    */
   messageId?: string
+  /** E26b：本地执行终态（仅本地 assistant 记录，不发给模型） */
+  terminal?: RunTerminal
 }
 
 export interface TestResult {
@@ -353,6 +356,8 @@ export interface AgentTaskStatus {
   endedAt?: number
   error?: string
   output?: string
+  /** E26b：任务细终态（可选，旧数据无则不补造） */
+  terminal?: RunTerminal
 }
 
 export interface AgentRunResult {
@@ -364,6 +369,12 @@ export interface AgentRunResult {
   stopReason: 'completed' | 'max-rounds' | 'error' | 'cancelled'
   agent: string
   error?: string
+  /** E26b：真实运行终态（结构化分类） */
+  terminal?: RunTerminal
+  /** E26b：本轮整笔真实用量（null = 厂商未报） */
+  usage?: TokenUsage | null
+  /** E26b：用量报告是否完整 */
+  usageComplete?: boolean
 }
 
 
@@ -909,6 +920,41 @@ export interface ChatDonePayload {
   tier?: TokenSaverTier
   /** **注入税**（plan19 §5.2）：本轮记忆段占掉的**本地估算** token。缺/为 0 = 没有记忆段 → 界面**不显示**，不显示 0。 */
   memoryTokens?: number
+  /** E26a：本轮业务终态。缺字段 = 老主进程，不替它编成功/失败。 */
+  terminal?: RunTerminal
+}
+
+/** E26a：错误结算的可选细节。缺省时仍走旧字符串路径，保证旧调用与旧消费者不变。 */
+export interface ChatErrorDetails {
+  terminal: RunTerminal
+  usage: TokenUsage | null
+  usageComplete: boolean
+  /** 有真实已观测值才带；未知不造 0。 */
+  avoided?: number
+  /** 同上：未知不造默认档。 */
+  tier?: TokenSaverTier
+  memoryTokens?: number
+}
+
+/** E26a：结构化错误封套（沿补正 V2 §三）。`message` 只放固定本地映射，不放厂商正文/cause。 */
+export interface ChatErrorPayload extends ChatDonePayload {
+  message: string
+  terminal: RunTerminal
+  usageComplete: boolean
+}
+
+/**
+ * E26a：把新旧错误载荷归一成界面可显示的一句话。
+ * 旧主进程发 string、新主进程发 `ChatErrorPayload`；两者都保留 `conversationId`（由信封负责）。
+ * 坏输入回固定本地文案，不把对象序列化/厂商正文漏到界面。
+ */
+export function chatErrorMessage(payload: unknown): string {
+  if (typeof payload === 'string') return payload
+  if (payload && typeof payload === 'object') {
+    const message = (payload as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return '对话执行失败'
 }
 
 export interface StreamEnvelope<T> {
@@ -1011,7 +1057,8 @@ export interface ApiBridge {
   onChatChunk(cb: (e: StreamEnvelope<string>) => void): () => void
   onChatReasoning(cb: (e: StreamEnvelope<string>) => void): () => void
   onChatDone(cb: (e: StreamEnvelope<ChatDonePayload>) => void): () => void
-  onChatError(cb: (e: StreamEnvelope<string>) => void): () => void
+  /** E26a-R1：旧主进程发 string、新主进程发 ChatErrorPayload；桥接原样透传，由渲染端按需归一文案。 */
+  onChatError(cb: (e: StreamEnvelope<string | ChatErrorPayload>) => void): () => void
   onChatTool(cb: (e: StreamEnvelope<import('./agent').ToolEvent>) => void): () => void
   runAgent(request: AgentRunRequest): Promise<AgentRunResult>
   listAgentTasks(): Promise<AgentTaskStatus[]>

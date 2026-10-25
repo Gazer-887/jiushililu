@@ -9,7 +9,8 @@
 // 隐私取舍（入参可能是文件正文）。想逐字回看工具输出请用对话流里的工具卡片。
 
 import { useCallback, useEffect, useState } from 'react'
-import { EXEC_EVENT_LABELS, type ExecEvent, type ExecEventKind } from '@shared/exec-events'
+import { EXEC_EVENT_LABELS, runTerminalText, type ExecEvent, type ExecEventKind } from '@shared/exec-events'
+import { isRunTerminal } from '@shared/execution-outcome'
 import { useAppStore } from '../store'
 
 /** 相对时间（列表里不放大段 ISO 串；超过一天给绝对日期） */
@@ -30,6 +31,19 @@ function fmtBytes(n: unknown): string {
   if (n < 1024) return `${n}B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
   return `${(n / 1024 / 1024).toFixed(1)}MB`
+}
+
+/**
+ * E29：run_end 一行摘要 —— 事件带合法 terminal 时按结构化终态显示（terminal 优先于 stopReason）；
+ * 旧事件无 terminal 保持旧摘要（stopReason 原文 / 中断），绝不推断"肯定成功"。
+ * 导出供单测消费：判定与渲染同源，禁止测试复制本实现。
+ */
+export function runEndSummary(e: ExecEvent): string {
+  const rounds = typeof e.rounds === 'number' ? ` · ${e.rounds} 轮` : ''
+  const ms = typeof e.durationMs === 'number' ? ` · ${(e.durationMs / 1000).toFixed(1)}s` : ''
+  if (isRunTerminal(e.terminal)) return `结束：${runTerminalText(e.terminal)}${rounds}${ms}`
+  const reason = typeof e.stopReason === 'string' ? e.stopReason : '中断'
+  return `结束：${reason}${rounds}${ms}`
 }
 
 /** 一行摘要：事件的核心事实（结构化拼装，不渲染任何正文） */
@@ -57,12 +71,9 @@ function summarize(e: ExecEvent): string {
       const sum = e.summarized === true ? ' · 已摘要' : ''
       return `裁剪 ${cnt}${bytes ? ` / ${bytes}` : ''}${sum}`
     }
-    case 'run_end': {
-      const reason = typeof e.stopReason === 'string' ? e.stopReason : '中断'
-      const rounds = typeof e.rounds === 'number' ? ` · ${e.rounds} 轮` : ''
-      const ms = typeof e.durationMs === 'number' ? ` · ${(e.durationMs / 1000).toFixed(1)}s` : ''
-      return `结束：${reason}${rounds}${ms}`
-    }
+    case 'run_end':
+      // E29：摘要判定收口到 runEndSummary（terminal 优先，旧事件不推断成功）
+      return runEndSummary(e)
   }
 }
 

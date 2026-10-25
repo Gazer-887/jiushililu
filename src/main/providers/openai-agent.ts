@@ -1,12 +1,13 @@
 ﻿import type { ModelSettings } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage, ToolSchema } from '@shared/agent'
+import type { RunTerminal } from '@shared/execution-outcome'
 import { resolveApiUrl } from './url'
 import { usageFromOpenAIChunk } from './usage-parsers'
 import type { TokenUsage } from '@shared/usage'
 import { ProviderError, mapHttpError } from './errors'
 import { createSSEParser } from './sse'
 import { effortToSend, openaiReasoningFields } from '@shared/reasoning'
-import { ToolCallAccumulator } from './tool-accumulator'
+import { ToolCallAccumulator, ToolCallIntegrityError } from './tool-accumulator'
 import { httpFetch } from './http-client'
 import { attachmentTextForModel } from '@shared/attachment-block'
 import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
@@ -69,7 +70,59 @@ export function buildToolsBody(
 
 async function throwHttpError(res: Response): Promise<never> {
   const detail = await res.text().catch(() => '')
-  throw new ProviderError(mapHttpError(res.status, detail), res.status)
+  // HTTP 层失败也挂结构化事实（E23-R1）：调用方据此判终态，不必解析文案。
+  // ⚠️ detail 只用于映射文案，绝不进入 message/facts —— 厂商正文不得外泄。
+  throw new ProviderError(mapHttpError(res.status, detail), res.status, {
+    scope: 'request',
+    terminal: { state: 'failed', code: 'http-error', httpStatus: res.status },
+    usage: null,
+    usageComplete: false
+  })
+}
+
+/** 受控失败（E23-R1）：固定本地文案 + 白名单事实，不带厂商原文/cause。 */
+function failRequest(terminal: RunTerminal, usage: TokenUsage | null): never {
+  throw new ProviderError('本次请求未正常完成', 0, {
+    scope: 'request',
+    terminal,
+    usage,
+    usageComplete: usage !== null
+  })
+}
+
+/**
+ * 非流 JSON 响应 → AgentChatResult（E23-R1）。
+ * ⚠️ 这是**同一响应**的唯一消费点：stream 收到 application/json 时也走它，
+ * 不重新发请求 —— 自动模型重放固定为 0。
+ */
+function resultFromOpenAIJson(json: {
+  choices?: Array<{
+    finish_reason?: string | null
+    message?: {
+      content?: string | null
+      tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
+    }
+  }>
+  usage?: unknown
+}): AgentChatResult {
+  const usage = usageFromOpenAIChunk(json)
+  const choice = json.choices?.[0]
+  const terminal = openaiFinishReasonToTerminal(choice?.finish_reason)
+  // 缺终因 / 未知值 / 截断 / 拒绝一律受控失败，绝不静默当成功
+  if (terminal === null) failRequest({ state: 'unknown', code: 'missing-terminal' }, usage)
+  if (terminal.state !== 'completed') failRequest(terminal, usage)
+
+  const msg = choice?.message ?? {}
+  return {
+    text: typeof msg.content === 'string' && msg.content.length > 0 ? msg.content : null,
+    toolCalls: (msg.tool_calls ?? []).map((tc, i) => ({
+      id: tc.id ?? `call_${i}`,
+      name: tc.function?.name ?? '',
+      arguments: tc.function?.arguments ?? '{}'
+    })),
+    usageComplete: usage !== null,
+    ...(usage ? { usage } : {})
+  }
 }
 
 export async function chatWithToolsOpenAI(
@@ -87,27 +140,48 @@ export async function chatWithToolsOpenAI(
   })
   if (!res.ok) await throwHttpError(res)
 
-  const json = (await res.json()) as {
-    choices?: Array<{
-      message?: {
-        content?: string | null
-        tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
-      }
-    }>
-  }
-  const msg = json.choices?.[0]?.message ?? {}
-  return {
-    text: typeof msg.content === 'string' && msg.content.length > 0 ? msg.content : null,
-    toolCalls: (msg.tool_calls ?? []).map((tc, i) => ({
-      id: tc.id ?? `call_${i}`,
-      name: tc.function?.name ?? '',
-      arguments: tc.function?.arguments ?? '{}'
-    }))
+  return resultFromOpenAIJson(
+    (await res.json()) as {
+      choices?: Array<{
+        finish_reason?: string | null
+        message?: {
+          content?: string | null
+          tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
+        }
+      }>
+      usage?: unknown
+    }
+  )
+}
+
+/**
+ * OpenAI `finish_reason` → 业务终态（E23）。
+ * ⚠️ **只有这里的映射才决定"这轮算不算完成"**：`[DONE]` 哨兵不是成功依据 ——
+ * 上游可能在没给 finish_reason 的情况下直接断流，那种流不该被当成功。
+ * 未知值一律 unknown/unsupported-stop，绝不猜成 completed。
+ *
+ * ⚠️ E23-R1：`function_call` 是**本应用从不发出的 legacy 协议形式**，按合同归 unknown。
+ * 收到它说明上游协议形态与预期不符，不能当正常收束。
+ */
+function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTerminal | null {
+  if (reason === null || reason === undefined) return null
+  switch (reason) {
+    case 'stop':
+      return { state: 'completed' }
+    case 'tool_calls':
+      // 工具是否真的存在由调用方的结构一致性检查确认；这里只标"业务上正常收束"
+      return { state: 'completed' }
+    case 'length':
+      return { state: 'truncated', code: 'token-limit' }
+    case 'content_filter':
+      return { state: 'denied', code: 'content-filter' }
+    default:
+      // 含 legacy `function_call`：本应用未发出的协议形式，按 unknown 处理
+      return { state: 'unknown', code: 'unsupported-stop' }
   }
 }
 
-/** 流式 + 工具（D-032 核心）：文本增量实时回调、工具调用参数分片累积；一条通道同时承担"聊天"与"干活" */
-export async function streamWithToolsOpenAI(
+/** 流式 + 工具（D-032 核心）：文本增量实时回调、工具调用参数分片累积；一条通道同时承担"聊天"与"干活" */export async function streamWithToolsOpenAI(
   settings: ModelSettings,
   apiKey: string,
   messages: AgentMessage[],
@@ -131,8 +205,15 @@ export async function streamWithToolsOpenAI(
     })
     if (!res.ok) await throwHttpError(res)
 
-    // 上游不返回流（或后端强制非流）时降级为一次性读取
-    if (!res.body) return await chatWithToolsOpenAI(settings, apiKey, messages, tools, signal)
+    // ⚠️ E23-R1：无 body 时**不得再发一次请求** —— 自动模型重放固定为 0。
+    //    旧实现会调 chatWithToolsOpenAI 重新 POST，等于用第二个响应掩盖第一次的未知状态。
+    if (!res.body) failRequest({ state: 'unknown', code: 'missing-terminal' }, null)
+
+    // ⚠️ E23-R1：端点忽略 stream 回退成 JSON 时，消费**同一响应**，不发新请求（hits 保持 1）。
+    const contentType = res.headers.get('content-type') ?? ''
+    if (contentType.toLowerCase().includes('application/json')) {
+      return resultFromOpenAIJson((await res.json()) as never)
+    }
 
     const acc = new ToolCallAccumulator()
     let text = ''
@@ -142,32 +223,57 @@ export async function streamWithToolsOpenAI(
      * 所以每个 chunk 都要试着取一次；厂商不报就留 null，上层据此退回估算并**标注**。
      */
     let usage: TokenUsage | null = null
+    /** 最后一次看到的 finish_reason（E23）：**业务终态的唯一依据**，`[DONE]` 不算 */
+    let finishReason: string | null = null
+    /** 上游在 payload 里明确报错（E23）：必须当失败，不能当"没有 delta 就跳过" */
+    let upstreamError = false
+    /** 业务帧 JSON 损坏（E23）：形似业务消息却解析失败，不能被通用 catch 静默吞掉 */
+    let malformedBusinessFrame = false
 
     const parser = createSSEParser((data) => {
       if (data === '[DONE]') return
+      let json: {
+        error?: unknown
+        usage?: unknown
+        choices?: Array<{
+          finish_reason?: string | null
+          delta?: {
+            content?: string
+            /** DeepSeek 系（reasoner / v4）把思考放这里；OpenAI 系通常不返回内容 */
+            reasoning_content?: string
+            tool_calls?: Array<Record<string, unknown>>
+          }
+        }>
+      }
       try {
-        const json = JSON.parse(data) as {
-          usage?: unknown
-          choices?: Array<{
-            delta?: {
-              content?: string
-              /** DeepSeek 系（reasoner / v4）把思考放这里；OpenAI 系通常不返回内容 */
-              reasoning_content?: string
-              tool_calls?: Array<Record<string, unknown>>
-            }
-          }>
-        }
-        const chunkUsage = usageFromOpenAIChunk(json)
-        if (chunkUsage) usage = chunkUsage
-        const delta = json.choices?.[0]?.delta
-        if (!delta) return
-        // 思考增量：**不进 text**，只外送 —— 它是过程，不是回答
-        if (delta.reasoning_content) onReasoning?.(delta.reasoning_content)
-        if (delta.content) {
-          text += delta.content
-          onText(delta.content)
-        }
-        if (Array.isArray(delta.tool_calls)) {
+        json = JSON.parse(data) as typeof json
+      } catch {
+        // 只有**形似业务帧**的损坏才算错；心跳/注释/裸文本仍按协议忽略
+        if (/"(choices|error|usage)"\s*:/.test(data)) malformedBusinessFrame = true
+        return
+      }
+      // 顶层 error：上游明确报错，必须当失败（不能因没有 delta 而跳过）
+      if (json.error !== undefined && json.error !== null) {
+        upstreamError = true
+        return
+      }
+      const chunkUsage = usageFromOpenAIChunk(json)
+      if (chunkUsage) usage = chunkUsage
+      const choice = json.choices?.[0]
+      // finish_reason 每帧都可能出现（通常最后一帧），取最后一次非空值
+      if (choice?.finish_reason !== undefined && choice.finish_reason !== null) {
+        finishReason = choice.finish_reason
+      }
+      const delta = choice?.delta
+      if (!delta) return
+      // 思考增量：**不进 text**，只外送 —— 它是过程，不是回答
+      if (delta.reasoning_content) onReasoning?.(delta.reasoning_content)
+      if (delta.content) {
+        text += delta.content
+        onText(delta.content)
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        try {
           acc.pushOpenAI(
             delta.tool_calls as Array<{
               index?: number
@@ -175,9 +281,10 @@ export async function streamWithToolsOpenAI(
               function?: { name?: string; arguments?: string }
             }>
           )
+        } catch {
+          // 冲突已记进 accumulator 的 conflict 状态；finishStrict 会拒绝，
+          // 这里吞掉是为了不在解析回调里中断流（真实 provider 同款结构）
         }
-      } catch {
-        // 心跳 / 注释等非 JSON 行忽略
       }
     })
 
@@ -193,8 +300,54 @@ export async function streamWithToolsOpenAI(
     parser.push(decoder.decode())
     parser.end()
 
-    const toolCalls = acc.finish()
-    return { text: text.length > 0 ? text : null, toolCalls, ...(usage ? { usage } : {}) }
+    // ── 业务终态判定（E23）：顺序即优先级，先确定"这轮是什么结局"，再决定要不要交工具 ──
+    // ⚠️ 只有**失败形态**才带 terminal（走 ProviderError.facts）；成功直接 return 即代表 completed，
+    //    `AgentChatResult` 保持既有 shape，整轮 terminal 由后续 loop/runner 写入 AgentLoopResult。
+    const failWith: (terminal: RunTerminal) => never = (terminal) => {
+      throw new ProviderError('本次请求未正常完成', 0, {
+        scope: 'request',
+        terminal,
+        usage,
+        usageComplete: usage !== null
+      })
+    }
+
+    if (upstreamError) failWith({ state: 'failed', code: 'upstream-error' })
+    if (malformedBusinessFrame) failWith({ state: 'unknown', code: 'malformed-stream' })
+
+    const terminal = openaiFinishReasonToTerminal(finishReason)
+    if (terminal === null) failWith({ state: 'unknown', code: 'missing-terminal' })
+    if (terminal.state !== 'completed') failWith(terminal)
+
+    // 工具放行只走严格出口：残片/冲突一律拒绝，且**不执行任何该轮工具**
+    let toolCalls
+    try {
+      toolCalls = acc.finishStrict()
+    } catch (err) {
+      if (err instanceof ToolCallIntegrityError) {
+        failWith({ state: 'failed', code: 'incomplete-tool-call' })
+      }
+      throw err
+    }
+
+    // ── 结构一致性（E23-R1）：**先固定结构，再决定工具放行** ──
+    // finish_reason 与「工具是否真的存在」必须互相印证；矛盾一律受控失败，绝不执行工具。
+    const expectsTools = finishReason === 'tool_calls'
+    if (expectsTools && toolCalls.length === 0) {
+      // 说本轮是工具调用，却一个完整工具都没解析出来 → 残片或上游谎报
+      failWith({ state: 'failed', code: 'incomplete-tool-call' })
+    }
+    if (!expectsTools && toolCalls.length > 0) {
+      // 终态说"正常结束"却冒出工具 → 结构矛盾，执行它等于凭空干活
+      failWith({ state: 'failed', code: 'incomplete-tool-call' })
+    }
+
+    return {
+      text: text.length > 0 ? text : null,
+      toolCalls,
+      usageComplete: usage !== null,
+      ...(usage ? { usage } : {})
+    }
   } catch (err) {
     // 守卫开的枪 → 换成**说清是哪一层超时**的话（不是笼统的"请求超时"）
     const timedOut = guard.timeoutMessage()

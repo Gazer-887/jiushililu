@@ -57,7 +57,7 @@ test.describe('对话内预览：完整PDF快照故事与旧接口兼容回归',
         let body = ''; req.on('data', chunk => { body += chunk })
         req.on('end', () => {
           bodies.push(body); res.writeHead(200, { 'content-type': 'text/event-stream' })
-          res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'PDF_SNAPSHOT_REPLY' } }] })}\n\ndata: [DONE]\n\n`)
+          res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'PDF_SNAPSHOT_REPLY' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`)
         })
       })
       srv.listen(0, '127.0.0.1'); await once(srv, 'listening')

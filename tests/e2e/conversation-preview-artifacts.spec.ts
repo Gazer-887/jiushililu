@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { launchApp, apiCall } from './helpers'
 function tool(name: string, args: unknown, id: string): string {
-  return `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] })}\n\ndata: [DONE]\n\n`
+  return `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`
 }
-function text(body: string): string { return `data: ${JSON.stringify({ choices: [{ delta: { content: body } }] })}\n\ndata: [DONE]\n\n` }
+function text(body: string): string { return `data: ${JSON.stringify({ choices: [{ delta: { content: body }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n` }
 
 test('真实工具写入与edit成功才出卡；当前版本刷新，工作区切换与重启不串根', async () => {
   const first = await launchApp()

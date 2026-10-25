@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 
 // 白名单门控（plan6 D4）：权限门控的第一道消费者。
@@ -22,21 +22,33 @@ export class ToolGate {
   }
 }
 
-/** 解析到"最深的已存在祖先"的真实路径，再拼回未存在的尾部（用于校验待创建文件的目标位置） */
+/** 只有确证不存在（ENOENT）才算"尾部未建"；ENOTDIR 与权限/未知失败一律上抛（见交还说明）。 */
+function isMissingPathError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code
+  return code === 'ENOENT'
+}
+
+/** 解析到"最深的已存在祖先"的真实路径，再拼回未存在的尾部；祖先必须是目录，否则抛错。 */
 export function realpathDeepest(abs: string): string {
   let cur = abs
   let tail = ''
+  let real = ''
   for (;;) {
     try {
-      const real = realpathSync.native(cur)
-      return tail ? join(real, tail) : real
-    } catch {
+      real = (typeof realpathSync.native === 'function' ? realpathSync.native : realpathSync)(cur)
+      break
+    } catch (err) {
+      // 不可核就抛（ENOTDIR / 权限 / 未知），让上层 fail-closed
+      if (!isMissingPathError(err)) throw err
       const parent = dirname(cur)
       if (parent === cur) return abs // 到根都不存在（异常输入）
       tail = tail ? join(basename(cur), tail) : basename(cur)
       cur = parent
     }
   }
+  // 尾部要拼在"最深的已存在祖先"之下，那祖先必须是目录：普通文件之下建不出东西
+  if (tail && !statSync(real).isDirectory()) throw new Error('无法解析真实路径：未存在尾部的祖先不是目录')
+  return tail ? join(real, tail) : real
 }
 
 /**
@@ -64,21 +76,20 @@ export interface ResolvedPath {
   outside: boolean
 }
 
-/**
- * 把目标路径解析到 workspaceRoot 内，并回答"有没有出界"；按策略决定出界时是拒绝还是放行。
- *
- * 防三类逃逸：① 相对路径 ../ ② 绝对路径直指工作区外 ③ **符号链接指向工作区外**（用真实路径比对）
- *
- * ⚠️ `allowOutside` 下**不再做符号链接真实路径比对** —— 那个比对的目的是"揭穿伪装成界内的界外路径"，
- * 而在"界外本来就允许"的前提下它没有意义（用户要的就是碰真实机器）。故这一档下只做解析，不做判定。
- */
-export function resolvePathInWorkspace(root: string, target: string, access?: PathAccess): ResolvedPath | null {
-  if (typeof target !== 'string' || target.length === 0) return null
+/** 一次解析的结论：成功给出绝对路径与出界与否，失败按 reason 分类（核不出 ≠ 越界）。 */
+export type PathInspection =
+  | { ok: true; abs: string; outside: boolean }
+  | { ok: false; reason: 'invalid' | 'outside' | 'unresolvable' }
+
+/** 解析到 workspaceRoot 内，返回出界与否；失败按 reason 分类（见 `PathInspection`）。
+ *  防三类逃逸：../、绝对路径直指界外、联接指向界外；`allowOutside` 下只解析不判定。 */
+export function inspectPathInWorkspace(root: string, target: string, access?: PathAccess): PathInspection {
+  if (typeof target !== 'string' || target.length === 0) return { ok: false, reason: 'invalid' }
   const abs = isAbsolute(target) ? resolve(target) : resolve(join(root, target))
   const normRoot = resolve(root)
 
   // 「完全访问」档在 **Agent 线** 上的语义：没有边界。仍返回绝对路径，好让上层如实展示落点。
-  if (access?.allowOutside === true) return { abs, outside: !isInside(normRoot, abs) }
+  if (access?.allowOutside === true) return { ok: true, abs, outside: !isInside(normRoot, abs) }
 
   // 真实路径对比：符号链接会把"看起来在内"的路径指向外面，必须用 realpath 揭穿
   let realRoot: string
@@ -87,11 +98,18 @@ export function resolvePathInWorkspace(root: string, target: string, access?: Pa
     realRoot = realpathDeepest(normRoot)
     realTarget = realpathDeepest(abs)
   } catch {
-    return null
+    // 真实路径核不出来（权限 / 未知失败）：**fail-closed**，且与"越界"分开报
+    return { ok: false, reason: 'unresolvable' }
   }
 
-  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + sep)) return null
-  return { abs, outside: false }
+  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + sep)) return { ok: false, reason: 'outside' }
+  return { ok: true, abs, outside: false }
+}
+
+/** 解析结论的简写（既有调用方只用得到"放行与否"）：失败一律 null，语义等同 fail-closed */
+export function resolvePathInWorkspace(root: string, target: string, access?: PathAccess): ResolvedPath | null {
+  const r = inspectPathInWorkspace(root, target, access)
+  return r.ok ? { abs: r.abs, outside: r.outside } : null
 }
 
 /** 绝对路径是否落在 root 内（**纯几何判断**，不解符号链接、不做策略）—— 只用于"要不要提示越界" */

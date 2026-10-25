@@ -25,16 +25,65 @@ const settings: ModelSettings = {
 
 afterEach(() => setHttpFetch(null))
 
+type SseEvent = Record<string, unknown> & { type?: string }
+
+/**
+ * E33-R1 合法时序守护：官方流式契约是
+ * message_start → content_block_start/delta/stop → message_delta（可多个，累计 usage + stop_reason）→ message_stop。
+ * 正文块闭合必须早于 message_delta；message_stop 只出现一次且在最后。
+ */
+function assertSuccessEventOrder(events: SseEvent[]): void {
+  const types = events.map((e) => e.type)
+  expect(types[0]).toBe('message_start')
+  expect(types[types.length - 1]).toBe('message_stop')
+  expect(types.filter((t) => t === 'message_stop')).toHaveLength(1)
+  const start = types.indexOf('content_block_start')
+  const delta = types.indexOf('content_block_delta')
+  const stop = types.indexOf('content_block_stop')
+  expect(start).toBeGreaterThan(0)
+  expect(delta).toBeGreaterThan(start)
+  expect(stop).toBeGreaterThan(delta)
+  const firstMessageDelta = types.indexOf('message_delta')
+  if (firstMessageDelta >= 0) expect(firstMessageDelta).toBeGreaterThan(stop)
+}
+
 async function response(usageEvents: unknown[]) {
-  const events = [
-    ...usageEvents,
+  const typed = usageEvents as SseEvent[]
+  const starts = typed.filter((e) => e.type === 'message_start')
+  const deltas = typed.filter((e) => e.type === 'message_delta')
+  const others = typed.filter((e) => e.type !== 'message_start' && e.type !== 'message_delta')
+  // E33-R1：合法顺序 = 开始 → 完整文本块 → 原样传入的 message_delta（最后一个只补 stop_reason）
+  // → message_stop。不新增/删除/补造 usage 字段，也不把终止事件挪到正文前。
+  const lastDelta = deltas.length - 1
+  const closing = deltas.map((e, i) =>
+    i === lastDelta
+      ? {
+          ...e,
+          delta: { ...((e.delta as Record<string, unknown> | undefined) ?? {}), stop_reason: 'end_turn' }
+        }
+      : e
+  )
+  const events: SseEvent[] = [
+    ...(starts.length
+      ? starts
+      : [{ type: 'message_start', message: { type: 'message', role: 'assistant', content: [] } }]),
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
     {
       type: 'content_block_delta',
       index: 0,
       delta: { type: 'text_delta', text: '文本正常完成。' }
     },
+    { type: 'content_block_stop', index: 0 },
+    ...others,
+    ...(deltas.length
+      ? closing
+      : [{ type: 'message_delta', delta: { stop_reason: 'end_turn' } }]),
     { type: 'message_stop' }
   ]
+  assertSuccessEventOrder(events)
+  // usage 保护：传入的最后一个 message_delta 只补 stop_reason，原 usage 引用/缺报保持不变。
+  if (deltas.length) expect(closing[lastDelta].usage).toBe(deltas[lastDelta].usage)
+
   const fetch = vi.fn(
     async () =>
       new Response(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''), {

@@ -1,17 +1,19 @@
 import { create } from 'zustand'
 import { sortGoals, type Goal, type GoalAction } from '@shared/goal'
-import type {
-  ChatDonePayload,
-  ChatMessage,
-  ConversationCreateInput,
-  ConversationMeta,
-  SettingsView,
-  StreamEnvelope
+import {
+  chatErrorMessage,
+  type ChatDonePayload,
+  type ChatErrorPayload,
+  type ChatMessage,
+  type ConversationCreateInput,
+  type ConversationMeta,
+  type SettingsView,
+  type StreamEnvelope
 } from '@shared/ipc'
 import { textOfParts, type ContentPart } from '@shared/content-parts'
 import type { LocalFileRef } from '@shared/conversation-preview'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
-import { applyAssistantChunk, applyAssistantThinking, applyAssistantTool } from '@shared/message-segments'
+import { applyAssistantChunk, applyAssistantTerminal, applyAssistantThinking, applyAssistantTool } from '@shared/message-segments'
 import type { AskRequest } from '@shared/ask'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
@@ -227,7 +229,8 @@ interface AppState {
   setTodos: (e: StreamEnvelope<TodoItem[]>) => void
   setSubagents: (e: StreamEnvelope<SubagentJobEvent[]>) => void
   markDone: (e: StreamEnvelope<ChatDonePayload>) => void
-  markError: (e: StreamEnvelope<string>) => void
+  /** E26a-R1：旧主进程 string、新主进程 ChatErrorPayload；文案在这一层归一，结构化事实由调用方保留。 */
+  markError: (e: StreamEnvelope<string | ChatErrorPayload>) => void
   clearToolEvents: () => void
   sendMessage: (
     text: string,
@@ -855,11 +858,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   markDone: (e) => {
     set((s) => {
+      // E27-R1：已结算判据按“本轮尾部 assistant 是否已有 terminal”，与 streaming 无关 ——
+      // stopStreaming 会先把 streaming 置 false，迟到的 done 仍是本轮的唯一下载点。
+      const view = e.conversationId === s.activeId ? viewOf(s) : s.runtimes[e.conversationId]
+      const tail = view?.messages[view.messages.length - 1]
+      if (tail?.role === 'assistant' && tail.terminal) return {}
       const nextUsage = accumulateConversationUsage(s.usageByConversation[e.conversationId], e.payload ?? { usage: null })
       return settleRuntime(
         s,
         {
-          ...applyToConversation(s, e.conversationId, () => ({ streaming: false })),
+          ...applyToConversation(s, e.conversationId, (v) => ({
+            streaming: false,
+            messages: applyAssistantTerminal(v.messages, e.payload?.terminal)
+          })),
           ...(nextUsage ? { usageByConversation: { ...s.usageByConversation, [e.conversationId]: nextUsage } } : {})
         },
         e.conversationId
@@ -870,16 +881,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   markError: (e) => {
-    set((s) =>
-      settleRuntime(
+    set((s) => {
+      // E27-R1：错误同样按轮次结算；已结算后只更新文案，不再累加账、不覆盖已有终态。
+      const view = e.conversationId === s.activeId ? viewOf(s) : s.runtimes[e.conversationId]
+      const tail = view?.messages[view.messages.length - 1]
+      const alreadySettled = tail?.role === 'assistant' && !!tail.terminal
+      const payload = typeof e.payload === 'string' ? null : e.payload
+      const nextUsage =
+        !alreadySettled && payload
+          ? accumulateConversationUsage(s.usageByConversation[e.conversationId], payload)
+          : undefined
+      return settleRuntime(
         s,
-        applyToConversation(s, e.conversationId, () => ({
-          streaming: false,
-          streamError: e.payload
-        })),
+        {
+          ...applyToConversation(s, e.conversationId, (v) => ({
+            streaming: false,
+            // 旧 string 原样显示；新结构化载荷取固定映射 message（不把对象/厂商正文塞进界面）。
+            streamError: chatErrorMessage(e.payload),
+            ...(!alreadySettled && payload?.terminal
+              ? { messages: applyAssistantTerminal(v.messages, payload.terminal) }
+              : {})
+          })),
+          ...(nextUsage ? { usageByConversation: { ...s.usageByConversation, [e.conversationId]: nextUsage } } : {})
+        },
         e.conversationId
       )
-    )
+    })
     // 错到一半的内容也是内容，照样落盘
     void get().persistConversation(e.conversationId)
   },
@@ -906,7 +933,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 这个 filter 的结果会成为新的 `messages`（见下方 set）→ **在这里丢掉它，
     // 内存就比磁盘少条目 → 渲染 index ≠ 磁盘 index → `rollbackTo` 切错位置**。
     const history = get().messages.filter(
-      (m) => m.content.trim().length > 0 || (m.role === 'assistant' && (m.segments?.length ?? 0) > 0)
+      (m) =>
+        m.content.trim().length > 0 ||
+        (m.role === 'assistant' && ((m.segments?.length ?? 0) > 0 || !!m.terminal))
     )
     const now = Date.now()
     // plan74：用户消息身份（本地引用/产物卡/媒体进度键的稳定锚）。仅新发的这条带；

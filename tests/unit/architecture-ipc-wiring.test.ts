@@ -1,5 +1,5 @@
 // 真IPC→runner→loop→Provider→记忆库整链，仅替换Electron与网络出口，不替换内部装配。
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,8 @@ import type { ModelSettings } from '@shared/ipc'
 
 const f = vi.hoisted(() => ({
   root: '', handlers: new Map<string, (event: unknown, input: unknown) => Promise<unknown>>(),
-  notices: [] as Array<{ channel: string; payload: { conversationId?: string; written?: string[] } }>
+  notices: [] as Array<{ channel: string; payload: { conversationId?: string; written?: string[] } }>,
+  events: [] as Array<Record<string, unknown>>
 }))
 vi.mock('electron', () => ({
   app: { getPath: () => { if (!f.root) throw new Error('测试数据根未设置'); return f.root } },
@@ -40,7 +41,7 @@ const { createPlaybookStore } = await import('@main/store/playbook-store')
 const { setHttpFetch } = await import('@main/providers/http-client')
 f.root = mkdtempSync(join(tmpdir(), 'jsl-architecture-ipc-'))
 let sequence = 0
-beforeEach(() => { f.notices.length = 0; f.handlers.clear() })
+beforeEach(() => { f.notices.length = 0; f.events.length = 0; f.handlers.clear() })
 afterAll(() => {
   setHttpFetch(null)
   expect(resolve(dirname(f.root))).toBe(resolve(tmpdir())); expect(basename(f.root)).toMatch(/^jsl-architecture-ipc-/)
@@ -56,7 +57,7 @@ function setup() {
     trash: async () => {}, confirm: { ask: async () => true, respond: () => false, abortAll: () => {} },
     ask: { ask: async () => ({ answered: false as const, reason: 'no-window' as const }), respond: () => false, abortAll: () => {} },
     planApproval: { request: async () => true, respond: () => false, abortAll: () => {} }, terminal: {} as never,
-    system: { getBlockers: () => [] } as never, execEventSink: { append: () => {} }, network: {} as never })
+    system: { getBlockers: () => [] } as never, execEventSink: { append: (evt) => { f.events.push(evt as unknown as Record<string, unknown>) } }, network: {} as never })
   return { memory, agent }
 }
 function event(id: number, onSend?: (channel: string, payload: unknown) => void) {
@@ -70,7 +71,9 @@ const response = (message: Record<string, unknown>) => {
   const delta = { ...message, ...(Array.isArray(message.tool_calls) ? {
     tool_calls: message.tool_calls.map((call, index) => ({ ...call, index }))
   } : {}) }
-  return new Response(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\ndata: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`, {
+  // E33：正常成功壳 = 终帧；有工具调用走 tool_calls，纯文本走 stop。
+  const finishReason = Array.isArray(message.tool_calls) ? 'tool_calls' : 'stop'
+  return new Response(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\ndata: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`, {
     status: 200, headers: { 'Content-Type': 'text/event-stream' }
   })
 }
@@ -187,5 +190,66 @@ describe('聊天和一次性任务实际装配', () => {
     expect(notice('cancel-chat')[0].payload.written).toEqual([first])
     expect(JSON.stringify(e.messages.filter((m) => m.channel === IPC.chatError))).toContain('已停止生成')
     expect(agent.checkpoints.list().every((run) => run.status !== 'running')).toBe(true)
+  })
+
+  it('一次性任务真实接执行事件与子代理登记：main/sub 同 conversationId，其它会话 0', async () => {
+    setup()
+    mkdirSync(join(f.root, 'agents'), { recursive: true })
+    writeFileSync(
+      join(f.root, 'agents', 'e30-main.md'),
+      `---\nname: e30-main\ndescription: E30 P2 main\ntools: [spawn_agents, read_file]\n---\n主代理。\n`,
+      'utf8'
+    )
+    writeFileSync(
+      join(f.root, 'agents', 'e30-child.md'),
+      `---\nname: e30-child\ndescription: E30 P2 child\ntools: [read_file]\n---\n子代理。\n`,
+      'utf8'
+    )
+    let n = 0
+    setHttpFetch(async (_url, init) => {
+      void requestBody(init as RequestInit)
+      n++
+      if (n === 1) {
+        return response({
+          content: '',
+          tool_calls: [
+            {
+              id: 'p2-spawn',
+              type: 'function',
+              function: {
+                name: 'spawn_agents',
+                arguments: JSON.stringify({ jobs: [{ agent: 'e30-child', task: '读取一个文件' }] })
+              }
+            }
+          ]
+        })
+      }
+      return response({ content: n === 2 ? '子代理完成' : '主代理收口完成' })
+    })
+    const e = event(91)
+    const result = await f.handlers.get(IPC.agentRun)!(e, {
+      task: '派一个子任务',
+      agentName: 'e30-main',
+      conversationId: 'conv-p2'
+    })
+    expect(result).toMatchObject({ ok: true })
+
+    const mine = f.events.filter((x) => x['conversationId'] === 'conv-p2')
+    const start = mine.find((x) => x['kind'] === 'run_start')
+    expect(start).toBeTruthy()
+    expect(start!['agentScope']).toBe('main')
+    expect(start!['agentName']).toBe('e30-main')
+    expect(mine.some((x) => x['agentScope'] === 'sub')).toBe(true)
+    expect(f.events.every((x) => x['conversationId'] === 'conv-p2')).toBe(true)
+
+    const jobs = f.handlers.get(IPC.subagentGet)!(e, 'conv-p2') as Array<{ name: string }>
+    expect(jobs.map((j) => j.name)).toContain('e30-child')
+    expect(f.handlers.get(IPC.subagentGet)!(e, 'conv-other')).toEqual([])
+
+    const notices = e.messages.filter((m) => m.channel === IPC.subagentChanged)
+    expect(notices.length).toBeGreaterThan(0)
+    expect(
+      notices.every((m) => (m.payload as { conversationId: string }).conversationId === 'conv-p2')
+    ).toBe(true)
   })
 })
