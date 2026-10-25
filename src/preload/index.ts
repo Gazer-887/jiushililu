@@ -284,7 +284,12 @@ const api: ApiBridge = {
   readWorkspaceBinary: (rel) => ipcRenderer.invoke(IPC.fsReadBinary, rel),
   // Office 内嵌预览：主进程解析，渲染端只拿沙箱 URL（不拿 HTML 本体）
   previewOffice: (rel) => ipcRenderer.invoke(IPC.officePreview, rel),
-  openWorkspacePathInSystem: (rel) => ipcRenderer.invoke(IPC.fsOpenInSystem, rel),
+  openWorkspacePathInSystem: (rel, previewHandleId) => ipcRenderer.invoke(IPC.fsOpenInSystem, rel, ...(previewHandleId ? [previewHandleId] : [])),
+  // ── 对话内文件预览（plan74）：Gateway 统一只读加载缝 ──
+  previewOpen: (req) => ipcRenderer.invoke(IPC.previewOpen, req),
+  previewRelease: (handleId) => ipcRenderer.invoke(IPC.previewRelease, handleId),
+  previewRead: (handleId) => ipcRenderer.invoke(IPC.previewRead, handleId),
+  previewIngestDraft: (input) => ipcRenderer.invoke(IPC.previewIngestDraft, input),
   // 写操作全部走统一写入服务（留检查点、可回滚）
   writeWorkspaceFile: (rel, content, expectedMtimeMs, expectedRevision) =>
     ipcRenderer.invoke(IPC.fsWrite, {

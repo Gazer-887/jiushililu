@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ATTACH_LIMIT, readAttachment } from '@main/workspace-fs'
 import { attachmentsDir, readAttachmentMedia, saveAttachmentImage } from '@main/attachments-store'
+import { AssetBudget, assetsDir } from '@main/preview-assets'
 import { MAX_OUTBOUND_IMAGE_BYTES } from '@shared/content-parts'
 
 // 附件读取（③ 文件拖进会话 / 文件选择框 **共用**这一份；两入口只差"路径从哪来"）

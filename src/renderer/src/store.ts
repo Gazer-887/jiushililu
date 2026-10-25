@@ -9,6 +9,7 @@ import type {
   StreamEnvelope
 } from '@shared/ipc'
 import { textOfParts, type ContentPart } from '@shared/content-parts'
+import type { LocalFileRef } from '@shared/conversation-preview'
 import type { SubagentJobEvent, ToolEvent } from '@shared/agent'
 import { applyAssistantChunk, applyAssistantThinking, applyAssistantTool } from '@shared/message-segments'
 import type { AskRequest } from '@shared/ask'
@@ -228,7 +229,10 @@ interface AppState {
   markDone: (e: StreamEnvelope<ChatDonePayload>) => void
   markError: (e: StreamEnvelope<string>) => void
   clearToolEvents: () => void
-  sendMessage: (text: string, opts?: { skipAppend?: boolean; parts?: ContentPart[] }) => Promise<void>
+  sendMessage: (
+    text: string,
+    opts?: { skipAppend?: boolean; parts?: ContentPart[]; localFiles?: LocalFileRef[]; messageId?: string }
+  ) => Promise<boolean>
   stopStreaming: () => Promise<void>
   persistConversation: (id: string) => Promise<void>
   flushAll: () => Promise<void>
@@ -891,10 +895,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 每个调用点自觉传对更可靠（下面 append 那一处直接用它，`content === textOfParts(parts)` 由此成立）
     const content = (opts?.parts ? textOfParts(opts.parts) : text).trim()
     const conversationId = get().activeId
-    if (!content || get().streaming) return
+    if (!content || get().streaming) return false
     if (!conversationId) {
       set({ streamError: '该消息没有归属的会话，请先新建会话再发送。' })
-      return
+      return false
     }
     const skipAppend = opts?.skipAppend === true
     // ⚠️ 与 `normalizeHistory` 同规则（plan46 前置检查发现，plan36 坑 3 的另一半）：
@@ -905,6 +909,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       (m) => m.content.trim().length > 0 || (m.role === 'assistant' && (m.segments?.length ?? 0) > 0)
     )
     const now = Date.now()
+    // plan74：用户消息身份（本地引用/产物卡/媒体进度键的稳定锚）。仅新发的这条带；
+    // 历史消息的 messageId 由存档读回时补。
+      const messageId = opts?.messageId ?? `u-${now}-${Math.random().toString(36).slice(2, 8)}`
+    const localFiles = opts?.localFiles
     const payload = skipAppend
       ? [...history]
       : [
@@ -913,8 +921,11 @@ export const useAppStore = create<AppState>((set, get) => ({
             role: 'user' as const,
             content,
             createdAt: now,
+            messageId,
             // 图片轮才带（引用制，见 `ChatMessage.parts`）；文本部分与 `content` 同源，不另计一次
-            ...(opts?.parts ? { parts: opts.parts } : {})
+            ...(opts?.parts ? { parts: opts.parts } : {}),
+            // plan74：本地文件引用（并列载体、不出站）—— 随消息持久化，重启仍可预览
+            ...(localFiles && localFiles.length > 0 ? { localFiles } : {})
           }
         ]
     set({
@@ -945,14 +956,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 主 Agent（plan17 G2）：从会话 meta 读（真相源），带了但定义不存在 → 主进程报人话错误
       const agentName = get().conversations.find((c) => c.id === conversationId)?.agentName
       await window.api.chatSend({ conversationId, messages: payload, ...(agentName ? { agentName } : {}) })
+      return true
     } catch (err) {
       // 主进程入参校验失败等；常规错误已通过 chatError 事件送达。
       // ⚠️ 原文必须带出来：`friendlyParse` 给的是「参数不合法：messages.3.content —— …」，
       //    换成通用句就把"是哪一条消息坏了"这条唯一线索埋了（K8 因此在界面上无从下手）。
-      get().markError({
-        conversationId,
-        payload: `发送失败：${err instanceof Error ? err.message : String(err)}`
-      })
+      // IPC尚未接受的新轮不落盘，不把草稿能力当作历史消费。常规模型失败仍走原事件收尾。
+      set(s => settleRuntime(s, applyToConversation(s, conversationId, () => ({
+        messages: history, streaming: false, streamError: `发送失败：${err instanceof Error ? err.message : String(err)}`
+      })), conversationId))
+      if (get().activeId === conversationId) get().archiveCurrent()
+      return false
     }
   },
 

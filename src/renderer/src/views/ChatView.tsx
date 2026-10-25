@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore, usedTokens } from '../store'
-import type { Attachment } from '@shared/ipc'
+import type { Attachment, ChatMessage } from '@shared/ipc'
 import { stripAttachmentBlocks, userTurnWithMedia } from '@shared/attachment-block'
 import MessageMarkdown from '../components/MessageMarkdown'
 import MessageSegments from '../components/MessageSegments'
@@ -38,6 +38,7 @@ export default function ChatView() {
   const [capture, setCapture] = useState<{ text: string; turnIndex: number } | null>(null)
   /** 执行时间线浮层开关（09-19：时间线从右栏搬进主对话；本地态，不进全局 store） */
   const [tlOpen, setTlOpen] = useState(false)
+  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null)
 
   /** 菜单容器：判「点在不在菜单里」全靠它 —— 用法与原因见下面 effect */
   const menuRef = useRef<HTMLDivElement>(null)
@@ -99,8 +100,9 @@ export default function ChatView() {
 
   /** 编辑 = 回退到这条之前 + 把原提问填回输入框（plan46 决策 5）—— 真回退了才填，拒了确认就什么都不做 */
   const requestEdit = async (index: number, text: string): Promise<void> => {
+    const original = messages[index]
     const ok = await rollbackTo(index, { viaEdit: true })
-    if (ok) setInput(text)
+    if (ok) { setInput(text); setEditingMessage(original) }
   }
 
   /** 时间戳 HH:mm（24 小时制）。不带日期 —— 同一会话跨天罕见，不值得占操作条的位 */
@@ -358,6 +360,7 @@ export default function ChatView() {
   const stopStreaming = useAppStore((s) => s.stopStreaming)
   const conversations = useAppStore((s) => s.conversations)
   const activeId = useAppStore((s) => s.activeId)
+  useEffect(() => { setEditingMessage(null) }, [activeId])
   // 主 Agent（plan17）：meta 是真相源；定义被删 → 降级标记（回退内核默认，但如实显示原名）
   const agentsView = useAppStore((s) => s.agentsView)
   const selectAgent = useAppStore((s) => s.selectAgent)
@@ -404,16 +407,28 @@ export default function ChatView() {
 
   const tokens = useMemo(() => usedTokens(messages), [messages])
 
-  const submit = async (attachments: Attachment[]): Promise<void> => {
+  const submit = async (attachments: Attachment[]): Promise<boolean> => {
     const raw = input
-    if (!raw.trim() && attachments.length === 0) return
-    setInput('')
+    if (!raw.trim() && attachments.length === 0) return false
+    const sentFor = activeId
     // 自己刚发的这条必须看得见：无条件收回跟随权（片② 的例外 —— 用户主动提交不是"上滑阅读"）
     stickBottomRef.current = true
     setShowJumpLatest(false)
     // 正文与图片引用一次构造（片③）：两处分开拼迟早漂出"气泡有图、模型没图"
     const turn = userTurnWithMedia(raw.trim(), attachments)
-    await sendMessage(turn.content, turn.parts ? { parts: turn.parts } : undefined)
+    const retainedParts = editingMessage?.parts?.filter(part => part.type !== 'text') ?? []
+    const parts = retainedParts.length ? [...(turn.parts ?? [{ type: 'text' as const, text: turn.content }]), ...retainedParts] : turn.parts
+    const files = [...(editingMessage?.localFiles ?? []), ...(turn.localFiles ?? [])]
+    const accepted = await sendMessage(turn.content, {
+      ...(parts ? { parts } : {}),
+      ...(files.length ? { localFiles: files } : {}),
+      ...(editingMessage?.messageId ? { messageId: editingMessage.messageId } : {})
+    })
+    if (accepted && useAppStore.getState().activeId === sentFor) {
+      setInput(current => current === raw ? '' : current)
+      setEditingMessage(current => current === editingMessage ? null : current)
+    }
+    return accepted
   }
 
   return (
@@ -480,7 +495,10 @@ export default function ChatView() {
             {m.role === 'assistant' && m.segments && m.segments.length > 0 ? (
               <>
                 {/* plan36：分段长在消息里，按真实到达顺序交错（正文段独占 .msg-content，见 MessageSegments 头注） */}
-                <MessageSegments segments={m.segments} />
+                {/* plan74：conversationId 供 Agent 产物卡读所属会话工作区 */}
+                <MessageSegments segments={m.segments} {...(activeId ? { conversationId: activeId } : {})} />
+                {/* 存档预算只保成功文件的最小工具段时，正文仍来自原content，不能变成空白。 */}
+                {m.content && !m.segments.some(segment => segment.kind === 'text') && <div className="msg-content"><MessageMarkdown content={m.content} /></div>}
                 {streaming && i === messages.length - 1 && textFromSegments(m.segments) === '' && (
                   <div className="msg-content">…</div>
                 )}
@@ -491,7 +509,14 @@ export default function ChatView() {
                   <MessageMarkdown content={m.content} />
                 ) : m.role === 'user' ? (
                   /* plan57 片①：附件折成 chip，用户那句话放最前 —— 此前 64 KB 全文直接摊在气泡里 */
-                  <UserMessage text={m.content} parts={m.parts} />
+                  /* plan74：localFiles 就地预览卡（PDF/音频/Office/文本不必去资源管理器） */
+                  <UserMessage
+                    text={m.content}
+                    parts={m.parts}
+                    localFiles={m.localFiles}
+                    {...(activeId ? { conversationId: activeId } : {})}
+                    {...(m.messageId ? { messageId: m.messageId } : {})}
+                  />
                 ) : (
                   m.content || (streaming && i === messages.length - 1 ? '…' : '')
                 )}
@@ -556,7 +581,7 @@ export default function ChatView() {
               <strong>对话历史已退，但工作区文件与 git 提交未回退</strong> —— 若这轮改过文件，请自行处理。
               {rollbackNotice.viaEdit && ' 原提问已填回输入框，可修改后重新发送。'}
             </span>
-            <button className="rb-btn" onClick={() => void undoRollback()}>
+            <button className="rb-btn" onClick={() => { setEditingMessage(null); void undoRollback() }}>
               撤销
             </button>
           </div>
@@ -669,10 +694,16 @@ export default function ChatView() {
             onDone={() => setCapture(null)}
           />
         ) : null}
+        {editingMessage?.localFiles?.length && activeId ? (
+          <div className="chat-edit-files" role="group" aria-label="编辑提问沿用的附件">
+            <span>沿用发送时附件，不重新读取原文件</span>
+            <UserMessage text="" parts={editingMessage.parts} localFiles={editingMessage.localFiles} conversationId={activeId} messageId={editingMessage.messageId} />
+          </div>
+        ) : null}
         <InputConsole
           value={input}
           onChange={setInput}
-          onSubmit={(atts) => void submit(atts)}
+          onSubmit={submit}
           busy={streaming}
           onStop={() => void stopStreaming()}
           usedTokens={tokens}

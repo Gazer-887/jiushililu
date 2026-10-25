@@ -90,8 +90,9 @@ function hasMedia(parts: ContentPart[]): boolean {
   return parts.some((p) => p.type === 'image' || p.type === 'video')
 }
 
-/** `materializeHistory` 的输入：只要求这三个形状，`ChatMessage` 与 `AgentMessage` 都落在里面 */
+/** `materializeHistory` 的输入：`ChatMessage` 与 `AgentMessage` 都落在里面。出站白名单只认 role/content/parts。 */
 export interface PartBearing {
+  role: string
   content?: string | null
   parts?: ContentPart[]
 }
@@ -109,29 +110,37 @@ export interface MaterializeOptions {
  *
  * 摘掉不等于丢图：正文里那条 marker 带着文件名，存档中的 `parts` 也还在（引用制，见文件头），
  * 下一轮用户"再看这张图"时仍能还原。反过来若旧图也原样重放，一张截图就能把后面每轮的输入都抬起来。
+ *
+ * ⚠️ **出站白名单**（plan74 4.1）：只挑 `role` / `content` / `parts` 三个字段进 HTTP 请求体。
+ * 存储消息上的 `localFiles` / `messageId` / `segments` / `createdAt` 等**本地字段一律不带出**——
+ * 那是"界面怎么看"的元数据，泄漏进模型请求既污染上下文又把内部资产身份抖给厂商。
+ * 用白名单而非"删掉某几个字段"：将来新增任何本地字段都自动不出站，不必记得回来补一刀。
  */
 export async function materializeHistory<T extends PartBearing>(
   messages: T[],
   load: LoadImage,
   opts: MaterializeOptions = {}
-): Promise<Array<Omit<T, 'parts'> & { parts?: WirePart[] }>> {
+): Promise<Array<Pick<T, 'role' | 'content'> & { parts?: WirePart[] }>> {
   const keep = Math.max(0, opts.keepRecentImageTurns ?? 1)
-  const out: Array<Omit<T, 'parts'> & { parts?: WirePart[] }> = new Array(messages.length)
+  const out: Array<Pick<T, 'role' | 'content'> & { parts?: WirePart[] }> = new Array(messages.length)
   let kept = 0
   for (let i = messages.length - 1; i >= 0; i--) {
-    const { parts, ...rest } = messages[i]
+    const src = messages[i]
+    // 出站只认这三个字段（白名单，见上方说明）
+    const base = { role: src.role, content: src.content } as Pick<T, 'role' | 'content'>
+    const parts = src.parts
     if (!parts || !hasMedia(parts)) {
-      out[i] = parts ? { ...rest, parts: await materializeParts(parts, load) } : rest
+      out[i] = parts ? { ...base, parts: await materializeParts(parts, load) } : base
       continue
     }
     // 配额只按"带媒体的轮"数：中间夹几轮纯文本，不该把上一轮的媒体提前折掉
     if (kept >= keep) {
-      out[i] = rest
+      out[i] = base
       continue
     }
     kept++
     out[i] = {
-      ...rest,
+      ...base,
       parts: await materializeParts(parts, load, (ref, kind) => ({
         type: 'text',
         text: kind === 'video' ? missingVideoNote(ref) : missingImageNote(ref)

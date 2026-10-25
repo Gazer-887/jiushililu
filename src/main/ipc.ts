@@ -104,6 +104,7 @@ import {
   modelPatchEntrySchema,
   goalActionSchema,
   goalCreateSchema,
+  localFilesSchema,
   modelSaveSchema,
   mcpServerSchema,
   settingsSchema,
@@ -178,6 +179,7 @@ import type { ExecEventListResult } from '@shared/exec-events'
 import type { SubagentJobEvent } from '@shared/agent'
 import { materializeHistory, mediaCountOf, modalityGateError } from '@shared/content-parts'
 import { readAttachmentMedia } from './attachments-store'
+import { openPreview, releasePreview, readPreview, openPreviewInSystem, ingestDraft, ingestClipboardImage, getAssetBudget, observePreviewOwner, attachmentPreviewPublisher, preparePreviewMessages, commitPreviewMessages } from './preview-assemble'
 import type { TodoItem } from '@shared/todo'
 import { resolveInsideWorkspace } from './agent/guard'
 import { getWindow, sendToAll } from './window-registry'
@@ -1120,10 +1122,12 @@ export function registerIpcHandlers(deps: {
     agentName: z.string().max(64).optional(),
     skills: z.array(z.string().max(64)).max(50).optional(),
     firstMessage: z.string().max(200000).optional(),
-    firstParts: contentPartsSchema.optional()
+    firstParts: contentPartsSchema.optional(),
+    // plan74：首条本地文件引用（并列载体、不出站）—— 带附件的新会话首条也要能预览
+    firstLocalFiles: localFilesSchema.optional()
   })
 
-  ipcMain.handle(IPC.convCreate, (_e, raw: unknown): Conversation => {
+  ipcMain.handle(IPC.convCreate, (e, raw: unknown): Conversation => {
     const input = convCreateInput.parse(raw)
     // 会话工作区必须来自"已被授权过的目录"或当前工作区，防止渲染层随意指定
     const current = getWorkspaceInfo(deps.userDataDir).path
@@ -1132,15 +1136,22 @@ export function registerIpcHandlers(deps: {
     }
     // **绑定"当前端点的当前模型"**（plan7 F5.1）：`modelProfileId` 记端点（用哪条连接 + 哪把 Key）、`modelEntryId` 记目录里的哪一条 —— 渲染端不用关心，它此刻用的就是这一对。
     const active = getActiveEntry()
-    return createConversation({
+    const owner = input.firstLocalFiles?.length ? observePreviewOwner(e.sender) : 0
+    const localFiles = input.firstLocalFiles?.length
+      ? preparePreviewMessages([{ role: 'user', content: input.firstMessage ?? '', messageId: 'initial-draft', localFiles: input.firstLocalFiles }], [], owner)[0].localFiles
+      : undefined
+    const conversation = createConversation({
       ...input,
+      ...(localFiles ? { firstLocalFiles: localFiles } : {}),
       ...(active
         ? { model: active.entry.model, modelProfileId: active.profile.id, modelEntryId: active.entry.id }
         : {})
     })
+    commitPreviewMessages(conversation.messages, owner)
+    return conversation
   })
 
-  const convSaveCore = (raw: unknown): ConversationMeta | null => {
+  const convSaveCore = (raw: unknown, getOwner: () => number): ConversationMeta | null => {
     // **先松收下 → 规整 → 再严格校验**：① 流式占位（`content` 为空）是**合法中间状态**，先收得下来；② 丢掉没内容的消息；③ 落盘前严格把关。
     // ⚠️ 以前是"直接严格 parse"，于是"流式没吐字就切会话/点停止/关窗口"这几条路**保存必然被拒**，而调用方 `void persistActive()` —— 静默、丢数据、无从解释。
     const input = z
@@ -1167,7 +1178,8 @@ export function registerIpcHandlers(deps: {
         agentName: z.string().max(64).optional()
       })
       .parse(raw)
-    const normalized = normalizeHistory(input.messages as ChatMessage[])
+    const owner = input.messages.some(message => message.localFiles?.length) ? getOwner() : 0
+    const normalized = normalizeHistory(preparePreviewMessages(input.messages as ChatMessage[], getConversation(input.id, true)?.messages ?? [], owner))
     // 超预算先丢分段保正文（plan36）；丢完仍超（正文本身超）才让 strict 审整条拒
     const { messages, stripped } = fitStoredBudget(normalized, MAX_STORED_CHARS)
     if (stripped > 0) {
@@ -1204,16 +1216,17 @@ export function registerIpcHandlers(deps: {
       bodyBytes
     })
     // 智能标题（plan26 D-080）：首答刚落盘时触发一次（条件收在 maybeGenerateSmartTitle 内部）
+    if (savedMeta) commitPreviewMessages(parsed.data as ChatMessage[], owner)
     if (savedMeta && parsed.data.length === 2 && parsed.data.some((m) => m.role === 'assistant')) {
       maybeGenerateSmartTitle(input.id)
     }
     return savedMeta
   }
   // 看门狗标记（plan37 S0）：会话保存是同步 fs 链；回存前值而非硬写 idle（单槽坑，见 watchdog.ts）
-  ipcMain.handle(IPC.convSave, (_e, raw: unknown): ConversationMeta | null => {
+  ipcMain.handle(IPC.convSave, (e, raw: unknown): ConversationMeta | null => {
     const prevPhase = setWatchdogPhase('conversation:save')
     try {
-      return convSaveCore(raw)
+      return convSaveCore(raw, () => observePreviewOwner(e.sender))
     } finally {
       setWatchdogPhase(prevPhase)
     }
@@ -2042,15 +2055,19 @@ export function registerIpcHandlers(deps: {
     }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     if (res.canceled || res.filePaths.length === 0) return null
-    return readAttachment(ws, res.filePaths[0]!, deps.userDataDir)
+    return readAttachment(ws, res.filePaths[0]!, deps.userDataDir, getAssetBudget(), attachmentPreviewPublisher(e.sender))
   })
 
   // 拖拽进来的文件：相对路径来自工作区文件树（必须在工作区内），绝对路径来自系统资源管理器（明确拖入即放行）；边界规则与理由集中在 `workspace-fs.readAttachment`，这里只管留痕。
-  ipcMain.handle(IPC.attachPath, async (_e, raw: unknown): Promise<Attachment> => {
+  ipcMain.handle(IPC.attachPath, async (e, raw: unknown): Promise<Attachment> => {
+    if (typeof raw !== 'string') {
+      const input = z.object({ kind: z.literal('clipboard-image'), bytes: z.custom<Uint8Array>(value => value instanceof Uint8Array && value.byteLength > 0 && value.byteLength <= 50 * 1024 * 1024) }).strict().parse(raw)
+      return ingestClipboardImage(input.bytes, e.sender)
+    }
     const pathOrRel = z.string().min(1).max(4096).parse(raw)
     const ws = getWorkspaceInfo(deps.userDataDir).path
     try {
-      return await readAttachment(ws, pathOrRel, deps.userDataDir)
+      return readAttachment(ws, pathOrRel, deps.userDataDir, getAssetBudget(), attachmentPreviewPublisher(e.sender))
     } catch (err) {
       // **留痕**：附件被拒以前是静默的 —— 界面上看到一句"越界"、日志里什么都没有，事后只能靠猜。带上载荷与边界就够定位了。
       log.warn('附件被拒', {
@@ -2341,6 +2358,33 @@ export function registerIpcHandlers(deps: {
     return renderOfficePreview(deps.agent.getWorkspaceRoot(), rel)
   })
 
+  // ── 对话内文件预览（plan74）：Gateway 统一只读加载缝 ──
+  // 入参 zod 校验（不信渲染端）；open 交 Gateway 裁定，ingest 先落资产副本。
+  const previewOpenInput = z.object({
+    source: z.enum(['history', 'artifact', 'draft']),
+    conversationId: z.string().min(1).max(64).optional(),
+    messageId: z.string().min(1).max(64).optional(),
+    draftId: z.string().min(1).max(128).optional(),
+    assetId: z.string().min(1).max(128).optional(),
+    workspaceRel: z.string().min(1).max(1024).optional(),
+    name: z.string().min(1).max(1024),
+    mime: z.string().min(1).max(255),
+    bytes: z.number().nonnegative().optional()
+  })
+  const previewIngestInput = z.object({
+    sourceAbs: z.string().min(1).max(4096),
+    name: z.string().min(1).max(1024),
+    mime: z.string().min(1).max(255),
+    draftId: z.string().min(1).max(128)
+  })
+  ipcMain.handle(IPC.previewOpen, (e, raw: unknown) => openPreview(previewOpenInput.parse(raw), observePreviewOwner(e.sender)))
+  ipcMain.handle(IPC.previewRelease, (e, raw: unknown) => {
+    const handleId = z.string().min(1).max(128).parse(raw)
+    releasePreview(handleId, observePreviewOwner(e.sender))
+  })
+  ipcMain.handle(IPC.previewRead, (e, raw: unknown) => readPreview(z.string().min(1).max(128).parse(raw), observePreviewOwner(e.sender)))
+  ipcMain.handle(IPC.previewIngestDraft, (e, raw: unknown) => ingestDraft(previewIngestInput.parse(raw), observePreviewOwner(e.sender)))
+
   // 工作区写操作（plan7 批 A2）：① 全部走**统一写入服务**（界面与 Agent 同一条写入路径）；② 每个操作**各开一个检查点轮次**，于是界面里删掉/改掉的东西同样出现在「文件变更记录」里、同样退得回；③ 删除走回收站，不是硬删。
   const fsWriteInput = z.object({
     rel: z.string().min(1).max(1024),
@@ -2583,7 +2627,11 @@ export function registerIpcHandlers(deps: {
 
   // 用系统默认程序打开（pptx 等不支持内嵌预览的格式的出口）。与 fsReveal 同一条边界：
   // 只开工作区内（resolveInsideWorkspace，含符号链接防逃逸），越界一律拒绝。
-  ipcMain.handle(IPC.fsOpenInSystem, async (_e, raw: unknown): Promise<FsOpenResult> => {
+  ipcMain.handle(IPC.fsOpenInSystem, async (e, raw: unknown, rawHandle?: unknown): Promise<FsOpenResult> => {
+    if (rawHandle !== undefined) {
+      const id = z.string().regex(/^[a-f0-9]{32}$/).safeParse(rawHandle)
+      return id.success ? openPreviewInSystem(id.data, observePreviewOwner(e.sender)) : { ok: false, error: '预览身份不合法' }
+    }
     const p = fsRelInput.safeParse(raw)
     if (!p.success) return { ok: false, error: '路径不合法' }
     const abs = resolveInsideWorkspace(deps.agent.getWorkspaceRoot(), p.data.rel)

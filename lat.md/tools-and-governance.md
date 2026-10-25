@@ -218,3 +218,126 @@ button/按钮型 input/明确 onclick/role=button/可编辑），OR 汇总**不�
 晚到的传输不允许重新登记；释放共享结果，不能只清 Map 留下服务进程。
 [[src/main/quit-lifecycle.ts#createQuitBarrier]] 首次阻止退出，释放完成或五秒上限后放行；再次退出不重复阻止。
 macOS 只关窗口时不终止 MCP，避免重新开窗口拿到永久关闭的管理器。
+
+## 对话内文件与媒体预览（plan74，2026-10-14）
+
+三入口就地预览（输入附件 / 历史用户消息 / Agent 文件产物），用户不必去资源管理器找文件。
+
+**本地预览与模型出站物理分离**（铁律）：PDF/音频/Office 只走 [[src/shared/conversation-preview.ts]] 的
+LocalFileRef（ChatMessage.localFiles 承载），**不进 parts、不出站**。图片/视频两处引用同一 assetId，
+不复制字节。最终出站装配走**显式白名单**（[[src/shared/content-parts.ts#materializeHistory]] 只放
+role/content/parts）——将来任何新本地字段自动不出站，不许 spread 存储消息。
+
+**文本候选装正文前必过 NUL 闸**（[[src/main/workspace-fs.ts#hasBinaryHead]]，2026-10-15 双独审 N-1 回补）：
+文本语义 hint（text/*、json、xml）的文件在摄取登记时读前 8KiB 查 NUL，命中即按未知二进制降级——
+content 留空、不填模型 parts，本地快照与归属保留。切错的后果：文本扩展名的二进制（如 .log 实为压缩包）
+垃圾正文进模型上下文，且旧路径是整件拒绝、有预算路径却放行，同一文件两个待遇。
+⚠️ 只做 NUL 探测，不是 magic-byte/编码识别；真实 PDF/Office/音视频走各自格式通路，容器含 NUL 不误拒。
+同一判据也用在 [[src/main/workspace-fs.ts#readAttachment]] 无预算分支与 file-tools 的 read_file，三处不许分叉。
+
+**唯一只读加载缝**是 [[src/main/preview-gateway.ts#createPreviewGateway]]（纯逻辑、不 import electron、
+可单测）；协议挂载在 [[src/main/preview-protocol.ts#installPreviewProtocol]]（同一 scheme 单一 handler
+按 host 分发 doc/mem/asset，`jsl-preview://asset/<handleId>`，Range 越界/多段→416 不静默回全量）；
+组合根在 [[src/main/preview-assemble.ts]]（ensureGateway 惰性初始化，模块顶层不碰 electron 运行时）。
+[[src/main/preview-identities.ts#PreviewIdentities]] 签发真实窗口绑定的草稿身份；assetId存在不能代替
+window/draft/asset三者对应。附件选择与拖入同样经过这个登记，不另开“有文件就读”的入口。
+保存前prepare只依据宿主登记或原消息资产边规整成history；写盘成功后committed才消费草稿，
+失败仍能重试。持久消息不保留临时draftId。历史读取同时核会话、消息和该消息引用的具体资产，
+重启后不依赖进程内草稿表，也不允许用另一条合法消息借读未引用资产。
+renderer在保存后尚未重读时可能仍带draft；组合根只有找到真实存档中完全对应的消息资产边
+才转换为history，名称/MIME/大小也从这条边或宿主登记读取，不能由客户端改字段提升呈现能力。
+artifact 读盘（async）上移装配层，Gateway 保持同步。⚠️ 同一 scheme 只能装一个 protocol.handle ——
+曾分 doc/mem 与 asset 两处安装，真实 Electron 在第二个安装处抛 `Failed to register protocol`（Spec R1）。
+
+**资产预算事务** [[src/main/preview-assets.ts#AssetBudget]]：单文件 50MiB、总附件 1GiB。
+reserve 返回本账本拥有的预留身份，而不是可重复扣减的字节数；同步复制并关闭两个描述符后，
+resize 先核实际增长与总量，rename 与登记成功后才 commit。失败只 release 那笔仍在途的身份，
+重复释放、跨账本释放与已结算后释放不影响别的占用。提前结算再按初始大小回退，会在
+“源增长但未超预算＋rename失败”组合中留下增长部分的幽灵占用。历史/草稿不自动淘汰（61 项保留）。
+旧媒体库与新资产库的统一计账仍在本次单端实施中，不能把预算类单测当作全部组合根已接通。
+
+**Agent 产物路径只信真实入参**（[[src/shared/tool-detail.ts#toolArtifactPaths]]）：从 write_file 类工具的
+path 入参提取，**不是**从 detail 文本正则猜——模型随口写的字符串不算可读路径。绝对路径/盘符/`..` 段全拒。
+
+**媒体单播放协调** [[src/renderer/src/media-coordinator.ts]]：激活即互斥，卸载（收起/切会话）即停，
+按「会话+稳定资产身份」续进度但不自动播放；产物版本变了不串进度。
+
+[[src/renderer/src/components/FilePreviewCard.tsx#FilePreviewCard]] 的每次加载effect拥有自己的句柄。
+收起、换源、切会话与卸载均释放该次句柄；结果晚到时不显示并立即释放。不能用一个
+handleRef只在组件卸载时释放最后一次打开的句柄，那会让之前折叠掉的资源失去归属。
+
+**PDF真实页面**由 [[src/renderer/src/components/PdfPreview.tsx#PdfPreview]] 使用现有pdfjs绘制到
+浏览器canvas，扫描件图像同样绘制，不用Node canvas。页面内容从签发窗口的有效PDF句柄经
+previewRead受控桥读取；用户内容不进入HTML脚本。worker是Vite打包的本地资源，直接以端口
+交给PDFWorker，避免file: origin判断转成blob/CDN包装；主窗口/公共HTML的脚本策略不放宽。
+翻页、缩放、键盘导航都重绘实际画布；畸形画布有尺寸/像素上限，关闭时取消render并销毁文档/worker。
+旧Node纯文本模块已无生产消费者，随同它的四个文本抽取单测退役；原字节在本地实施前快照，
+替代证据是生产Electron的真实像素、扫描图像、翻页缩放、损坏反馈和受控句柄读/撤销故事，
+不是为了救绿删除失败断言。旧冻结执行/审查包不改。
+
+Office在组合根复用 [[src/main/office-preview.ts#parseDocxBuffer]] 与
+[[src/main/office-preview.ts#parseSheetBuffer]]，只返回静态沙箱HTML/工作表URL；token随句柄撤销。
+docx异步解析结束后重核句柄仍存在，关窗不能留下孤儿token。单格A1是合法工作表范围，
+[[src/shared/office-preview.ts#clipRange]] 不再误判空表；原行列数量截断保留。
+
+### 图片与音视频的共同资产、事务及实际播放生命周期
+
+[[src/main/preview-assets.ts#assetBudgetForRoot]] 对同一宿主数据根只建一份预算：
+扫描assets/attachments全部文件（含未知旧名/残留件），旧库不迁移、不自动删；无法核实存量时拒新增。
+[[src/main/preview-assets.ts#assetFilePath]] 在最终读取处核真实库根与文件边界，双库同名拒绝，
+而非按查找顺序读到另一份内容。模型parts与本地localFiles共用媒体的同一物理ref；
+新本地50MiB预览不扩大原5MiB图片/20MiB视频出站限制，超出模型上限的媒体只留本地。
+
+[[src/main/preview-assets.ts#ingestAsset]] 与 [[src/main/preview-assets.ts#storeAssetBuffer]]
+均在rename后、结算前调用可撤销宿主登记；复制、关闭、rename、窗口销毁、登记或结算失败
+释放同一笔在途预留、撤回本次登记，不把已commit的孤儿附件伪称事务成功。
+[[src/main/preview-assemble.ts#attachmentPreviewPublisher]] 在真正登记前重核窗口还活着；
+不能把摄取前一次窗口检查当成异步摄取后的许可。清不掉的本次件保守计入并拒新增，
+不新增自动清理历史资产机制。
+
+[[src/main/preview-protocol.ts#installPreviewProtocol]] 的资产库媒体响应使用真实fd/大小和
+64KiB带背压文件流；Range与无Range均不整份readFile后slice，多段/越界明确416。
+浏览器取消、窗口销毁、释放或五分钟主动到期停止在途流；Office临时token同时撤销。
+[[src/renderer/src/media-coordinator.ts#MediaCoordinator]] 用元素身份而非只用asset键互斥，
+同一资产在两处展开也不能同时播放，卸载旧元素不摘走新元素；进度键包含内容版本。
+[[src/renderer/src/components/FilePreviewCard.tsx#FilePreviewCard]] 媒体在metadata就绪后恢复进度，
+不自动播放，卸载真实pause并移除src/load停止解码下载。图片是真解码缩略图与同窗浮层，
+不通过堆积右侧页签或新窗口实现，Esc关闭归还焦点。
+
+### 成功产物与降级出口不是模型宣称
+
+[[src/main/agent/tools/file-tools.ts#createFileTools]] 保持execute文本返回接口，
+仅在实际写入成功后，按本次入参对象身份记录工作区产物；
+[[src/main/agent/loop.ts#runAgentLoop]] 执行后消费该证据，start/拒绝/异常/无变化不提前发文件卡。
+[[src/shared/tool-detail.ts#toolArtifactPaths]] 只认真实write_file/edit，Windows反斜杠按同一段规则校验。
+存档segments保留成功事件的artifactPaths；正文/model请求不搬这些本地事件字段。
+
+[[src/main/preview-assemble.ts#openPreview]] 在宿主补探产物类型、大小和真实内容指纹，
+始终读会话原工作区，不用全局当前根或renderer的text/plain/0字节占位事实。
+文件读取期间变更或超过50MiB拒绝；PDF/媒体只保留源事实和流句柄，不存整份Buffer。
+[[src/renderer/src/components/FilePreviewCard.tsx#FilePreviewCard]] 明确刷新当前文件并显示内容版本变化，
+而不是拿旧句柄链接冒称已刷新。对应音视频进度键随真实内容版本改变。
+
+[[src/renderer/src/components/MessageMarkdown.tsx]] 复用既有解析器，但本地只读变体禁止图片和链接
+自动取外部资源；缓存键含变体，不把普通消息的外链缓存借给本地文档。
+未知/PPTX仍有受限快照与明确降级，
+[[src/main/preview-assemble.ts#openPreviewInSystem]] 只接受本人有效句柄并重核真实来源，
+不借系统打开回退到任意路径/当前工作区；可执行文件和快捷方式不由预览入口启动。
+系统打开为用户主动行为，测试仅替OS打开外设，IPC与来源判断保持生产实现。
+
+发送接收状态从真实异步提交返回，不在调用回调后立即清空附件。
+[[src/renderer/src/components/InputConsole.tsx#InputConsole]] 保留拒绝/异常草稿，
+成功只清本次批次，不误清等待期间新加入的附件；ChatView不清新输入或别的会话输入。
+IPC尚未接受的新轮恢复原内存消息，不持久化失败payload来消费草稿。
+
+资产摄取临时件只有排他创建成功才属于本次事务；EEXIST时不能把已有临时文件删掉。
+[[src/main/preview-assets.ts#assetBudgetForRoot]] 只有整库尚未存在可按空库处理，
+扫描中单项ENOENT/解析错误仍阻断新增，避免漏算剩余持久资产。
+四个Provider最终装配均调用 [[src/shared/attachment-block.ts#attachmentTextForModel]]
+去掉规范媒体marker中的内部引用；存档marker保留，普通用户ref文字不改写。
+WirePart的内部ref只在进程中定位字节，不序列化进厂商HTTP字段。
+
+用户paste事件的图片字节复用既有attachPath IPC，不引入可读任意路径的新入口。
+[[src/main/preview-assemble.ts#ingestClipboardImage]] 在宿主解码转PNG，之后共用预算和可撤销登记；
+超原模型5MiB但在本地50MiB内只落本地引用，普通文本粘贴不被截获。
+测试不读写用户系统剪贴板，只将合成ClipboardEvent送到真实输入组件。

@@ -6,6 +6,7 @@ import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MOD
 import { resolveApiUrl } from './url'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
+import { attachmentTextForModel } from '@shared/attachment-block'
 
 // 思考强度 → Anthropic extended thinking 预算（方言映射）
 // ⚠️ 键**不再穷举** `ReasoningEffort`：plan58 R6 把它改成开放字符串后，官方值
@@ -53,7 +54,7 @@ export function mapAnthropicMessages(
     .join('\n')
   const rest = messages
     .filter((m) => m.role !== 'system')
-    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.role === 'user' ? attachmentTextForModel(m.content) : m.content }))
   return { system, messages: rest }
 }
 

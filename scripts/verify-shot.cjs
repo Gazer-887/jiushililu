@@ -956,6 +956,12 @@ const agentUiCalls = { run: [], stop: [] }
 const STUBS = {
   // 待办清单：面板挂载时拉一次 —— 验的是面板渲染与位置，不是 Agent 会不会调 update_todos
   'todo:get': () => FAKE_TODOS,
+  // plan74 对话内预览桩：门禁只验结构渲染（卡能挂载、句柄生命周期不炸），
+  // 不验真实字节 —— 真实 Gateway/协议安全由单测与 e2e 负责。open 回一个确定的假句柄。
+  'preview:open': () => ({ ok: true, handleId: 'gate-stub-handle', url: 'jsl-preview://asset/gate-stub-handle', capabilities: { text: true }, sourceLabel: 'history', boundedText: '' }),
+  'preview:release': () => {},
+  'preview:read': () => new Uint8Array(),
+  'preview:ingest-draft': () => ({ ok: true, assetId: 'gate-stub-asset', bytes: 0, digest: '0'.repeat(16) }),
   // plan60：内置浏览器桩（有状态标签页）。面板挂载即拉 state；动作后 state 带 tabs 回，
   // 面板不自己记 tabs（唯一真相源在"主进程"那头，面板只渲染 —— 与 GoalPanel 跨窗广播同口径）。
   // 初始零标签（空态不断言"强留空白标签"，关到零个回空态是 plan60 定死的形态）。
@@ -1977,8 +1983,10 @@ const STUBS = {
       }
     }
     if (/\.(mov|avi|webm|bmp|svg)$/i.test(name)) {
-      // 真源：`workspace-fs.readAttachment`。主语必须是本应用通路，不许甩锅给模型（09-27 装机点验的教训）
-      throw new Error(`「${name}」是二进制文件（含 NUL 字节），当前附件通路只支持文本、图片（png/jpg/gif/webp）与视频（mp4）`)
+      // 真源：`workspace-fs.readAttachment`。主语必须是本应用通路，不许甩锅给模型（09-27 装机点验的教训）。
+      // ⚠️ 桩按扩展名镜像拒绝，文案与现行产品**同义**；门禁断言只依赖「文件名 + 二进制」两个片段
+      //   （见下方 DRAG_REJECT 判据），所以这里保持与 readAttachment 同一产品口径即可。
+      throw new Error(`「${name}」是无法识别的二进制文件，当前附件通路只支持文本、图片（png/jpg/gif/webp）、视频（mp4）与可本地预览的文档/音频`)
     }
     const content = '氧化铈粉 120kg\n碳酸钠 45kg'
     return {
@@ -9426,7 +9434,7 @@ app.whenReady().then(async () => {
         chipBadges: chips.map((c) => Array.from(c.querySelectorAll('span')).map((s) => s.textContent || '').filter(Boolean).join('/')),
         // 界面任何一处露出字节 = 引用制破了（chip 的 title 是最容易漏的地方）
         chipLeak: document.querySelector('.attach-list')?.textContent?.includes('iVBOR') === true,
-        imgChip: !!document.querySelector('.msg-attach-image'),
+        imgChip: !!bubble?.querySelector('.fp-card[data-preview-mime^="image/"] .fp-card-head'),
         bubbleText: (bubble?.textContent ?? '').trim().slice(0, 120),
         bubbleLeak: (bubble?.textContent ?? '').includes('iVBOR')
       };
@@ -9435,7 +9443,7 @@ app.whenReady().then(async () => {
   const imgSend = chatSendCalls[chatSendCalls.length - 1]
   const imgTurn = (imgSend?.messages ?? []).filter((m) => m.role === 'user').pop()
   checkTrue(
-    '片③ 图片附件：输入框与气泡各给一枚「图片」chip，且界面上看不到字节',
+    '片③ 图片附件：输入附件标识与历史同窗图片卡存在，界面不泄漏编码字节',
     imgFlow.ok === true &&
       imgFlow.imgChip === true &&
       imgFlow.chipBadges.some((b) => b.includes('图片')) &&
@@ -9477,10 +9485,10 @@ app.whenReady().then(async () => {
       return {
         ok: true,
         badges,
-        // 按**结构**断，不按字：气泡里的角标显示具体类型（mp4 / png），比"视频"更有信息
-        bubbleVideoChip: !!bubble?.querySelector('.msg-attach-video'),
-        bubbleBadge: Array.from(bubble?.querySelectorAll('.msg-attach-kind') ?? [])
-          .map((s) => s.textContent || ''),
+        // 芯片已升级为文件卡：从真实卡片读类型，不再要求退役的角标class。
+        bubbleVideoChip: !!bubble?.querySelector('.fp-card[data-preview-mime="video/mp4"] .fp-card-head'),
+        bubbleBadge: Array.from(bubble?.querySelectorAll('.fp-card[data-preview-mime]') ?? [])
+          .map((s) => s.getAttribute('data-preview-mime')),
         bubbleLeak: (bubble?.textContent ?? '').includes('AAAA')
       };
     })()
@@ -9488,11 +9496,11 @@ app.whenReady().then(async () => {
   const vidSend = chatSendCalls[chatSendCalls.length - 1]
   const vidTurn = (vidSend?.messages ?? []).filter((m) => m.role === 'user').pop()
   checkTrue(
-    '片⑤ 视频附件：输入框与气泡各给一枚「视频」chip，界面上看不到字节',
+    '片⑤ 视频附件：输入附件标识与历史MP4文件卡存在，界面不泄漏编码字节',
     vidFlow.ok === true &&
       vidFlow.badges.some((b) => b.includes('视频')) &&
       vidFlow.bubbleVideoChip === true &&
-      vidFlow.bubbleBadge.includes('mp4') &&
+      vidFlow.bubbleBadge.includes('video/mp4') &&
       vidFlow.bubbleLeak === false,
     vidFlow
   )

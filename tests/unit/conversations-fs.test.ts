@@ -83,7 +83,9 @@ describe('布局：meta 与正文分开落盘', () => {
     expect(metaRaw.conversations[c.id]!.messageCount).toBe(1)
 
     const body = JSON.parse(readFileSync(messagesFilePath(root, c.id), 'utf8')) as ChatMessage[]
-    expect(body).toEqual([{ role: 'user', content: '你好' }])
+    // plan74：首条消息带 messageId（本地引用/产物卡的稳定锚）；核心字段在此核，id 动态生成
+    expect(body).toMatchObject([{ role: 'user', content: '你好' }])
+    expect(typeof body[0]!.messageId).toBe('string')
   })
 
   it('空会话**不写正文文件**（一个字节都不浪费）', () => {
@@ -116,7 +118,9 @@ describe('布局：meta 与正文分开落盘', () => {
     const reopened = createConversationsRepo(createFsConversationsBackend(root))
     const back = reopened.getConversation(c.id)
     expect(back?.title).toBe('你好')
-    expect(back?.messages).toEqual([{ role: 'user', content: '你好' }])
+    // plan74：往返保留 messageId（本地引用身份跨重启不丢）
+    expect(back?.messages).toMatchObject([{ role: 'user', content: '你好' }])
+    expect(typeof back?.messages[0]?.messageId).toBe('string')
     expect(reopened.listConversations()[0]!.messageCount).toBe(1)
   })
 

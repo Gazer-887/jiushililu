@@ -97,6 +97,26 @@ export const contentPartsSchema = z.array(
 ).min(1).max(MAX_IMAGES_PER_TURN)
 
 /**
+ * 本地文件引用（plan74）：与 parts **并列**的本地预览载体 —— **不出站**（parts 才是模型内容）。
+ * assetId 形状校验挡路径穿越；读盘在 Gateway，schema 层不碰文件系统（与 contentPartsSchema 同口径）。
+ * 宽松收：未知字段不拒（前端可能带展示用字段），但核心身份字段必严。
+ */
+export const localFileRefSchema = z.object({
+  assetId: z.string().min(1).max(200),
+  name: z.string().min(1).max(500),
+  mime: z.string().min(1).max(200),
+  bytes: z.number().int().nonnegative(),
+  digest: z.string().max(64).optional(),
+  source: z.enum(['history', 'artifact', 'draft']),
+  draftId: z.string().min(1).max(128).optional(),
+  workspaceRel: z.string().max(1000).optional(),
+  outside: z.boolean().optional()
+})
+
+/** localFiles 数组（一条消息可挂多个本地文件，各自独立展开）。 */
+export const localFilesSchema = z.array(localFileRefSchema).max(100)
+
+/**
  * 单条消息（发给模型的通道）：刻意**不含** segments —— 执行分段是本地渲染资产，不随请求出境（plan36 审查坑 2）。
  * 空正文按角色放行（K8）：否则被「停止生成」留下空正文助手轮的那条会话，从此再也发不出消息。
  * 这比落盘侧 `storedMessageSchema` 松一档（segments 到不了这儿），差额由 agent/context `historyForModel` 兜住。
@@ -301,6 +321,10 @@ export const incomingMessagesSchema = z.array(
     content: z.string().max(200000),
     parts: contentPartsSchema.optional(),
     segments: z.array(z.record(z.string(), z.unknown())).max(1000).optional(),
+    /** plan74：本地文件引用（并列载体，不出站）—— 存档要保住，否则重启历史丢预览 */
+    localFiles: localFilesSchema.optional(),
+    /** plan74：消息身份（供产物卡/媒体进度键稳定引用） */
+    messageId: z.string().max(200).optional(),
     /** plan46：消息时间戳（可选 —— 旧数据无该字段，渲染层据此决定是否显示时间） */
     createdAt: z.number().int().nonnegative().optional()
   })
@@ -318,7 +342,10 @@ const segmentSchema = z
         phase: z.enum(['start', 'error', 'end']),
         detail: z.string().max(4000).optional(),
         summary: z.string().max(8000).optional(),
-        savedTokens: z.number().int().nonnegative().optional()
+          savedTokens: z.number().int().nonnegative().optional(),
+          artifactPaths: z.array(z.string().min(1).max(1000).refine(path =>
+            !/^(?:[a-zA-Z]:|[\\/])/.test(path) && !path.replace(/\\/g, '/').split('/').some(part => !part || part === '.' || part === '..')
+          )).max(50).optional()
       })
       .optional()
   })
@@ -342,6 +369,10 @@ export const storedMessageSchema = z
     content: z.string().max(200000),
     parts: contentPartsSchema.optional(),
     segments: z.array(segmentSchema).max(1000).optional(),
+    /** plan74：本地文件引用（并列载体，不出站）—— 落盘保住，重启仍可预览 */
+    localFiles: localFilesSchema.optional(),
+    /** plan74：消息身份 */
+    messageId: z.string().max(200).optional(),
     /** plan46：消息时间戳（可选 —— 旧存档无此字段，渲染层无则不显示时间，不编造） */
     createdAt: z.number().int().nonnegative().optional()
   })

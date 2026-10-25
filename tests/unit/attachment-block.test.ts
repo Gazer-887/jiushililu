@@ -91,7 +91,8 @@ describe('P3 结构守卫：两份手抄已收成一份', () => {
     const view = src('renderer/src/views/ChatView.tsx')
     const body = src('renderer/src/components/UserMessage.tsx')
     // parts 也必须接上：只传正文的话，图片 chip 上的类型角标会永远缺值（呈现与出境两份真相的起点）
-    expect(view).toContain('<UserMessage text={m.content} parts={m.parts} />')
+    // plan74 起还接 localFiles/conversationId/messageId —— 三件事都接到，才轮得到预览卡渲染
+    expect(view).toMatch(/<UserMessage[\s\S]*?text=\{m\.content\}[\s\S]*?parts=\{m\.parts\}[\s\S]*?localFiles=\{m\.localFiles\}[\s\S]*?\/>/)
     expect(body).toContain('splitAttachmentBlocks')
     // 呈现层不许反过来改出境内容：气泡里只能用拆分，不能用拼接
     expect(body).not.toContain('composeWithAttachments')

@@ -10,6 +10,22 @@ import type {
   ConversationMeta
 } from '@shared/ipc'
 
+describe('编辑附件只查宿主保留历史，正常读取不暴露回滚尾部', () => {
+  it('includeHidden不移游标、不写库；默认仍只读可见消息', () => {
+    const memory = memBackend()
+    const repo = createConversationsRepo(memory.backend)
+    const conversation = repo.createConversation({ workspace: 'D:/owned', model: 'm', firstMessage: 'first' })
+    repo.saveConversation(conversation.id, [...conversation.messages, { role: 'user', messageId: 'old-edit-message', content: 'second', localFiles: [{ source: 'history', assetId: '20261015T000000-0-abcdef.txt', name: 'saved.txt', mime: 'text/plain', bytes: 10 }] }])
+    repo.rollbackConversation(conversation.id, 1)
+    const writes = memory.stats.messageWrites + memory.stats.metaWrites
+    expect(repo.getConversation(conversation.id)?.messages).toHaveLength(1)
+    expect(repo.getConversation(conversation.id, true)?.messages[1].messageId).toBe('old-edit-message')
+    expect(repo.getConversation(conversation.id, true)?.messageCount).toBe(1)
+    expect(memory.stats.messageWrites + memory.stats.metaWrites).toBe(writes)
+    expect(repo.getConversation('missing', true)).toBeNull()
+  })
+})
+
 // 会话存储六个入口的**行为基线**（plan10 步骤 0 立）：A 批要给会话存储**分层**（正文搬出整表），
 // 除**读盘足迹**（列表不再碰正文）外，六个入口的语义必须一模一样。
 // ⚠️ 别以为 `tests/unit/conversations.test.ts` 兜底 —— 它只测三个纯函数，六个入口零覆盖。
@@ -104,7 +120,9 @@ describe('createConversation（新建）', () => {
 
     expect(c.id).toMatch(/^[0-9a-f-]{36}$/) // UUID
     expect(c.createdAt).toBe(c.updatedAt)
-    expect(c.messages).toEqual([{ role: 'user', content: '你好' }])
+    // plan74：首条消息带 messageId（本地引用/产物卡的稳定锚）
+    expect(c.messages).toMatchObject([{ role: 'user', content: '你好' }])
+    expect(typeof c.messages[0]?.messageId).toBe('string')
     expect(c.messageCount).toBe(1)
     expect(dump()[c.id]!.title).toBe('你好')
   })

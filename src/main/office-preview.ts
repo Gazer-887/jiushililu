@@ -36,9 +36,11 @@ import { resolveInsideWorkspace } from './agent/guard'
 
 export interface MemPreviewStore {
   /** 注册一份 HTML，返回不可猜的 token（URL 里暴露的就是它） */
-  register: (html: string) => string
+  register: (html: string, isValid?: () => boolean) => string
   /** 取 HTML；不存在 / 已过期返回 null（调用方一律 404，不区分"没注册过"和"过期了"） */
   get: (token: string) => string | null
+  /** 释放仅临时HTML，不删除原文件/历史资产。 */
+  release: (token: string) => void
 }
 
 /** 可注入时间与上限 —— 单测不用睡真时钟 */
@@ -48,7 +50,7 @@ export function createMemPreviewStore(
   const ttl = opts.ttlMs ?? MEM_PREVIEW_TTL_MS
   const max = opts.maxEntries ?? MEM_PREVIEW_MAX_ENTRIES
   const now = opts.now ?? Date.now
-  const mem = new Map<string, { html: string; at: number }>()
+  const mem = new Map<string, { html: string; at: number; isValid?: () => boolean }>()
 
   const evict = (): void => {
     const t = now()
@@ -64,16 +66,17 @@ export function createMemPreviewStore(
   }
 
   return {
-    register(html: string): string {
+    register(html: string, isValid?: () => boolean): string {
       evict()
       const token = randomBytes(MEM_TOKEN_BYTES).toString('hex')
-      mem.set(token, { html, at: now() })
+      mem.set(token, { html, at: now(), ...(isValid ? { isValid } : {}) })
       return token
     },
+    release(token: string): void { mem.delete(token) },
     get(token: string): string | null {
       const hit = mem.get(token)
       if (!hit) return null
-      if (now() - hit.at > ttl) {
+      if (now() - hit.at > ttl || (hit.isValid && !hit.isValid())) {
         mem.delete(token)
         return null
       }

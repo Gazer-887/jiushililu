@@ -8,6 +8,7 @@ import { createSSEParser } from './sse'
 import { effortToSend, openaiReasoningFields } from '@shared/reasoning'
 import { ToolCallAccumulator } from './tool-accumulator'
 import { httpFetch } from './http-client'
+import { attachmentTextForModel } from '@shared/attachment-block'
 import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
 
 // OpenAI tool-calls 适配（plan6 → P1；D-032 增补流式）：主循环的模型通道。
@@ -18,13 +19,18 @@ import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
  * 带图的轮换 OpenAI 视觉那套 content 数组；其余轮把 `parts` 摘掉、形状与改造前逐字节相同。
  */
 export function toOpenAIWireMessage(m: AgentMessage): Record<string, unknown> {
-  const { parts, ...rest } = m
+  const { parts } = m
+  const rest = {
+    role: m.role, content: m.role === 'user' && typeof m.content === 'string' ? attachmentTextForModel(m.content) : m.content,
+    ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+    ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {})
+  }
   if (!parts?.some((p) => p.type === 'image' || p.type === 'video')) return rest
   return {
     ...rest,
     content: parts.map((p) =>
       p.type === 'text'
-        ? { type: 'text', text: p.text }
+        ? { type: 'text', text: m.role === 'user' ? attachmentTextForModel(p.text) : p.text }
         : p.type === 'video'
           ? // 实测形状（plan57 §八之四）：MiMo token-plan 端点收 `video_url` + base64 data URL，
             // 且 usage 里单独报 `video_tokens`；`{"type":"video",…}` 那种帧序列形状它回 400

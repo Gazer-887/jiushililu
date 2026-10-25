@@ -6,6 +6,8 @@ import { estimateTokens } from '@shared/tokens'
 import { resolvePathInWorkspace } from '../guard'
 import type { WorkspaceWriter } from '../../workspace-write'
 import type { TokenPolicy } from '@shared/token-tier'
+import { relative } from 'node:path'
+import { toolArtifactPaths } from '@shared/tool-detail'
 
 // 内置工具第一批（plan6）：文件读写。两条硬边界：① 路径必须落在 workspaceRoot 内（防逃逸）
 // ② 读取按**行窗口**给而非全文（防撑爆上下文）。
@@ -214,6 +216,16 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
    * 档位 → writer 只有一条路径（`runner.ts`），少一条重复的判断就少一处漂移。
    */
   const revisions = new Map<string, string>()
+  const produced = new WeakMap<Record<string, unknown>, string[]>()
+  const recordProduced = (args: Record<string, unknown>, abs: string): void => {
+    const paths = toolArtifactPaths('write_file', JSON.stringify({ path: relative(writer.root, abs).replace(/\\/g, '/') }))
+    if (paths.length) produced.set(args, paths)
+  }
+  const takeProducedFiles = (args: Record<string, unknown>): string[] => {
+    const paths = produced.get(args) ?? []
+    produced.delete(args)
+    return paths
+  }
   const locate = (rel: string): { abs: string; note: string } | null => {
     const r = resolvePathInWorkspace(writer.root, rel, { allowOutside: writer.allowsOutside })
     if (!r) return null
@@ -308,6 +320,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
   }
 
   const write_file: AgentTool = {
+    takeProducedFiles,
     schema: {
       name: 'write_file',
       description: '把文本内容写入工作区内的一个文件（覆盖式写入，路径不存在会自动创建）' + scopeHint,
@@ -321,6 +334,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       }
     },
     async execute(args) {
+      produced.delete(args)
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
       const content = typeof args['content'] === 'string' ? args['content'] : null
       if (content === null) return '错误：缺少 content 参数'
@@ -331,6 +345,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         if (baseline !== null && !revisions.has(located.abs)) return '错误：覆盖已有文件前请先用 read_file 读取，避免覆盖人工改动'
         const result = await writer.write(rel, content, baseline)
         revisions.set(located.abs, contentRevision(content))
+        recordProduced(args, located.abs)
         return `${located.note}${result}`
       } catch (err) {
         if (err instanceof AgentPauseError) throw err
@@ -340,6 +355,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
   }
 
   const edit: AgentTool = {
+    takeProducedFiles,
     schema: {
       name: 'edit',
       description:
@@ -373,6 +389,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       }
     },
     async execute(args) {
+      produced.delete(args)
       const rel = typeof args['path'] === 'string' ? args['path'] : ''
       const rawEdits = args['edits']
       if (!Array.isArray(rawEdits)) return '错误：缺少 edits 参数（应为替换列表）'
@@ -417,6 +434,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       try {
         const wrote = await writer.write(rel, outcome.text, contentRevision(source))
         revisions.set(abs, contentRevision(outcome.text))
+        recordProduced(args, abs)
         const notes = outcome.applied.map((a) => {
           const sign = a.deltaBytes >= 0 ? `+${a.deltaBytes}` : `${a.deltaBytes}`
           const how = a.matchedBy === 'normalized' ? '，按换行符口径归一后命中' : ''

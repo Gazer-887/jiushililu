@@ -7,6 +7,7 @@ import { createSSEParser } from './sse'
 import { createAnthropicUsageAccumulator, usageFromAnthropicMessage } from './usage-parsers'
 import { ToolCallAccumulator } from './tool-accumulator'
 import { httpFetch } from './http-client'
+import { attachmentTextForModel } from '@shared/attachment-block'
 import { createStreamGuard, type StreamGuard, type StreamGuardOptions } from './stream-guard'
 
 // Anthropic tool_use 适配（plan6 → P1）：把 OpenAI 风格的 Agent 消息翻译成 Anthropic 块结构。
@@ -34,13 +35,13 @@ type AnthropicBlock =
  * 这儿再兜一道，免得将来有人绕过闸直接喂。
  */
 function blocksOfUserTurn(m: AgentMessage): AnthropicBlock[] {
-  if (!m.parts) return [{ type: 'text', text: m.content ?? '' }]
+  if (!m.parts) return [{ type: 'text', text: attachmentTextForModel(m.content ?? '') }]
   if (m.parts.some((p) => p.type === 'video')) {
     throw new Error('Anthropic 协议不支持视频输入块：请改用 OpenAI 兼容端点，或把视频先转成关键帧图片')
   }
   return m.parts.map((p): AnthropicBlock =>
     p.type === 'text'
-      ? { type: 'text', text: p.text }
+      ? { type: 'text', text: attachmentTextForModel(p.text) }
       : {
           type: 'image',
           source: { type: 'base64', media_type: p.mime, data: p.base64 },

@@ -2,21 +2,32 @@ import { useState } from 'react'
 import { splitAttachmentBlocks } from '@shared/attachment-block'
 import { estimateImageTokens } from '@shared/tokens'
 import type { ContentPart } from '@shared/content-parts'
+import type { LocalFileRef } from '@shared/conversation-preview'
+import FilePreviewCard from './FilePreviewCard'
 
 /**
- * 用户气泡（plan57 片①）：附件折成 chip，正文照常显示。
+ * 用户气泡（plan57 片① + plan74）：附件折成 chip，正文照常显示。
  * ⚠️ 只改呈现 —— 发出去的正文永远是含完整块文本的那一条，折叠不许改变出境内容（判据在 attachment-block.test）。
  * 顺序与出境相反：用户自己的话是主角，放最前；附件收成一行，点开才看内容。
  *
  * 图片 chip 的 MIME 只从 `parts`（引用制的那份真相）取，marker 文本里没有这个字段 ——
  * 两处都能提供时以 parts 为准，缺了对应项就按"图，类型未知"呈现，不猜。
+ *
+ * plan74：`localFiles`（本地预览引用）在此渲染成就地预览卡 —— 非媒体文件（PDF/音频/Office/文本）
+ * 也能就地看，不必去资源管理器。卡片只读、按需加载、展开/卸载释放句柄。
  */
 export default function UserMessage({
   text,
-  parts
+  parts,
+  localFiles,
+  conversationId,
+  messageId
 }: {
   text: string
   parts?: ContentPart[]
+  localFiles?: LocalFileRef[]
+  conversationId?: string
+  messageId?: string
 }): JSX.Element {
   const { files, body } = splitAttachmentBlocks(text)
   const [open, setOpen] = useState<boolean[]>([])
@@ -25,7 +36,7 @@ export default function UserMessage({
     (parts ?? []).flatMap((p) => (p.type === 'text' ? [] : [[p.ref, p.mime] as const]))
   )
 
-  if (files.length === 0) return <>{text}</>
+  if (files.length === 0 && (localFiles?.length ?? 0) === 0) return <>{text}</>
 
   const toggle = (n: number): void =>
     setOpen((s) => {
@@ -41,6 +52,12 @@ export default function UserMessage({
         {files.map((f, n) => {
           const media = f.image ?? f.video
           if (media) {
+            if (localFiles?.some(file => file.assetId === media.ref)) return null
+            const mime = mimeByRef.get(media.ref)
+            if (mime && conversationId && messageId) return (
+              <FilePreviewCard key={`${media.ref}-${n}`} conversationId={conversationId} messageId={messageId}
+                file={{ assetId: media.ref, name: f.name, mime, bytes: media.bytes, source: 'history' }} />
+            )
             const isVideo = media.type === 'video'
             return (
               <span
@@ -80,6 +97,18 @@ export default function UserMessage({
             {f.content}
           </pre>
         ) : null
+      )}
+      {localFiles && localFiles.length > 0 && (
+        <div className="msg-local-files" role="group" aria-label="本条消息的本地文件预览">
+          {localFiles.map((f) => (
+            <FilePreviewCard
+              key={`${f.assetId}-${f.name}`}
+              file={f}
+              {...(conversationId ? { conversationId } : {})}
+              {...(messageId ? { messageId } : {})}
+            />
+          ))}
+        </div>
       )}
     </>
   )

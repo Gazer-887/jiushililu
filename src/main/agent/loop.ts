@@ -6,7 +6,7 @@ import type {
   ToolEvent,
   ToolImageRef
 } from '@shared/agent'
-import { toolCallDetail } from '@shared/tool-detail'
+import { toolCallDetail, toolArtifactPaths } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
 import { setWatchdogPhase, traceSync } from '../watchdog'
@@ -230,6 +230,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       opts.signal?.throwIfAborted()
       const tool = toolMap.get(tc.name)
       // 带上「这一步在干什么」（从入参提取），否则界面只能显示干巴巴的「执行中…」
+      let artifactPaths: string[] = []
       opts.onToolEvent?.({
         id: tc.id,
         name: tc.name,
@@ -252,12 +253,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         } else {
           try {
             opts.signal?.throwIfAborted()
-            const raw = await tool.execute(parseArgs(tc.arguments))
+            const args = parseArgs(tc.arguments)
+            const raw = await tool.execute(args)
             opts.signal?.throwIfAborted()
             // 工具可以只回文本（绝大多数），也可以回"文本 + 图片引用"（plan44 S2b）。
             // 归一化只在这一处发生：**进模型的一直是 text**，images 只交给界面事件。
             const outcome = typeof raw === 'string' ? { text: raw } : raw
             output = outcome.text
+            // 工具确认实际落盘后才消费；入参或模型文字不能提前生成“已产出”卡。
+            artifactPaths = (tool.takeProducedFiles?.(args) ?? []).flatMap(path => toolArtifactPaths(tc.name, JSON.stringify({ path })))
             toolImages = outcome.images ?? []
             // plan57 K52 B2：opt-in 交图 —— 只有显式要交的工具才挂 parts 进模型（MCP 等老工具不受影响）
             forwarded =
@@ -322,7 +326,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         phase: failed ? 'error' : 'end',
         summary: summarize(output),
         ...(saved > 0 ? { savedTokens: saved } : {}),
-        ...(toolImages.length > 0 ? { images: toolImages } : {})
+        ...(toolImages.length > 0 ? { images: toolImages } : {}),
+        ...(!failed && artifactPaths.length > 0 ? { artifactPaths } : {})
       })
       // plan26 D-077：tool_result 只记元数据 —— bytes 是输出大小、**正文不进事件流**
       opts.execEvents?.record('tool_result', {

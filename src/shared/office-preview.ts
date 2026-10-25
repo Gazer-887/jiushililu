@@ -93,17 +93,17 @@ export function numToCol(n: number): string {
  */
 export function clipRange(ref: unknown, maxRows: number, maxCols: number): string | null {
   if (typeof ref !== 'string') return null
-  const m = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(ref.toUpperCase())
+  const m = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(ref.toUpperCase())
   if (!m) return null
   const c1 = colToNum(m[1])
   const r1 = Number(m[2])
-  const c2 = colToNum(m[3])
-  const r2 = Number(m[4])
+  const c2 = colToNum(m[3] ?? m[1])
+  const r2 = Number(m[4] ?? m[2])
   if (c1 === 0 || c2 === 0 || !Number.isFinite(r1) || !Number.isFinite(r2)) return null
   if (r1 < 1 || r2 < r1 || c2 < c1) return null
   const rEnd = Math.min(r2, r1 + maxRows - 1)
   const cEnd = Math.min(c2, c1 + maxCols - 1)
-  return `${numToCol(c1)}${r1}:${numToCol(cEnd)}${rEnd}`
+  return m[3] === undefined ? `${numToCol(c1)}${r1}` : `${numToCol(c1)}${r1}:${numToCol(cEnd)}${rEnd}`
 }
 
 // ── 结果类型（跨 IPC：主进程解析 → 渲染端只拿 URL，不拿 HTML 本体）──

@@ -23,10 +23,10 @@ export default function NewSessionView(): JSX.Element {
     if (settings?.model && !model) setModel(settings.model)
   }, [settings?.model, model])
 
-  const start = async (attachments: Attachment[]): Promise<void> => {
-    if (busy) return
+  const start = async (attachments: Attachment[]): Promise<boolean> => {
+    if (busy) return false
     const ws = await window.api.getWorkspace()
-    if (!ws.path || !model) return
+    if (!ws.path || !model) return false
     // 正文与图片引用一次构造（片③，与对话页同一份 `userTurnWithMedia`）
     const turn = userTurnWithMedia(input.trim(), attachments)
     const text = turn.content
@@ -37,7 +37,9 @@ export default function NewSessionView(): JSX.Element {
         model,
         ...(agent ? { agentName: agent } : {}),
         ...(text ? { firstMessage: text } : {}),
-        ...(text && turn.parts ? { firstParts: turn.parts } : {})
+        ...(text && turn.parts ? { firstParts: turn.parts } : {}),
+        // plan74：首条本地文件引用（并列载体、不出站）—— 带附件的新会话首条也要能预览
+        ...(turn.localFiles ? { firstLocalFiles: turn.localFiles } : {})
       })
       // 首条输入直接发出去（省一次点击）。
       // ⚠️ skipAppend：首条已由 createConversation({ firstMessage }) 存进会话（还承担标题推导），
@@ -45,6 +47,7 @@ export default function NewSessionView(): JSX.Element {
       // 首条（含图片引用）已由 `createConversation` 落盘，这里只喊一声：`parts` 不再传，免得看着像追加第二条
       if (text) await useAppStore.getState().sendMessage(text, { skipAppend: true })
       setInput('')
+      return true
     } finally {
       setBusy(false)
     }
@@ -63,7 +66,7 @@ export default function NewSessionView(): JSX.Element {
           autoFocus
           value={input}
           onChange={setInput}
-          onSubmit={(atts) => void start(atts)}
+          onSubmit={start}
           busy={busy}
           placeholder="描述你想做的事…（Enter 开始，Shift+Enter 换行）"
           usedTokens={usedTokens([])}

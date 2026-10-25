@@ -17,6 +17,8 @@ export interface AgentTool {
    * `ToolOutcome` 那一支只给需要交图的工具（plan44 S2b）；其余工具返 string，一个字都不用改。
    */
   execute(args: Record<string, unknown>): Promise<string | ToolOutcome>
+  /** 本次实际成功落盘的文件，由生产工具提供；不从模型宣称路径推导。读取即消费。 */
+  takeProducedFiles?: (args: Record<string, unknown>) => string[]
 }
 
 export interface AgentMessage {
@@ -63,6 +65,13 @@ export interface ToolEvent {
    *    要细节用 recall"是同一条口径：模型不需要看见截图，用户需要。
    */
   images?: ToolImageRef[]
+  /**
+   * 本步产出的**文件路径**（plan74 Agent 产物入口）：从工具真实入参提取的工作区相对路径
+   * （如 write_file 的 path），**不是**从 detail 文本正则猜的 —— 后者会把模型随口写的字符串
+   * 当成可读路径（正是计划警告的"不信模型宣称路径"）。界面据此渲染可就地预览的产物卡，
+   * 读的是所属会话原工作区的当前文件。仅写/建类工具有；其余为空。
+   */
+  artifactPaths?: string[]
 }
 
 /**

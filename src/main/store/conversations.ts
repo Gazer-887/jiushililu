@@ -55,8 +55,8 @@ export function listConversations() {
   return repo().listConversations()
 }
 
-export function getConversation(id: string) {
-  return repo().getConversation(id)
+export function getConversation(id: string, includeHidden = false) {
+  return repo().getConversation(id, includeHidden)
 }
 
 export function createConversation(input: Parameters<ConversationsRepo['createConversation']>[0]) {

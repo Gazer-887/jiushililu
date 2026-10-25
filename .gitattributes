@@ -8,3 +8,5 @@
 *.yml  text eol=lf
 *.css  text eol=lf
 *.html text eol=lf
+# PDF夹具的xref偏移依赖原始字节，不能按文本改换行。
+tests/fixtures/conversation-preview/*.pdf binary
