@@ -6820,6 +6820,10 @@ body[data-resizing] {
   gap: 8px;
   padding: 6px 0;
   border-bottom: 1px solid var(--line);
+  /* S2-40-R1：窄面板（抽屉只有 88px）下，动作按钮宁可换行到下一行，
+     也不能把 .mem-row-main 压成 0 宽 —— 那会让来源文字彻底不可见。
+     宽屏时总宽够放，主行与动作仍同一行（不改变现有观感）。 */
+  flex-wrap: wrap;
 }
 
 .mem-row-main {
@@ -6827,7 +6831,10 @@ body[data-resizing] {
   align-items: baseline;
   gap: 6px;
   min-width: 0;
-  flex: 1;
+  /* S2-40-R1：auto 基底 + 父行换行 ⇒ 窄的时候主行吃掉整行，宽的时候跟动作平分 */
+  flex: 1 1 auto;
+  /* S2-40-R1：允许换行 —— 否则 .mem-evidence 会被当成同一行 flex 项压到 width=0（来源文字实际不可见） */
+  flex-wrap: wrap;
 }
 
 .tool-shots {
@@ -6933,6 +6940,21 @@ body[data-resizing] {
   margin: 2px 0 0 14px;
   color: var(--muted);
   font-size: var(--fs-xs);
+  /* S2-40-R1：簇内来源同理 —— 让来源行换到独立一行，而不是被挤在同一行 */
+  flex-wrap: wrap;
+}
+
+/* S2-20：来源只读行。仅新增本选择器，只做换行与弱化，不动其它规则 */
+.mem-evidence {
+  display: block;
+  min-width: 0;
+  /* S2-40-R1：独占一个换行后的整行内容宽度（flex parents 里 flex-basis:100% 会另起一行）；
+     ⚠️ 只加 flex 尺寸，不隐藏、不缩短文案 */
+  flex: 1 1 100%;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .mem-conflict {

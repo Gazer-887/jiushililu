@@ -128,3 +128,26 @@ describe('公共序列化出口与正常身份兼容', () => {
     expect(serializeEvent(event)).toBe(JSON.stringify(event))
   })
 })
+
+// S2-30：合并去向进了事件流，隐私断言必须跟着钉「只记名称」。
+describe('合并事件只记去向（S2-30）', () => {
+  it('正式合并的 delete 事件只含名称与 mergedInto，不含正文、绝对路径或 Canary', () => {
+    const { repo, lines } = setup()
+    const CANARY = 'CANARY-S230-MERGE-DO-NOT-LEAK'
+    expect(repo.save({ name: 'alpha', description: '甲条目', class: 'default', origin: 'user', body: `甲正文 ${CANARY}` }).ok).toBe(true)
+    expect(repo.save({ name: 'beta', description: '乙条目', class: 'default', origin: 'user', body: `乙正文 ${CANARY}` }).ok).toBe(true)
+    const fileOf = (name: string): string => repo.list().entries.find((e) => e.name === name)!.file
+    expect(repo.merge(fileOf('alpha'), fileOf('beta')).ok).toBe(true)
+
+    const del = lines.map((line) => JSON.parse(line)).find((e) => e.kind === 'delete')!
+    expect(del).toMatchObject({ name: 'alpha', by: 'user', mergedInto: 'beta' })
+    const text = JSON.stringify(del)
+    expect(text).not.toContain(CANARY)
+    expect(text).not.toContain('/mem/notes')
+    expect(text).not.toContain('甲正文')
+    // 允许集合按真实事件口径：合并只写名称与口径字段（statsVersion），不得出现正文/路径/描述。
+    const allowed = new Set(['kind', 'at', 'conversationId', 'name', 'by', 'mergedInto', 'candidate', 'statsVersion'])
+    for (const key of Object.keys(del)) expect(allowed.has(key)).toBe(true)
+    expect(del.candidate).toBeUndefined()
+  })
+})

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { PlaybookEntry } from '@shared/playbook'
 import { composePlaybookBlock, estimatePlaybookTokens } from '@main/memory/playbook-inject'
 import { estimateMemoryTokens } from '@main/memory/inject'
-import { inferActiveTags, matchesPlaybookTags } from '@shared/playbook'
+import { hasAutomaticRecallTag, inferActiveTags, matchesPlaybookTags } from '@shared/playbook'
 
 const FIXED = new Date('2026-09-15T01:00:00.000Z').toISOString()
 
@@ -88,5 +88,36 @@ describe('inferActiveTags：词边界（B3-D5 修复）', () => {
 
   it('空串 → 空数组（不误召回）', () => {
     expect(inferActiveTags('')).toEqual([])
+  })
+})
+
+// S2-10：保存端用同一份词表判断「能否参与自动召回」，不再另建重复标签表。
+describe('hasAutomaticRecallTag：规范标签判定', () => {
+  it('大小写与空白归一化后命中', () => {
+    expect(hasAutomaticRecallTag(['Debug'])).toBe(true)
+    expect(hasAutomaticRecallTag([' debug '])).toBe(true)
+  })
+
+  it('混合自定义标签仍因规范标签命中', () => {
+    expect(hasAutomaticRecallTag(['file-edit', 'react'])).toBe(true)
+  })
+
+  it('六类规范标签逐一命中', () => {
+    for (const tag of ['file-edit', 'debug', 'research', 'build', 'test', 'refactor']) {
+      expect(hasAutomaticRecallTag([tag])).toBe(true)
+    }
+  })
+
+  it('纯自定义标签不命中', () => {
+    expect(hasAutomaticRecallTag(['react'])).toBe(false)
+    expect(hasAutomaticRecallTag(['react', 'ui'])).toBe(false)
+  })
+
+  it('空数组不命中', () => {
+    expect(hasAutomaticRecallTag([])).toBe(false)
+  })
+
+  it('子串不算命中（file-edits 不是规范标签）', () => {
+    expect(hasAutomaticRecallTag(['file-edits'])).toBe(false)
   })
 })

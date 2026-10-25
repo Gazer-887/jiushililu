@@ -1044,7 +1044,10 @@ export function createMemoryRepo(backend: MemoryBackend, opts: MemoryRepoOptions
         origin: newer.origin,
         cls: newer.class
       })
-      record({ kind: 'delete', conversationId: currentConversation(), name: older.name, by: 'user' })
+      record({ kind: 'delete', conversationId: currentConversation(), name: older.name, by: 'user',
+        // S2-30：记下实际去向（按 createdAt 重判后的较新条目名）。
+        // ⚠️ 只加 mergedInto，不动 kind/by/candidate；正式条目被并掉仍是正式 delete，不得补 candidate: true。
+        mergedInto: newer.name })
       notify({ name: newer.name, ok: true })
       return { ok: true, message: `已把「${older.name}」并入「${newer.name}」并删除旧条` }
     },

@@ -910,3 +910,114 @@ describe('片①-b 硬闸装在咽喉点：三条通路都拦得住', () => {
     expect(seeing.ok).toBe(false)
   })
 })
+
+// ── S2-30：正式合并去向留痕 ────────────────────────────────────────────────
+// 背景：正式 `merge()` 的 delete 事件此前不带 `mergedInto`，用户只能看到"少了一条"，
+// 无从核对它被并进了哪一条。本组钉的是「事件能回答去向」，且不污染普通删除与候选吸收语义。
+describe('正式合并去向留痕（S2-30）', () => {
+  const OLD_AT = '2026-09-01T00:00:00.000Z'
+  const NEW_AT = '2026-09-10T00:00:00.000Z'
+  const seed = () => ({
+    [`${ROOT}/old-note.md`]: fileText({ name: 'old-note', description: '旧条目', createdAt: OLD_AT, updatedAt: OLD_AT }),
+    [`${ROOT}/new-note.md`]: fileText({ name: 'new-note', description: '新条目', createdAt: NEW_AT, updatedAt: NEW_AT })
+  })
+  const eventsOf = (backend: { events: string[] }) => backend.events.map((line) => JSON.parse(line))
+
+  it('正序参数（旧,新）：旧条目 delete 事件带 by=user 与 mergedInto=较新条目名，且不是候选删除', () => {
+    const { repo, backend } = makeRepoWithEvents(seed())
+    const before = backend.events.length
+    const r = repo.merge(`${ROOT}/old-note.md`, `${ROOT}/new-note.md`)
+    expect(r.ok).toBe(true)
+    const fresh = eventsOf(backend).slice(before)
+    const del = fresh.find((e) => e.kind === 'delete')!
+    expect(del.name).toBe('old-note')
+    expect(del.by).toBe('user')
+    expect(del.mergedInto).toBe('new-note')
+    expect(del.candidate).toBeUndefined()
+  })
+
+  it('逆序参数（新,旧）：方向仍按 createdAt 重判，mergedInto 指向实际较新条目', () => {
+    const { repo, backend } = makeRepoWithEvents(seed())
+    const before = backend.events.length
+    const r = repo.merge(`${ROOT}/new-note.md`, `${ROOT}/old-note.md`)
+    expect(r.ok).toBe(true)
+    const del = eventsOf(backend).slice(before).find((e) => e.kind === 'delete')!
+    expect(del.name).toBe('old-note')
+    expect(del.mergedInto).toBe('new-note')
+    // 正文按时间语义保留：旧正文并入新条目，新条目名不变
+    const kept = repo.list().entries.find((e) => e.name === 'new-note')!
+    expect(kept.body).toContain('合并自「old-note」')
+  })
+
+  it('普通删除不带 mergedInto（合并与普通删除必须可区分）', () => {
+    const { repo, backend } = makeRepoWithEvents(seed())
+    const before = backend.events.length
+    expect(repo.remove(`${ROOT}/old-note.md`)).toBe(true)
+    const del = eventsOf(backend).slice(before).find((e) => e.kind === 'delete')!
+    expect(del.name).toBe('old-note')
+    expect(del.mergedInto).toBeUndefined()
+  })
+
+  it('同一条目合并 → ok:false，且不产生成功 write/delete 事件', () => {
+    const { repo, backend } = makeRepoWithEvents(seed())
+    const before = backend.events.length
+    const r = repo.merge(`${ROOT}/old-note.md`, `${ROOT}/old-note.md`)
+    expect(r.ok).toBe(false)
+    expect(backend.events).toHaveLength(before)
+  })
+
+  it('一边不存在 → ok:false，且不产生成功 write/delete 事件', () => {
+    const { repo, backend } = makeRepoWithEvents(seed())
+    const before = backend.events.length
+    const r = repo.merge(`${ROOT}/old-note.md`, `${ROOT}/ghost.md`)
+    expect(r.ok).toBe(false)
+    expect(backend.events).toHaveLength(before)
+  })
+
+  it('候选吸收路径不回归：仍记 candidate:true 且指向合并稿目标', () => {
+    // ⚠️ 本组必须用「notes 与 candidates 分开列」的 backend：本文件默认的 memBackend
+    // 让 listFiles 返回全部 key，候选会被当成生效条目读出来，批准时撞名（那不是产品行为）。
+    const files = new Map<string, string>()
+    const events: string[] = []
+    const arch = createArchiveMock({ files, notesRoot: ROOT, archRoot: ARCH })
+    const backend = {
+      listFiles: () => [...files.keys()].filter((f) => f.startsWith(`${ROOT}/`) && !f.startsWith(`${ROOT}/candidates/`)).sort(),
+      listCandidates: () => [...files.keys()].filter((f) => f.startsWith(`${ROOT}/candidates/`)).sort(),
+      candidatePathFor: (slug: string) => `${ROOT}/candidates/${slug}.md`,
+      pathFor: (slug: string) => `${ROOT}/${slug}.md`,
+      write: (f: string, t: string) => void files.set(f, t),
+      remove: (f: string) => files.delete(f),
+      appendEvent: (line: string) => void events.push(line),
+      ...arch.backend
+    }
+    const repo = createMemoryRepo(backend, { now: () => FIXED, onWarn: () => {}, conversationId: () => 'c1' })
+    const src = `${ROOT}/candidates/a.md`
+    repo.saveCandidate({ name: 'a', description: '来源一', class: 'default', body: '候选正文。' })
+    const mergedFile = repo.saveCandidate({
+      name: 'verbatim-output',
+      description: '合并稿',
+      class: 'default',
+      body: '合并正文。',
+      mergeSources: [src]
+    })
+    expect(mergedFile.length).toBeGreaterThan(0)
+    const before = events.length
+    expect(repo.approveCandidate(mergedFile).ok).toBe(true)
+    const del = events.slice(before).map((line) => JSON.parse(line)).filter((e) => e.kind === 'delete')
+    expect(del).toHaveLength(1)
+    expect(del[0].candidate).toBe(true)
+    expect(del[0].mergedInto).toBe('verbatim-output')
+  })
+
+  it('正式 delete 带 mergedInto 仍计入丢失，候选 delete 仍不计入（统计口径不变）', () => {
+    const events: MemoryEvent[] = [
+      { kind: 'write', at: FIXED.toISOString(), conversationId: 'c1', name: 'new-note', origin: 'user', cls: 'default' } as MemoryEvent,
+      { kind: 'write', at: FIXED.toISOString(), conversationId: 'c1', name: 'old-note', origin: 'user', cls: 'default' } as MemoryEvent,
+      { kind: 'delete', at: FIXED.toISOString(), conversationId: 'c1', name: 'old-note', by: 'user', mergedInto: 'new-note' } as MemoryEvent,
+      { kind: 'delete', at: FIXED.toISOString(), conversationId: 'c1', name: 'src', by: 'user', candidate: true, mergedInto: 'new-note' } as MemoryEvent
+    ]
+    const s = computeStats(events)
+    expect(s.written).toBe(2)
+    expect(s.alive).toBe(1)
+  })
+})

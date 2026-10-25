@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { resolveReflectModel } from '@main/memory/reflection'
 import { sumInjectionTax } from '@main/memory/inject'
 import { createMemoryStore } from '@main/store/memory-store'
@@ -107,5 +107,110 @@ describe('K16 / K17：装配那一段接上了没有（源码结构守卫）', (
     expect(sumInjectionTax(0, 0)).toBe(0)
     expect(sumInjectionTax(-3, 7)).toBe(7)
     expect(sumInjectionTax(Number.NaN, 4)).toBe(4)
+  })
+})
+
+// ── S2-20 追加：store 级来源装配与持久化（S2-40 承接，不改原 K14–K17 判据）──────
+// 目的：把"执行器绑定 input.id"这条上提到装配层 —— 走真 createMemoryStore + 真隔离临时根，
+// 证候选落盘、重建 store 后仍只有真实会话，且用量/出队/事件/失败语义不回归。
+describe('S2-20 装配：候选来源由 store 绑定真实会话（伪造来源一律不采信）', () => {
+  const msgsBig: ChatMessage[] = [{ role: 'user', content: 'x'.repeat(2200) }]
+  const forged = (name: string): Record<string, unknown> => ({
+    name,
+    description: `${name} 的描述`,
+    class: 'default',
+    body: `${name} 的正文`,
+    evidence: { conversationId: 'forged-c9', turnIndex: 99 }
+  })
+
+  /**
+   * 隔离临时根 + 收尾断言父目录是系统 tmp、前缀合法（同 memory-runtime 纪律）。
+   * ⚠️ 必须 await 内部 Promise 再进 finally：写成同步 `return run(dir)`，async 体一 `await`
+   *    就会先跑 finally 把目录删掉，后面整段操作全落空（本单实测踩过）。
+   */
+  async function withTempRoot<T>(prefix: string, run: (dir: string) => Promise<T> | T): Promise<T> {
+    const dir = mkdtempSync(join(tmpdir(), prefix))
+    try {
+      return await run(dir)
+    } finally {
+      expect(resolve(dirname(dir)), '临时根的父目录必须是系统 tmp（判错即抛在删除之前）').toBe(resolve(tmpdir()))
+      expect(basename(dir).startsWith(prefix)).toBe(true)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('reflect 写入候选：evidence 只能是输入会话 A，且无 turnIndex；多候选逐个绑定', async () => {
+    await withTempRoot('s220-wiring-', async (dir) => {
+      const chat = vi.fn(async () => ({
+        content: JSON.stringify([forged('cand-a'), forged('cand-b')]),
+        usage: { promptTokens: 11, completionTokens: 7 }
+      }))
+      const usage: Array<[string, number]> = []
+      const store = createMemoryStore(dir, nodeFsAdapter, {
+        reflectChat: chat,
+        conversationsExists: () => true,
+        getConversationForReflect: () => ({ messages: msgsBig, bodyBytes: 4096 }),
+        onReflectionUsage: (id, u) => usage.push([id, u.promptTokens + u.completionTokens])
+      })
+      expect(store.enqueueReflection('conv-A')).toBe(true)
+      const ranResult = await store.runReflection('conv-A')
+      expect(ranResult, '反思应真消费掉这一项').toBe(true)
+
+      const cands = store.list().candidates
+      expect(cands.map((c) => c.name).sort()).toEqual(['cand-a', 'cand-b'])
+      for (const c of cands) {
+        expect(c.evidence, `${c.name} 必须绑定真会话 A`).toEqual({ conversationId: 'conv-A' })
+        expect(c.evidence?.turnIndex, '模型自报轮次不得写入').toBeUndefined()
+      }
+      // 出队与用量语义不回归
+      expect(store.dequeueReflection(), '队列应已空').toBeNull()
+      expect(usage, '用量仍逐次上报').toEqual([['conv-A', 18]])
+      // reflection_sample 事件仍在（completed + 候选数）
+      const eventsFile = join(dir, 'memory', 'events.jsonl')
+      const lines = readFileSync(eventsFile, 'utf8').split(/\r?\n/).filter((l) => l.trim().length > 0)
+      const samples = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e.kind === 'reflection_sample')
+      expect(samples).toHaveLength(1)
+      expect(samples[0]).toMatchObject({ conversationId: 'conv-A', outcome: 'completed', candidates: 2 })
+    })
+  })
+
+  it('重建 store 后来源仍一致（真落盘，不靠内存态）', async () => {
+    await withTempRoot('s220-persist-', async (dir) => {
+      const chat = vi.fn(async () => ({ content: JSON.stringify([forged('cand-p')]) }))
+      const first = createMemoryStore(dir, nodeFsAdapter, {
+        reflectChat: chat,
+        conversationsExists: () => true,
+        getConversationForReflect: () => ({ messages: msgsBig, bodyBytes: 4096 })
+      })
+      first.enqueueReflection('conv-P')
+      await first.runReflection('conv-P')
+
+      const restarted = createMemoryStore(dir, nodeFsAdapter, {})
+      const cands = restarted.list().candidates
+      expect(cands).toHaveLength(1)
+      expect(cands[0]?.evidence).toEqual({ conversationId: 'conv-P' })
+      expect(cands[0]?.evidence?.turnIndex).toBeUndefined()
+    })
+  })
+
+  it('失败语义不回归：reflectChat 抛错 → 不落候选，reflection_sample 记 failed', async () => {
+    await withTempRoot('s220-fail-', async (dir) => {
+      const chat = vi.fn(async () => {
+        throw new Error('network')
+      })
+      const store = createMemoryStore(dir, nodeFsAdapter, {
+        reflectChat: chat,
+        conversationsExists: () => true,
+        getConversationForReflect: () => ({ messages: msgsBig, bodyBytes: 4096 })
+      })
+      store.enqueueReflection('conv-F')
+      await store.runReflection('conv-F')
+      expect(store.list().candidates).toHaveLength(0)
+      const eventsFile = join(dir, 'memory', 'events.jsonl')
+      const lines = readFileSync(eventsFile, 'utf8').split(/\r?\n/).filter((l) => l.trim().length > 0)
+      const samples = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e.kind === 'reflection_sample')
+      expect(samples).toHaveLength(1)
+      expect(samples[0]).toMatchObject({ conversationId: 'conv-F', outcome: 'failed', candidates: 0 })
+    })
   })
 })
