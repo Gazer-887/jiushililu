@@ -1,12 +1,13 @@
 import { contentRevision, fileRevision } from '../../file-revision'
 import { AgentPauseError } from '../pause-error'
 import { readFile } from 'node:fs/promises'
-import type { AgentTool } from '@shared/agent'
+import { realpathSync } from 'node:fs'
+import type { AgentTool, StagedToolRead } from '@shared/agent'
 import { estimateTokens } from '@shared/tokens'
 import { inspectPathInWorkspace } from '../guard'
 import type { WorkspaceWriter } from '../../workspace-write'
 import type { TokenPolicy } from '@shared/token-tier'
-import { relative } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { toolArtifactPaths } from '@shared/tool-detail'
 
 // 内置工具第一批（plan6）：文件读写。两条硬边界：① 路径必须落在 workspaceRoot 内（防逃逸）
@@ -190,11 +191,22 @@ export function applyExactEdits(source: string, edits: EditSpec[]): EditOutcome 
   return { ok: true, text, applied }
 }
 
+/** Windows 文件系统大小写不敏感：同一文件的不同大小写必须落到同一版本键。 */
+const foldKey = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
+
 /** 参数是模型给的，什么形状都可能：缺、字符串、0、负数、小数 —— 一律归到一个合法正整数 */
 function toPositiveInt(v: unknown, fallback: number): number {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : Number.NaN
   if (!Number.isFinite(n) || n < 1) return fallback
   return Math.floor(n)
+}
+
+/** 真实内建 read_file 的对象身份登记：同名/同结构的插件工具不在其中（S3-40B）。 */
+const trustedReadTools = new WeakSet<AgentTool>()
+
+/** loop 只认这里登记过的对象；工具名与形态自述都不算身份。 */
+export function isTrustedReadTool(tool: AgentTool): boolean {
+  return trustedReadTools.has(tool)
 }
 
 /**
@@ -241,6 +253,172 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
   const scopeHint =
     writer.allowsOutside ? '（当前为完全访问档，工作区外的路径也可指定，越界会在结果里标注绝对路径）' : ''
 
+  /**
+   * 严格身份键：只对已存在目标做 realpath；失败回 null（读取资格/批资格用）。
+   * Windows 大小写折叠，junction/symlink/相对绝对差异在此收口。
+   */
+  const strictIdentityKey = (abs: string): string | null => {
+    try {
+      return foldKey(realpathSync(abs))
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 版本登记键（S3-40B 主脑校验）：已存在目标用 realpath；新建目标对最近已存在祖先
+   * 做 realpath 再拼回。无法解析（权限/未知错误/根不可达）回 null，调用方必须 fail-closed。
+   */
+  const versionKeyOf = (abs: string): string | null => {
+    let current = abs
+    const tail: string[] = []
+    for (;;) {
+      try {
+        const real = realpathSync(current)
+        return foldKey(tail.length > 0 ? join(real, ...tail.reverse()) : real)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return null
+        const parent = dirname(current)
+        if (parent === current) return null
+        tail.push(basename(current))
+        current = parent
+      }
+    }
+  }
+
+  /**
+   * 读取核心：只成形文本与版本，不登记 revisions（execute 与 stage 共用）。
+   * canStart 只在真正读盘前调用；守卫返回 false 或抛错都按 blocked 收口，本项未读。
+   */
+  const readCore = async (
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+    canStart?: () => boolean
+  ): Promise<{
+    text: string
+    abs: string | null
+    revision: string | null
+    versionKey: string | null
+    blocked?: boolean
+  }> => {
+    signal?.throwIfAborted()
+    const rel = typeof args['path'] === 'string' ? args['path'] : ''
+    const located = locate(rel, '读取')
+    if ('error' in located) {
+      return { text: located.error, abs: null, revision: null, versionKey: null }
+    }
+    const { abs, note } = located
+    try {
+      // 路径解析等异步准备之后、真正读盘之前再核一次；守卫抛错也不得变成普通工具失败
+      if (canStart) {
+        let allowed = true
+        try {
+          allowed = canStart() === true
+        } catch {
+          allowed = false
+        }
+        if (!allowed) return { text: '', abs, revision: null, versionKey: null, blocked: true }
+      }
+      signal?.throwIfAborted()
+      const buf = await readFile(abs)
+      signal?.throwIfAborted()
+      // 资格只在这次读取被接受时提交；被拒的读取不得留下覆盖资格（见交还说明）
+      if (buf.byteLength > MAX_READ_BYTES) {
+        return {
+          text: `错误：文件超过 ${Math.round(MAX_READ_BYTES / 1024 / 1024)}MB，读取被拒绝`,
+          abs,
+          revision: null,
+          versionKey: null
+        }
+      }
+      // 只看前 8KB 里有没有 NUL：二进制读成 utf8 会灌进满屏替换字符，烧 token 还让模型满口胡话
+      const probe = buf.subarray(0, 8192)
+      if (probe.includes(0)) {
+        return {
+          text: `错误：「${rel}」看起来是二进制文件（含 NUL 字节），read_file 只读文本`,
+          abs,
+          revision: null,
+          versionKey: null
+        }
+      }
+
+      const text = buf.toString('utf8')
+      const all = text.split(/\r?\n/)
+      const total = all.length
+      const offset = toPositiveInt(args['offset'], 1)
+      const limit = Math.min(toPositiveInt(args['limit'], defaultLines), MAX_LIMIT_LINES)
+      const start = Math.min(offset, total + 1)
+      const end = Math.min(start + limit - 1, total)
+
+      if (start > total) {
+        return {
+          text: `错误：起始行 ${offset} 超出文件范围（该文件共 ${total} 行）。要看末尾请用 offset=${Math.max(1, total - defaultLines + 1)}`,
+          abs,
+          revision: null,
+          versionKey: null
+        }
+      }
+
+      const window = all.slice(start - 1, end)
+      // 按**预算**逐行收，而不是按行数收（见 MAX_WINDOW_TOKENS 的注释）
+      const rows: string[] = []
+      const clipped: number[] = []
+      let used = 0
+      let lastGiven = start - 1
+      for (let i = 0; i < window.length; i++) {
+        const no = start + i
+        const line = window[i]!
+        const long = line.length > MAX_LINE_CHARS
+        const row = long
+          ? `${no}|${line.slice(0, MAX_LINE_CHARS)}…（本行共 ${line.length} 字符，已掐断）`
+          : `${no}|${line}`
+        const cost = estimateTokens(row) + 1
+        if (rows.length > 0 && used + cost > MAX_WINDOW_TOKENS) break
+        rows.push(row)
+        used += cost
+        lastGiven = no
+        if (long) clipped.push(no)
+      }
+
+      const body = rows.join('\n')
+      // footer 是硬要求（"截断必须告诉模型"）：不说清它就会把"我看到的"当成"文件就是这样"，然后给出错结论
+      const moreLines = lastGiven < total
+      const budgetHit = moreLines && lastGiven < end
+      const footer = moreLines
+        ? `\n（文件共 ${total} 行；本次给了第 ${start}–${lastGiven} 行${budgetHit ? `，**已达单次上限约 ${MAX_WINDOW_TOKENS} token**` : ''}，后面还有 ${total - lastGiven} 行。继续读用 offset=${lastGiven + 1}）`
+        : `\n（文件共 ${total} 行；本次已给到末尾）`
+      const clipNote =
+        clipped.length > 0 ? `\n（其中第 ${clipped.join('、')} 行**超长已掐断**，如需完整内容请针对性读取）` : ''
+
+      // 版本只交给调用方；execute 在成功尾部登记，stage 先暂存到 receipt。
+      // versionKey 无法解析时保持 null：read 结果仍可用，但不得留下不可复用的假版本资格。
+      return {
+        text: `${note}${body}${footer}${clipNote}`,
+        abs,
+        revision: contentRevision(buf),
+        versionKey: versionKeyOf(abs)
+      }
+    } catch (err) {
+      if (err instanceof AgentPauseError) throw err
+      if (signal?.aborted) throw err
+      return {
+        text: `错误：读取失败——${err instanceof Error ? err.message : String(err)}`,
+        abs,
+        revision: null,
+        versionKey: null
+      }
+    }
+  }
+
+  /** 批资格用的严格身份键：只认已存在目标；realpath 失败回 null（整批串行）。 */
+  const canonicalKeyOf = async (args: Record<string, unknown>): Promise<string | null> => {
+    const rel = typeof args['path'] === 'string' ? args['path'] : ''
+    if (!rel) return null
+    const located = locate(rel, '读取')
+    if ('error' in located) return null
+    return strictIdentityKey(located.abs)
+  }
+
   const read_file: AgentTool = {
     schema: {
       name: 'read_file',
@@ -259,72 +437,53 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       }
     },
     async execute(args) {
-      const rel = typeof args['path'] === 'string' ? args['path'] : ''
-      const located = locate(rel, '读取')
-      if ('error' in located) return located.error
-      const { abs, note } = located
-      try {
-        const buf = await readFile(abs)
-        // 资格只在这次读取被接受时提交；被拒的读取不得留下覆盖资格（见交还说明）
-        if (buf.byteLength > MAX_READ_BYTES) {
-          return `错误：文件超过 ${Math.round(MAX_READ_BYTES / 1024 / 1024)}MB，读取被拒绝`
+      const read = await readCore(args)
+      // 串行读取也登记到唯一 canonical 版本键：换别名写入必须命中同一份读资格
+      if (read.versionKey !== null && read.revision !== null) revisions.set(read.versionKey, read.revision)
+      return read.text
+    },
+    /**
+     * 可信读取（S3-40B）：stage 只暂存，commit 才登记版本。
+     * ⚠️ 不得在 stage 里写 revisions —— 否则取消后仍留下可供 write_file 使用的读资格。
+     */
+    trustedRead: {
+      canonicalKey: canonicalKeyOf,
+      async stage(args, signal, canStart) {
+        const key = await canonicalKeyOf(args)
+        signal?.throwIfAborted()
+        // 守卫抛错也必须 fail-closed 成 blocked，不能掉进 runToolBatch 的普通 rejected
+        if (canStart) {
+          let allowed = true
+          try {
+            allowed = canStart() === true
+          } catch {
+            allowed = false
+          }
+          if (!allowed) return { text: '', ok: false, receipt: null, key, blocked: true }
         }
-        // 只看前 8KB 里有没有 NUL：二进制读成 utf8 会灌进满屏替换字符，烧 token 还让模型满口胡话
-        const probe = buf.subarray(0, 8192)
-        if (probe.includes(0)) return `错误：「${rel}」看起来是二进制文件（含 NUL 字节），read_file 只读文本`
-
-        const text = buf.toString('utf8')
-        const all = text.split(/\r?\n/)
-        const total = all.length
-        const offset = toPositiveInt(args['offset'], 1)
-        const limit = Math.min(toPositiveInt(args['limit'], defaultLines), MAX_LIMIT_LINES)
-        const start = Math.min(offset, total + 1)
-        const end = Math.min(start + limit - 1, total)
-
-        if (start > total) {
-          return `错误：起始行 ${offset} 超出文件范围（该文件共 ${total} 行）。要看末尾请用 offset=${Math.max(1, total - defaultLines + 1)}`
+        const read = await readCore(args, signal, canStart)
+        return {
+          text: read.text,
+          ok: read.revision !== null,
+          receipt:
+            read.revision !== null && read.abs !== null && read.versionKey !== null
+              ? { abs: read.abs, revision: read.revision, key: read.versionKey }
+              : null,
+          key,
+          // 第二次 canStart 在 readCore 内失效时，必须把 blocked 透传给提交门
+          ...(read.blocked ? { blocked: true } : {})
         }
-
-        const window = all.slice(start - 1, end)
-        // 按**预算**逐行收，而不是按行数收（见 MAX_WINDOW_TOKENS 的注释）
-        const rows: string[] = []
-        const clipped: number[] = []
-        let used = 0
-        let lastGiven = start - 1
-        for (let i = 0; i < window.length; i++) {
-          const no = start + i
-          const line = window[i]!
-          const long = line.length > MAX_LINE_CHARS
-          const text = long
-            ? `${no}|${line.slice(0, MAX_LINE_CHARS)}…（本行共 ${line.length} 字符，已掐断）`
-            : `${no}|${line}`
-          const cost = estimateTokens(text) + 1
-          if (rows.length > 0 && used + cost > MAX_WINDOW_TOKENS) break
-          rows.push(text)
-          used += cost
-          lastGiven = no
-          if (long) clipped.push(no)
-        }
-
-        const body = rows.join('\n')
-        // footer 是硬要求（"截断必须告诉模型"）：不说清它就会把"我看到的"当成"文件就是这样"，然后给出错结论
-        const moreLines = lastGiven < total
-        const budgetHit = moreLines && lastGiven < end
-        const footer = moreLines
-          ? `\n（文件共 ${total} 行；本次给了第 ${start}–${lastGiven} 行${budgetHit ? `，**已达单次上限约 ${MAX_WINDOW_TOKENS} token**` : ''}，后面还有 ${total - lastGiven} 行。继续读用 offset=${lastGiven + 1}）`
-          : `\n（文件共 ${total} 行；本次已给到末尾）`
-        const clipNote =
-          clipped.length > 0 ? `\n（其中第 ${clipped.join('、')} 行**超长已掐断**，如需完整内容请针对性读取）` : ''
-
-        // 读取被接受后才提交内容版本资格
-        revisions.set(abs, contentRevision(buf))
-        return `${note}${body}${footer}${clipNote}`
-      } catch (err) {
-        if (err instanceof AgentPauseError) throw err
-        return `错误：读取失败——${err instanceof Error ? err.message : String(err)}`
+      },
+      commit(staged: StagedToolRead) {
+        if (staged.receipt) revisions.set(staged.receipt.key, staged.receipt.revision)
+        return staged.text
+      },
+      discard() {
+        // receipt 从未写入 revisions，丢弃结果即可（结果随批次一起作废）
       }
     }
   }
+  trustedReadTools.add(read_file)
 
   const write_file: AgentTool = {
     takeProducedFiles,
@@ -347,11 +506,18 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       if (content === null) return '错误：缺少 content 参数'
       const located = locate(rel, '写入')
       if ('error' in located) return located.error
+      const versionKey = versionKeyOf(located.abs)
+      // 版本键无法解析时 fail-closed：宁可拒绝，也不留下不可复用的假资格
+      if (versionKey === null) {
+        return `错误：路径「${rel}」无法确认规范位置（权限或文件系统解析失败），拒绝写入`
+      }
       try {
-        const baseline = revisions.get(located.abs) ?? fileRevision(located.abs)
-        if (baseline !== null && !revisions.has(located.abs)) return '错误：覆盖已有文件前请先用 read_file 读取，避免覆盖人工改动'
+        const baseline = revisions.get(versionKey) ?? fileRevision(located.abs)
+        if (baseline !== null && !revisions.has(versionKey)) {
+          return '错误：覆盖已有文件前请先用 read_file 读取，避免覆盖人工改动'
+        }
         const result = await writer.write(rel, content, baseline)
-        revisions.set(located.abs, contentRevision(content))
+        revisions.set(versionKey, contentRevision(content))
         recordProduced(args, located.abs)
         return `${located.note}${result}`
       } catch (err) {
@@ -411,6 +577,10 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
       const located = locate(rel, '修改')
       if ('error' in located) return located.error
       const { abs, note } = located
+      const versionKey = versionKeyOf(abs)
+      if (versionKey === null) {
+        return `错误：路径「${rel}」无法确认规范位置（权限或文件系统解析失败），拒绝修改`
+      }
       let source: string
       try {
         const buf = await readFile(abs)
@@ -430,7 +600,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
         return `错误：读取失败——${msg}`
       }
       // 读被接受（大小/NUL 通过）：这次内部读取是合法的，提交资格供后续写操作比对
-      revisions.set(abs, contentRevision(source))
+      revisions.set(versionKey, contentRevision(source))
 
       const outcome = applyExactEdits(source, edits)
       if (!outcome.ok) {
@@ -442,7 +612,7 @@ export function createFileTools(writer: WorkspaceWriter, policy?: TokenPolicy): 
 
       try {
         const wrote = await writer.write(rel, outcome.text, contentRevision(source))
-        revisions.set(abs, contentRevision(outcome.text))
+        revisions.set(versionKey, contentRevision(outcome.text))
         recordProduced(args, abs)
         const notes = outcome.applied.map((a) => {
           const sign = a.deltaBytes >= 0 ? `+${a.deltaBytes}` : `${a.deltaBytes}`

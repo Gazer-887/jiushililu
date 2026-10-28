@@ -1,24 +1,27 @@
 import Store from 'electron-store'
 import { copyFileSync, existsSync } from 'node:fs'
-import type { ModelSettings, ReasoningConfig, SettingsSaveInput, SettingsView } from '@shared/ipc'
+import type { ModelSettings, SettingsSaveInput, SettingsView } from '@shared/ipc'
+import type { ModelMetadata } from '../../shared/model-metadata'
 import {
   activeEntry,
   activeProfile,
   applyDetectionToEntries,
+  applyEntrySettingsPatch,
   canDeleteEntry,
   canDeleteProfile,
   createProfile,
   findModelEntry,
   legacyKeyOwnerId,
   makeEntry,
-  mergeEntrySettings,
   normalizeProfiles,
   profileOf,
   removeProfile,
   resolveFetchApiKey,
   settingsOf,
   sourceOfBaseURL,
+  tierSupportFromServiceTiers,
   type AvailableModels,
+  type EntrySettingsPatch,
   type FetchAvailableInput,
   type ModelEntry,
   type ModelProfile,
@@ -27,6 +30,8 @@ import {
   type ModelProfileView,
   type ModelSwitchResult
 } from '@shared/models'
+import type { TierSupport } from '@shared/request-policy'
+import type { ProviderRequest } from '../providers/types'
 import { createLogger } from '../log'
 import {
   clearLegacyApiKey,
@@ -154,6 +159,30 @@ export function getActiveEntry(): { profile: ModelProfile; entry: ModelEntry } |
   return entry ? { profile, entry } : null
 }
 
+/**
+ * run 起点的一次性绑定（S3-30F）：settings / 实际模型 / 能力位**同一时刻**从同一份档案读出，
+ * 异步之后不再回头补读（避免"读到刚被切走的端点"或"用新能力解释旧请求"）。
+ * 能力位来自 `metadata.serviceTiers` 的既有单真源（user > official > catalog）。
+ */
+export interface ActiveRunBinding {
+  profile: ModelProfile
+  entry: ModelEntry
+  /** 与该端点/条目同一时刻合成的设置视图（含探测记录；Key 仍只给掩码） */
+  settings: SettingsView
+  tierSupport: TierSupport
+}
+
+export function getActiveRunBinding(): ActiveRunBinding | null {
+  const active = getActiveEntry()
+  if (!active) return null
+  return {
+    profile: active.profile,
+    entry: active.entry,
+    settings: settingsViewOf(active.profile, active.entry),
+    tierSupport: tierSupportFromServiceTiers(active.profile.providerType, active.entry.metadata)
+  }
+}
+
 /** 界面视图（Key 只给掩码） */
 export function modelsView(): ModelsView {
   const { profiles, activeId } = listProfiles()
@@ -176,17 +205,22 @@ export function modelsFilePath(): string {
 
 // ── 内核与界面看见的"那一个模型" ───────────────────────────────────────────
 
+/** 由同一份端点/条目构造界面视图（Key 只给掩码；探测记录原样直通） */
+function settingsViewOf(profile: ModelProfile, entry: ModelEntry): SettingsView {
+  return {
+    ...settingsOf(profile, entry),
+    hasApiKey: hasProfileKey(profile.id),
+    apiKeyMasked: maskKey(getProfileKey(profile.id)),
+    // K51 直通：有探测记录就带上（过期裁决在消费方，不在这里）
+    ...(entry.detectedModalities ? { detectedModalities: entry.detectedModalities } : {}),
+    ...(typeof entry.detectedAt === 'number' ? { detectedAt: entry.detectedAt } : {})
+  }
+}
+
 export function getSettingsView(): SettingsView {
   const active = getActiveEntry()
   if (!active) return { ...EMPTY, hasApiKey: false, apiKeyMasked: '' }
-  return {
-    ...settingsOf(active.profile, active.entry),
-    hasApiKey: hasProfileKey(active.profile.id),
-    apiKeyMasked: maskKey(getProfileKey(active.profile.id)),
-    // K51 直通：有探测记录就带上（过期裁决在消费方，不在这里）
-    ...(active.entry.detectedModalities ? { detectedModalities: active.entry.detectedModalities } : {}),
-    ...(typeof active.entry.detectedAt === 'number' ? { detectedAt: active.entry.detectedAt } : {})
-  }
+  return settingsViewOf(active.profile, active.entry)
 }
 
 export function getDecryptedApiKey(): string {
@@ -221,8 +255,15 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
         // 与 plan58 片⓪ 变异自检抓到的 `settingsOf` 漏透传同族（读盘一 hop / 写盘一 hop）。
         ...(rest.reasoning ? { reasoning: rest.reasoning } : {}),
         maxToolRounds: rest.maxToolRounds,
-        inputModalities: rest.inputModalities
-      }
+        inputModalities: rest.inputModalities,
+        // S3-10C0：白名单重建显式带（字段存在才携带；settings:save 旧路径不丢新字段）
+        ...(rest.requestIdentity ? { requestIdentity: rest.requestIdentity } : {}),
+        ...(rest.authentication ? { authentication: rest.authentication } : {}),
+        // S3-10C1：settings:save 重建当前 entry 时显式保留 metadata（普通编辑不丢元数据）
+        ...(active.entry.metadata ? { metadata: active.entry.metadata } : {})
+      },
+      // S3-20A：旧保存路径同样是白名单重建，模型默认档位必须显式带走
+      speedMode: active.entry.speedMode
     })
     saveEndpoint({
       id: active.profile.id,
@@ -248,7 +289,10 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
         reasoningEffort: rest.reasoningEffort,
         ...(rest.reasoning ? { reasoning: rest.reasoning } : {}), // 同上：白名单重建，必须显式带
         maxToolRounds: rest.maxToolRounds,
-        inputModalities: rest.inputModalities
+        inputModalities: rest.inputModalities,
+        // S3-10C0：同上，显式带两字段
+        ...(rest.requestIdentity ? { requestIdentity: rest.requestIdentity } : {}),
+        ...(rest.authentication ? { authentication: rest.authentication } : {})
       }
     })
     const created = createProfile({
@@ -379,11 +423,7 @@ export function setActiveEntry(profileId: string, entryId: string): void {
  * 同档案其它字段逐字节不变 —— 防 `models:save` 那种整表覆盖的回退）。
  * ⚠️ 白名单判档不在这里：handler 已把补丁合进整表过过 `modelSaveSchema` 才会调到这。
  */
-export function patchEntrySettings(
-  profileId: string,
-  entryId: string,
-  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig; contextWindow?: number }
-): void {
+export function patchEntrySettings(profileId: string, entryId: string, patch: EntrySettingsPatch): void {
   const { profiles } = listProfiles()
   const profile = profiles.find((p) => p.id === profileId)
   if (!profile) throw new Error('该端点不存在（可能已被删除）')
@@ -394,9 +434,8 @@ export function patchEntrySettings(
       p.id === profileId
         ? {
             ...p,
-            models: p.models.map((m) =>
-              m.id === entryId ? { ...m, settings: mergeEntrySettings(m.settings, patch) } : m
-            ),
+            // S3-20A：条目级字段（speedMode / metadata）由共享合并函数原样保留
+            models: p.models.map((m) => (m.id === entryId ? applyEntrySettingsPatch(m, patch) : m)),
             updatedAt: Date.now()
           }
         : p
@@ -424,7 +463,18 @@ const FETCH_MODELS_TIMEOUT_CAP_MS = 20000
  * Key 取值链：入参明文（新端点表单里刚填的）→ 有 `id` 则回落该端点已存密文 → 都没有才报"请先填 Key"。
  * `settings` 是纯数据构造（不从档案取），与 `provider.listModels(req)` 的现有签名天然契合。
  */
-export async function fetchAvailableModels(input: FetchAvailableInput): Promise<AvailableModels> {
+/**
+ * 目录拉取的窄运行时参数（S3-30F）：组合根建好的运行上下文只作**函数参数**传入，
+ * 不进持久 schema/档案，也不由本层创建（持久层不引用运行态类型名）。
+ */
+export interface CatalogFetchRuntime {
+  context?: ProviderRequest['context']
+}
+
+export async function fetchAvailableModels(
+  input: FetchAvailableInput,
+  runtime: CatalogFetchRuntime = {}
+): Promise<AvailableModels> {
   const savedKey = input.id ? getProfileKey(input.id) : ''
   const apiKey = resolveFetchApiKey(input, savedKey)
   if (!apiKey) return { ok: false, message: '请先填写 API Key（或先保存该端点的 Key）', models: [] }
@@ -433,13 +483,23 @@ export async function fetchAvailableModels(input: FetchAvailableInput): Promise<
     ...EMPTY,
     providerType: input.providerType,
     baseURL: input.baseURL,
-    timeoutMs: input.timeoutMs ?? EMPTY.timeoutMs
+    timeoutMs: input.timeoutMs ?? EMPTY.timeoutMs,
+    // S3-30F0/F：把当前草稿的两项持久策略真正带进请求；缺省不加键（旧行为逐字不变）
+    ...(input.requestIdentity ? { requestIdentity: input.requestIdentity } : {}),
+    ...(input.authentication ? { authentication: input.authentication } : {})
   }
+  const context = runtime.context
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, FETCH_MODELS_TIMEOUT_CAP_MS))
   try {
     const provider = createProvider(input.providerType)
-    const result = await provider.listModels({ settings, apiKey, messages: [], signal: controller.signal })
+    const result = await provider.listModels({
+      settings,
+      apiKey,
+      messages: [],
+      signal: controller.signal,
+      ...(context ? { context } : {})
+    })
     // K51 拉列表刷新（B3 定案）：只在编辑已存端点时写盘（`input.id` 在场）。
     // 新端点表单免保存拉取时无档案可写 —— capabilities 随结果回界面，落盘等下次拉取。
     // 缺 capabilities/空表/失败 ⇒ 不写盘（失败形状不写盘，K51-3 的落盘半边）。
@@ -466,4 +526,52 @@ export async function fetchAvailableModels(input: FetchAvailableInput): Promise<
   } finally {
     clearTimeout(timer)
   }
+}
+
+// ── S3-10C2A：条目元数据原子读写 ────────────────────────────────────────────
+
+/**
+ * 读取条目元数据：条目/端点不存在抛人话错误；存在但无 metadata 返回 null（不补空对象）。
+ * 走 listProfiles（normalizeProfiles 容错读回），与设置页看到的是同一份真值。
+ */
+export function getEntryMetadata(profileId: string, entryId: string): ModelMetadata | null {
+  const { profiles } = listProfiles()
+  const profile = profiles.find((p) => p.id === profileId)
+  if (!profile) throw new Error(`端点不存在（${profileId}）`)
+  const entry = profile.models.find((m) => m.id === entryId)
+  if (!entry) throw new Error(`该模型不存在（可能已被删除）`)
+  return entry.metadata ?? null
+}
+
+/**
+ * 原子 metadata 补丁：只更新该 entry 的 metadata，单次 `store.set('profiles', …)`；
+ * 其它 profile、entry、settings、name、Key、时间戳按既有语义保留。
+ * `next === undefined` 时移除 metadata 键（metadata 整体不存在）。
+ * 调用方（main handler）负责先 `applyUserMetadataPatch` 合成并过 `modelMetadataSchema`。
+ */
+export function patchEntryMetadata(
+  profileId: string,
+  entryId: string,
+  next: ModelMetadata | undefined
+): void {
+  // S3-10C2A-R1（C2A-M3）：函数内部自己走 listProfiles() 归一化路径——store 级合同独立成立，
+  // 不依赖 handler 先行读取；仍保持单次 store.set('profiles', …)。
+  const { profiles } = listProfiles()
+  let hits = 0
+  const nextProfiles = profiles.map((p) => {
+    if (p.id !== profileId) return p
+    hits += 1
+    return {
+      ...p,
+      models: p.models.map((m) => {
+        if (m.id !== entryId) return m
+        hits += 1
+        const rest: ModelProfile['models'][number] = { ...m }
+        delete rest.metadata
+        return next === undefined ? rest : { ...rest, metadata: next }
+      })
+    }
+  })
+  if (hits !== 2) throw new Error(`要补丁的条目不存在（profile=${profileId} entry=${entryId}）`)
+  store.set('profiles', nextProfiles)
 }

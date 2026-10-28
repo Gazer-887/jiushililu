@@ -190,6 +190,71 @@ function attributeStall(
 let phase = 'idle'
 // 哨兵条目：历史被截断后兜底为 unknown，宁可说"不知道"也不误归给残存阶段
 let history: { phase: string; at: number }[] = [{ phase: 'unknown', at: Number.NEGATIVE_INFINITY }]
+
+// ── 所有权租约（S3-40A）─────────────────────────────────────────────
+// 单槽 phase 只能表达"当前是谁"，无法证明两个在途所有者相互独立；租约补的是**归属**：
+// 每个在途工作持有自己的条目，release 只删自己那条，重复 release 幂等。
+// ⚠️ 租约只影响**展示/归因**用的 display phase；旧 `phase` 槽与 setWatchdogPhase 的
+//    "返回 prev 再回存"语义保持不变 —— 绝不把租约展示值当成 prev 写成永久基线。
+export interface WatchdogLease {
+  readonly id: string
+  readonly phase: string
+  release(): void
+}
+
+let leases = new Map<string, { phase: string }>()
+let leaseSeq = 0
+
+/** 在途租约的展示串：同 phase 合并计数，不同 phase 排序拼接（确定性，便于日志比对）。 */
+function leaseDisplay(): string | null {
+  if (leases.size === 0) return null
+  const counts = new Map<string, number>()
+  for (const lease of leases.values()) counts.set(lease.phase, (counts.get(lease.phase) ?? 0) + 1)
+  return [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, n]) => (n > 1 ? `${name}×${n}` : name))
+    .join('+')
+}
+
+/** 对外展示/停滞归因用的阶段：有租约看租约，没有才回落旧槽。 */
+export function peekWatchdogDisplayPhase(): string {
+  return leaseDisplay() ?? phase
+}
+
+/** 当前在途租约快照（只读；测试与诊断用，不是可变入口）。 */
+export function peekWatchdogLeases(): Array<{ id: string; phase: string }> {
+  return [...leases.entries()].map(([id, lease]) => ({ id, phase: lease.phase }))
+}
+
+/** 展示 phase 变化才记历史：租约存续期间旧 setter 改槽不产生噪音。 */
+function recordDisplayPhase(): void {
+  const shown = peekWatchdogDisplayPhase()
+  if (history[history.length - 1]?.phase === shown) return
+  history.push({ phase: shown, at: performance.now() })
+  if (history.length > HISTORY_MAX) history = history.slice(-(HISTORY_MAX - 1))
+}
+
+/**
+ * 取得一个所有权租约。调用方必须在自己的 finally 里 release（幂等），
+ * 单项任务/取消/异常都不得把释放责任推给别人。
+ */
+export function acquireWatchdogLease(leasePhase: string): WatchdogLease {
+  const id = `lease-${++leaseSeq}`
+  leases.set(id, { phase: leasePhase })
+  recordDisplayPhase()
+  let released = false
+  return {
+    id,
+    phase: leasePhase,
+    release(): void {
+      if (released) return
+      released = true
+      // 只删自己那条：绝不能因为"批结束了"就清空别人的在途归属
+      leases.delete(id)
+      recordDisplayPhase()
+    }
+  }
+}
 let timer: NodeJS.Timeout | null = null
 let lastTick = 0
 let intervalMs = 250
@@ -204,8 +269,8 @@ export function setWatchdogPhase(next: string): string {
   const prev = phase
   if (next !== phase) {
     phase = next
-    history.push({ phase: next, at: performance.now() })
-    if (history.length > HISTORY_MAX) history = history.slice(-(HISTORY_MAX - 1))
+    // 只有展示 phase 真的变了才记历史：租约存续时旧 setter 改的是"之后的回落值"，不是当前归属
+    recordDisplayPhase()
   }
   return prev
 }
@@ -256,6 +321,7 @@ export function startWatchdog(opts?: {
   lastTick = performance.now()
   history = [{ phase: 'unknown', at: Number.NEGATIVE_INFINITY }, { phase, at: lastTick }]
   // 插桩状态不跨启停存活（与 D-119 ②「缓存不许跨重挂载存活」同源）
+  leases = new Map()
   bigBlocks = []
   crumbs = []
   lastSlowReportAt = new Map()

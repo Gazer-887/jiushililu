@@ -13,7 +13,25 @@ import {
   modalityLabel,
   type InputModality
 } from '@shared/content-parts'
-import { entryLabel, isDetectionFresh, type ModelEntry } from '@shared/models'
+import { entryLabel, isDetectionFresh, type ModelEntry, type ModelsView } from '@shared/models'
+import {
+  resolveMetadata,
+  withAppDefault,
+  type AppDefaultResolution,
+  type AttachmentParsing,
+  type CatalogPolicy,
+  type MetadataValue,
+  type ModelMetadata,
+  type ModelMetadataField,
+  type ModelMetadataPatch,
+  type ModelMetadataPatchInput,
+  type ModelMetadataPatchSet,
+  type NativeExtendedInput,
+  type PriceCategory,
+  type PriceEntry,
+  type ResolvedMetadata,
+  type SubscriptionPlan
+} from '@shared/model-metadata'
 import {
   ADDABLE_EFFORT_LEVELS,
   BUDGET_ENCODING_LABELS,
@@ -28,7 +46,298 @@ import FieldNote from './FieldNote'
  * ⚠️ 加一项之前必须先确认出境通路真的通了（provider 有映射 + 有判据），否则这里出现的就是一个骗人的格子；
  * 厂商收不收由 `inputModalities` 表达，**我们能不能发**由这张表表达，两者不是一回事。
  */
-const MODALITY_UI: InputModality[] = ['text', 'image', 'video']
+export const MODALITY_UI: InputModality[] = ['text', 'image', 'video']
+
+// ── 模型事实展示（S3-10D）───────────────────────────────────────────────────
+// 界面**不判定来源优先级**：值与来源只取 resolveMetadata / withAppDefault 的结果，本文件只管格式化。
+// 未知一律显示“未知”，不补 0、不补空串、不造默认值；0 只在真实零价时出现。
+
+/** 展示来源 = 三类元数据来源 + 应用默认（回退值不得伪装成三类来源之一） */
+export type FactSource = 'user' | 'official' | 'catalog' | 'app-default'
+
+export const SOURCE_LABELS: Record<FactSource, string> = {
+  user: '用户',
+  official: '官方',
+  catalog: '目录',
+  'app-default': '应用默认'
+}
+
+export const UNKNOWN_TEXT = '未知'
+
+/** 应用内回退值：与 `@shared/models` 的 `settingsOf` 兜底同值（单测钉住两者一致，改一侧须同步） */
+export const APP_DEFAULTS = { contextWindow: 131072, maxOutputTokens: 4096 } as const
+
+const FACT_LABELS: Record<ModelMetadataField, string> = {
+  contextWindow: '上下文窗口',
+  maxOutputTokens: '最大输出 Token',
+  reasoningLevels: '推理档位',
+  nativeInputModalities: '原生输入模态',
+  nativeExtendedInputs: '原生扩展输入',
+  attachmentParsing: '附件解析',
+  pricing: '价格',
+  subscriptionPlan: '订阅套餐',
+  serviceTiers: '服务档',
+  catalogPolicy: '目录策略'
+}
+
+/** 原生输入与附件解析分属两栏：只按各自字段展示，绝不互相推导 */
+export const NATIVE_INPUT_KEYS = ['nativeInputModalities', 'nativeExtendedInputs'] as const
+export const ATTACHMENT_KEYS = ['attachmentParsing'] as const
+
+const NATIVE_EXTENDED_LABELS: Record<NativeExtendedInput, string> = {
+  audio: '音频',
+  pdf: 'PDF',
+  file: '文件'
+}
+
+const CATALOG_POLICY_LABELS: Record<CatalogPolicy, string> = {
+  'fetch-or-manual': '可拉取，亦可手填',
+  'manual-only': '仅手动维护'
+}
+
+/** 千分位分组：金额与 Token 数可扫读（小数只作用于整数部分） */
+function groupDigits(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+/** 观测时间显示到分钟（元数据不是秒级事实），用本地时区 */
+export function formatObservedAt(ts: number): string {
+  const d = new Date(ts)
+  const two = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`
+}
+
+/** 一个字段的展示态；未知时 `value` 恒为 `UNKNOWN_TEXT`，来源与时间均为空 */
+export interface FactField {
+  key: ModelMetadataField
+  label: string
+  value: string
+  known: boolean
+  source: FactSource | null
+  sourceLabel: string | null
+  observedAt: number | null
+  observedAtLabel: string | null
+  limitations: string[]
+}
+
+type AnyResolution<T> = ResolvedMetadata<T> | AppDefaultResolution<T>
+
+function unknownFact(key: ModelMetadataField): FactField {
+  return {
+    key,
+    label: FACT_LABELS[key],
+    value: UNKNOWN_TEXT,
+    known: false,
+    source: null,
+    sourceLabel: null,
+    observedAt: null,
+    observedAtLabel: null,
+    limitations: []
+  }
+}
+
+function factField<T>(
+  key: ModelMetadataField,
+  resolved: AnyResolution<T> | undefined,
+  format: (value: T) => string
+): FactField {
+  if (!resolved) return unknownFact(key)
+  const observedAt = 'observedAt' in resolved ? resolved.observedAt : null
+  return {
+    key,
+    label: FACT_LABELS[key],
+    value: format(resolved.value),
+    known: true,
+    source: resolved.source,
+    sourceLabel: SOURCE_LABELS[resolved.source],
+    observedAt,
+    observedAtLabel: observedAt === null ? null : formatObservedAt(observedAt),
+    limitations: 'limitations' in resolved && resolved.limitations ? [...resolved.limitations] : []
+  }
+}
+
+function formatAttachment(value: AttachmentParsing): string {
+  if (!value.supported) return '不支持'
+  return value.parsers && value.parsers.length > 0 ? `支持（${value.parsers.join('、')}）` : '支持'
+}
+
+function formatPlan(value: SubscriptionPlan): string {
+  const quota = `${groupDigits(value.quotaAmount)} ${value.quotaUnit}`
+  return value.resetWindow ? `${quota} / ${value.resetWindow} 重置` : quota
+}
+
+/**
+ * 十个字段的展示态（顺序即界面顺序）。只有上下文窗口与最大输出 Token 有应用内回退值，
+ * 其余字段无已知来源时一律“未知”——不拿应用默认冒充厂商规格。
+ */
+export function buildMetadataFacts(metadata: ModelMetadata | undefined): FactField[] {
+  return [
+    factField(
+      'contextWindow',
+      withAppDefault(resolveMetadata(metadata?.contextWindow), APP_DEFAULTS.contextWindow),
+      (v) => `${groupDigits(v)} Token`
+    ),
+    factField(
+      'maxOutputTokens',
+      withAppDefault(resolveMetadata(metadata?.maxOutputTokens), APP_DEFAULTS.maxOutputTokens),
+      (v) => `${groupDigits(v)} Token`
+    ),
+    factField('reasoningLevels', resolveMetadata(metadata?.reasoningLevels), (v) => v.join('、')),
+    factField('nativeInputModalities', resolveMetadata(metadata?.nativeInputModalities), (v) =>
+      v.map((m) => modalityLabel(m)).join('、')
+    ),
+    factField('nativeExtendedInputs', resolveMetadata(metadata?.nativeExtendedInputs), (v) =>
+      v.map((m) => NATIVE_EXTENDED_LABELS[m]).join('、')
+    ),
+    factField('attachmentParsing', resolveMetadata(metadata?.attachmentParsing), formatAttachment),
+    factField('pricing', resolveMetadata(metadata?.pricing), (v) => `${v.length} 条（按类别分列）`),
+    factField('subscriptionPlan', resolveMetadata(metadata?.subscriptionPlan), formatPlan),
+    factField('serviceTiers', resolveMetadata(metadata?.serviceTiers), (v) => v.join('、')),
+    factField('catalogPolicy', resolveMetadata(metadata?.catalogPolicy), (v) => CATALOG_POLICY_LABELS[v])
+  ]
+}
+
+/** 价格四类别固定顺序：公开 API 与订阅套餐各成一栏，不做任何换算 */
+export const PRICE_CATEGORIES: PriceCategory[] = [
+  'public-api',
+  'aggregator',
+  'subscription-plan',
+  'subscription-overage'
+]
+
+export const PRICE_CATEGORY_LABELS: Record<PriceCategory, string> = {
+  'public-api': '公开 API 单价',
+  aggregator: '聚合平台价',
+  'subscription-plan': '订阅套餐价',
+  'subscription-overage': '套餐外超额价'
+}
+
+const PRICE_SCOPE_LABELS: Record<NonNullable<PriceEntry['scope']>, string> = {
+  input: '输入',
+  output: '输出',
+  request: '每次请求'
+}
+
+export interface PriceGroup {
+  category: PriceCategory
+  label: string
+  /** false = 该类别没有任何已知价格（界面显示“未知”，不显示 0） */
+  known: boolean
+  entries: PriceEntry[]
+  lines: string[]
+}
+
+/** 单条价格：`金额 币种 / 单位` + scope/region/serviceTier/cache/batch（存在才显示） */
+export function formatPriceEntry(entry: PriceEntry): string {
+  const head = `${groupDigits(entry.amount)} ${entry.currency} / ${entry.unit}`
+  const qualifiers: string[] = []
+  if (entry.scope) qualifiers.push(PRICE_SCOPE_LABELS[entry.scope])
+  if (entry.region) qualifiers.push(`区域 ${entry.region}`)
+  if (entry.serviceTier) qualifiers.push(`服务档 ${entry.serviceTier}`)
+  if (entry.cache) qualifiers.push('缓存')
+  if (entry.batch) qualifiers.push('批量')
+  return qualifiers.length > 0 ? `${head} · ${qualifiers.join(' · ')}` : head
+}
+
+/** 按类别分组：一条价格一行，多个币种或单位绝不并成一行 */
+export function buildPriceGroups(pricing: MetadataValue<PriceEntry[]> | undefined): PriceGroup[] {
+  const entries = resolveMetadata(pricing)?.value ?? []
+  return PRICE_CATEGORIES.map((category) => {
+    const own = entries.filter((e) => e.category === category)
+    return {
+      category,
+      label: PRICE_CATEGORY_LABELS[category],
+      known: own.length > 0,
+      entries: own,
+      lines: own.map(formatPriceEntry)
+    }
+  })
+}
+
+/**
+ * 用户覆盖只对**已保存**的端点与条目开放：新增端点或未保存草稿没有可打的档案，
+ * 走 IPC 只会拿到“条目不存在”，所以这里先行拦下，一个请求都不发。
+ */
+export function canOverrideMetadata(
+  profileId: string | undefined,
+  savedEntryIds: readonly string[],
+  entryId: string
+): boolean {
+  return typeof profileId === 'string' && profileId.length > 0 && savedEntryIds.includes(entryId)
+}
+
+export interface MetadataOverrideValues {
+  contextWindow?: number
+  maxOutputTokens?: number
+}
+
+export interface MetadataOverrideInput {
+  api: { patchModelMetadata(input: ModelMetadataPatchInput): Promise<ModelsView> }
+  profileId?: string
+  savedEntryIds: readonly string[]
+  entryId: string
+  draftModels: ModelEntry[]
+  set?: MetadataOverrideValues
+  clear?: Array<'contextWindow' | 'maxOutputTokens'>
+}
+
+export type MetadataOverrideResult =
+  | { ok: true; models: ModelEntry[] }
+  | { ok: false; models: ModelEntry[]; error: string }
+
+/**
+ * 成功后只把 `metadata` 换成主进程真值：名称、settings（含认证）与其它未保存草稿逐字段保留。
+ * 主进程返回值里该条目已无 metadata 时，草稿里的旧 metadata 一并清掉（不残留）。
+ */
+export function mergeMetadataFromView(
+  draftModels: ModelEntry[],
+  view: ModelsView,
+  profileId: string
+): ModelEntry[] {
+  const profile = view.profiles.find((p) => p.id === profileId)
+  if (!profile) return draftModels
+  const saved = new Map(profile.models.map((m) => [m.id, m]))
+  return draftModels.map((draft) => {
+    const latest = saved.get(draft.id)
+    if (!latest) return draft
+    const next: ModelEntry = { ...draft }
+    if (latest.metadata) next.metadata = latest.metadata
+    else delete next.metadata
+    return next
+  })
+}
+
+/**
+ * 提交用户覆盖：只发 `{ user: { value } }`，**不带 observedAt** —— 盖章是主进程的职责。
+ * 失败时原样返回入参草稿，界面据此保留当前值与已填内容。
+ */
+export async function submitMetadataOverride(
+  input: MetadataOverrideInput
+): Promise<MetadataOverrideResult> {
+  const { api, profileId, savedEntryIds, entryId, draftModels, set, clear } = input
+  if (!canOverrideMetadata(profileId, savedEntryIds, entryId)) {
+    return { ok: false, models: draftModels, error: '该模型尚未保存：先保存端点，再使用用户覆盖。' }
+  }
+  const setBody: ModelMetadataPatchSet = {}
+  if (set && typeof set.contextWindow === 'number' && Number.isFinite(set.contextWindow)) {
+    setBody.contextWindow = { user: { value: set.contextWindow } }
+  }
+  if (set && typeof set.maxOutputTokens === 'number' && Number.isFinite(set.maxOutputTokens)) {
+    setBody.maxOutputTokens = { user: { value: set.maxOutputTokens } }
+  }
+  const patch: ModelMetadataPatch = {}
+  if (Object.keys(setBody).length > 0) patch.set = setBody
+  if (clear && clear.length > 0) patch.clear = [...clear]
+  if (!patch.set && !patch.clear) {
+    return { ok: false, models: draftModels, error: '没有可提交的覆盖值：请填写上下文窗口或最大输出 Token。' }
+  }
+  try {
+    const view = await api.patchModelMetadata({ profileId: profileId as string, entryId, patch })
+    return { ok: true, models: mergeMetadataFromView(draftModels, view, profileId as string) }
+  } catch (err) {
+    return { ok: false, models: draftModels, error: err instanceof Error ? err.message : String(err) }
+  }
+}
 
 /**
  * 推理等级那一块（plan58 R14 · 形态照 Zcode：chips + `+`，`levels` 收**有序**数组）。
@@ -289,12 +598,267 @@ const MODALITY_HINT: Record<InputModality, string> = {
 
 const num = (v: string): number => (v === '' ? 0 : Number(v))
 
+/** 来源与观测时间：未知字段不占位（没有来源就没有这一行） */
+function FactMeta({ fact }: { fact: FactField }): JSX.Element | null {
+  if (!fact.sourceLabel) return null
+  return (
+    <span className="mc-fact-meta">
+      来源：{fact.sourceLabel}
+      {fact.observedAtLabel ? ` · 观测于 ${fact.observedAtLabel}` : ' · 应用内回退值'}
+    </span>
+  )
+}
+
+/** 该来源自带的限制说明：价格/套餐这类多行块也要带上，不能只在单值字段显示 */
+function FactLimits({ fact }: { fact: FactField }): JSX.Element | null {
+  if (fact.limitations.length === 0) return null
+  return (
+    <ul className="mc-fact-limits">
+      {fact.limitations.map((line, i) => (
+        <li key={i}>{line}</li>
+      ))}
+    </ul>
+  )
+}
+
+function FactRow({ fact }: { fact: FactField }): JSX.Element {
+  return (
+    <div className="mc-fact">
+      <span className="mc-fact-label">{fact.label}</span>
+      <span className={fact.known ? 'mc-fact-value' : 'mc-fact-value is-unknown'}>{fact.value}</span>
+      <FactMeta fact={fact} />
+      <FactLimits fact={fact} />
+    </div>
+  )
+}
+
+/**
+ * 模型事实区（S3-10D）：只读展示 metadata 的解析结果。
+ * 三块固定分栏 —— 基础字段 / 原生输入与附件解析 / 价格与订阅套餐，互不推导。
+ */
+function ModelFacts({ metadata }: { metadata: ModelMetadata | undefined }): JSX.Element {
+  const rows = buildMetadataFacts(metadata)
+  const row = (key: ModelMetadataField): FactField => rows.find((r) => r.key === key)!
+  const priceGroups = buildPriceGroups(metadata?.pricing)
+  const pricing = row('pricing')
+  const plan = row('subscriptionPlan')
+  const planValue = resolveMetadata(metadata?.subscriptionPlan)?.value
+  return (
+    <div className="mc-facts">
+      <div className="mc-facts-head">
+        <span className="mc-facts-title">模型事实</span>
+        <FieldNote
+          text={[
+            '来源优先级固定为用户 > 官方 > 目录；界面只显示解析结果，不自行判定。',
+            '「应用默认」是应用内的回退值，不代表厂商规格。',
+            '原生输入与附件解析分开看：附件能被解析，不代表模型原生接受该格式。'
+          ]}
+        />
+      </div>
+      <div className="mc-facts-grid">
+        {(['contextWindow', 'maxOutputTokens', 'reasoningLevels', 'serviceTiers', 'catalogPolicy'] as const).map(
+          (key) => (
+            <FactRow key={key} fact={row(key)} />
+          )
+        )}
+      </div>
+      <div className="mc-facts-columns">
+        <div className="mc-facts-col">
+          <span className="mc-facts-col-title">模型原生输入</span>
+          {NATIVE_INPUT_KEYS.map((key) => (
+            <FactRow key={key} fact={row(key)} />
+          ))}
+        </div>
+        <div className="mc-facts-col">
+          <span className="mc-facts-col-title">附件解析通路</span>
+          {ATTACHMENT_KEYS.map((key) => (
+            <FactRow key={key} fact={row(key)} />
+          ))}
+        </div>
+      </div>
+      <div className="mc-facts-block">
+        <span className="mc-facts-col-title">价格</span>
+        {pricing.known ? (
+          <>
+            <FactMeta fact={pricing} />
+            <FactLimits fact={pricing} />
+            <div className="mc-price-groups">
+              {priceGroups.map((group) => (
+                <div className="mc-price-group" key={group.category}>
+                  <span className="mc-price-cat">{group.label}</span>
+                  {group.known ? (
+                    group.lines.map((line, i) => (
+                      <span className="mc-price-line" key={i}>
+                        {line}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="mc-fact-value is-unknown">{UNKNOWN_TEXT}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <span className="mc-fact-value is-unknown">{UNKNOWN_TEXT}</span>
+        )}
+      </div>
+      <div className="mc-facts-block">
+        <span className="mc-facts-col-title">订阅套餐</span>
+        {plan.known ? (
+          <>
+            <span className="mc-fact-value">{plan.value}</span>
+            <FactMeta fact={plan} />
+            <FactLimits fact={plan} />
+            {planValue?.overagePricing && planValue.overagePricing.length > 0 && (
+              <div className="mc-price-groups">
+                <div className="mc-price-group">
+                  <span className="mc-price-cat">{PRICE_CATEGORY_LABELS['subscription-overage']}</span>
+                  {planValue.overagePricing.map((entry, i) => (
+                    <span className="mc-price-line" key={i}>
+                      {formatPriceEntry(entry)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <span className="mc-fact-value is-unknown">{UNKNOWN_TEXT}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export type MetadataOverrideBody = {
+  set?: MetadataOverrideValues
+  clear?: Array<'contextWindow' | 'maxOutputTokens'>
+}
+
+/**
+ * 用户覆盖入口（S3-10D）：只覆盖上下文窗口与最大输出 Token。
+ * 未保存的端点/条目只给说明，不发 IPC；失败保留已填值与当前界面。
+ */
+function MetadataOverride({
+  entry,
+  canOverride,
+  onOverride
+}: {
+  entry: ModelEntry
+  canOverride: boolean
+  onOverride: (body: MetadataOverrideBody) => Promise<MetadataOverrideResult>
+}): JSX.Element {
+  const [contextText, setContextText] = useState(() => String(entry.metadata?.contextWindow?.user?.value ?? ''))
+  const [outputText, setOutputText] = useState(() => String(entry.metadata?.maxOutputTokens?.user?.value ?? ''))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState<string | null>(null)
+
+  if (!canOverride) {
+    return (
+      <div className="mc-override">
+        <span className="mc-facts-title">用户覆盖</span>
+        <p className="hint">该模型尚未保存：保存端点后，可在这里覆盖上下文窗口与最大输出 Token。</p>
+      </div>
+    )
+  }
+
+  /** 空 = 不覆盖；非正整数当场拦下（0 与未知是两回事，不接受 0 冒充） */
+  const collect = (): MetadataOverrideValues | null => {
+    const values: MetadataOverrideValues = {}
+    const fields = [
+      { text: contextText, key: 'contextWindow', label: '上下文窗口' },
+      { text: outputText, key: 'maxOutputTokens', label: '最大输出 Token' }
+    ] as const
+    for (const field of fields) {
+      const text = field.text.trim()
+      if (text === '') continue
+      const value = Number(text)
+      if (!Number.isInteger(value) || value <= 0) {
+        setError(`${field.label}须为正整数；不覆盖请留空，不要填 0。`)
+        return null
+      }
+      values[field.key] = value
+    }
+    return values
+  }
+
+  const submit = async (): Promise<void> => {
+    setError(null)
+    setDone(null)
+    const values = collect()
+    if (!values) return
+    setBusy(true)
+    const res = await onOverride({ set: values })
+    setBusy(false)
+    if (res.ok) setDone('已保存用户覆盖')
+    else setError(res.error)
+  }
+
+  const clearAll = async (): Promise<void> => {
+    setError(null)
+    setDone(null)
+    setBusy(true)
+    const res = await onOverride({ clear: ['contextWindow', 'maxOutputTokens'] })
+    setBusy(false)
+    if (res.ok) {
+      setContextText('')
+      setOutputText('')
+      setDone('已清除用户覆盖：回落到官方或目录来源')
+    } else {
+      setError(res.error)
+    }
+  }
+
+  return (
+    <div className="mc-override">
+      <span className="mc-facts-title">用户覆盖</span>
+      <p className="hint">只覆盖填写的字段；清除后回落到官方或目录来源。留空表示不覆盖。</p>
+      <label>
+        上下文窗口（Token）
+        <input
+          type="number"
+          min="1"
+          value={contextText}
+          placeholder="留空则不覆盖"
+          onChange={(e) => setContextText(e.target.value)}
+        />
+      </label>
+      <label>
+        最大输出 Token
+        <input
+          type="number"
+          min="1"
+          value={outputText}
+          placeholder="留空则不覆盖"
+          onChange={(e) => setOutputText(e.target.value)}
+        />
+      </label>
+      <div className="mc-override-actions">
+        <button className="btn-secondary" disabled={busy} onClick={() => void submit()}>
+          {busy ? '保存中…' : '保存覆盖'}
+        </button>
+        <button className="btn-secondary" disabled={busy} onClick={() => void clearAll()}>
+          清除覆盖
+        </button>
+      </div>
+      {error && <p className="mc-override-err">{error}</p>}
+      {done && <p className="mc-override-done">{done}</p>}
+    </div>
+  )
+}
+
 function AdvancedPanel({
   entry,
-  onChange
+  onChange,
+  canOverride,
+  onOverride
 }: {
   entry: ModelEntry
   onChange: (patch: Partial<ModelSettings>) => void
+  canOverride: boolean
+  onOverride: (body: MetadataOverrideBody) => Promise<MetadataOverrideResult>
 }): JSX.Element {
   const s = entry.settings ?? {}
   const rc = s.reasoning
@@ -426,6 +990,8 @@ function AdvancedPanel({
         )
       })()}
       <span className="hint inline-hint">Top K 请使用端点级或厂商默认值：多数端点不支持该参数</span>
+      <ModelFacts metadata={entry.metadata} />
+      <MetadataOverride entry={entry} canOverride={canOverride} onOverride={onOverride} />
     </div>
   )
 }
@@ -433,17 +999,37 @@ function AdvancedPanel({
 export default function ModelCatalogEditor({
   models,
   onChange,
-  onFetch
+  onFetch,
+  profileId,
+  savedEntryIds
 }: {
   models: ModelEntry[]
   onChange: (next: ModelEntry[]) => void
   /** 「获取可用模型」：由上层调主进程；返回候选 id 列表（失败时给出人话） */
   onFetch?: () => Promise<{ ok: boolean; message: string; models: string[] }>
+  /** 已保存端点的 id；新增态为 undefined ⇒ 不提供 metadata 用户覆盖 */
+  profileId?: string
+  /** 该端点**已保存**的条目 id；不在此列的条目视为未保存草稿，不发 metadata IPC */
+  savedEntryIds?: string[]
 }): JSX.Element {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [fetching, setFetching] = useState(false)
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
   const [picked, setPicked] = useState<string[] | null>(null)
+
+  /** 覆盖成功即用主进程返回的 ModelsView 刷新草稿；失败把错误原样交回面板显示 */
+  const overrideMetadata = async (entryId: string, body: MetadataOverrideBody): Promise<MetadataOverrideResult> => {
+    const res = await submitMetadataOverride({
+      api: window.api,
+      profileId,
+      savedEntryIds: savedEntryIds ?? [],
+      entryId,
+      draftModels: models,
+      ...body
+    })
+    if (res.ok) onChange(res.models)
+    return res
+  }
 
   const patch = (id: string, next: Partial<ModelEntry>): void => {
     onChange(models.map((m) => (m.id === id ? { ...m, ...next } : m)))
@@ -575,7 +1161,14 @@ export default function ModelCatalogEditor({
               </svg>
             </button>
           </div>
-          {expanded === m.id && <AdvancedPanel entry={m} onChange={(p) => patchSettings(m.id, p)} />}
+          {expanded === m.id && (
+            <AdvancedPanel
+              entry={m}
+              onChange={(p) => patchSettings(m.id, p)}
+              canOverride={canOverrideMetadata(profileId, savedEntryIds ?? [], m.id)}
+              onOverride={(body) => overrideMetadata(m.id, body)}
+            />
+          )}
         </div>
       ))}
 

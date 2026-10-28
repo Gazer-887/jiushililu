@@ -2,14 +2,61 @@ import type { TokenUsage } from './usage'
 import type { WirePart } from './content-parts'
 import type { OutcomeCode, RunTerminal, ToolResultState } from './execution-outcome'
 import type { TokenSaverTier } from './token-tier'
+import type { RequestPolicySnapshot, ServiceTierObservation } from './request-policy'
 
 // Agent 内核共享类型（plan6 D1-D8）：工具、消息、循环结果。
 // 协议采用 OpenAI tool-calls 格式（DeepSeek 全系原生兼容）。
+
+/**
+ * **run 级不可变请求策略**（S3-20D1）：一次 run 只解析一次并冻结，主循环与全部子代理共享同一引用。
+ * ⚠️ 只是命名合同：枚举与解析逻辑的唯一真源是 `request-policy.ts`，本文件不得复制任一取值或分支。
+ */
+export type RunRequestPolicy = Readonly<RequestPolicySnapshot>
 
 export interface ToolSchema {
   name: string
   description: string
   parameters: Record<string, unknown>
+}
+
+/**
+ * 可信内建读取的私有暂存（S3-40B）：结果与版本 receipt 在 commit 前都不产生写资格。
+ * ⚠️ 只有真实内建 read_file 对象可实现；loop 按**对象身份**判定，不信工具名或 readOnly 自述。
+ */
+export interface StagedToolRead {
+  /** 已成形、可直接回灌模型的文本（成功或错误） */
+  text: string
+  /** 读取被接受（成功才可能有 receipt） */
+  ok: boolean
+  /** 版本 receipt：commit 前不写 revisions，discard 时与结果一起丢；key 是唯一 canonical 版本键 */
+  receipt: { readonly abs: string; readonly revision: string; readonly key: string } | null
+  /** realpath 规范化身份键；null = 无法确认（整批按串行处理） */
+  key: string | null
+  /** 异步准备后守卫失效：本项未读取、不得提交 */
+  blocked?: boolean
+}
+
+export interface TrustedReadCapability {
+  /** 解析同一文件的规范化身份键；不确定一律回 null */
+  canonicalKey(args: Record<string, unknown>): Promise<string | null>
+  /** 只暂存结果与 receipt；真正读盘前再核 canStart */
+  stage(args: Record<string, unknown>, signal?: AbortSignal, canStart?: () => boolean): Promise<StagedToolRead>
+  /** 与结果同一同步门提交：只有这里才登记读版本 */
+  commit(staged: StagedToolRead): string
+  /** 丢弃结果与 receipt（不碰 revisions） */
+  discard(staged: StagedToolRead): void
+}
+
+/**
+ * Run 级权限/活性守卫（S3-40C2）：父 run 与每个子 run 共用同一份冻结起点与权威来源，
+ * 但**各自持有观察状态**——兄弟子 run 不许互相污染已观察到的收紧档位。
+ * 同步返回 false 或抛错即拒绝；调用方不得把“用户已批准”当作权限未变的证据。
+ */
+export interface RunPermissionGuard {
+  /** 每项工具真实启动前、异步准备后的读盘前调用；可带实际工具名。 */
+  canStart(toolName?: string): boolean
+  /** 可信读取的提交门前置：代次变化一律拒绝。 */
+  canCommit(): boolean
 }
 
 export interface AgentTool {
@@ -21,6 +68,11 @@ export interface AgentTool {
   execute(args: Record<string, unknown>): Promise<string | ToolOutcome>
   /** 本次实际成功落盘的文件，由生产工具提供；不从模型宣称路径推导。读取即消费。 */
   takeProducedFiles?: (args: Record<string, unknown>) => string[]
+  /**
+   * 可信读取能力（S3-40B）：只有真实内建 read_file 对象会挂它。
+   * ⚠️ 它是对象身份而不是名字合同；同名 MCP/插件工具不得被当作它。
+   */
+  trustedRead?: TrustedReadCapability
 }
 
 export interface AgentMessage {
@@ -55,6 +107,11 @@ export interface AgentChatResult {
    * 只有阶段输入或缺少最终输出时才不能自称完整。缺失 ≠ false，未观测就不写这一位。
    */
   usageComplete?: boolean
+  /**
+   * 服务档观测（S3-30T1）：与用量、终态、正文相互独立；缺报保持 actual=null / observed=false，
+   * 不以 requested 回填。旧调用方不填 = 未观测。
+   */
+  serviceTier?: ServiceTierObservation
 }
 
 export interface ToolEvent {
@@ -183,4 +240,9 @@ export interface AgentLoopResult {
   usageComplete?: boolean
   /** 本轮生效的省 token 档位（真实观测才写；未观测省略，不填默认档）。 */
   tokenTier?: TokenSaverTier
+  /**
+   * 本轮服务档观测（S3-30T1）：语义同 `AgentChatResult.serviceTier`；
+   * 缺报保持 actual=null / observed=false，不从 usage 或终态推断。
+   */
+  serviceTier?: ServiceTierObservation
 }

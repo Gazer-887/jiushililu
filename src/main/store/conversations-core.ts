@@ -13,6 +13,7 @@ import type {
   ConversationMeta,
   ConversationSaveStats
 } from '@shared/ipc'
+import { runFactsSchema } from '../schemas'
 
 // 会话存储的**纯逻辑**（不依赖 electron / fs，便于单测）：标题推导、工作区标签、分组排序、消息规整，
 // 以及**六个入口的完整行为**。
@@ -117,6 +118,27 @@ export interface RollbackOutcome {
  * ⚠️ 发送侧（`chatMessagesSchema`）自 K8 起按角色放行空正文助手轮，**不再与这里同口径**：
  *    那边要的是"发得出去"，这边要的是"存得干净"，把空串挡在模型之外由 `historyForModel` 负责。
  */
+/**
+ * 运行事实归属与一致性（本地字段）：只允许 assistant 携带；形状 / 枚举 / UUID / 有界非空白 /
+ * `observed` 与 `actual` 一致 / 策略工厂不变量，全部复用 main/schemas 的同一份规则（core 直调也绕不过）。
+ */
+export function assertRunFactsAttribution(messages: readonly ChatMessage[]): void {
+  for (const m of messages) {
+    const hasFacts =
+      m.requestId !== undefined || m.requestPolicy !== undefined || m.serviceTier !== undefined
+    if (!hasFacts) continue
+    if (m.role !== 'assistant') throw new Error('运行事实只允许挂在 assistant 上')
+    const parsed = runFactsSchema.safeParse({
+      requestId: m.requestId,
+      requestPolicy: m.requestPolicy,
+      serviceTier: m.serviceTier
+    })
+    if (!parsed.success) {
+      throw new Error(`运行事实不合法：${parsed.error.issues[0]?.message ?? '形状不符'}`)
+    }
+  }
+}
+
 export function normalizeHistory(messages: ChatMessage[]): ChatMessage[] {
   return messages.filter(
     (m) =>
@@ -283,6 +305,8 @@ export function createConversationsRepo(backend: ConversationsBackend): Conversa
      * 只要发生一次保存**（切会话 / 点停止 / 关窗口都触发）尾巴就被抹掉，**"撤销"从此静默失效**（回滚看着成功，只有点撤销时才"什么都没发生"）。
      */
     saveConversation(id, messages, stats) {
+      // 归属 / 一致性先于任何写盘：坏数据不许借 core 直调绕过 schema 落进正文
+      assertRunFactsAttribution(messages)
       const current = backend.readMeta()[id]
       if (!current) return null
       const log = backend.readMessages(id)

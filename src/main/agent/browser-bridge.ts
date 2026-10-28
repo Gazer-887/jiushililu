@@ -42,6 +42,12 @@ export interface BrowserTaskContext {
    * 缺省 = 不因未知状态拦截（关停由工具不下发兜底）。
    */
   isEnabled?: () => boolean
+  /**
+   * 实时权限探针（同步，入参是**实际工具名**，不是 `browser_task` 虚拟确认名）：
+   * 目标分类/异步准备后、确认或缓存许可后、真实动作前各核一次；false = 拒绝该动作。
+   * 缺省 = 不启用实时权限收紧（旧调用方兼容）。
+   */
+  isToolAllowed?: (tool: string) => boolean
 }
 
 export interface BrowserAdapter {

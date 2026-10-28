@@ -3,11 +3,16 @@ import type {
   AgentMessage,
   AgentLoopResult,
   AgentTool,
+  RunRequestPolicy,
+  StagedToolRead,
+  ToolCall,
   ToolEvent,
   ToolImageRef,
-  ToolOutcome
+  ToolOutcome,
+  TrustedReadCapability
 } from '@shared/agent'
 import type { RunTerminal } from '@shared/execution-outcome'
+import { resolveToolBatchConcurrency, type ServiceTierObservation } from '@shared/request-policy'
 import { toolCallDetail, toolArtifactPaths } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
@@ -17,6 +22,8 @@ import { historyForModel, trimMessages, type TrimOptions } from './context'
 import type { ExecEventRecorder } from './exec-events'
 import { AgentRunFailure, ProviderError, isAbortError } from '../providers/errors'
 import { AgentPauseError } from './pause-error'
+import { runToolBatch } from './tool-batch'
+import { isTrustedReadTool } from './tools/file-tools'
 
 // Agent 主循环（plan6；D-032 流式化）：模型 → 工具调用 → 结果回灌 → 循环，直到出最终答案或预算耗尽。
 // 缰绳：maxRounds 是硬上限（D5 决策），卡死必须能停；contextWindow 控历史裁剪。
@@ -32,6 +39,13 @@ const SELF_MANAGED_TOOLS = new Set(['read_file'])
 export interface AgentLoopOptions {
   /** 用户停止信号：模型和工具派发共用；已完成的副作用不自动回滚。 */
   signal?: AbortSignal
+  /**
+   * 权限/活性守卫（同步）：每项真实启动前、异步准备后的读盘前各核一次；可带工具名。
+   * 返回 false 或抛错 = 不许启动。提交门用 `canCommit`，默认回落到 `canStart('read_file')`。
+   */
+  canStart?: (toolName?: string) => boolean
+  /** 提交门前置（同步）：暂存读取的版本与结果是否仍可提交；缺省回落到 canStart。 */
+  canCommit?: () => boolean
   systemPrompt: string
   /** 对话历史（不含 system；本循环在最前面补 system）。D-032：带完整历史，多轮有记忆 */
   history: AgentMessage[]
@@ -54,6 +68,11 @@ export interface AgentLoopOptions {
    * 加档 / 改取值只动 `@shared/token-tier`；不给 = 平衡档（与改造前一致）。
    */
   policy?: TokenPolicy
+  /**
+   * run 级不可变请求策略（S3-20D1）：由 `runAgent` 在检查点之后解析**一次**并冻结，主循环与子代理共享。
+   * ⚠️ 本层只接收、不解析：不得读 UI 偏好或按当前设置重算，否则同一 run 会中途漂移。
+   */
+  requestPolicy?: RunRequestPolicy
   /** 工具执行生命周期（界面显示"正在读 xx / 完成 / 失败"） */
   onToolEvent?: (evt: ToolEvent) => void
   /**
@@ -115,6 +134,30 @@ export function stripForwardedImageParts(messages: AgentMessage[]): number {
   return n
 }
 
+/**
+ * 可信读取批资格（S3-40B）：只有**同一个真实内建 read_file 对象**、且每个调用的 canonical key
+ * 都唯一可解析时才成立。同名不同对象、键重复、realpath 未知 —— 一律回 null 走原串行路径。
+ * ⚠️ 不信工具名或 `readOnly` 自述；身份由 file-tools 的 WeakSet 登记。
+ */
+export async function planTrustedReadBatch(
+  calls: ToolCall[],
+  toolMap: Map<string, AgentTool>
+): Promise<{ capability: TrustedReadCapability; keys: string[] } | null> {
+  if (calls.length < 2) return null
+  // 调用 id 必须唯一：重复 id 无法把结果/事件配对回原调用，保守串行
+  if (new Set(calls.map((tc) => tc.id)).size !== calls.length) return null
+  const first = toolMap.get(calls[0]!.name)
+  if (!first || !isTrustedReadTool(first) || !first.trustedRead) return null
+  for (const tc of calls) {
+    if (toolMap.get(tc.name) !== first) return null
+  }
+  const capability = first.trustedRead
+  const keys = await Promise.all(calls.map((tc) => capability.canonicalKey(parseArgs(tc.arguments))))
+  if (keys.some((key) => key === null)) return null
+  if (new Set(keys).size !== keys.length) return null
+  return { capability, keys: keys as string[] }
+}
+
 /** 主循环的日志器（§七④：像"前缀缓存失效"这类**值得但必须知情**的代价要留痕） */
 const log = createLogger('agent-loop')
 
@@ -150,6 +193,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   const windowEnabled = opts.toolWindow === false ? false : policy.windowEnabled
   /** 这一轮靠窗口化省下的估算 token（plan8 R9.1 记账用） */
   let avoidedTokens = 0
+  /**
+   * 本 run **最后一次真实观测**的服务档（S3-30E）。只认 observed=true 的回值：
+   * 后续轮次缺报（observed=false）不清空它，也不从 usage / 终态 / requested 推断。
+   * 纯 run 局部状态——没有全局 latest，也没有跨会话串扰。
+   */
+  let lastServiceTier: ServiceTierObservation | undefined
 
   // ── 执行事件流（plan26 D-077）：run_start / run_end（finally 补发，error 路径不丢）──
   const startedAt = Date.now()
@@ -190,7 +239,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         rounds,
         stopReason: 'max-rounds',
         avoidedTokens,
-        terminal: { state: 'max-rounds', code: 'token-limit' }
+        terminal: { state: 'max-rounds', code: 'token-limit' },
+        ...(lastServiceTier ? { serviceTier: lastServiceTier } : {})
       }
     }
     rounds++
@@ -238,6 +288,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     const res = await opts.chat(sent, emitText)
     opts.signal?.throwIfAborted()
     if (res.text) lastText = res.text
+    // S3-30E：有真实回值就更新；缺报（observed=false / 无字段）**不清空**已观测事实
+    if (res.serviceTier && res.serviceTier.observed === true) lastServiceTier = res.serviceTier
     // plan57 K52 B2：本轮请求已把转交图片发出 → 摘掉，不让 base64 在后续轮次里重放
     stripForwardedImageParts(messages)
 
@@ -249,7 +301,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         rounds,
         stopReason: 'completed',
         avoidedTokens,
-        terminal: { state: 'completed' }
+        terminal: { state: 'completed' },
+        ...(lastServiceTier ? { serviceTier: lastServiceTier } : {})
       }
     }
 
@@ -264,26 +317,117 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       }))
     })
 
+    // 可信内建读取批（S3-40B）：仅 FAST 且整批合格时走"私有暂存 → 同门提交"；
+    // 普通模式、混合读写、同名冒充与同文件别名继续走下面的原串行路径。
+    const batchEligible =
+      opts.requestPolicy?.maxLocalReadConcurrency === 2 &&
+      resolveToolBatchConcurrency({ mode: opts.requestPolicy?.mode, eligible: true }) === 2
+    const readPlan =
+      batchEligible && opts.signal?.aborted !== true ? await planTrustedReadBatch(res.toolCalls, toolMap) : null
+    let stagedReads: Map<string, StagedToolRead> | null = null
+    let batchStartedAt = 0
+    if (readPlan) {
+      // start 事件在真实读取前按原序发出；结果回灌仍按原序（见下方 stagedReads）
+      for (const tc of res.toolCalls) {
+        opts.onToolEvent?.({
+          id: tc.id,
+          name: tc.name,
+          phase: 'start',
+          detail: toolCallDetail(tc.name, tc.arguments)
+        })
+        opts.execEvents?.record('tool_call', { tool: tc.name })
+      }
+      batchStartedAt = Date.now()
+      const batch = await runToolBatch<ToolCall, StagedToolRead>({
+        items: res.toolCalls,
+        mode: opts.requestPolicy?.mode,
+        eligible: true,
+        signal: opts.signal,
+        leasePhase: 'tool:read_file',
+        canStart: (tc) => (opts.canStart ? opts.canStart(tc.name) === true : true),
+        run: (tc) =>
+          readPlan.capability.stage(
+            parseArgs(tc.arguments),
+            opts.signal,
+            opts.canStart ? () => opts.canStart!(tc.name) === true : undefined
+          ),
+        guard: (results) =>
+          opts.signal?.aborted !== true &&
+          // 未启动项与 blocked 同义：整批不得提交，避免只落已成功项的读资格
+          results.every((r) => r.started) &&
+          results.every((r) => r.value?.blocked !== true) &&
+          (opts.canCommit
+            ? opts.canCommit() === true
+            : opts.canStart
+              ? opts.canStart('read_file') === true
+              : true),
+        commit: (results) => {
+          for (const r of results) {
+            if (r.started && r.status === 'fulfilled' && r.value && r.value.blocked !== true) {
+              readPlan.capability.commit(r.value)
+            }
+          }
+        },
+        discard: (results) => {
+          for (const r of results) if (r.value) readPlan.capability.discard(r.value)
+        }
+      })
+      // 未启动（guard 拒绝/排队未轮到）或 blocked 与取消同义：整批不提交，run 暂停
+      if (batch.aborted || batch.results.some((r) => !r.started || r.value?.blocked === true)) {
+        // start 已按原序发出：先补终态，保证 ToolEvent.id 成对，再中止本轮
+        for (const tc of res.toolCalls) {
+          opts.onToolEvent?.({
+            id: tc.id,
+            name: tc.name,
+            phase: 'error',
+            summary: '本批读取未提交（取消或权限守卫失效）',
+            outcome: 'cancelled'
+          })
+        }
+        opts.signal?.throwIfAborted()
+        throw new AgentPauseError('本批读取未提交：run 已取消或权限守卫失效')
+      }
+      opts.signal?.throwIfAborted()
+      stagedReads = new Map()
+      for (const r of batch.results) {
+        const staged: StagedToolRead =
+          r.value ?? {
+            text: `错误：读取失败——${r.error instanceof Error ? r.error.message : String(r.error)}`,
+            ok: false,
+            receipt: null,
+            key: null
+          }
+        stagedReads.set(r.item.id, staged)
+      }
+    }
+
     for (const tc of res.toolCalls) {
+      const stagedRead = stagedReads?.get(tc.id)
+      if (stagedReads && !stagedRead) {
+        throw new AgentPauseError('批读取结果缺失：拒绝回退到二次执行')
+      }
       opts.signal?.throwIfAborted()
       const tool = toolMap.get(tc.name)
       // 带上「这一步在干什么」（从入参提取），否则界面只能显示干巴巴的「执行中…」
       let artifactPaths: string[] = []
-      opts.onToolEvent?.({
-        id: tc.id,
-        name: tc.name,
-        phase: 'start',
-        detail: toolCallDetail(tc.name, tc.arguments)
-      })
-      // plan26 D-077：tool_call 只记工具名 —— **入参不进事件流**（content 类参数即文件正文）
-      opts.execEvents?.record('tool_call', { tool: tc.name })
+      if (!stagedRead) {
+        opts.onToolEvent?.({
+          id: tc.id,
+          name: tc.name,
+          phase: 'start',
+          detail: toolCallDetail(tc.name, tc.arguments)
+        })
+        // plan26 D-077：tool_call 只记工具名 —— **入参不进事件流**（content 类参数即文件正文）
+        opts.execEvents?.record('tool_call', { tool: tc.name })
+      }
 
-      const toolStartedAt = Date.now()
+      const toolStartedAt = stagedRead ? batchStartedAt : Date.now()
       let toolImages: ToolImageRef[] = []
       // plan57 K52 B2：本工具调用要交给模型的图片块（opt-in，默认空；挂到本条 tool 消息的 parts 上）
       let forwarded: Array<{ type: 'image'; mime: string; base64: string; ref: string }> = []
-      // 看门狗标记（plan37 S0）：save/restore 回前值 —— 单槽阶段硬写 'idle' 会抹平并发路径（见 watchdog.ts）
-      const prevPhase = setWatchdogPhase(`tool:${tc.name}`)
+      // 看门狗标记（plan37 S0）：save/restore 回前值 —— 单槽阶段硬写 'idle' 会抹平并发路径（见 watchdog.ts）。
+      // 批路径的读取阶段由 tool-batch 租约持有，这里不再重复占用旧槽。
+      const prevPhase = stagedRead ? null : setWatchdogPhase(`tool:${tc.name}`)
       let output: string
       let outcomeState: ToolOutcome['outcome']
       let outcomeCode: ToolOutcome['code']
@@ -293,9 +437,20 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           output = `错误：未知工具「${tc.name}」。可用工具：${[...toolMap.keys()].join('、') || '（无）'}`
           outcomeState = 'failed'
           outcomeCode = 'tool-error'
+        } else if (stagedRead) {
+          // 真实读取与版本已在批路径完成；这里只回灌已提交文本，不再执行第二次
+          output = stagedRead.text
         } else {
           try {
             opts.signal?.throwIfAborted()
+            // 串行路径同样在真实启动前核一次：C 接真实权限代次时不需另开分支
+            let allowed = true
+            try {
+              allowed = opts.canStart ? opts.canStart(tc.name) === true : true
+            } catch {
+              allowed = false
+            }
+            if (!allowed) throw new AgentPauseError('工具启动前权限守卫失效')
             const args = parseArgs(tc.arguments)
             const raw = await tool.execute(args)
             opts.signal?.throwIfAborted()
@@ -327,7 +482,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           }
         }
       } finally {
-        setWatchdogPhase(prevPhase)
+        if (prevPhase !== null) setWatchdogPhase(prevPhase)
       }
 
       // 窗口化（plan8 R9.1）：留头尾 + 中段按行号采样 + 报错现场保护；双门控不过就原样放行

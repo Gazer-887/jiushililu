@@ -6,11 +6,22 @@
  * 纯逻辑（不 import electron / 不碰 IO / 不认识 Key 密文，落盘见 `main/store/models.ts`）。
  * ⚠️ API Key 一个字节都不进 `models.json`：仍按"端点 id → 密文"存 settings.json（AGENTS.md / D-013）。
  */
-import type { ModelSettings, ProviderType, ReasoningConfig, BudgetEncoding, OffEncoding } from './ipc'
+import type {
+  AuthenticationChoice,
+  ModelSettings,
+  ProviderType,
+  ReasoningConfig,
+  BudgetEncoding,
+  OffEncoding,
+  RequestIdentityMode
+} from './ipc'
 import type { InputModality } from './content-parts'
-import { BUDGET_ENCODINGS, OFF_ENCODINGS } from './ipc'
+import { AUTH_CHOICES, BUDGET_ENCODINGS, OFF_ENCODINGS, REQUEST_IDENTITY_MODES } from './ipc'
 import { REASONING_KINDS } from './ipc'
 import { modalitiesFromLegacyFlag, normalizeModalities } from './content-parts'
+import { normalizeModelMetadata, resolveMetadata, type ModelMetadata } from './model-metadata'
+import type { TierSupport } from './request-policy'
+import { isSpeedMode, type SpeedMode } from './request-policy'
 
 /** 来源标签：界面显示"内置来源 / 用户自定义"（不参与任何逻辑判断） */
 export type ModelSource = 'deepseek' | 'custom'
@@ -33,6 +44,16 @@ export interface ModelEntry {
   detectedAt?: number
   /** 目前只有 Anthropic 官方 `/v1/models` 有这个位（OpenAI 侧无官方位，不填） */
   detectSource?: 'anthropic-models-api'
+  /**
+   * S3-10C1：模型元数据（官方/目录/用户三类来源分层，user > official > catalog）。
+   * 单一档案字段——不建 metadataByEntry/第二配置库；读盘容错走 normalizeModelMetadata。
+   */
+  metadata?: ModelMetadata
+  /**
+   * S3-20A：模型默认速度档。缺字段 = 旧行为（等价 `normal`），读盘保持缺失、不补写；
+   * 会话级覆盖属 S3-20B，不落在条目上。
+   */
+  speedMode?: SpeedMode
 }
 
 /** 探测缓存有效期：7 天（B3 定案）。过期不断网重探的 quiet 失败，只降级显示与报因 */
@@ -142,9 +163,49 @@ export function settingsOf(profile: ModelProfile, entry: ModelEntry): ModelSetti
     // 端点级的默认值没有意义 —— 同一个端点下不同模型能吃的档不一样。
     ...(over.reasoning ? { reasoning: over.reasoning } : {}),
     maxToolRounds: over.maxToolRounds ?? 200,
-    inputModalities: over.inputModalities ?? ['text']
+    inputModalities: over.inputModalities ?? ['text'],
+    // S3-10C0：身份/认证**原样透传**；旧条目缺字段时不新增键（Object.keys 语义保持）
+    ...(over.requestIdentity ? { requestIdentity: over.requestIdentity } : {}),
+    ...(over.authentication ? { authentication: over.authentication } : {})
   }
 }
+
+/**
+ * 服务档声明 → 本协议的 FAST 支持位（S3-30F）。输入只有 `metadata.serviceTiers`
+ * （user > official > catalog 的既有单真源），**不按厂商名/模型名/网关广告猜**。
+ * - 缺声明 / 空列表 / 全是读不懂的值 → `unknown`（不知道就不发非默认档）
+ * - 命中本协议的快速档值 → `supported`
+ * - 全部是明确的标准档值 → `unsupported`（声明了只有标准容量）
+ * ⚠️ 跨协议的值不算数（OpenAI 的 fast/priority 与 Anthropic 的 auto 不共用）；
+ * 本函数只决定"能不能发"，具体出站值仍由各协议自己的映射决定。
+ */
+export function tierSupportFromServiceTiers(
+  protocol: ProviderType,
+  metadata: ModelMetadata | undefined
+): TierSupport {
+  const resolved = resolveMetadata(metadata?.serviceTiers)
+  const declared = (resolved?.value ?? [])
+    .map((value) => (typeof value === 'string' ? value.trim().toLowerCase() : ''))
+    .filter((value) => value.length > 0)
+  if (declared.length === 0) return 'unknown'
+  const fast = FAST_CAPABLE_DECLARATIONS[protocol]
+  if (declared.some((value) => fast.includes(value))) return 'supported'
+  if (declared.every((value) => STANDARD_ONLY_DECLARATIONS.includes(value))) return 'unsupported'
+  return 'unknown'
+}
+
+/** 各协议里能兑现 FAST 意图的声明值（出站请求值必须落在其中） */
+const FAST_CAPABLE_DECLARATIONS: Readonly<Record<ProviderType, readonly string[]>> = Object.freeze({
+  'openai-compatible': Object.freeze(['priority', 'fast']),
+  anthropic: Object.freeze(['priority', 'auto'])
+})
+
+/** 明确的"只有标准容量"声明：列表**全部**落在这里才判 unsupported */
+const STANDARD_ONLY_DECLARATIONS: readonly string[] = Object.freeze([
+  'standard',
+  'standard_only',
+  'default'
+])
 
 /** 用户没写名就用模型 ID（列表里不留空白） */
 export function entryLabel(entry: ModelEntry): string {
@@ -153,12 +214,23 @@ export function entryLabel(entry: ModelEntry): string {
 }
 
 /** 新建/改造一个模型条目；空 `model` 直接拒绝（那是"没有模型"） */
-export function makeEntry(input: { id: string; model: string; name?: string; settings?: Partial<ModelSettings> }): ModelEntry {
+export function makeEntry(input: {
+  id: string
+  model: string
+  name?: string
+  settings?: Partial<ModelSettings>
+  metadata?: ModelMetadata
+  speedMode?: SpeedMode
+}): ModelEntry {
   return {
     id: input.id,
     model: input.model.trim(),
     ...(input.name && input.name.trim() ? { name: input.name.trim().slice(0, PROFILE_NAME_MAX) } : {}),
-    ...(input.settings && Object.keys(input.settings).length > 0 ? { settings: input.settings } : {})
+    ...(input.settings && Object.keys(input.settings).length > 0 ? { settings: input.settings } : {}),
+    // S3-10C1：metadata 与 settings 同级保留——普通编辑不传入也不得丢掉已有 metadata
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+    // S3-20A：只写合法档位；未传 / 脏值不产生该键（缺字段 = 旧行为 normal）
+    ...(isSpeedMode(input.speedMode) ? { speedMode: input.speedMode } : {})
   }
 }
 
@@ -224,7 +296,10 @@ export function profileOf(
           // 但签名收的是 `ModelSettings` —— 将来谁传一个带 `reasoning` 的进来就静默丢。
           ...(settings.reasoning ? { reasoning: settings.reasoning } : {}),
           maxToolRounds: settings.maxToolRounds,
-          inputModalities: settings.inputModalities
+          inputModalities: settings.inputModalities,
+          // S3-10C0：白名单重建必须显式带（漏一个字段它就在这条路上蒸发）
+          ...(settings.requestIdentity ? { requestIdentity: settings.requestIdentity } : {}),
+          ...(settings.authentication ? { authentication: settings.authentication } : {})
         }
       })
     ],
@@ -328,11 +403,16 @@ export interface ModelSaveInput {
 export interface ModelPatchEntryInput {
   profileId: string
   entryId: string
-  patch: {
-    reasoningEffort?: string
-    reasoning?: ReasoningConfig
-    contextWindow?: number
-  }
+  patch: EntrySettingsPatch
+}
+
+/** 单字段补丁载荷：只收 settings 白名单字段（与整表保存同一道闸） */
+export interface EntrySettingsPatch {
+  reasoningEffort?: string
+  reasoning?: ReasoningConfig
+  contextWindow?: number
+  requestIdentity?: RequestIdentityMode
+  authentication?: AuthenticationChoice
 }
 
 /**
@@ -342,9 +422,18 @@ export interface ModelPatchEntryInput {
  */
 export function mergeEntrySettings(
   settings: Partial<ModelSettings> | undefined,
-  patch: { reasoningEffort?: string; reasoning?: ReasoningConfig; contextWindow?: number }
+  patch: EntrySettingsPatch
 ): Partial<ModelSettings> {
+  // spread 天然只合并 patch 携带的键：未携带的旧值原样保留（S3-10C0 断言依赖此语义）
   return { ...(settings ?? {}), ...patch }
+}
+
+/**
+ * 条目级补丁合并：只换 `settings`，`speedMode` / `metadata` / id / name 原样保留。
+ * 纯函数，store 落盘与单测共用这一份，防"单字段补丁把条目级字段冲掉"。
+ */
+export function applyEntrySettingsPatch(entry: ModelEntry, patch: EntrySettingsPatch): ModelEntry {
+  return { ...entry, settings: mergeEntrySettings(entry.settings, patch) }
 }
 
 /** 「获取可用模型」的结果：能从厂商那里列出来的模型 ID */
@@ -370,6 +459,10 @@ export interface FetchAvailableInput {
   baseURL: string
   timeoutMs?: number
   apiKey?: string
+  /** S3-30F0：当前草稿的窄身份策略；缺省 = 旧行为（不附加身份头） */
+  requestIdentity?: RequestIdentityMode
+  /** S3-30F0：当前草稿的认证方式；缺省 = 旧档缺省（按协议 missingLegacy） */
+  authentication?: AuthenticationChoice
 }
 
 /**
@@ -450,11 +543,24 @@ function normalizeEntry(raw: unknown, fallbackId: string): ModelEntry | null {
   const mods = normalizeModalities(s.inputModalities)
   if (mods) settings.inputModalities = mods
   else if (s.supportsImages !== undefined) settings.inputModalities = modalitiesFromLegacyFlag(s.supportsImages === true)
+  // S3-10C0：身份/认证只收枚举内值，非法值不写回（宁可当没填，不存半截配置）
+  if (s.requestIdentity !== undefined && REQUEST_IDENTITY_MODES.includes(s.requestIdentity as RequestIdentityMode)) {
+    settings.requestIdentity = s.requestIdentity as RequestIdentityMode
+  }
+  if (s.authentication !== undefined && AUTH_CHOICES.includes(s.authentication as AuthenticationChoice)) {
+    settings.authentication = s.authentication as AuthenticationChoice
+  }
+  const metadata = normalizeModelMetadata(e.metadata)
+  // S3-20A：合法档位读回；缺字段保持缺失、非法值丢弃（有效值仍是 normal，不改写行为）
+  const speedMode = isSpeedMode(e.speedMode) ? e.speedMode : undefined
   return {
     id,
     model,
     ...(name ? { name } : {}),
-    ...(Object.keys(settings).length > 0 ? { settings } : {})
+    ...(Object.keys(settings).length > 0 ? { settings } : {}),
+    // S3-10C1：metadata 容错读回（fail-closed 白名单重建）；旧档案无该键则结果不含
+    ...(metadata ? { metadata } : {}),
+    ...(speedMode ? { speedMode } : {})
   }
 }
 

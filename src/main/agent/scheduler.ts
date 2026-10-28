@@ -3,9 +3,12 @@ import type {
   AgentMessage,
   AgentStopReason,
   AgentTool,
+  RunPermissionGuard,
+  RunRequestPolicy,
   SubagentJobEvent
 } from '@shared/agent'
 import type { RunTerminal } from '@shared/execution-outcome'
+import type { ProviderExecutionContext } from '@shared/request-policy'
 import { runAgentLoop } from './loop'
 import { AgentRunFailure, ProviderError, isAbortError } from '../providers/errors'
 import { composeAgentPrompt, TOOL_OUTPUT_TRUST_BASELINE } from './loader'
@@ -44,15 +47,33 @@ export interface SubagentRunOptions {
    * 完全不生效（既不收窄也不授予，plan51 F1 修的正是这个）。上限与口径由 runner 侧决定。
    * ⚠️ 每个 **job** 各调一次（同角色并发两个 job 也各调一次）—— 浏览器工具按 job 身份装配，
    * 按 def 缓存会让同角色两个 job 共用一个任务适配器（plan79 修正 C）。
+   * 第二个参数是该 job 独立的权限守卫（S3-40C2）；命令/浏览器工具据此在确认等待后重核。
    */
-  toolsFor: (def: AgentDefinition) => AgentTool[]
-  /** 按定义产出模型通道（生产环境按 def.model 选模型；测试注入 mock）。
+  toolsFor: (def: AgentDefinition, guard?: RunPermissionGuard) => AgentTool[]
+  /**
+   * 每个子作业**独立**的权限/活性守卫（S3-40C2）：由 runner 按父 run 的冻结起点与权威来源构造。
+   * ⚠️ 每 job 调一次，兄弟子 run 的观察状态与已批准资格必须隔离；不许共用一个守卫实例。
+   * 不传 = 旧调用方兼容（子循环不做实时权限重核）。
+   */
+  guardFor?: (def: AgentDefinition) => RunPermissionGuard | undefined
+  /**
+   * 按定义产出模型通道（生产环境按 def.model 选模型；测试注入 mock）。
    *  ⚠️ 第二个参数是 **scheduler 同一次装配的 jobTools**（修正 C）：schema 与执行工具必须同源，
-   *  实现里不许再自己调一次 toolsFor（浏览器工具两次求值 = 两份适配器，schema 与真工具分岔）。 */
+   *  实现里不许再自己调一次 toolsFor（浏览器工具两次求值 = 两份适配器，schema 与真工具分岔）。
+   *  ⚠️ 第三个参数是**本作业唯一的运行上下文**（S3-30T2）：由 `contextFactory` 在作业边界建一次，
+   *  供该子任务的全部模型轮复用；`undefined` = 旧请求（无身份/服务档）。
+   */
   chatFactory: (
     def: AgentDefinition,
-    tools: AgentTool[]
+    tools: AgentTool[],
+    context?: ProviderExecutionContext
   ) => (messages: AgentMessage[]) => Promise<AgentChatResult>
+  /**
+   * 每个真实子任务在**运行边界**建一次运行上下文（S3-30T2）。由 runner 注入（它持有版本、
+   * 父 run 冻结策略与模型能力快照）；本层只按作业调用，不自己造上下文形状、不读配置。
+   * 不传 / 返回 undefined = 旧请求（保持改造前行为）。
+   */
+  contextFactory?: (def: AgentDefinition) => ProviderExecutionContext | undefined
   /** 并发上限（D5，默认 3） */
   maxConcurrency?: number
   /** 单代理轮数预算（默认 12） */
@@ -63,6 +84,11 @@ export interface SubagentRunOptions {
   onJobEvent?: (evt: SubagentJobEvent) => void
   /** 省 token 档位（plan8 R9.1 §七②③）的开关取值；**与主代理同一份**（由 runner 透传） */
   policy?: TokenPolicy
+  /**
+   * run 级不可变请求策略（S3-20D1）：**只能继承父 run 的快照**，本层不解析、不复制、不改写。
+   * ⚠️ 不按子代理自己的模型另算速度档 —— 同一 run 的主循环与全部子代理必须共用父 run 那一个冻结对象。
+   */
+  requestPolicy?: RunRequestPolicy
   /** 输出纪律提示（§七③）：拼在子代理系统提示末尾；**与主代理同档**（不给就不加） */
   systemSuffix?: string
   /**
@@ -103,10 +129,20 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
         startedAt
       })
       try {
+        // 权限守卫按 job 建一次：兄弟子 run 的观察状态必须隔离（S3-40C2）。
+        const jobGuard = opts.guardFor?.(def)
         // 工具集与纪律**同源同次求值**：纪律要按这份实收工具表取舍，分两次算迟早对不上
-        const jobTools = opts.toolsFor(def)
+        const jobTools = opts.toolsFor(def, jobGuard)
+        // S3-30T2：**每个作业建一次**运行上下文（兄弟/父子随机键隔离），该作业所有模型轮共用
+        const jobContext = opts.contextFactory?.(def)
         const loop = await runAgentLoop({
           signal: opts.signal,
+          ...(jobGuard
+            ? {
+                canStart: (toolName?: string) => jobGuard.canStart(toolName),
+                canCommit: () => jobGuard.canCommit()
+              }
+            : {}),
           systemPrompt:
             // 拼接走 loader 的纯函数（plan17 D10）：与主循环同式，防两处格式漂移
             composeAgentPrompt(def, 'subagent') +
@@ -122,13 +158,15 @@ export async function runSubagents(opts: SubagentRunOptions): Promise<SubagentJo
           history: [{ role: 'user', content: jobTask }],
           tools: jobTools,
           maxRounds: opts.maxRoundsPerAgent,
-          chat: opts.chatFactory(def, jobTools),
+          chat: opts.chatFactory(def, jobTools, jobContext),
           // 刻意**不传 `contextWindow`** ⇒ 子代理这条路没有历史折叠与滚动摘要
           // （`agent/loop.ts · runAgentLoop` 里 `trimOpts` 缺参即整段不启用）。取舍：子代理历史短、
           // 轮数封顶兜着（`maxRounds` 默认 12），0.75 阈值多半永不触发，补传却要为折叠多花摘要调用。
           // 护栏仍有两道：轮数上限 + 下面那条 `policy`（工具输出窗口化）。触发条件与完整理由见 `PLAN/plan55` §十（K37）。
           // 子代理跟主代理**同一个档位**：否则用户看到的省钱行为跟自己的设置对不上，最难解释
           ...(opts.policy ? { policy: opts.policy } : {}),
+          // S3-20D1：请求策略快照**原样透传**（同一个冻结引用）—— 本层不重新解析，也不按 def.model 另算。
+          ...(opts.requestPolicy ? { requestPolicy: opts.requestPolicy } : {}),
           // plan26 D-077：子代理执行事件标 'sub'（tool_call/tool_result/run_start/run_end 全覆盖）
           ...(opts.execEvents ? { execEvents: withAgentScope(opts.execEvents, 'sub') } : {})
         })

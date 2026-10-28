@@ -2,6 +2,7 @@
 // 抽出来是为了能单测：CI 无 Electron 二进制，碰 electron 的代码测不了（与 checkpoint.ts 同思路）。
 
 import type { WorkbenchLayout, WorkbenchSizes } from './workbench'
+import { DEFAULT_SPEED_OVERRIDE, isSpeedOverride, type SpeedOverride } from './request-policy'
 
 /** 左抽屉（会话列表）宽度范围与默认值 */
 export const SIDEBAR_DEFAULT = 248
@@ -109,6 +110,11 @@ export interface UIPrefs {
   workbench: WorkbenchLayout
   /** 栏宽**期望值**；长度恒等于 `panes.length − 1`（末栏吃余量，不存） */
   workbenchSizes: WorkbenchSizes
+  /**
+   * **会话级 FAST 覆盖**（S3-20B1）：key = 会话 id，value 只能 inherit / normal / fast。
+   * 键序即新旧（队首最旧、队尾最近），读写两侧都必须守住这条 LRU 不变量。
+   */
+  conversationSpeedOverrides: Record<string, SpeedOverride>
 }
 
 /** 存档/入参都可能被改坏 */
@@ -220,3 +226,95 @@ export function sanitizeStoredWidth(
 // 注：旧的「文件预览区高度拖拽」（PREVIEW_MIN/MAX/DEFAULT、resizePreview）已删——
 // 它只服务于"预览压在文件树底下、拖手柄调高"的旧形态；plan9 W6 预览改成右侧独立成栏后手柄不存在了，
 // 栏宽改由 workbench.ts 的 allocate / clampPaneWidth（横向）负责。
+
+// ── 会话级 FAST 覆盖（S3-20B1）────────────────────────────────────────
+// 只做共享类型与有界存储：不解析请求、不碰 token-tier、不改运行中任务（那是 S3-20B2 及后续卡的活）。
+// 键序就是 LRU 队列（队首最旧、队尾最近）—— 读盘与写入都必须维持次序，否则超限裁剪会误杀活跃条目。
+
+/** 会话级覆盖的条目上限：超出按最近使用裁掉最旧的（固定常量，不做成配置项） */
+export const CONVERSATION_SPEED_OVERRIDES_MAX = 200
+
+/** 会话 id 的合法长度区间为 1–CONVERSATION_SPEED_KEY_MAX */
+export const CONVERSATION_SPEED_KEY_MAX = 128
+
+/** C0（含 TAB / LF）与 C1 控制字符：会话 id 里出现即按脏数据丢弃 */
+function hasControlChars(text: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return /[\u0000-\u001f\u007f-\u009f]/.test(text)
+}
+
+/** 只认纯对象：null / 数组 / 标量一律当"没有这张表" */
+function isSpeedPrefsRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 键合法性。⚠️ 故意不 trim：trim 会把 `" a"` 悄悄改名成 `"a"`，等于替用户丢键 */
+function isConversationId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length >= 1 &&
+    value.length <= CONVERSATION_SPEED_KEY_MAX &&
+    !hasControlChars(value)
+  )
+}
+
+/** 按 LRU 队列裁到上限并落成普通对象。⚠️ 用 Map 保序：纯对象会把整数形键按数值重排 */
+function trimSpeedPrefs(entries: Map<string, SpeedOverride>): Record<string, SpeedOverride> {
+  const overflow = entries.size - CONVERSATION_SPEED_OVERRIDES_MAX
+  if (overflow > 0) {
+    let dropped = 0
+    for (const key of entries.keys()) {
+      if (dropped >= overflow) break
+      entries.delete(key)
+      dropped += 1
+    }
+  }
+  return Object.fromEntries(entries)
+}
+
+/** 读盘 / 入参统一入口：逐项丢坏键坏值后裁剪，**不因一条坏值丢整张表** */
+export function sanitizeConversationSpeedOverrides(
+  input: unknown
+): Record<string, SpeedOverride> {
+  const entries = new Map<string, SpeedOverride>()
+  if (!isSpeedPrefsRecord(input)) return {}
+  for (const [key, value] of Object.entries(input)) {
+    if (!isConversationId(key) || !isSpeedOverride(value)) continue
+    entries.set(key, value)
+  }
+  return trimSpeedPrefs(entries)
+}
+
+/** set / touch：重写已有键**视作最近使用**（先删后插挪到队尾）；非法 id 或取值原表返回 */
+export function setConversationSpeedOverride(
+  map: unknown,
+  conversationId: unknown,
+  override: unknown
+): Record<string, SpeedOverride> {
+  const entries = new Map(Object.entries(sanitizeConversationSpeedOverrides(map)))
+  if (!isConversationId(conversationId) || !isSpeedOverride(override)) {
+    return Object.fromEntries(entries)
+  }
+  entries.delete(conversationId)
+  entries.set(conversationId, override)
+  return trimSpeedPrefs(entries)
+}
+
+/** 精确删一个会话的覆盖；键不存在或非法时原表返回（幂等） */
+export function deleteConversationSpeedOverride(
+  map: unknown,
+  conversationId: unknown
+): Record<string, SpeedOverride> {
+  const entries = new Map(Object.entries(sanitizeConversationSpeedOverrides(map)))
+  if (isConversationId(conversationId)) entries.delete(conversationId)
+  return Object.fromEntries(entries)
+}
+
+/** 查单会话覆盖：缺键 / 坏值 / 非法 id 一律 inherit —— 坏值绝不冒充"显式覆盖" */
+export function getConversationSpeedOverride(map: unknown, conversationId: unknown): SpeedOverride {
+  if (!isConversationId(conversationId) || !isSpeedPrefsRecord(map)) {
+    return DEFAULT_SPEED_OVERRIDE
+  }
+  const value = map[conversationId]
+  return isSpeedOverride(value) ? value : DEFAULT_SPEED_OVERRIDE
+}

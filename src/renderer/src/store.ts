@@ -20,7 +20,8 @@ import type { TodoItem } from '@shared/todo'
 import { accumulateConversationUsage, mergeConversationUsage, type ConversationUsage } from '@shared/conversation-usage'
 export type { ConversationUsage } from '@shared/conversation-usage'
 import { estimateMessageTokens, estimatePartsTokens } from '@shared/tokens'
-import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
+import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeConversationSpeedOverrides, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
+import type { RequestPolicySnapshot, ServiceTierObservation, SpeedOverride } from '@shared/request-policy'
 import { applyLocale } from './i18n'
 import {
   activateTab,
@@ -113,6 +114,12 @@ interface AppState {
   /** 界面字体 family 名（空串 = 默认栈）。值进 store 前过 sanitizeUiFont */
   uiFont: string
   setUiFont: (f: string) => void
+  /**
+   * **会话级 FAST 覆盖**（S3-20C）：key = 会话 id，value = inherit / normal / fast。
+   * 清洗口径与主进程同一份（`sanitizeConversationSpeedOverrides`）；键序即最近使用，
+   * 只由共享纯函数维护 —— 界面层不许手工重排。
+   */
+  conversationSpeedOverrides: Record<string, SpeedOverride>
   setSidebarWidth: (w: number) => void
   setDockWidth: (w: number) => void
   persistUIPrefs: (patch: Partial<UIPrefs>) => Promise<void>
@@ -376,6 +383,75 @@ function settleRuntime(
   return { ...patched, runtimes: { ...runtimes, [conversationId]: { ...current, streaming: false } } }
 }
 
+/** 本地轮次身份：只认平台 CSPRNG，拿不到就明确失败（弱随机冒充不了归属键）。 */
+function newLocalRequestId(): string {
+  const source = (globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypto
+  if (typeof source?.randomUUID !== 'function') {
+    throw new Error('运行环境缺少 crypto.randomUUID，拒绝退化为弱随机源')
+  }
+  return source.randomUUID()
+}
+
+/** 取某条会话的运行现场：当前显示的在顶层字段，后台的在存档里。 */
+function runViewOf(s: AppState, conversationId: string): RuntimeSnapshot | undefined {
+  return conversationId === s.activeId ? viewOf(s) : s.runtimes[conversationId]
+}
+
+/** 未知 / 已删会话的事件：丢弃并留痕（与 `applyToConversation` 同一口径，绝不凭空造存档）。 */
+function warnUnknownConversation(conversationId: string): void {
+  console.warn('[store] 收到不属于任何已知会话的事件，已丢弃', { conversationId })
+}
+
+/**
+ * 事件归属：先确认目标运行现场存在（已删会话不复活），再按本地身份判定。
+ * - 带 requestId：只认尾部 assistant 草稿上的同一身份；草稿已有身份时，无身份旧帧一律拒收。
+ * - 不带 requestId：仅当目标仍是无运行身份的旧形态现场（旧草稿）才放行，保持升级兼容。
+ */
+function runMatches(s: AppState, conversationId: string, requestId: string | undefined): boolean {
+  const view = runViewOf(s, conversationId)
+  if (!view) {
+    warnUnknownConversation(conversationId)
+    return false
+  }
+  const tail = view.messages[view.messages.length - 1]
+  if (requestId !== undefined) {
+    if (!tail || tail.role !== 'assistant') return false
+    return tail.requestId === undefined || tail.requestId === requestId
+  }
+  return !(tail?.role === 'assistant' && tail.requestId !== undefined)
+}
+
+/**
+ * 会话级进度刷新（todos / subagents）：这类通道存在合法后台来源且不带聊天身份，
+ * 不能按聊天流的归属门一刀切；只要求目标会话现场仍在（已删会话不复活）。
+ */
+function runVisible(s: AppState, conversationId: string): boolean {
+  if (runViewOf(s, conversationId) !== undefined) return true
+  warnUnknownConversation(conversationId)
+  return false
+}
+
+/** 结算时把本地运行事实写回尾部 assistant：策略是意图，档位只写真实观测。 */
+function applyRunFacts(
+  messages: ChatMessage[],
+  facts: {
+    requestId?: string
+    requestPolicy?: RequestPolicySnapshot
+    serviceTier?: ServiceTierObservation
+  }
+): ChatMessage[] {
+  const last = messages[messages.length - 1]
+  if (!last || last.role !== 'assistant') return messages
+  const next = messages.slice()
+  next[next.length - 1] = {
+    ...last,
+    ...(last.requestId === undefined && facts.requestId ? { requestId: facts.requestId } : {}),
+    ...(facts.requestPolicy ? { requestPolicy: facts.requestPolicy } : {}),
+    ...(facts.serviceTier ? { serviceTier: facts.serviceTier } : {})
+  }
+  return next
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   view: 'new',
   setView: (view) => set({ view }),
@@ -392,6 +468,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   fontScale: FONT_SCALE_DEFAULT,
   uiFont: '',
+  conversationSpeedOverrides: {},
   locale: LOCALE_DEFAULT,
   setLocale: (l) => {
     const locale = sanitizeLocale(l)
@@ -432,7 +509,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         dockWidth: next.dockWidth,
         theme: sanitizeTheme(next.theme),
         fontScale: sanitizeFontScale(next.fontScale),
-        uiFont: sanitizeUiFont(next.uiFont)
+        uiFont: sanitizeUiFont(next.uiFont),
+        // S3-20C：回显主进程清洗后的覆盖表（LRU 次序以落盘结果为准），不做乐观更新
+        conversationSpeedOverrides: sanitizeConversationSpeedOverrides(
+          next.conversationSpeedOverrides
+        )
       })
     } catch {
       // 忽略：布局偏好不是关键数据
@@ -449,7 +530,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         fontScale: sanitizeFontScale(next.fontScale),
         uiFont: sanitizeUiFont(next.uiFont),
         workbench: next.workbench,
-        workbenchSizes: next.workbenchSizes
+        workbenchSizes: next.workbenchSizes,
+        conversationSpeedOverrides: sanitizeConversationSpeedOverrides(
+          next.conversationSpeedOverrides
+        )
       })
       // 恢复默认布局的同时把文档级属性也拉回默认，否则界面要等下次重启才回原样
       applyFontPrefs(sanitizeFontScale(next.fontScale), sanitizeUiFont(next.uiFont))
@@ -462,7 +546,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         fontScale: FONT_SCALE_DEFAULT,
         uiFont: '',
         workbench: emptyLayout(),
-        workbenchSizes: emptySizes()
+        workbenchSizes: emptySizes(),
+        conversationSpeedOverrides: {}
       })
       applyFontPrefs(FONT_SCALE_DEFAULT, '')
       applyLocale(LOCALE_DEFAULT)
@@ -480,7 +565,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         fontScale,
         uiFont,
         workbench: prefs.workbench,
-        workbenchSizes: prefs.workbenchSizes
+        workbenchSizes: prefs.workbenchSizes,
+        // S3-20C：盘上数据不可信，进 store 前按共享口径清洗（坏键坏值逐项丢弃）
+        conversationSpeedOverrides: sanitizeConversationSpeedOverrides(
+          prefs.conversationSpeedOverrides
+        )
       })
       // 右栏宽过一遍比例钳再进（存时是宽窗、开的是窄窗 —— 不钳就一进来主列被挤）
       get().setDockWidth(prefs.dockWidth)
@@ -810,23 +899,32 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ streamError: err instanceof Error ? err.message : String(err) })
     }
   },
-  appendReasoning: (e) =>
+  appendReasoning: (e) => {
+    if (!runMatches(get(), e.conversationId, e.requestId)) return
     set((s) =>
       // 全局 reasoning 保留到 S3 换渲染；segments 同步长（thinking 段只进消息，无全局等价物）
       applyToConversation(s, e.conversationId, (v) => ({
         reasoning: v.reasoning + e.payload,
         messages: applyAssistantThinking(v.messages, e.payload)
       }))
-    ),
+    )
+  },
 
-  setTodos: (e) => set((s) => applyToConversation(s, e.conversationId, () => ({ todos: e.payload }))),
+  setTodos: (e) => {
+    // 带身份的事件必须先过归属门；只有无身份的合法会话级后台刷新才走 runVisible
+    if (e.requestId !== undefined ? !runMatches(get(), e.conversationId, e.requestId) : !runVisible(get(), e.conversationId)) return
+    set((s) => applyToConversation(s, e.conversationId, () => ({ todos: e.payload })))
+  },
 
-  setSubagents: (e) =>
-    set((s) => applyToConversation(s, e.conversationId, () => ({ subagents: e.payload }))),
+  setSubagents: (e) => {
+    if (e.requestId !== undefined ? !runMatches(get(), e.conversationId, e.requestId) : !runVisible(get(), e.conversationId)) return
+    set((s) => applyToConversation(s, e.conversationId, () => ({ subagents: e.payload })))
+  },
 
   setBackgroundTasks: (list) => set({ backgroundTasks: list }),
 
-  pushToolEvent: (e) =>
+  pushToolEvent: (e) => {
+    if (!runMatches(get(), e.conversationId, e.requestId)) return
     set((s) =>
       applyToConversation(s, e.conversationId, (v) => {
         // 同一调用（id）的 start→end 就地更新，避免堆两条
@@ -836,7 +934,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           : [...v.toolEvents, e.payload]
         return { toolEvents, messages: applyAssistantTool(v.messages, e.payload) }
       })
-    ),
+    )
+  },
 
   archiveCurrent: () => {
     const s = get()
@@ -845,6 +944,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   appendChunk: (e) => {
+    if (!runMatches(get(), e.conversationId, e.requestId)) return
     set((s) =>
       // ⚠️ 只返回改动的那一个字段（不是整份现场）—— 这个回调**每来一个字就调一次**
       // plan36：content 与 text 段同步增长（合同：content = text 段拼接）
@@ -857,6 +957,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   markDone: (e) => {
+    // 旧轮迟到：身份不匹配直接丢弃，不碰新轮正文 / 用量 / 档位 / 终态，也不动 streaming
+    if (!runMatches(get(), e.conversationId, e.requestId)) return
     set((s) => {
       // E27-R1：已结算判据按“本轮尾部 assistant 是否已有 terminal”，与 streaming 无关 ——
       // stopStreaming 会先把 streaming 置 false，迟到的 done 仍是本轮的唯一下载点。
@@ -869,7 +971,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         {
           ...applyToConversation(s, e.conversationId, (v) => ({
             streaming: false,
-            messages: applyAssistantTerminal(v.messages, e.payload?.terminal)
+            messages: applyRunFacts(
+              applyAssistantTerminal(v.messages, e.payload?.terminal),
+              {
+                ...(e.requestId ? { requestId: e.requestId } : {}),
+                ...(e.requestPolicy ? { requestPolicy: e.requestPolicy } : {}),
+                ...(e.payload?.serviceTier ? { serviceTier: e.payload.serviceTier } : {})
+              }
+            )
           })),
           ...(nextUsage ? { usageByConversation: { ...s.usageByConversation, [e.conversationId]: nextUsage } } : {})
         },
@@ -881,16 +990,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   markError: (e) => {
+    // 旧轮迟到：同上，按本地身份拒收
+    if (!runMatches(get(), e.conversationId, e.requestId)) return
     set((s) => {
-      // E27-R1：错误同样按轮次结算；已结算后只更新文案，不再累加账、不覆盖已有终态。
+      // E27-R1：错误同样按轮次结算；已结算后整条丢弃 —— 迟到的失败不得把成功/取消改写成失败，
+      // 也不再累加账（重复错误不能覆盖成功）。
       const view = e.conversationId === s.activeId ? viewOf(s) : s.runtimes[e.conversationId]
       const tail = view?.messages[view.messages.length - 1]
       const alreadySettled = tail?.role === 'assistant' && !!tail.terminal
+      if (alreadySettled) return s
       const payload = typeof e.payload === 'string' ? null : e.payload
-      const nextUsage =
-        !alreadySettled && payload
-          ? accumulateConversationUsage(s.usageByConversation[e.conversationId], payload)
-          : undefined
+      const nextUsage = payload
+        ? accumulateConversationUsage(s.usageByConversation[e.conversationId], payload)
+        : undefined
       return settleRuntime(
         s,
         {
@@ -898,8 +1010,14 @@ export const useAppStore = create<AppState>((set, get) => ({
             streaming: false,
             // 旧 string 原样显示；新结构化载荷取固定映射 message（不把对象/厂商正文塞进界面）。
             streamError: chatErrorMessage(e.payload),
-            ...(!alreadySettled && payload?.terminal
-              ? { messages: applyAssistantTerminal(v.messages, payload.terminal) }
+            ...(payload?.terminal
+              ? {
+                  messages: applyRunFacts(applyAssistantTerminal(v.messages, payload.terminal), {
+                    ...(e.requestId ? { requestId: e.requestId } : {}),
+                    ...(e.requestPolicy ? { requestPolicy: e.requestPolicy } : {}),
+                    ...(payload.serviceTier ? { serviceTier: payload.serviceTier } : {})
+                  })
+                }
               : {})
           })),
           ...(nextUsage ? { usageByConversation: { ...s.usageByConversation, [e.conversationId]: nextUsage } } : {})
@@ -957,8 +1075,10 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...(localFiles && localFiles.length > 0 ? { localFiles } : {})
           }
         ]
+    // 本地轮次身份：发起时立刻生成并绑定草稿 —— 不等首个 chunk，零 chunk 失败 / 取消也能归属
+    const requestId = newLocalRequestId()
     set({
-      messages: [...payload, { role: 'assistant', content: '', segments: [], createdAt: now }],
+      messages: [...payload, { role: 'assistant', content: '', segments: [], createdAt: now, requestId }],
       streaming: true,
       streamError: null,
       toolEvents: [], // 新一轮，清掉上一轮的工具活动
@@ -984,13 +1104,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       // 主 Agent（plan17 G2）：从会话 meta 读（真相源），带了但定义不存在 → 主进程报人话错误
       const agentName = get().conversations.find((c) => c.id === conversationId)?.agentName
-      await window.api.chatSend({ conversationId, messages: payload, ...(agentName ? { agentName } : {}) })
+      await window.api.chatSend({ conversationId, messages: payload, requestId, ...(agentName ? { agentName } : {}) })
       return true
     } catch (err) {
       // 主进程入参校验失败等；常规错误已通过 chatError 事件送达。
       // ⚠️ 原文必须带出来：`friendlyParse` 给的是「参数不合法：messages.3.content —— …」，
       //    换成通用句就把"是哪一条消息坏了"这条唯一线索埋了（K8 因此在界面上无从下手）。
-      // IPC尚未接受的新轮不落盘，不把草稿能力当作历史消费。常规模型失败仍走原事件收尾。
+      // 迟到拒绝只结束本次 Promise：已换轮（B 已发起）或本轮已结算时一律不回写，
+      // 否则会把新草稿回滚成旧 history，或抹掉已到的成功终态与档位。
+      const current = get()
+      const view = runViewOf(current, conversationId)
+      const tail = view?.messages[view.messages.length - 1]
+      const stillMine = tail?.role === 'assistant' && tail.requestId === requestId
+      if (!stillMine || tail.terminal) return false
       set(s => settleRuntime(s, applyToConversation(s, conversationId, () => ({
         messages: history, streaming: false, streamError: `发送失败：${err instanceof Error ? err.message : String(err)}`
       })), conversationId))

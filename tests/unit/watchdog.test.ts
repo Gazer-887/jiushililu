@@ -3,7 +3,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { initLogger } from '@main/log'
-import { breadcrumb, setWatchdogPhase, startWatchdog, stopWatchdog } from '@main/watchdog'
+import {
+  acquireWatchdogLease,
+  breadcrumb,
+  peekWatchdogDisplayPhase,
+  peekWatchdogLeases,
+  setWatchdogPhase,
+  startWatchdog,
+  stopWatchdog
+} from '@main/watchdog'
 
 // 看门狗（plan37 S0）：把「主进程被同步任务占死」变成带时长与阶段归属的日志证据。
 // 计时用真实定时器 + 同步忙等构造 —— 阈值给足余量，避免 CI 高负载下的边界抖动。
@@ -96,5 +104,58 @@ describe('事件循环看门狗', () => {
     setWatchdogPhase(outer)
     expect(setWatchdogPhase('tool:outer')).toBe(outer) // 同值不追加历史（幂等）
     setWatchdogPhase('idle')
+  })
+})
+
+describe('S3-40A 看门狗所有权租约', () => {
+  it('两个在途所有者互相独立；旧 setter 返回旧槽值，不把租约展示当 prev', () => {
+    startWatchdog({ intervalMs: 1000, thresholdMs: 1000, heartbeatMs: 0 })
+    setWatchdogPhase('idle')
+    const a = acquireWatchdogLease('tool:batch')
+    const b = acquireWatchdogLease('tool:batch')
+    expect(peekWatchdogLeases()).toHaveLength(2)
+    expect(peekWatchdogDisplayPhase()).toBe('tool:batch×2')
+
+    // 旧 setter 改的是"租约结束后的回落值"；返回值必须是旧槽，而不是租约展示值
+    const prev = setWatchdogPhase('conversation:save')
+    expect(prev).toBe('idle')
+    expect(peekWatchdogDisplayPhase()).toBe('tool:batch×2')
+    setWatchdogPhase(prev)
+    expect(peekWatchdogDisplayPhase()).toBe('tool:batch×2')
+
+    a.release()
+    expect(peekWatchdogDisplayPhase()).toBe('tool:batch')
+    b.release()
+    expect(peekWatchdogDisplayPhase()).toBe('idle')
+    // 重复 release 幂等
+    a.release()
+    b.release()
+    expect(peekWatchdogLeases()).toHaveLength(0)
+  })
+
+  it('反向结束：先释放后获取的，先获取者归属仍在；不会误置 idle', () => {
+    startWatchdog({ intervalMs: 1000, thresholdMs: 1000, heartbeatMs: 0 })
+    setWatchdogPhase('idle')
+    const read = acquireWatchdogLease('tool:read')
+    const write = acquireWatchdogLease('tool:write')
+    expect(peekWatchdogDisplayPhase()).toBe('tool:read+tool:write')
+    write.release()
+    expect(peekWatchdogDisplayPhase()).toBe('tool:read')
+    expect(peekWatchdogLeases().map((l) => l.phase)).toEqual(['tool:read'])
+    read.release()
+    expect(peekWatchdogDisplayPhase()).toBe('idle')
+  })
+
+  it('重复 release 只释放自己的那条，另一在途不受影响', () => {
+    startWatchdog({ intervalMs: 1000, thresholdMs: 1000, heartbeatMs: 0 })
+    setWatchdogPhase('idle')
+    const a = acquireWatchdogLease('tool:read')
+    const b = acquireWatchdogLease('tool:write')
+    a.release()
+    a.release()
+    expect(peekWatchdogLeases()).toHaveLength(1)
+    expect(peekWatchdogDisplayPhase()).toBe('tool:write')
+    b.release()
+    expect(peekWatchdogDisplayPhase()).toBe('idle')
   })
 })

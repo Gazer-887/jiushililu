@@ -409,3 +409,78 @@ describe('buildOpenAIChatBody / buildAnthropicBody · 上下文窗口不发厂�
     expect('contextWindow' in anthropic).toBe(false)
   })
 })
+
+describe('S3-10B 最终URL断言矩阵（chat/models/test 三路；E10B）', () => {
+  // 断言对象=resolveApiUrl 产出的最终请求 URL（非模板字符串）；来源=S3-00C 官方端点取证 EP-1~6。
+  it('Gemini OpenAI 兼容面：chat 不补 /v1（F-01 缺陷修复断言）', () => {
+    expect(
+      resolveApiUrl('https://generativelanguage.googleapis.com/v1beta/openai', 'chat/completions')
+    ).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions')
+  })
+  it('Gemini OpenAI 兼容面：带尾斜杠同径；models 与连接检查同路径', () => {
+    expect(
+      resolveApiUrl('https://generativelanguage.googleapis.com/v1beta/openai/', 'chat/completions')
+    ).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions')
+    expect(
+      resolveApiUrl('https://generativelanguage.googleapis.com/v1beta/openai', 'models')
+    ).toBe('https://generativelanguage.googleapis.com/v1beta/openai/models')
+  })
+  it('MiniMax 双区域 Anthropic 面：/anthropic 只追加 /v1/messages（urlClarification）', () => {
+    expect(resolveApiUrl('https://api.minimax.io/anthropic', 'messages')).toBe(
+      'https://api.minimax.io/anthropic/v1/messages'
+    )
+    expect(resolveApiUrl('https://api.minimax.cn/anthropic', 'messages')).toBe(
+      'https://api.minimax.cn/anthropic/v1/messages'
+    )
+  })
+  it('MiniMax OpenAI 面 /v1 结尾：chat/models 不重复拼（双Key类同base）', () => {
+    expect(resolveApiUrl('https://api.minimax.cn/v1', 'chat/completions')).toBe(
+      'https://api.minimax.cn/v1/chat/completions'
+    )
+    expect(resolveApiUrl('https://api.minimax.cn/v1', 'models')).toBe(
+      'https://api.minimax.cn/v1/models'
+    )
+  })
+  it('Kimi Code 双面：/coding/v1 chat 与 /coding → /coding/v1/messages（官方 endpoint 示例逐字）', () => {
+    expect(resolveApiUrl('https://api.kimi.com/coding/v1', 'chat/completions')).toBe(
+      'https://api.kimi.com/coding/v1/chat/completions'
+    )
+    expect(resolveApiUrl('https://api.kimi.com/coding/', 'messages')).toBe(
+      'https://api.kimi.com/coding/v1/messages'
+    )
+  })
+  it('Moonshot 普通 API Anthropic 面：/anthropic → /anthropic/v1/messages（官方 ×14 逐字）', () => {
+    expect(resolveApiUrl('https://api.moonshot.cn/anthropic', 'messages')).toBe(
+      'https://api.moonshot.cn/anthropic/v1/messages'
+    )
+  })
+  it('阶跃 Step Plan 双面（Anthropic messages 全路径为推导，官方逐字待补证）', () => {
+    expect(resolveApiUrl('https://api.stepfun.com/step_plan/v1', 'chat/completions')).toBe(
+      'https://api.stepfun.com/step_plan/v1/chat/completions'
+    )
+    expect(resolveApiUrl('https://api.stepfun.com/step_plan', 'messages')).toBe(
+      'https://api.stepfun.com/step_plan/v1/messages'
+    )
+  })
+  it('OpenCode Go：chat base 与 models URL 分列（EP-4 官方原样）', () => {
+    expect(resolveApiUrl('https://opencode.ai/inference/go/openai/v1', 'chat/completions')).toBe(
+      'https://opencode.ai/inference/go/openai/v1/chat/completions'
+    )
+    expect(resolveApiUrl('https://opencode.ai/inference/go/anthropic', 'messages')).toBe(
+      'https://opencode.ai/inference/go/anthropic/v1/messages'
+    )
+    expect(resolveApiUrl('https://opencode.ai/inference/go/v1', 'models')).toBe(
+      'https://opencode.ai/inference/go/v1/models'
+    )
+  })
+  it('火山方舟 Anthropic 兼容面：机械规则 /api/compatible → /v1/messages（最终路径待官方逐字补证）', () => {
+    expect(resolveApiUrl('https://ark.cn-beijing.volces.com/api/compatible', 'messages')).toBe(
+      'https://ark.cn-beijing.volces.com/api/compatible/v1/messages'
+    )
+  })
+  it('百炼旧域 models 与连接检查路径（Token Plan 套餐 base 用户自填不在此列）', () => {
+    expect(resolveApiUrl('https://dashscope.aliyuncs.com/compatible-mode/v1', 'models')).toBe(
+      'https://dashscope.aliyuncs.com/compatible-mode/v1/models'
+    )
+  })
+})

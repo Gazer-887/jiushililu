@@ -254,7 +254,18 @@ export function createBrowserTaskAdapter(
       return '(未知站点)'
     }
   }
-  const gate = async (prop: string, args: unknown[]): Promise<void> => {
+  /** 权限探针只认实际工具名：browser_task 是确认卡的虚拟名，不能拿来做权限判断。 */
+  const assertToolAllowed = (tool: string): void => {
+    if (!ctx?.isToolAllowed) return // 旧兼容：未注入探针 = 不启用实时权限收紧
+    let allowed = false
+    try {
+      allowed = ctx.isToolAllowed(tool) === true
+    } catch {
+      allowed = false // 权限源读取抛错/无效：只读动作也必须 fail-closed
+    }
+    if (!allowed) throw new BrowserGateError('权限已收紧，已拒绝该浏览器动作')
+  }
+  const gate = async (prop: string, args: unknown[]): Promise<boolean> => {
     const toolName = BROWSER_METHOD_TOOLS[prop] ?? 'browser_unknown'
     const argMap: Record<string, unknown> = {
       0: args[0],
@@ -279,10 +290,16 @@ export function createBrowserTaskAdapter(
       argMap['targetInfo'] = await describeTarget(target, String(args[0] ?? ''))
       assertEnabled()
     }
-    if (classifyBrowserAction(toolName, argMap) === 'readonly') return
+    if (classifyBrowserAction(toolName, argMap) === 'readonly') {
+      // 只读不等于"绕过权限源"：有效 read-only 探针为 true；来源抛错/无效、run 失活/取消必须拒绝。
+      assertToolAllowed(toolName)
+      return false
+    }
     if (!ctx || !authorizer) {
       throw new BrowserGateError('浏览器动作缺少宿主任务上下文，已拒绝（不降级执行）')
     }
+    // 目标分类/describeTarget 等异步准备之后先核一次：等待期间撤权不得进入确认/缓存分支
+    assertToolAllowed(toolName)
     const site =
       toolName === 'browser_navigate' || toolName === 'browser_tabs'
         ? originOf(String(args[0] ?? target?.view.webContents.getURL() ?? ''))
@@ -295,8 +312,14 @@ export function createBrowserTaskAdapter(
       site
     })
     if (!r.allowed) throw new BrowserGateError(r.reason ?? '浏览器动作未获授权')
-    // ★ 确认返回后重核（修正 B）：等待期间关开关/取消 → 旧批准不得继续（真实输入零发生）
+    // ★ 确认/缓存许可返回后重核（修正 B）：等待期间撤权/关开关 → 旧批准不得继续
     assertEnabled()
+    assertToolAllowed(toolName)
+    return true
+  }
+  /** gate 是 async：await 返回到调用方还有一个微任务边界，动作前必须再核一次（只读同样适用）。 */
+  const assertGateAfterAwait = (prop: string): void => {
+    assertToolAllowed(BROWSER_METHOD_TOOLS[prop] ?? 'browser_unknown')
   }
   return new Proxy(base, {
     get(object, property) {
@@ -313,6 +336,7 @@ export function createBrowserTaskAdapter(
           signal?.throwIfAborted()
           if (property === 'newTab') {
             await gate('newTab', args)
+            assertGateAfterAwait('newTab')
             const created = await browserNewTab(args[0] as string | undefined)
             target = tabs.get(created.id)!; revision = target.revision
             return created
@@ -320,6 +344,7 @@ export function createBrowserTaskAdapter(
           // selectTab 是**恢复通道**：当前目标已死时也要能切走（只过门位，不先核旧目标）
           if (property === 'selectTab') {
             await gate('selectTab', args)
+            assertGateAfterAwait('selectTab')
             assertEnabled()
             const next = tabs.get(args[0] as string)
             if (!next) return null
@@ -329,10 +354,12 @@ export function createBrowserTaskAdapter(
           // listTabs 是纯读：不要求当前目标存活（它就是用来找恢复目标的）
           if (property === 'listTabs') {
             await gate('listTabs', args)
+            assertGateAfterAwait('listTabs')
             return browserListTabs()
           }
           check()
           await gate(property as string, args)
+          assertGateAfterAwait(property as string)
           // ★ 门后重核（修正 B）：确认等待期间人工换页/换目标 → 旧批准不得覆盖
           check()
           if (target !== tab) throw new Error('任务目标已改变，未执行旧操作')

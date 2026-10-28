@@ -6,10 +6,25 @@ import type {
   AgentMessage,
   AgentLoopResult,
   AgentTool,
+  RunPermissionGuard,
+  RunRequestPolicy,
   SubagentJobEvent,
   ToolEvent,
   ToolImageRef
 } from '@shared/agent'
+import {
+  FAST_SERVICE_TIER,
+  createProviderExecutionContext,
+  isPermissionGenerationCurrent,
+  normalizeTierSupport,
+  resolveRequestPolicy,
+  type PermissionStateSnapshot,
+  type ProviderCallPurpose,
+  type ProviderExecutionContext,
+  type RequestPolicySnapshot,
+  type ServiceTierObservation,
+  type TierSupport
+} from '@shared/request-policy'
 import type { TodoItem } from '@shared/todo'
 import { ToolGate, type PathAccess } from './guard'
 import type { ExecEventRecorder } from './exec-events'
@@ -254,7 +269,8 @@ function buildBrowserToolsFor(hooks: ToolHooks, agentName: string): AgentTool[] 
       agent: agentName,
       conversationId: hooks.conversationId,
       confirm: hooks.confirmBrowser ?? null,
-      ...(hooks.isNativeBrowserEnabled ? { isEnabled: hooks.isNativeBrowserEnabled } : {})
+      ...(hooks.isNativeBrowserEnabled ? { isEnabled: hooks.isNativeBrowserEnabled } : {}),
+      ...(hooks.permissionAllows ? { isToolAllowed: hooks.permissionAllows } : {})
     },
     ...(hooks.attachmentsRoot
       ? {
@@ -367,6 +383,45 @@ export function createAllTools(workspaceRoot: string, hooks: ToolHooks = {}): Ag
   // 与 plan43 的「run 内不漂移」同一条口径：**新任务用新环境，正在跑的任务不打断**。
 }
 
+/** 权限档的运行时次序：未知档位不得参与比较（fail-closed，由调用方拒绝）。 */
+const PERMISSION_RANK: Readonly<Record<string, number>> = Object.freeze({
+  'read-only': 0,
+  write: 1,
+  'full-access': 2
+})
+
+function permissionRankOf(value: unknown): number | null {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(PERMISSION_RANK, value)
+    ? PERMISSION_RANK[value]!
+    : null
+}
+
+/** 取更严格的一档：活权限只能收紧，放宽不能突破 run 起点上限。 */
+function stricterPreset(a: PermissionPreset, b: PermissionPreset): PermissionPreset {
+  return (PERMISSION_RANK[a] ?? 0) <= (PERMISSION_RANK[b] ?? 0) ? a : b
+}
+
+/** 读 run 起点的权威快照；非法档位/代次直接拒绝本轮（在检查点与工具装配之前）。 */
+function readStartPermission(args: RunAgentArgs): PermissionStateSnapshot<PermissionPreset> | null {
+  if (!args.readPermissionState) return null
+  const state = args.readPermissionState()
+  if (permissionRankOf(state?.preset) === null) throw new Error('权限档位非法，拒绝启动本轮')
+  if (!Number.isSafeInteger(state?.generation) || state.generation < 0) {
+    throw new Error('权限代次非法，拒绝启动本轮')
+  }
+  return { preset: state.preset, generation: state.generation }
+}
+
+/** 起点上限取「调用方声明档」与「权威快照档」中更严格的一档，避免入口分岔扩权。 */
+function resolveStartPreset(
+  args: RunAgentArgs,
+  start: PermissionStateSnapshot<PermissionPreset> | null
+): PermissionPreset {
+  if (!start) return permissionRankOf(args.permission) === null ? 'write' : args.permission!
+  if (permissionRankOf(args.permission) === null) return start.preset
+  return stricterPreset(args.permission!, start.preset)
+}
+
 /** 本轮用户原话（最后一条 user 消息）。⚠️ 只取 content 为字符串的那些 —— 带图片的消息取不到文字。 */
 function lastUserText(history: AgentMessage[]): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
@@ -394,6 +449,11 @@ export interface ToolHooks {
    * 合法导航、完全访问档的未知风险确认都走它）；不传 = 浏览器外部作用动作一律拒绝。
    */
   confirmBrowser?: ConfirmFn
+  /**
+   * 实时权限探针（同步，实际工具名）：浏览器异步准备/确认/缓存许可后、真实动作前调用。
+   * 由 runAgent 注入；缺省 = 不启用实时权限收紧（旧调用方兼容）。
+   */
+  permissionAllows?: (tool: string) => boolean
   onTodos?: (todos: TodoItem[]) => void
   /** 目标创建口（plan12 ⑤）；不传 = 不下发 set_goal 工具（「有消费者才注册」，同 todos/ask/subagent） */
   onSetGoal?: (input: { text: string; doneWhen?: string }) => import('@shared/goal').Goal
@@ -625,6 +685,13 @@ export interface RunAgentArgs {
   /** 原生浏览器开关实时探针（plan79 切片 3；用于排队中关停） */
   isNativeBrowserEnabled?: () => boolean
   permission?: PermissionPreset
+  /**
+   * 权威权限快照读取（同步）：run 起点捕获一次，之后每次真实启动/异步读盘前/提交门重核。
+   * 缺失 = 旧兼容路径（只用 args.permission，不启用实时收紧）。
+   */
+  readPermissionState?: () => PermissionStateSnapshot<PermissionPreset>
+  /** run 活性探针（同步）：由组合根绑定本轮 gate/controller；缺失 = 只用 signal。 */
+  isRunActive?: () => boolean
   /** Firecrawl 密钥（plan31）：由组合根从设置解密后传入；不传 = web_search 走零密钥默认源 */
   firecrawlApiKey?: string | null
   onText?: (delta: string) => void
@@ -655,6 +722,31 @@ export interface RunAgentArgs {
   toolWindow?: boolean
   /** 省 token 档位（plan8 R9.1 §七②）解析出的开关，**由调用方注入** —— runner 不许碰 electron-store，故"读用户设置"只能发生在组合根（`ipc.ts` / `scheduler.ts`）。 */
   policy?: TokenPolicy
+  /**
+   * run 级不可变请求策略（S3-20D1）：调用方传入则**复制并冻结**，缺省由 `resolveRequestPolicy()` 解析一次。
+   * ⚠️ 本层不读 UI 偏好；入口负责读取模型默认与会话覆盖，运行中改设置只影响下一次 run。
+   */
+  requestPolicy?: RunRequestPolicy
+  /**
+   * 真实客户端版本（S3-30T2）。由组合根注入 `app.getVersion()` —— runner 不读 package、不导入 electron。
+   * ⚠️ 缺省 = 旧兼容路径：**不创建运行上下文**，也就没有身份头与服务档字段（不伪造版本）。
+   */
+  clientVersion?: string
+  /** 本次 run 的真实调用目的（S3-30T2）：主聊天 / 一次性任务；缺省按主聊天。 */
+  purpose?: 'main-chat' | 'one-shot'
+  /**
+   * 端点各模型的只读 FAST 服务档支持快照（S3-30T2）：模型 → supported/unsupported/unknown。
+   * 由组合根（30F）注入；runner 不做 IO、不建第二份配置真源。缺失/未知一律保守省略服务档。
+   */
+  tierSupportForModel?: (model: string) => TierSupport | undefined
+  /**
+   * 单请求服务档观察出口（S3-30T2）。两个域**分开**：子代理观察绝不写进主请求展示值。
+   * 失败请求也能收到（provider 在抛错前已交出已观测事实），供 30C 错误信封消费。
+   */
+  serviceTierReports?: {
+    onMain?: (observation: ServiceTierObservation) => void
+    onSubagent?: (observation: ServiceTierObservation, agentName: string) => void
+  }
   /**
    * 记忆注入段（plan19 批 1）。**由组合根组装好传进来** —— runner 不知道记忆库在哪，也不该知道。
    * `null` / 缺省 = 这一段不出现。
@@ -732,7 +824,67 @@ export type AgentRunResult = AgentLoopResult & {
   planApproved?: boolean
 }
 
+/**
+ * 实际请求模型的能力位（S3-30T2）：定义覆盖了模型时，父模型的 `supported` **不能**当作子模型证据。
+ * 未覆盖 = 实际模型就是父模型，沿用父快照；覆盖后按只读快照解析，缺失/未声明一律 unknown。
+ */
+export function resolveModelTierSupport(input: {
+  requestModel: string
+  baseModel: string
+  baseTierSupport: TierSupport
+  tierSupportForModel?: (model: string) => TierSupport | undefined
+}): TierSupport {
+  if (input.requestModel === input.baseModel) return input.baseTierSupport
+  return normalizeTierSupport(input.tierSupportForModel?.(input.requestModel))
+}
+
+/**
+ * 按实际模型派生请求策略（S3-30T2）：**只重解析协议能力位**，速度意图与本地并发上限原样继承父快照。
+ * ⚠️ 刻意不调用 `resolveRequestPolicy`：那个函数是「run 起点重新读取用户设置」的唯一入口，
+ * 结构守卫按调用次数钉住它（每 run 至多一次）；这里是从父快照做纯派生，不是重新解析设置。
+ * `fast + supported ⇒ FAST_SERVICE_TIER` 这条规则的常量仍取自 shared，不另抄一份字面值。
+ */
+export function derivePolicyForModel(
+  parent: RunRequestPolicy,
+  tierSupport: TierSupport
+): RequestPolicySnapshot {
+  return {
+    mode: parent.mode,
+    maxLocalReadConcurrency: parent.maxLocalReadConcurrency,
+    requestedServiceTier: parent.mode === 'fast' && tierSupport === 'supported' ? FAST_SERVICE_TIER : null,
+    tierSupport
+  }
+}
+
+/**
+ * 一次真实运行的运行上下文（S3-30T2）：版本缺省 → undefined（旧请求，不伪造版本）。
+ * ⚠️ 只在内存里作为函数参数传递；不进 messages / 系统提示 / 存档 / 事件 / 日志。
+ */
+export function createModelScopedContext(input: {
+  clientVersion?: string
+  purpose: ProviderCallPurpose
+  parentPolicy: RunRequestPolicy
+  /** 父层实际在用的模型（子任务未声明 model 时就是它） */
+  baseModel: string
+  /** 父层实际生效的能力位（已经按父模型解析过） */
+  baseTierSupport: TierSupport
+  /** 本次真实请求用的模型 */
+  requestModel: string
+  tierSupportForModel?: (model: string) => TierSupport | undefined
+}): ProviderExecutionContext | undefined {
+  if (input.clientVersion === undefined) return undefined
+  const tierSupport = resolveModelTierSupport(input)
+  return createProviderExecutionContext({
+    clientVersion: input.clientVersion,
+    purpose: input.purpose,
+    policy: derivePolicyForModel(input.parentPolicy, tierSupport)
+  })
+}
+
 export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Promise<AgentRunResult> {
+  // 权限起点在任何检查点/工具装配之前定格；非法或读取失败直接拒绝本轮，不留下半轮副作用。
+  const startPermission = readStartPermission(args)
+  const startPreset = resolveStartPreset(args, startPermission)
   const workspaceRoot = ctx.getWorkspaceRoot()
   const registry = loadAgentRegistry(ctx)
 
@@ -748,6 +900,12 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   const agentLabel = args.agentName ?? '内核默认'
   const runId = ctx.checkpoints.begin(workspaceRoot, agentLabel, args.conversationId)
 
+  // S3-20D1：本轮请求策略在**检查点建立后、任何模型调用前**定格一次 —— 传入即复制并冻结，
+  // 缺省按 normal 保守解析；运行中外部对象再改也碰不到本轮（主循环与全部子代理共享这一个引用）。
+  const requestPolicy: RunRequestPolicy = Object.freeze(
+    args.requestPolicy ? { ...args.requestPolicy } : resolveRequestPolicy()
+  )
+
   // ── 子代理派发（plan7 批 D）── 两条边界：① 子代理按**自己的 def** 装配工具，上限是**权限档**
   // 而不是"主代理实收了什么"（所以派一个声明了高危工具的 Agent，它就拿得到那个高危工具；
   //  也所以声明只读的 Agent 真的只读 —— 详见 `subagentToolNamesFor` 的口径变更说明）；
@@ -755,9 +913,12 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   // `allTools` / `preset` 在下面才初始化：本闭包要等 `dispatch` 被真调用时才求值，故用 let 打破顺序。
   // ⚠️ 兜底**抛错而不是返回空数组**：静默发空工具 = 子代理一个活儿干不了、提示词照旧许诺它有能力，
   // 且没有任何一道闸会红（顺序哪天被打乱，表现必须是响，不是"看起来像没权限"）。
-  let toolsForSubagent: (def: AgentDefinition) => AgentTool[] = () => {
+  let toolsForSubagent: (def: AgentDefinition, guard?: RunPermissionGuard) => AgentTool[] = () => {
     throw new Error('子代理工具集尚未初始化（派发早于装配）—— 这是接线错误，不是权限不足')
   }
+  // 与 toolsForSubagent 同因延后初始化：dispatch 被真调用时，权限闭包已经装配完毕。
+  // ⚠️ 每次 dispatch 内的每个 job 各求值一次 —— 兄弟子 run 必须拿到不同的守卫实例。
+  let guardForSubagent: ((def: AgentDefinition) => RunPermissionGuard) | null = null
   const subagentDispatcher: SubagentDispatcher = {
     async dispatch(jobs) {
       const missing = [
@@ -773,25 +934,72 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
         task: '',
         tasks: jobs.map((j) => j.task),
         toolsFor: toolsForSubagent,
+        // S3-40C2：每个子作业独立守卫 —— 同源起点 + 权威来源，观察状态互不污染。
+        guardFor: (d) => {
+          if (!guardForSubagent) {
+            throw new Error('子代理权限守卫尚未初始化（派发早于装配）—— 这是接线错误，不是权限不足')
+          }
+          return guardForSubagent(d)
+        },
+        // S3-30T2：每个真实子任务在 scheduler 的作业边界建**一次**上下文 ——
+        // 兄弟/父子随机键互相隔离；同一子任务的所有模型轮共用这一份（不按轮重键）。
+        contextFactory: (d) =>
+          createModelScopedContext({
+            clientVersion: args.clientVersion,
+            purpose: 'subagent',
+            parentPolicy: requestPolicy,
+            baseModel: effective.model,
+            baseTierSupport: mainTierSupport,
+            requestModel: d.model ?? effective.model,
+            tierSupportForModel: args.tierSupportForModel
+          }),
         // 子代理按**自己的 def.model** 建通道（缺省沿用当前会话模型），输出不上屏（只回流给主代理）
-        chatFactory: (d, tools) => {
+        chatFactory: (d, tools, jobContext) => {
           // 用 `effective` 而非 `args.settings`：档位对思考强度的覆盖（§七③）必须对子代理同样生效，否则轻量档用户派个子代理，那边还在高思考强度空烧
           const model = d.model ? { ...effective, model: d.model } : effective
           // schema 取**scheduler 同一次装配**的 jobTools（修正 C）：早前这里再调一次 toolsForSubagent，
           // 浏览器工具按 job 重建后两次求值会各建一份适配器 —— schema 与执行工具就此分岔
           const schemas = tools.map((t) => t.schema)
+          // S3-30T2：子请求域的观察单独走一条出口，绝不写进主请求展示值
+          const notifySubagent = args.serviceTierReports?.onSubagent
+          const onSubagentTier = notifySubagent
+            ? (observation: ServiceTierObservation): void => notifySubagent(observation, d.name)
+            : undefined
           return (messages: AgentMessage[]) => {
             // 子代理**不再自带整轮墙钟**（plan29 D-090）：原来这里在父 signal 缺席时给一个
             // `AbortSignal.timeout(model.timeoutMs)`，而子代理是并发跑的 —— 等于每个子代理各拿一个
             // 与"父轮次总时长"同数量级的数字，父轮的预算被并发地重复消耗。现在的口径是：
             // 只传父 signal（**父停子停**），每一轮自己的健壮性由 provider 的首包 / 分片间隔守卫负责。
             return model.providerType === 'anthropic'
-              ? streamWithToolsAnthropic(model, args.apiKey, messages, schemas, () => {}, args.signal)
-              : streamWithToolsOpenAI(model, args.apiKey, messages, schemas, () => {}, args.signal)
+              ? streamWithToolsAnthropic(
+                  model,
+                  args.apiKey,
+                  messages,
+                  schemas,
+                  () => {},
+                  args.signal,
+                  undefined,
+                  jobContext,
+                  onSubagentTier
+                )
+              : streamWithToolsOpenAI(
+                  model,
+                  args.apiKey,
+                  messages,
+                  schemas,
+                  () => {},
+                  args.signal,
+                  undefined,
+                  undefined,
+                  jobContext,
+                  onSubagentTier
+                )
           }
         },
         ...(args.onSubagentEvent ? { onJobEvent: args.onSubagentEvent } : {}),
         ...(args.policy ? { policy: args.policy } : {}),
+        // S3-20D1：子代理**继承父 run 的同一个冻结快照**，不按各自 def.model 另算速度档。
+        requestPolicy,
         // 输出纪律（§七③）：与主代理**同一份** —— 子代理的输出同样计费，纪律不该只约束一半
         ...(discipline ? { systemSuffix: discipline } : {}),
         // plan26 D-077：执行事件流透传（子代理活动标 'sub'，盲审 A P0-2）
@@ -819,8 +1027,8 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
    * 2. **只有 full-access 才为真**，其余档位 `undefined` = fail-closed。默认档（write）必须维持旧行为。
    */
   // 权限档在一轮内是定值，且**主/子代理共用同一档**（子代理不许借派发换档）。
-  // 提到最前面：路径放行、确认桥、工具上限三处都要读它，各写一遍 `args.permission ?? 'write'` 迟早分岔。
-  const preset: PermissionPreset = args.permission ?? 'write'
+  // 起点取自权威快照（缺失时才回落 args.permission）；路径放行、确认桥、工具上限共用这一份。
+  const preset: PermissionPreset = startPreset
   const pathAccess: PathAccess | undefined =
     preset === 'full-access' ? { allowOutside: true } : undefined
 
@@ -856,14 +1064,19 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
    * 子代理若复用主代理那一份，并发派发时几张确认卡都写着主代理的名字，
    * 用户在错信息下点"允许这一次"（卡片本来就渲染在 `发起：{agent}` 上）。
    */
-  const confirmBridgeFor = (label: string): CommandConfirm => (command) =>
-    ctx.confirmCommand!({
+  const confirmBridgeFor = (label: string, guard?: RunPermissionGuard): CommandConfirm => async (command) => {
+    const approved = await ctx.confirmCommand!({
       tool: 'run_command',
       detail: command,
       agent: label,
       where: workspaceRoot,
       conversationId: args.conversationId
     })
+    if (!approved) return false
+    // ⚠️ 确认卡等待期间可能撤权/取消/换 run：这里返回 false 后 system-tools 不会启动命令。
+    // 只在确认结束后、真实启动前重核，不能把“用户已批准”当成权限未变的证据。
+    return guard ? guard.canStart('run_command') : permissionCanStart('run_command')
+  }
   /** 浏览器确认桥（修正 D）：**全权限档注入**（只读档的合法导航、完全访问档的未知风险确认都要它）；
    *  保留真实 tool 名与站点，不发 run_command/工作区包装。署名按实际发起者给（子代理用自己那份）。 */
   const browserConfirmFor = (label: string): ConfirmFn => (req) =>
@@ -875,9 +1088,12 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       conversationId: args.conversationId,
       kind: 'browser'
     })
+  // 浏览器工具先于 permissionCanStart 装配：用引用槽把运行期守卫接进来（执行前才求值）。
+  let permissionAllowsRef: ((tool: string) => boolean) | null = null
   const toolHooks: ToolHooks = {
     writer,
     conversationId: args.conversationId,
+    permissionAllows: (tool) => (permissionAllowsRef ? permissionAllowsRef(tool) === true : false),
     // plan79：原生开关值必须进 hooks —— 装配门（browserOn）与自视段都从这里取。漏传 = 显式关
     // 吃不到（旧门「非 false 即真」恰好掩盖过这处漏传，fail-closed 化后由 e2e 故事一/二当场暴露）。
     ...(args.nativeBrowser !== undefined ? { nativeBrowser: args.nativeBrowser } : {}),
@@ -908,8 +1124,12 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
             ...(ctx.memory.searchMemory ? { searchMemory: ctx.memory.searchMemory } : {}),
             ...(ctx.memory.confirm
               ? {
-                  confirm: (reason: string) =>
-                    ctx.memory!.confirm!(reason, args.conversationId)
+                  confirm: async (reason: string) => {
+                    const approved = await ctx.memory!.confirm!(reason, args.conversationId)
+                    if (!approved) return false
+                    // ⚠️ 确认等待期间可能撤权/取消：记忆写入前再核；只读档本就不允许 remember。
+                    return permissionCanStart('remember')
+                  }
                 }
               : {})
           }
@@ -925,8 +1145,16 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
             conversationId: args.conversationId,
             // F1 修复（2026-10-10）：confirm 桥必须在构造 toolHooks 时转发 —— 漏这一跳时
             // 生产中 confirm 档写入恒被拒、用户永不被问（D-200①A 的确认半边不可达）。
-            // 签名与 ctx.playbook.confirm 同形（reason, conversationId），直接透传。
-            ...(ctx.playbook.confirm ? { confirm: ctx.playbook.confirm } : {})
+            ...(ctx.playbook.confirm
+              ? {
+                  confirm: async (reason: string, conversationId: string) => {
+                    const approved = await ctx.playbook!.confirm!(reason, conversationId)
+                    if (!approved) return false
+                    // ⚠️ 确认等待期间可能撤权/取消：经验写入前再核；只读档本就不允许 save_playbook。
+                    return permissionCanStart('save_playbook')
+                  }
+                }
+              : {})
           }
         }
       : {}),
@@ -950,14 +1178,19 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
             onGatedDrop: defaultGatedDropLog,
             ...(ctx.confirmCommand
               ? {
-                  confirm: (req: { tool: string; detail: string }) =>
-                    ctx.confirmCommand!({
+                  confirm: async (req: { tool: string; detail: string }) => {
+                    const approved = await ctx.confirmCommand!({
                       tool: req.tool,
                       detail: req.detail,
                       agent: 'MCP',
                       where: 'MCP',
                       conversationId: args.conversationId
                     })
+                    if (!approved) return false
+                    // ⚠️ 外部工具确认等待期间可能撤权/取消：真实调用前再核；
+                    // false 时 MCP 适配器不得调用外部 transport。
+                    return permissionCanStart(req.tool)
+                  }
                 }
               : {})
           }
@@ -986,6 +1219,84 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   // 等于"批准卡还没弹，写操作已经经子代理落盘"——plan27 那条「先批准、后执行」当场失效。
   // 结构性掐掉，不靠"当前内置 planner 恰好没声明 spawn_agents"这层运气。
   const browserOn = toolHooks.nativeBrowser ?? (toolHooks.browserControl === true)
+  /**
+   * 实时权限守卫：只在权威快照可用时启用；读取失败/非法值一律 false。
+   * 起点上限与活权限取更严格者：收紧立即生效，放宽永远不突破起点。
+   */
+  const livePermission = (): PermissionStateSnapshot<PermissionPreset> | null => {
+    if (!args.readPermissionState) {
+      return { preset: startPreset, generation: startPermission?.generation ?? 0 }
+    }
+    try {
+      const state = args.readPermissionState()
+      if (permissionRankOf(state?.preset) === null) return null
+      if (!Number.isSafeInteger(state?.generation) || state.generation < 0) return null
+      return state
+    } catch {
+      return null
+    }
+  }
+  const runStillLive = (): boolean => {
+    if (args.signal?.aborted) return false
+    if (!args.isRunActive) return true
+    try {
+      return args.isRunActive() === true
+    } catch {
+      return false
+    }
+  }
+  /**
+   * 每个 run / 子 run 各建一个守卫实例（S3-40C2）：起点快照与权威权限源同源，
+   * 但观察状态（observedPermissionCeiling）各自持有 —— 兄弟子 run 不许互相污染。
+   * `scopeDef` 决定“收紧后还能用哪些工具”的上限：父 run 用父定义，子 run 用子定义。
+   */
+  const createPermissionGuard = (scopeDef: AgentDefinition | null): RunPermissionGuard => {
+    // 一旦观察到收紧，本守卫的授权上限单调收紧：之后即使档位放宽回原档，也不恢复已失去的权限。
+    let observedPermissionCeiling: PermissionPreset = startPreset
+    const observePermission = (live: PermissionStateSnapshot<PermissionPreset>): PermissionPreset => {
+      observedPermissionCeiling = stricterPreset(
+        observedPermissionCeiling,
+        stricterPreset(startPreset, live.preset)
+      )
+      return observedPermissionCeiling
+    }
+    const canStart = (toolName?: string): boolean => {
+      if (!runStillLive()) return false
+      const live = livePermission()
+      if (!live) return false
+      const ceiling = observePermission(live)
+      const baseline = startPermission?.generation ?? 0
+      // 代次已变但没观察到中间档位时，无法证明权限没被收紧过：
+      // 非只读工具（写/命令/未知/MCP）一律保守拒绝，避免“回到起始档”重新放行。
+      if (
+        !isPermissionGenerationCurrent(live.generation, baseline) &&
+        (!toolName || !READ_ONLY_TOOLS.has(toolName))
+      ) {
+        return false
+      }
+      // 放宽不扩权：ceiling 永不放宽于起点；观察过收紧后也不会回弹。
+      if (ceiling === startPreset) return true
+      if (!toolName) return false
+      return resolveAgentToolNames(ceiling, scopeDef?.tools, allNames, browserOn).includes(toolName)
+    }
+    const canCommit = (): boolean => {
+      if (!runStillLive()) return false
+      const live = livePermission()
+      if (!live) return false
+      const ceiling = observePermission(live)
+      const baseline = startPermission?.generation ?? 0
+      // 暂存期间任何权限代次变化都保守拒绝（含收紧后放回原档）
+      if (!isPermissionGenerationCurrent(live.generation, baseline)) return false
+      return ceiling === startPreset
+    }
+    return { canStart, canCommit }
+  }
+  const parentPermissionGuard = createPermissionGuard(def)
+  const permissionCanStart = parentPermissionGuard.canStart
+  const permissionCanCommit = parentPermissionGuard.canCommit
+  permissionAllowsRef = permissionCanStart
+  // 每个子 job 现建一个守卫（scheduler 每 job 调一次）；同源起点，观察状态隔离。
+  guardForSubagent = (d) => createPermissionGuard(d)
   const allowed = resolveAgentToolNames(preset, def?.tools, allNames, browserOn).filter(
     (n) =>
       !(def?.approval === 'plan' && n === 'spawn_agents') &&
@@ -996,7 +1307,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   const gate = new ToolGate(allowed)
   const tools = allTools.filter((t) => gate.check(t.schema.name).ok)
 
-  toolsForSubagent = (d) => {
+  toolsForSubagent = (d, guard) => {
     const allow = new Set(
       resolveAgentToolNames(preset, d.tools, allNames, browserOn).filter(
         (n) => !SUBAGENT_NEVER.has(n)
@@ -1005,8 +1316,12 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     // 浏览器工具**按 job 身份重建**（修正 C）：父 allTools 里那份闭包绑着父的任务上下文，
     // 直接过滤复用 = 父子共用一个 task adapter / authorizer（独审实证：两个子代理只建 1 个 createTask）。
     // 每个 job 各自 createBrowserTools → createTask → 独立适配器 + 独立 TaskAuthorizer（同角色并发也独立）。
+    // S3-40C2：探针同样换成该 job 的守卫 —— 父收紧时子浏览器动作在异步准备后也被重核。
+    const jobHooks = guard
+      ? { ...toolHooks, permissionAllows: (tool: string) => guard.canStart(tool) }
+      : toolHooks
     const browserTools = browserOn
-      ? buildBrowserToolsFor(toolHooks, d.name).filter((t) => allow.has(t.schema.name))
+      ? buildBrowserToolsFor(jobHooks, d.name).filter((t) => allow.has(t.schema.name))
       : []
     const withoutBrowser = allTools.filter(
       (t) => allow.has(t.schema.name) && !t.schema.name.startsWith('browser_')
@@ -1017,7 +1332,9 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     // 后台任务存储与确认桥仍是同一批 ⇒ 放行口径、检查点记账都不变。
     const own = buildCommandTools(
       workspaceRoot,
-      toolHooks.confirmCommand ? { ...toolHooks, confirmCommand: confirmBridgeFor(d.name) } : toolHooks,
+      jobHooks.confirmCommand
+        ? { ...jobHooks, confirmCommand: confirmBridgeFor(d.name, guard) }
+        : jobHooks,
       d.name
     ).filter((t) => t.schema.name === 'run_command')
     // 拿不到就不如实地炸：静默退回主代理那份 = 署名又变回错的，而这正是本段要修的东西
@@ -1099,6 +1416,26 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     : base
   // 工具 schema 必须下发给模型（否则模型无从知晓可调工具——交叉验证抓出的必修 bug）
   const toolSchemas = tools.map((t) => t.schema)
+  // ── 运行上下文（S3-30T2）── 检查点之后、首次模型调用之前**只建一次**；
+  // 本 run 的每一轮（流式/非流式、各工具轮与续请求）都复用这一份，session 键不随轮次漂移。
+  // 定义覆盖了模型时，能力位按**实际模型**重解析（父模型的 supported 不是子模型的证据）。
+  const mainTierSupport = resolveModelTierSupport({
+    requestModel: effective.model,
+    baseModel: args.settings.model,
+    baseTierSupport: requestPolicy.tierSupport,
+    tierSupportForModel: args.tierSupportForModel
+  })
+  const mainContext =
+    args.clientVersion === undefined
+      ? undefined
+      : createModelScopedContext({
+          clientVersion: args.clientVersion,
+          purpose: args.purpose ?? 'main-chat',
+          parentPolicy: requestPolicy,
+          baseModel: effective.model,
+          baseTierSupport: mainTierSupport,
+          requestModel: effective.model
+        })
 /** 本轮累计的真实用量（plan8 R9）：一轮里**可能调好几次模型**，每次的 usage 都要加起来 —— 只记最后一次会让账面少一大半；
  *  `null` = 厂商一次都没报（**不是**"用量为 0"，两者必须分得清）。 */
   let usageAcc: TokenUsage | null = null
@@ -1132,7 +1469,10 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
               messages,
               toolSchemas,
               onText,
-              signal
+              signal,
+              undefined,
+              mainContext,
+              args.serviceTierReports?.onMain
             )
           : await streamWithToolsOpenAI(
               effective,
@@ -1141,7 +1481,10 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
               toolSchemas,
               onText,
               signal,
-              args.onReasoning
+              args.onReasoning,
+              undefined,
+              mainContext,
+              args.serviceTierReports?.onMain
             )
     } catch (error) {
       if (error instanceof ProviderError && error.facts?.scope === 'request') {
@@ -1153,6 +1496,30 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     }
     recordRequestUsage(res.usage, res.usageComplete)
     return res
+  }
+
+  /**
+   * 摘要通道（S3-30T2）：辅助请求固定普通档（`reflection` 在生产工厂里被强制 normal），
+   * 每次调用建一份**独立 operation 上下文**，不复用带 FAST 的主 run 上下文及其随机键。
+   * 独立成函数：让 `summarize` 闭包只保留业务步骤，也保证摘要永远不带工具（空 schema）。
+   */
+  const chatSummary = async (
+    messages: AgentMessage[],
+    tools: AgentTool['schema'][],
+    onText: (delta: string) => void,
+    signal: AbortSignal
+  ): Promise<AgentChatResult> => {
+    const summaryContext =
+      args.clientVersion === undefined
+        ? undefined
+        : createProviderExecutionContext({
+            clientVersion: args.clientVersion,
+            purpose: 'reflection',
+            policy: requestPolicy
+          })
+    return effective.providerType === 'anthropic'
+      ? streamWithToolsAnthropic(effective, args.apiKey, messages, tools, onText, signal, undefined, summaryContext)
+      : streamWithToolsOpenAI(effective, args.apiKey, messages, tools, onText, signal, undefined, undefined, summaryContext)
   }
 
   // ── 滚动摘要（plan26 D-080）：裁剪发生时对被裁段 + 旧摘要调一次模型 ──
@@ -1174,10 +1541,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
     ]
     try {
       const signal = AbortSignal.timeout(30_000) // 摘要不拖主链路：30s 兜底
-      const res =
-        effective.providerType === 'anthropic'
-          ? await streamWithToolsAnthropic(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
-          : await streamWithToolsOpenAI(effective, args.apiKey, summarizeMessages, [], () => {}, signal)
+      const res = await chatSummary(summarizeMessages, [], () => {}, signal)
       recordRequestUsage(res.usage, res.usageComplete)
       const text = (res.text ?? '').trim()
       if (!text) return null
@@ -1196,6 +1560,8 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   try {
     const result = await runAgentLoop({
       signal: args.signal,
+      canStart: permissionCanStart,
+      canCommit: permissionCanCommit,
       systemPrompt: guardedSystem,
       history: args.history,
       tools,
@@ -1208,6 +1574,8 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
       ...(args.onToolWindowed ? { onToolWindowed: args.onToolWindowed } : {}),
       ...(args.toolWindow === undefined ? {} : { toolWindow: args.toolWindow }),
       ...(args.policy ? { policy: args.policy } : {}),
+      // S3-20D1：主循环只读这一份 run 级快照，不在本层重解析（含后续工具轮与模型调用）。
+      requestPolicy,
       // plan26 D-077：执行事件流（组合根装配 recorder，不传 = 不记录）
       ...(args.execEvents ? { execEvents: args.execEvents } : {}),
       // plan26 D-080：滚动摘要 —— 只在组合根给了缓存时启用（没缓存 = 机械占位，零退化）
@@ -1255,7 +1623,9 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
               { role: 'user', content: '请按上述方案执行（已获用户批准）。' }
             ],
             // 双保险之一（另一半是 executor 自身不带 approval:plan）：防「批准完又弹一张卡」的无限套娃
-            skipPlanApproval: true
+            skipPlanApproval: true,
+            // S3-20D1：执行阶段沿用本轮已冻结的策略内容（不重新解析用户设置）
+            requestPolicy
           })
           const mergedUsage = execResult.usage
             ? (usageAcc ? addUsage(usageAcc, execResult.usage) : { ...execResult.usage })

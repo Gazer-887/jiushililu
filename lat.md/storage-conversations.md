@@ -104,6 +104,14 @@ Anthropic输入是否归一为未缓存输入加缓存读写仍待裁，当前�
 口径分岔时不存在谁覆盖谁：两条通道各判各的，发送侧那一点差额由
 [[src/main/agent/context.ts#historyForModel]] 补（换占位句而不是删条，见 `lat.md/agent-kernel.md`）。
 
+### 逐轮运行事实：只落在 assistant，且必须可归属
+
+服务档这一包给消息增加了三个**本地运行事实**字段：`requestId`（本轮本地身份）、`requestPolicy`（起点冻结策略）、`serviceTier`（最后真实观测）。三者都只允许挂在 assistant 上，且策略 / 档位必须能归属到 `requestId`；`observed=false` 却带 actual 之类的矛盾一律拒收。
+
+规则只有一份（[[src/main/schemas.ts#runFactsSchema]]）：UUID、长度、枚举、策略工厂不变量（normal → 并发 1、fast → 并发 2；仅 fast + supported 请求 `priority`）、服务档有界非空白、observed / actual 一致。入站白名单与落盘白名单都声明这三个字段——未声明就会被 IPC 入口静默剥离；conversations-core 的 [[src/main/store/conversations-core.ts#assertRunFactsAttribution]] 直接复用同一份 schema，**绕过 IPC 直调仓储也拦得住**。
+
+只存逐轮事实，不建会话级 `latest*`：会话级"最近一档"会让下一轮缺报时继承上一轮 actual，正是"无观测保持未知"的反面；界面需要最近事实时读尾部消息，不另存一份。旧档缺字段原样兼容；存档 → 新仓储实例重读与磁盘 JSON 一致，重启不丢。本地 `requestId` 不是供应商随机身份键，不随模型请求出境。
+
 进主进程是一条固定流水：先松收下（[[src/main/schemas.ts#incomingMessagesSchema]]，流式占位是合法中间状态）→
 规整（[[src/main/store/conversations-core.ts#normalizeHistory]]）→ 才严格审（流水在 [[src/main/ipc.ts]] 的 `convSaveCore`）。
 中间那道规整封的是一条**真实的数据丢失渠道**：渲染端一按发送就塞空助手占位，而落盘要求正文非空，
@@ -202,3 +210,55 @@ Anthropic输入是否归一为未缓存输入加缓存读写仍待裁，当前�
 编辑重发沿用原messageId、媒体parts与本地引用，宿主仍按同一会话/消息/资产边核对；
 不是把全局资产存在当成许可，不重读已经变化的原文件。
 发送失败保留编辑附件，切会话清空编辑状态；恢复游标不改原资产。
+
+## 模型档案的元数据：三源、时间与未知态
+
+模型条目的 `metadata` 是**单一档案字段**（[[src/shared/models.ts#ModelEntry]]），不建 `metadataByEntry` 或第二配置库；十个字段各自独立保留 `official` / `catalog` / `user` 三类观测（[[src/shared/model-metadata.ts#ModelMetadata]]）。解析顺序固定 **user > official > catalog**（[[src/shared/model-metadata.ts#resolveMetadata]]）：每个来源都带自己的 `observedAt` 与可选 `limitations`，解析结果把**值与来源、时间一起带出**，界面不自行猜优先级。
+
+**没有合法来源就是 `undefined`，不补 0、不补空串、不造默认值**；`0` 只允许作为真实零价出现（[[src/shared/model-metadata.ts#PriceEntry]]）。
+
+应用默认走 [[src/shared/model-metadata.ts#withAppDefault]]，来源只能标 `app-default`，**不许伪装成官方/目录/用户**。上下文窗口与最大输出 Token 有应用内回退值，其余字段无已知来源时一律「未知」——拿应用默认冒充厂商规格，比留空更坏。
+
+**原生输入与附件解析是两个独立字段，不得互相推导**：`nativeInputModalities` + `nativeExtendedInputs` 回答「模型原生收什么」，`attachmentParsing` 回答「应用能把什么解析后送进去」（[[src/shared/model-metadata.ts#AttachmentParsing]]）。附件能解析 PDF **不等于**模型原生接受 PDF；两栏在界面上固定分开（[[src/renderer/src/components/ModelCatalogEditor.tsx#NATIVE_INPUT_KEYS]]）。`INPUT_MODALITIES` 仍是 `text/image/video`，本模块不扩产品出境枚举；audio/pdf/file 只存在于 `nativeExtendedInputs`（[[src/shared/model-metadata.ts#NATIVE_EXTENDED_INPUTS]]）。
+
+**保存门 fail-closed，读盘容错逐字段**：保存走 [[src/shared/model-metadata.ts#modelMetadataSchema]]（`.strict()`，未知键/非法来源/非法时间/非法值一律拒）；读盘走 [[src/shared/model-metadata.ts#normalizeModelMetadata]] 逐字段白名单重建，坏字段丢弃、好字段保留。严格整门若拿来读存量，一个坏字段会把整份元数据全丢——两条路径**同一合同、不同容错层**，不能合并。
+
+**用户覆盖只写 user 层，且只对已保存条目开放**：补丁入参 [[src/shared/model-metadata.ts#modelMetadataPatchInputSchema]] 只收 user 来源、不收 `observedAt`；主进程用一次 `Date.now()` 盖章后 [[src/shared/model-metadata.ts#applyUserMetadataPatch]] 只替换该字段的 user 观测，official/catalog 原样保留。清除只清 user，字段回落到 official/catalog；唯一来源清空才移除字段。落盘走 [[src/main/store/models.ts#patchEntryMetadata]] 单次 `store.set('profiles', …)`，其它 profile/entry/settings/name/Key 不动；metadata 整体不存在时移除键而不是留空对象。
+
+**刷新链是广播 + 重读，不是渲染端自盖**：`models:patch-metadata` 成功后主进程广播 `models`，设置窗收到后重读 `listModels()` 真值（[[src/renderer/src/views/SettingsView.tsx]]）；渲染端 [[src/renderer/src/components/ModelCatalogEditor.tsx#submitMetadataOverride]] 只发 `{ user: { value } }`，成功后 [[src/renderer/src/components/ModelCatalogEditor.tsx#mergeMetadataFromView]] 只替换草稿里的 `metadata`，保留 Key、模板、认证与其它未保存草稿。未保存端点/条目不调用 metadata IPC（[[src/renderer/src/components/ModelCatalogEditor.tsx#canOverrideMetadata]]）——没有档案可打，发了只会拿到「条目不存在」。
+
+## 会话级速度覆盖：寄生在既有偏好表里的一张有界映射
+
+`conversationSpeedOverrides` 不另立文件，就住在既有 `ui-prefs`（[[src/shared/splitter.ts#UIPrefs]]）：
+与主题、字号、语言同一条通路——主进程存、改完广播、每个窗口自己重读
+（[[src/main/store/ui-prefs.ts#getUIPrefs]]）。渲染端只提交整表补丁，落盘后回显主进程清洗过的结果，
+不做乐观更新（[[src/renderer/src/store.ts#useAppStore]] 的 `persistUIPrefs`）。
+
+**取值只有三个**：`inherit | normal | fast`（[[src/shared/request-policy.ts#SPEED_OVERRIDES]]）。
+缺键、坏值、非法 id 一律回 `inherit`（[[src/shared/splitter.ts#getConversationSpeedOverride]]）——
+坏值绝不能冒充"用户显式覆盖"。
+
+**键与会话 id 同域**：1–128 字符（[[src/shared/splitter.ts#CONVERSATION_SPEED_KEY_MAX]]），
+含 C0/C1 控制字符即丢弃；**故意不 trim**——把 `" a"` 悄悄改成 `"a"` 等于替用户丢键。上限 200 项
+（[[src/shared/splitter.ts#CONVERSATION_SPEED_OVERRIDES_MAX]]），键序就是 LRU 队列：队首最旧、队尾最近，
+超限从队首裁。清洗过程内部借 `Map` 临时保序（纯对象会把整数形键按数值重排），
+但清洗器最终经 `Object.fromEntries` 落成普通对象，下一次 `Object.entries` 会重新按整数键顺序枚举；
+真实生成的会话 id 属于非整数 id 域，当前行为不受影响。**不承诺任意整数形键经 JSON 持久化后的 LRU 保序**，
+此边界留待后续专项核验。
+
+**清洗逐项，不整表陪葬**：[[src/shared/splitter.ts#sanitizeConversationSpeedOverrides]] 丢坏键坏值、
+裁到上限；一条坏数据不该让整张覆盖表消失。读盘（`getUIPrefs`）与入参（`ui-prefs:set`）都走它。
+
+**写侧两条容易被忽略的语义**：① **脏入参不等于清空**——只有显式给 `{}` 才清空，类型不对的入参直接忽略，
+否则一次坏调用就把整张表抹掉（[[src/main/store/ui-prefs.ts#setUIPref]]）。② **按最近使用合并**——
+值没变的键沿用入参次序（纯函数的 set/touch 已把它挪到队尾），改值或新增的键统一进队尾；
+落盘前再过一次清洗与裁剪。
+
+**删除会话精确移除**：`IPC.convDelete` 先 `abort` 再删正文与目标，随后**只在该会话确有覆盖时**调用
+[[src/shared/splitter.ts#deleteConversationSpeedOverride]] 清这一条并广播；其他会话的覆盖与次序原样不动，
+没有覆盖就不写盘、不广播（[[src/main/ipc.ts]]）。**reset 清空整表**：
+[[src/main/store/ui-prefs.ts#resetUIPrefs]] 写 `{}`，渲染端用返回值覆盖内存，界面不必等重启。
+**旧档案缺字段回空映射**：字段不存在时清洗器返回 `{}`，不迁移、不补写、不生成第二份默认表。
+
+**边界**：覆盖只是一条偏好，不触发请求、不清正文、不动运行中的 run；它对请求策略的影响发生在
+下一次 run 起点（冻结规则见 `lat.md/agent-kernel.md`）。

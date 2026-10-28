@@ -2,6 +2,7 @@
 // 构造时就锁死 userData 路径 —— setPath 与迁移必须发生在它们之前。见 bootstrap-data-dir.ts 头注。
 import { getBootstrapOutcome, releaseBootstrapLock } from './bootstrap-data-dir'
 import { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, session, shell } from 'electron'
+import { createProviderExecutionContext, resolveRequestPolicy } from '@shared/request-policy'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { installTrustedIpc } from './trusted-ipc'
@@ -272,9 +273,16 @@ function createReflectChat(): ReflectChat {
     ]
     let content = ''
     let usage: TokenUsage | null = null
+    // S3-30F：反思是固定普通档辅助请求；每次逻辑 operation 各建一份独立上下文
+    // （随机键互不相同，不与任何 run 共享），版本只认组合根 app.getVersion()。
+    const context = createProviderExecutionContext({
+      clientVersion: app.getVersion(),
+      purpose: 'reflection',
+      policy: resolveRequestPolicy()
+    })
     try {
       await provider.streamChat(
-        { settings, apiKey, messages: assembled, signal: controller.signal },
+        { settings, apiKey, messages: assembled, signal: controller.signal, context },
         {
           onChunk: (text) => {
             content += text
@@ -305,9 +313,15 @@ function createTitleChat(): (messages: ChatMessage[]) => Promise<string> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, 30_000))
     let content = ''
+    // S3-30F：智能标题同样是固定普通档辅助请求，每次调用独立 operation 键
+    const context = createProviderExecutionContext({
+      clientVersion: app.getVersion(),
+      purpose: 'title',
+      policy: resolveRequestPolicy()
+    })
     try {
       await provider.streamChat(
-        { settings, apiKey, messages, signal: controller.signal },
+        { settings, apiKey, messages, signal: controller.signal, context },
         { onChunk: (text) => { content += text } }
       )
     } finally {
@@ -851,6 +865,8 @@ app.whenReady().then(async () => {
   registerIpcHandlers({
     agent: agentCtx,
     userDataDir,
+    // S3-30F：真实客户端版本只从组合根取（`app.getVersion()`）；ipc/store/provider 都不自行读 package
+    clientVersion: app.getVersion(),
     // 回收站（plan34 S2b 技能删除走它）—— 与 agent 上下文里的 trash 同一份
     trash: (abs) => shell.trashItem(abs),
     memory,

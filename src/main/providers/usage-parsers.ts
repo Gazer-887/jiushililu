@@ -1,4 +1,5 @@
 import { createLogger } from '../log'
+import { readServiceTierValue } from './service-tier'
 import type { TokenUsage } from '@shared/usage'
 
 /**
@@ -271,4 +272,29 @@ export function usageFromAnthropicMessage(json: unknown): TokenUsage | null {
     cacheWritePromptTokens: isNonNegInt(cachedWrite) ? cachedWrite : null,
     reasoningTokens: pickAnthropicReasoning(u)
   }
+}
+
+// ── 真实容量档的位置（S3-30B） ─────────────────────────────────────────────
+
+/**
+ * Anthropic 真实容量档只在 `usage.service_tier` 上报（官方 Usage 结构，取值如 `standard` / `priority`）。
+ * 非流整份响应：顶层 `usage`。⚠️ 缺报返回 null（未知），绝不用请求的 `auto` 或字段同名值回填。
+ */
+export function serviceTierFromAnthropicMessage(json: unknown): string | null {
+  if (!json || typeof json !== 'object') return null
+  return readServiceTierValue((json as { usage?: unknown }).usage)
+}
+
+/**
+ * 流式事件里的真实容量档：**只有 `message_start` 的 `message.usage`** 带它
+ * （官方 MessageDeltaUsage 没有 `service_tier` 字段，故 `message_delta` 既不提供、
+ * 也不得把已知值清成未知）。其他事件一律返回 null。
+ */
+export function serviceTierFromAnthropicEvent(json: unknown): string | null {
+  if (!json || typeof json !== 'object') return null
+  const event = json as Record<string, unknown>
+  if (event['type'] !== 'message_start') return null
+  const message = event['message']
+  if (!message || typeof message !== 'object') return null
+  return readServiceTierValue((message as Record<string, unknown>)['usage'])
 }
