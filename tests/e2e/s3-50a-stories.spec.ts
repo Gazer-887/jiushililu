@@ -1,22 +1,12 @@
-// S3-50A 三故事：干净首次接入、FAST 请求与真实档位、双会话独立读取/停止/重启。
+// S89-01 两故事：干净首次接入、双会话独立读取/停止/重启（服务档故事已随功能移除）。
 // 全部走真 Electron 入口 + 真 preload + 真 IPC；本地假 HTTP 不联网，userData/TEMP 均在阶段私域。
+// 请求体不再带任何 service_tier 字段（FAST 服务档已整体移除）。
 import { expect, test, type Page } from '@playwright/test'
 import { createServer, type Server } from 'node:http'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
 import { apiCall, launchApp, type E2EApp } from './helpers'
 
-interface Rect {
-  x: number
-  y: number
-  w: number
-  h: number
-}
-interface RunFact {
-  request: string | null
-  actual: string | null
-  observed: string | null
-}
 interface ModelsView {
   profiles: Array<{ id: string; name: string; models: Array<{ id: string }> }>
 }
@@ -57,10 +47,8 @@ async function seedProfile(
   h: E2EApp,
   opts: {
     name: string
-    speedMode: 'normal' | 'fast'
     baseURL: string
     apiKey: string
-    serviceTiers?: string[]
   }
 ): Promise<{ id: string }> {
   const saved = await apiCall<{ id: string }>(h.page, 'saveModel', {
@@ -73,11 +61,7 @@ async function seedProfile(
       {
         id: 's3-50a-model',
         model: 's3-50a-model',
-        name: 'S3-50A 模型',
-        speedMode: opts.speedMode,
-        ...(opts.serviceTiers
-          ? { metadata: { serviceTiers: { official: { value: opts.serviceTiers, observedAt: 1758000000000 } } } }
-          : {})
+        name: 'S3-50A 模型'
       }
     ],
     apiKey: opts.apiKey
@@ -87,20 +71,6 @@ async function seedProfile(
   await h.page.reload()
   await expect(h.page.locator('.sidebar')).toBeVisible({ timeout: 30_000 })
   return { id: saved.id }
-}
-
-async function readRunFacts(page: Page): Promise<RunFact[]> {
-  return page.evaluate(() =>
-    Array.from(document.querySelectorAll('.msg-run-facts')).map((el) => {
-      const req = el.querySelector('[data-run-fact="request"]')
-      const act = el.querySelector('[data-run-fact="actual"]')
-      return {
-        request: req ? (req.textContent ?? '').trim() : null,
-        actual: act ? (act.textContent ?? '').trim() : null,
-        observed: act ? act.getAttribute('data-observed') : null
-      }
-    })
-  )
 }
 
 interface StoryServer {
@@ -162,8 +132,6 @@ async function startStoryServer(): Promise<StoryServer> {
           choices: [],
           usage: { prompt_tokens: 11, completion_tokens: 3 }
         }
-        if (marker.includes('S3_50A_DEFAULT')) frame['service_tier'] = 'default'
-        else if (marker.includes('S3_50A_STANDARD')) frame['service_tier'] = 'standard'
         res.write(`data: ${JSON.stringify(frame)}\n\n`)
         res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`)
         res.end('data: [DONE]\n\n')
@@ -264,96 +232,7 @@ test.describe('S3-50A 三故事', () => {
     }
   })
 
-  test('故事二：FAST 请求字段与真实档位；400/403/断流不重试', async () => {
-    const h = await launchApp()
-    let server: StoryServer | null = null
-    try {
-      const encryptionAvailable = await h.app.evaluate(({ safeStorage }) =>
-        safeStorage.isEncryptionAvailable()
-      )
-      test.skip(!encryptionAvailable, '本地假端点发送需要 safeStorage；仅跳本故事')
-      server = await startStoryServer()
-      await seedProfile(h, {
-        name: 'S3-50A FAST 夹具',
-        speedMode: 'fast',
-        baseURL: `http://127.0.0.1:${server.port}/v1`,
-        apiKey: '{{SECRET_s3_50a_local_only}}',
-        serviceTiers: ['priority']
-      })
-      await h.page.locator('.sidebar .new-task-btn').click()
-      await expect(h.page.locator('.new-task')).toBeVisible()
-
-      await h.page.locator('textarea.console-input').fill('S3_50A_DEFAULT 默认档')
-      await h.page.locator('textarea.console-input').press('Enter')
-      await expect(h.page.locator('.msg-terminal[data-terminal-state="completed"]')).toHaveCount(1, {
-        timeout: 30_000
-      })
-      let facts = await readRunFacts(h.page)
-      expect(facts[0].request).toBe('请求：FAST')
-      expect(facts[0].actual, '服务端回 default 时必须显示实际普通').toBe('实际：普通')
-      expect(facts[0].observed).toBe('true')
-      const defaultReq = server.requests.filter((r) => r.hasTools && r.marker.includes('S3_50A_DEFAULT'))
-      expect(defaultReq).toHaveLength(1)
-      expect(defaultReq[0].body).toContain('"service_tier":"priority"')
-
-      await h.page.locator('textarea.console-input').fill('S3_50A_STANDARD 标准档')
-      await h.page.locator('textarea.console-input').press('Enter')
-      await expect(h.page.locator('.msg-terminal[data-terminal-state="completed"]')).toHaveCount(2, {
-        timeout: 30_000
-      })
-      facts = await readRunFacts(h.page)
-      expect(facts[1].request).toBe('请求：FAST')
-      expect(facts[1].actual, '服务端回 standard 时也必须显示实际普通').toBe('实际：普通')
-      expect(facts[1].observed).toBe('true')
-      const standardReq = server.requests.filter(
-        (r) => r.hasTools && r.marker.includes('S3_50A_STANDARD')
-      )
-      expect(standardReq).toHaveLength(1)
-
-      await h.page.locator('textarea.console-input').fill('S3_50A_MISSING 缺报档')
-      await h.page.locator('textarea.console-input').press('Enter')
-      await expect(h.page.locator('.msg-terminal[data-terminal-state="completed"]')).toHaveCount(3, {
-        timeout: 30_000
-      })
-      facts = await readRunFacts(h.page)
-      expect(facts[2].request).toBe('请求：FAST')
-      expect(facts[2].actual, '服务端缺报时必须显示档位未知').toBe('实际：未知')
-      expect(facts[2].observed).toBe('false')
-
-      await h.page.locator('textarea.console-input').fill('S3_50A_400 参数失败')
-      await h.page.locator('textarea.console-input').press('Enter')
-      await expect(h.page.locator('.msg-terminal[data-terminal-state="failed"]')).toHaveCount(1, {
-        timeout: 30_000
-      })
-      await expect(h.page.locator('.chat-error')).toContainText('请求失败（HTTP 400）')
-      const bad400 = server.requests.filter((r) => r.hasTools && r.marker.includes('S3_50A_400'))
-      expect(bad400, '400 不得重试/重放').toHaveLength(1)
-
-      await h.page.locator('textarea.console-input').fill('S3_50A_403 权限失败')
-      await h.page.locator('textarea.console-input').press('Enter')
-      await expect(h.page.locator('.msg-terminal[data-terminal-state="failed"]')).toHaveCount(2, {
-        timeout: 30_000
-      })
-      await expect(h.page.locator('.chat-error')).toContainText('无权限（403）')
-      const bad403 = server.requests.filter((r) => r.hasTools && r.marker.includes('S3_50A_403'))
-      expect(bad403, '403 不得重试/重放').toHaveLength(1)
-
-      await h.page.locator('textarea.console-input').fill('S3_50A_BREAK 断流')
-      await h.page.locator('textarea.console-input').press('Enter')
-      await expect(
-        h.page.locator('.msg-terminal[data-terminal-state="unknown"], .msg-terminal[data-terminal-state="failed"]')
-      ).toHaveCount(3, { timeout: 30_000 })
-      const broken = server.requests.filter((r) => r.hasTools && r.marker.includes('S3_50A_BREAK'))
-      expect(broken, '断流不得重试/重放').toHaveLength(1)
-      await expect(h.page.locator('.msg-terminal[data-terminal-state="completed"]')).toHaveCount(3)
-    } finally {
-      await closeStoryServer(server)
-      await h.close()
-      await h.cleanup()
-    }
-  })
-
-  test('故事三：双会话独立、停止后不再发、重启只恢复选择不自动执行', async () => {
+  test('故事二：双会话独立、停止后不再发、重启不自动执行', async () => {
     const h = await launchApp()
     let server: StoryServer | null = null
     let current: E2EApp | null = h
@@ -365,10 +244,8 @@ test.describe('S3-50A 三故事', () => {
       server = await startStoryServer()
       const { id: profileId } = await seedProfile(h, {
         name: 'S3-50A 双会话夹具',
-        speedMode: 'normal',
         baseURL: `http://127.0.0.1:${server.port}/v1`,
-        apiKey: '{{SECRET_s3_50a_dual_only}}',
-        serviceTiers: ['priority']
+        apiKey: '{{SECRET_s3_50a_dual_only}}'
       })
       const ws = await apiCall<{ path: string }>(h.page, 'getWorkspace')
       const convA = await apiCall<{ id: string }>(h.page, 'createConversation', {
@@ -380,9 +257,6 @@ test.describe('S3-50A 三故事', () => {
         workspace: ws.path,
         model: 's3-50a-model',
         firstMessage: '会话B'
-      })
-      await apiCall(h.page, 'setUIPrefs', {
-        conversationSpeedOverrides: { [convA.id]: 'fast', [convB.id]: 'normal' }
       })
       await h.page.reload()
       await expect(h.page.locator('.sidebar')).toBeVisible({ timeout: 30_000 })
@@ -404,8 +278,9 @@ test.describe('S3-50A 三故事', () => {
       const bReq = server.requests.filter((r) => r.hasTools && r.marker.includes('S3_50A_B'))
       expect(aReq).toHaveLength(1)
       expect(bReq).toHaveLength(1)
-      expect(aReq[0].body, 'A 会话覆盖 FAST 应带 priority').toContain('"service_tier":"priority"')
-      expect(bReq[0].body, 'B 会话普通不得带 priority').not.toContain('"service_tier"')
+      for (const req of [aReq[0], bReq[0]]) {
+        expect(req.body, '请求体不得携带任何服务档字段').not.toContain('"service_tier"')
+      }
 
       await openConversation(h.page, '会话A')
       await h.page.locator('textarea.console-input').fill('S3_50A_HOLD 停止轮')
@@ -434,14 +309,8 @@ test.describe('S3-50A 三故事', () => {
         server.requests.filter((r) => r.hasTools).length,
         '重启只恢复选择，不得自动执行任务'
       ).toBe(countBeforeRestart)
-      const prefs = await apiCall<{ conversationSpeedOverrides: Record<string, string> }>(
-        current.page,
-        'getUIPrefs'
-      )
-      expect(prefs.conversationSpeedOverrides[convA.id]).toBe('fast')
-      expect(prefs.conversationSpeedOverrides[convB.id]).toBe('normal')
       await openConversation(current.page, '会话A')
-      await expect(current.page.locator('.speed-select')).toHaveValue('fast')
+      await expect(current.page.locator('.chat-view')).toBeVisible()
     } finally {
       if (current) await current.close()
       await closeStoryServer(server)

@@ -337,7 +337,7 @@ describe('S3-40C0 权限代次真实来源', () => {
     expect(settings.getPermissionState()).toEqual({ preset: 'read-only', generation: 1 })
   })
 
-  it('连续调用只按真实变化推进，FAST/模型/省 token 配置不冒充权限', async () => {
+  it('连续调用只按真实变化推进，模型/省 token 配置不冒充权限', async () => {
     const { settings, policy } = await setup()
 
     settings.setPermissionPreset('read-only')
@@ -348,7 +348,7 @@ describe('S3-40C0 权限代次真实来源', () => {
 
     settings.setTokenTier('light')
     settings.setAutoMemoryEnabled(false)
-    policy.resolveRequestPolicy({ modelDefault: 'fast', tierSupport: 'supported' })
+    policy.resolveRequestPolicy()
     expect(settings.getPermissionState()).toEqual({ preset: 'read-only', generation: 3 })
   })
 
@@ -393,11 +393,8 @@ const MODEL_SETTINGS = {
   inputModalities: ['text']
 } as ModelSettings
 
-const FAST_POLICY = {
-  mode: 'fast' as const,
-  maxLocalReadConcurrency: 2 as const,
-  requestedServiceTier: 'priority',
-  tierSupport: 'supported' as const
+const RUN_POLICY = {
+  maxLocalReadConcurrency: 2 as const
 }
 
 function writeFileAt(root: string, rel: string, text: string): string {
@@ -574,7 +571,7 @@ describe('S3-40C1 主 run 权限实时收紧', () => {
         apiKey: 'k',
         history: [{ role: 'user', content: '并行读两个文件' }],
         conversationId: 'c1',
-        requestPolicy: FAST_POLICY,
+        requestPolicy: RUN_POLICY,
         readPermissionState,
         isRunActive: () => true
       })
@@ -1327,7 +1324,7 @@ describe('S3-40C2 子运行权限实时收紧', () => {
       apiKey: 'k',
       history: [{ role: 'user', content: '派发读文件' }],
       conversationId: 'c-sub-3',
-      requestPolicy: FAST_POLICY,
+      requestPolicy: RUN_POLICY,
       readPermissionState: settings.getPermissionState,
       isRunActive: () => true
     })

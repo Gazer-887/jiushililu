@@ -5,7 +5,6 @@ import type { TodoItem } from './todo'
 import type { Goal } from './goal'
 import type { TokenUsage } from './usage'
 import type { TokenSaverTier } from './token-tier'
-import type { RequestPolicySnapshot, ServiceTierObservation } from './request-policy'
 import type { RunTerminal } from './execution-outcome'
 import type { SubagentJobEvent, MessageSegment } from './agent'
 import type { BackgroundTask } from './background'
@@ -193,10 +192,6 @@ export interface ChatMessage {
    * ⚠️ 不是供应商的 operation / session 键；可随会话存档持久关联，但不得进模型请求或日志。
    */
   requestId?: string
-  /** 本 run 起点冻结的请求策略：只表达"当时要什么"，不是实际档位 */
-  requestPolicy?: RequestPolicySnapshot
-  /** 本 run 最后真实观测的服务档：无观测不带（未知不造 actual） */
-  serviceTier?: ServiceTierObservation
 }
 
 export interface TestResult {
@@ -947,11 +942,6 @@ export interface ChatDonePayload {
   memoryTokens?: number
   /** E26a：本轮业务终态。缺字段 = 老主进程，不替它编成功/失败。 */
   terminal?: RunTerminal
-  /**
-   * 本轮服务档观测（S3-30E）：只带**真实观测**（observed=true）；缺报/旧主进程不带，
-   * 不补默认、不用 requested 回填 actual。与 usage / usageComplete / terminal 完全独立。
-   */
-  serviceTier?: ServiceTierObservation
 }
 
 /** E26a：错误结算的可选细节。缺省时仍走旧字符串路径，保证旧调用与旧消费者不变。 */
@@ -964,8 +954,6 @@ export interface ChatErrorDetails {
   /** 同上：未知不造默认档。 */
   tier?: TokenSaverTier
   memoryTokens?: number
-  /** S3-30E：失败前同请求已观测的真实档位；未知不带（接线在 S3-30E1 的 ipc catch）。 */
-  serviceTier?: ServiceTierObservation
 }
 
 /** E26a：结构化错误封套（沿补正 V2 §三）。`message` 只放固定本地映射，不放厂商正文/cause。 */
@@ -997,8 +985,6 @@ export interface StreamEnvelope<T> {
    * ⚠️ 它不是供应商的 operation / session 键；可用于本地消息持久关联，但不得进模型请求或日志。
    */
   requestId?: string
-  /** 本 run 起点冻结的请求策略：只表达"当时要什么"，**不是**实际档位；actual 只能来自真实观测。 */
-  requestPolicy?: RequestPolicySnapshot
 }
 
 /** 危险操作确认请求（plan8 R5）：权限档管"能碰什么"（事先、粗粒度），它管"这一次要不要"（当场、细粒度）—— 互补关系，不是替代关系。 */

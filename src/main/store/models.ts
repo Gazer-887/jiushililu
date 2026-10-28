@@ -19,7 +19,6 @@ import {
   resolveFetchApiKey,
   settingsOf,
   sourceOfBaseURL,
-  tierSupportFromServiceTiers,
   type AvailableModels,
   type EntrySettingsPatch,
   type FetchAvailableInput,
@@ -30,7 +29,6 @@ import {
   type ModelProfileView,
   type ModelSwitchResult
 } from '@shared/models'
-import type { TierSupport } from '@shared/request-policy'
 import type { ProviderRequest } from '../providers/types'
 import { createLogger } from '../log'
 import {
@@ -160,16 +158,14 @@ export function getActiveEntry(): { profile: ModelProfile; entry: ModelEntry } |
 }
 
 /**
- * run 起点的一次性绑定（S3-30F）：settings / 实际模型 / 能力位**同一时刻**从同一份档案读出，
- * 异步之后不再回头补读（避免"读到刚被切走的端点"或"用新能力解释旧请求"）。
- * 能力位来自 `metadata.serviceTiers` 的既有单真源（user > official > catalog）。
+ * run 起点的一次性绑定（S3-30F）：settings / 实际模型同一时刻从同一份档案读出，
+ * 异步之后不再回头补读（避免"读到刚被切走的端点"或"用新设置解释旧请求"）。
  */
 export interface ActiveRunBinding {
   profile: ModelProfile
   entry: ModelEntry
   /** 与该端点/条目同一时刻合成的设置视图（含探测记录；Key 仍只给掩码） */
   settings: SettingsView
-  tierSupport: TierSupport
 }
 
 export function getActiveRunBinding(): ActiveRunBinding | null {
@@ -178,8 +174,7 @@ export function getActiveRunBinding(): ActiveRunBinding | null {
   return {
     profile: active.profile,
     entry: active.entry,
-    settings: settingsViewOf(active.profile, active.entry),
-    tierSupport: tierSupportFromServiceTiers(active.profile.providerType, active.entry.metadata)
+    settings: settingsViewOf(active.profile, active.entry)
   }
 }
 
@@ -261,9 +256,7 @@ export function saveSettings(input: SettingsSaveInput): SettingsView {
         ...(rest.authentication ? { authentication: rest.authentication } : {}),
         // S3-10C1：settings:save 重建当前 entry 时显式保留 metadata（普通编辑不丢元数据）
         ...(active.entry.metadata ? { metadata: active.entry.metadata } : {})
-      },
-      // S3-20A：旧保存路径同样是白名单重建，模型默认档位必须显式带走
-      speedMode: active.entry.speedMode
+      }
     })
     saveEndpoint({
       id: active.profile.id,
@@ -434,7 +427,7 @@ export function patchEntrySettings(profileId: string, entryId: string, patch: En
       p.id === profileId
         ? {
             ...p,
-            // S3-20A：条目级字段（speedMode / metadata）由共享合并函数原样保留
+            // 条目级字段（metadata）由共享合并函数原样保留
             models: p.models.map((m) => (m.id === entryId ? applyEntrySettingsPatch(m, patch) : m)),
             updatedAt: Date.now()
           }

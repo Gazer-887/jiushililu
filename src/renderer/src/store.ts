@@ -20,8 +20,7 @@ import type { TodoItem } from '@shared/todo'
 import { accumulateConversationUsage, mergeConversationUsage, type ConversationUsage } from '@shared/conversation-usage'
 export type { ConversationUsage } from '@shared/conversation-usage'
 import { estimateMessageTokens, estimatePartsTokens } from '@shared/tokens'
-import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeConversationSpeedOverrides, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
-import type { RequestPolicySnapshot, ServiceTierObservation, SpeedOverride } from '@shared/request-policy'
+import { DOCK_DEFAULT, DOCK_MIN, dockMaxWidth, FONT_SCALE_DEFAULT, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampWidth, fontScalePercent, sanitizeFontScale, sanitizeTheme, sanitizeUiFont, type FontScale, type ThemeName, type UIPrefs, LOCALE_DEFAULT, sanitizeLocale, type Locale } from '@shared/splitter'
 import { applyLocale } from './i18n'
 import {
   activateTab,
@@ -114,12 +113,6 @@ interface AppState {
   /** 界面字体 family 名（空串 = 默认栈）。值进 store 前过 sanitizeUiFont */
   uiFont: string
   setUiFont: (f: string) => void
-  /**
-   * **会话级 FAST 覆盖**（S3-20C）：key = 会话 id，value = inherit / normal / fast。
-   * 清洗口径与主进程同一份（`sanitizeConversationSpeedOverrides`）；键序即最近使用，
-   * 只由共享纯函数维护 —— 界面层不许手工重排。
-   */
-  conversationSpeedOverrides: Record<string, SpeedOverride>
   setSidebarWidth: (w: number) => void
   setDockWidth: (w: number) => void
   persistUIPrefs: (patch: Partial<UIPrefs>) => Promise<void>
@@ -431,13 +424,11 @@ function runVisible(s: AppState, conversationId: string): boolean {
   return false
 }
 
-/** 结算时把本地运行事实写回尾部 assistant：策略是意图，档位只写真实观测。 */
+/** 结算时把本地运行事实写回尾部 assistant。 */
 function applyRunFacts(
   messages: ChatMessage[],
   facts: {
     requestId?: string
-    requestPolicy?: RequestPolicySnapshot
-    serviceTier?: ServiceTierObservation
   }
 ): ChatMessage[] {
   const last = messages[messages.length - 1]
@@ -445,9 +436,7 @@ function applyRunFacts(
   const next = messages.slice()
   next[next.length - 1] = {
     ...last,
-    ...(last.requestId === undefined && facts.requestId ? { requestId: facts.requestId } : {}),
-    ...(facts.requestPolicy ? { requestPolicy: facts.requestPolicy } : {}),
-    ...(facts.serviceTier ? { serviceTier: facts.serviceTier } : {})
+    ...(last.requestId === undefined && facts.requestId ? { requestId: facts.requestId } : {})
   }
   return next
 }
@@ -468,7 +457,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   fontScale: FONT_SCALE_DEFAULT,
   uiFont: '',
-  conversationSpeedOverrides: {},
   locale: LOCALE_DEFAULT,
   setLocale: (l) => {
     const locale = sanitizeLocale(l)
@@ -509,11 +497,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         dockWidth: next.dockWidth,
         theme: sanitizeTheme(next.theme),
         fontScale: sanitizeFontScale(next.fontScale),
-        uiFont: sanitizeUiFont(next.uiFont),
-        // S3-20C：回显主进程清洗后的覆盖表（LRU 次序以落盘结果为准），不做乐观更新
-        conversationSpeedOverrides: sanitizeConversationSpeedOverrides(
-          next.conversationSpeedOverrides
-        )
+        uiFont: sanitizeUiFont(next.uiFont)
       })
     } catch {
       // 忽略：布局偏好不是关键数据
@@ -530,10 +514,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         fontScale: sanitizeFontScale(next.fontScale),
         uiFont: sanitizeUiFont(next.uiFont),
         workbench: next.workbench,
-        workbenchSizes: next.workbenchSizes,
-        conversationSpeedOverrides: sanitizeConversationSpeedOverrides(
-          next.conversationSpeedOverrides
-        )
+        workbenchSizes: next.workbenchSizes
       })
       // 恢复默认布局的同时把文档级属性也拉回默认，否则界面要等下次重启才回原样
       applyFontPrefs(sanitizeFontScale(next.fontScale), sanitizeUiFont(next.uiFont))
@@ -546,8 +527,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         fontScale: FONT_SCALE_DEFAULT,
         uiFont: '',
         workbench: emptyLayout(),
-        workbenchSizes: emptySizes(),
-        conversationSpeedOverrides: {}
+        workbenchSizes: emptySizes()
       })
       applyFontPrefs(FONT_SCALE_DEFAULT, '')
       applyLocale(LOCALE_DEFAULT)
@@ -565,11 +545,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         fontScale,
         uiFont,
         workbench: prefs.workbench,
-        workbenchSizes: prefs.workbenchSizes,
-        // S3-20C：盘上数据不可信，进 store 前按共享口径清洗（坏键坏值逐项丢弃）
-        conversationSpeedOverrides: sanitizeConversationSpeedOverrides(
-          prefs.conversationSpeedOverrides
-        )
+        workbenchSizes: prefs.workbenchSizes
       })
       // 右栏宽过一遍比例钳再进（存时是宽窗、开的是窄窗 —— 不钳就一进来主列被挤）
       get().setDockWidth(prefs.dockWidth)
@@ -974,9 +950,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             messages: applyRunFacts(
               applyAssistantTerminal(v.messages, e.payload?.terminal),
               {
-                ...(e.requestId ? { requestId: e.requestId } : {}),
-                ...(e.requestPolicy ? { requestPolicy: e.requestPolicy } : {}),
-                ...(e.payload?.serviceTier ? { serviceTier: e.payload.serviceTier } : {})
+                ...(e.requestId ? { requestId: e.requestId } : {})
               }
             )
           })),
@@ -1013,9 +987,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...(payload?.terminal
               ? {
                   messages: applyRunFacts(applyAssistantTerminal(v.messages, payload.terminal), {
-                    ...(e.requestId ? { requestId: e.requestId } : {}),
-                    ...(e.requestPolicy ? { requestPolicy: e.requestPolicy } : {}),
-                    ...(payload.serviceTier ? { serviceTier: payload.serviceTier } : {})
+                    ...(e.requestId ? { requestId: e.requestId } : {})
                   })
                 }
               : {})

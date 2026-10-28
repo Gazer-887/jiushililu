@@ -2,7 +2,7 @@ import type { TokenUsage } from './usage'
 import type { WirePart } from './content-parts'
 import type { OutcomeCode, RunTerminal, ToolResultState } from './execution-outcome'
 import type { TokenSaverTier } from './token-tier'
-import type { RequestPolicySnapshot, ServiceTierObservation } from './request-policy'
+import type { RequestPolicySnapshot } from './request-policy'
 
 // Agent 内核共享类型（plan6 D1-D8）：工具、消息、循环结果。
 // 协议采用 OpenAI tool-calls 格式（DeepSeek 全系原生兼容）。
@@ -107,11 +107,6 @@ export interface AgentChatResult {
    * 只有阶段输入或缺少最终输出时才不能自称完整。缺失 ≠ false，未观测就不写这一位。
    */
   usageComplete?: boolean
-  /**
-   * 服务档观测（S3-30T1）：与用量、终态、正文相互独立；缺报保持 actual=null / observed=false，
-   * 不以 requested 回填。旧调用方不填 = 未观测。
-   */
-  serviceTier?: ServiceTierObservation
 }
 
 export interface ToolEvent {
@@ -240,9 +235,4 @@ export interface AgentLoopResult {
   usageComplete?: boolean
   /** 本轮生效的省 token 档位（真实观测才写；未观测省略，不填默认档）。 */
   tokenTier?: TokenSaverTier
-  /**
-   * 本轮服务档观测（S3-30T1）：语义同 `AgentChatResult.serviceTier`；
-   * 缺报保持 actual=null / observed=false，不从 usage 或终态推断。
-   */
-  serviceTier?: ServiceTierObservation
 }

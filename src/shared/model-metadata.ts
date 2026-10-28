@@ -76,7 +76,6 @@ export interface ModelMetadata {
   attachmentParsing?: MetadataValue<AttachmentParsing>
   pricing?: MetadataValue<PriceEntry[]>
   subscriptionPlan?: MetadataValue<SubscriptionPlan>
-  serviceTiers?: MetadataValue<string[]>
   catalogPolicy?: MetadataValue<CatalogPolicy>
 }
 
@@ -199,7 +198,6 @@ const pricingValue = z.array(priceEntrySchema).min(1).max(64)
 const subscriptionPlanValue = subscriptionPlanSchema.extend({
   overagePricing: z.array(priceEntrySchema).max(64).optional()
 })
-const serviceTiersValue = uniqueOf(limitedStrings(32, 64))
 const catalogPolicyValue = z.enum(CATALOG_POLICIES)
 
 const metadataFieldSchemas = {
@@ -211,11 +209,13 @@ const metadataFieldSchemas = {
   attachmentParsing: metadataValueSchema(attachmentParsingValue),
   pricing: metadataValueSchema(pricingValue),
   subscriptionPlan: metadataValueSchema(subscriptionPlanValue),
-  serviceTiers: metadataValueSchema(serviceTiersValue),
   catalogPolicy: metadataValueSchema(catalogPolicyValue)
 } satisfies Record<keyof ModelMetadata, z.ZodTypeAny>
 
-/** 保存门：strict = 未知键/非法来源/非法时间/非法值一律拒绝（fail-closed）；字段均可选 */
+/**
+ * 保存门：strict = 未知键/非法来源/非法时间/非法值一律拒绝（fail-closed）；字段均可选。
+ * 唯一例外是历史残留的 `serviceTiers`：接受但**在解析结果中丢弃**，旧配置不因该键报错。
+ */
 export const modelMetadataSchema = z
   .object({
     contextWindow: metadataFieldSchemas.contextWindow.optional(),
@@ -226,10 +226,11 @@ export const modelMetadataSchema = z
     attachmentParsing: metadataFieldSchemas.attachmentParsing.optional(),
     pricing: metadataFieldSchemas.pricing.optional(),
     subscriptionPlan: metadataFieldSchemas.subscriptionPlan.optional(),
-    serviceTiers: metadataFieldSchemas.serviceTiers.optional(),
+    serviceTiers: z.unknown().optional(),
     catalogPolicy: metadataFieldSchemas.catalogPolicy.optional()
   })
   .strict()
+  .transform(({ serviceTiers: _legacy, ...rest }) => rest)
 
 /**
  * 读盘容错（normalizeEntry 用）：与保存门同一合同的**逐字段**白名单重建——
@@ -253,7 +254,7 @@ export function normalizeModelMetadata(raw: unknown): ModelMetadata | undefined 
 
 // ── S3-10C2A：元数据读取与用户补丁合同 ──────────────────────────────────────
 
-/** 十个元数据字段名（补丁 clear / set 键的唯一合法集合） */
+/** 九个元数据字段名（补丁 clear / set 键的唯一合法集合） */
 export const MODEL_METADATA_FIELDS = [
   'contextWindow',
   'maxOutputTokens',
@@ -263,7 +264,6 @@ export const MODEL_METADATA_FIELDS = [
   'attachmentParsing',
   'pricing',
   'subscriptionPlan',
-  'serviceTiers',
   'catalogPolicy'
 ] as const
 export type ModelMetadataField = (typeof MODEL_METADATA_FIELDS)[number]
@@ -303,10 +303,12 @@ export const modelMetadataSetSchema = z
     attachmentParsing: userSetObservationFor(attachmentParsingValue).optional(),
     pricing: userSetObservationFor(pricingValue).optional(),
     subscriptionPlan: userSetObservationFor(subscriptionPlanValue).optional(),
-    serviceTiers: userSetObservationFor(serviceTiersValue).optional(),
+    // 历史残留：接受但丢弃（旧配置不因该键报错）
+    serviceTiers: z.unknown().optional(),
     catalogPolicy: userSetObservationFor(catalogPolicyValue).optional()
   })
   .strict()
+  .transform(({ serviceTiers: _legacy, ...rest }) => rest)
 
 export const modelMetadataPatchSchema = z
   .object({

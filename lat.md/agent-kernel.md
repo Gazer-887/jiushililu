@@ -137,42 +137,40 @@ false——运行期事件只更新顶层，不补就留下"答完了还在跑"�
 [[src/main/agent/pause-error.ts#AgentPauseError]] 区分协作条件失效与普通工具错误；
 [[src/main/agent/loop.ts#runAgentLoop]] 不吞暂停异常，因此同帧后续工具与下一轮模型调用都不会继续。
 
-## 请求策略：速度档、并发意图与服务档声明
+## 请求策略：本地并发默认化与权限代次合同
 
-速度档是**每个 run 一份不可变快照**，不是每轮现读的界面状态。入口解析一次，
+请求策略是**每个 run 一份不可变快照**，不是每轮现读的界面状态。入口解析一次，
 [[src/main/agent/runner.ts#runAgent]] 在检查点建立后、任何模型调用前冻结，同一次 run 内主循环与全部子代理共享同一引用。
 
-解析出口唯一：[[src/shared/request-policy.ts#resolveRequestPolicy]] 收下「模型默认 + 本条会话覆盖 +
-服务档支持声明」，返回后由 `runAgent` 复制并冻结（`Object.freeze({ ...snapshot })`）。
-冻结之后，主循环 [[src/main/agent/loop.ts#runAgentLoop]] 与全部子代理
-[[src/main/agent/scheduler.ts#runSubagents]] 用同一个引用；loop 只接收不解析，scheduler 也不按子代理自己的
-`def.model` 另算速度档。计划批准后的执行阶段带着**相同策略内容**二次进入 `runAgent`，不重新解析用户设置；
+解析出口唯一：[[src/shared/request-policy.ts#resolveRequestPolicy]] 只返回本地只读批的并发上限
+（当前固定为 2 路），由 `runAgent` 复制并冻结。冻结之后，主循环
+[[src/main/agent/loop.ts#runAgentLoop]] 与全部子代理 [[src/main/agent/scheduler.ts#runSubagents]]
+用同一个引用；loop 只接收不解析，scheduler 也不按子代理自己的 `def.model` 另算。
+计划批准后的执行阶段带着**相同策略内容**二次进入 `runAgent`，不重新解析用户设置；
 但入口处的复制与冻结会生成**新的一份冻结副本**——两次进入各自持有自己的引用，策略内容相同，不承诺跨 run 共用同一对象。
-运行中改设置、换模型或改会话覆盖只影响下一次 run——中途重读会让同一条 run 前后两半按不同档位计费，
-而界面上没有任何东西能解释这笔账。
 
-**优先关系只有一条**：`inherit`（缺省与非法值都归到它）取模型条目上的 `ModelEntry.speedMode`
-（[[src/shared/models.ts#ModelEntry]]）；显式 `normal` / `fast` 直接生效
-（[[src/shared/request-policy.ts#resolveSpeedMode]]）。模型条目缺字段或值非法一律按 `normal`，
-**绝不静默升成 fast**；读盘侧缺字段保持缺失、不补写（[[src/shared/models.ts#normalizeProfiles]]）。
-会话覆盖只认**真实会话 id**：一次性任务没有 `conversationId` 时不读任何覆盖，不拿占位 owner 冒充
-（[[src/main/ipc.ts]] 的 `entryRequestPolicy`）。
+**并发上限不等于并发许可**：上限由 [[src/shared/request-policy.ts#resolveToolBatchConcurrency]] 收口，
+[[src/main/agent/tool-batch.ts#runToolBatch]] 消费。只有整批合格（同一真实内建读取对象、键唯一可解析）才拿到 2 路；
+不合格批、缺省或非法输入一律回落到 1 路。`maxLocalReadConcurrency` 可被入口收紧为 1，此时 loop 直接走串行路径。
 
-**快照里是策略声明，消费范围要分开读**：`mode`、`maxLocalReadConcurrency`、`requestedServiceTier`、`tierSupport` 是同一份快照的四个字段，但消费者不同。`maxLocalReadConcurrency`（normal 1 / fast 2）已由 [[src/shared/request-policy.ts#resolveToolBatchConcurrency]] 收口，并由 [[src/main/agent/tool-batch.ts#runToolBatch]] 消费：只有合格批才可能 2 路，非法/未知模式或不合格批一律回落到 1 路。
+**旧档案字段只读忽略**：历史配置里的 `speedMode` / `serviceTiers` 在读盘时丢弃，不迁移、不写回、不报错；
+服务档意图与厂商 `service_tier` 观测已整体移除，消息与结果不再声明相关字段。
 
-`requestedServiceTier` 已由真实入口解析：`tierSupport` 来自模型条目 metadata（user > official > catalog，`tierSupportFromServiceTiers`），只有 `fast + supported` 才取 `'priority'`；协议映射各自独立——OpenAI 兼容线写 `service_tier: 'priority'`，Anthropic 线写 `service_tier: 'auto'`（多档位选择加入），unknown / unsupported 一律不发该字段。**FAST 意图不等于优先处理已生效**：是否生效只看真实回值。
+**权限代次合同零变动**：[[src/shared/request-policy.ts#PermissionStateSnapshot]] 与
+[[src/shared/request-policy.ts#isPermissionGenerationCurrent]] 仍是"档位 + 进程内代次"的共享形状与提交门判据；
+非法代次一律按已变化处理，权限收紧/放宽与父子守卫行为不受本策略改动影响。
 
-**服务档只记观测，不回填意图**：每次厂商调用带一个 per-request 观察器，`observeServiceTier` 只认真实回值；主聊天在 run 局部汇聚最后一条 `observed=true` 的观测，`done` / `error` 信封只带真实观测，缺报保持未知，不用 requested 回填 actual，也不把服务端降级（actual ≠ requested）改写成请求值。已观测后断流 / 取消仍保留该观测；未观测的失败只带终态与身份。
+**本地请求身份与供应商随机身份是两类东西**：`chat:send` 接受渲染端在发起时生成的 UUID（缺省旧调用由主进程补一个），
+同一 run 的每个 `StreamEnvelope` 带同一 `requestId`。它只用于本地事件归属与消息持久关联，
+**不进模型请求、headers 或日志**；供应商的 `operationId` / `sessionId`（如 `x-opencode-session`）是逐请求随机键，
+**不得**当作本地归属或持久化身份。
 
-**本地请求身份与供应商随机身份是两类东西**：`chat:send` 接受渲染端在发起时生成的 UUID（缺省旧调用由主进程补一个），同一 run 的每个 `StreamEnvelope` 带同一 `requestId` 与起点冻结的 `requestPolicy`。它只用于本地事件归属与消息持久关联，**不进模型请求、headers 或日志**；供应商的 `operationId` / `sessionId`（如 `x-opencode-session`）是逐请求随机键，**不得**当作本地归属或持久化身份。`requestPolicy` 是冻结的意图快照，不是实际档位。
-
-**信封与结算**：成功 `done` 与失败 `error` 都带同一个本地 `requestId`（早退、零 chunk 失败、取消同样带），`serviceTier` 只随真实观测出现；emitter 的单结算保证 done / error 只发一次，重复终态不累加用量。
+**信封与结算**：成功 `done` 与失败 `error` 都带同一个本地 `requestId`（早退、零 chunk 失败、取消同样带）；
+emitter 的单结算保证 done / error 只发一次，重复终态不累加用量。
 
 **与省 token 四档正交**：`request-policy.ts` 零依赖，不 import [[src/shared/token-tier.ts#resolvePolicy]]，
 也不读写四档（`rich | ultimate | balanced | light`）的任一开关。`runAgent` 分别接收 `policy`（TokenPolicy）
-与 `requestPolicy`，两条链路互不推导：切 FAST 不改窗口化阈值、输出纪律或思考档位，调省 token 档位也不改
-速度意图。两份策略一旦合并，就会造出"省钱档顺带改了速度"的隐式联动，而界面上它们是两个互不相干的控件，
-用户无法从中恢复真相。
+与 `requestPolicy`，两条链路互不推导。
 
 ## 有界可信读取并行
 

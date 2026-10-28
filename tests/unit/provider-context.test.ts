@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { observeServiceTier } from '@shared/request-policy'
 import type { AgentChatResult, AgentLoopResult } from '@shared/agent'
+import type { ChatMessage, ChatDonePayload } from '@shared/ipc'
 import type { ProviderRequest, StreamCallbacks } from '@main/providers/types'
 import type { ModelSettings } from '@shared/ipc'
 
 /**
- * S3-30T1 运行态请求上下文与服务档结果合同。
+ * S3-30T1 → S89-01 运行态请求上下文合同。
  *
  * 本文件只证明**载体与工厂**的行为：不装配真实 run、不联网、不读真实配置。
- * 新增符号用动态导入，红态才能逐条落点（而不是整文件一个解析错误）。
+ * 服务档位相关字段已整体移除；身份、随机运行键与冻结语义保持不变。
  */
 
 const PURPOSES = [
@@ -24,8 +24,6 @@ const PURPOSES = [
   'model-catalog'
 ] as const
 
-const AUXILIARY = ['reflection', 'title', 'prompt-polish', 'connection-check', 'model-catalog'] as const
-
 interface ContextShape {
   clientVersion: string
   purpose: string
@@ -38,35 +36,23 @@ interface ContextFactoryExports {
   createProviderExecutionContext(input: Record<string, unknown>): ContextShape
   isProviderCallPurpose(value: unknown): boolean
   PROVIDER_CALL_PURPOSES: readonly string[]
-  AUXILIARY_PROVIDER_CALL_PURPOSES: readonly string[]
 }
 
 async function factory(): Promise<ContextFactoryExports> {
   return (await import('@shared/request-policy')) as unknown as ContextFactoryExports
 }
 
-const FAST_POLICY = {
-  mode: 'fast',
-  maxLocalReadConcurrency: 2,
-  requestedServiceTier: 'priority',
-  tierSupport: 'supported'
-}
+const PARALLEL_POLICY = { maxLocalReadConcurrency: 2 }
+const SERIAL_POLICY = { maxLocalReadConcurrency: 1 }
 
-const NORMAL_POLICY = {
-  mode: 'normal',
-  maxLocalReadConcurrency: 1,
-  requestedServiceTier: null,
-  tierSupport: 'unknown'
-}
-
-const VERSION = '0.13.110'
+const VERSION = '0.13.111'
 
 function make(overrides: Record<string, unknown> = {}): Promise<ContextShape> {
   return factory().then((p) =>
     p.createProviderExecutionContext({
       clientVersion: VERSION,
       purpose: 'main-chat',
-      policy: { ...FAST_POLICY },
+      policy: { ...PARALLEL_POLICY },
       ...overrides
     })
   )
@@ -120,9 +106,9 @@ const settings: ModelSettings = {
   inputModalities: ['text']
 }
 
-// ── ① 旧调用者兼容：新字段全部可选 ─────────────────────────────────────────
+// ── ① 旧调用者兼容：新字段全部可选，已移除字段不再出现 ─────────────────────
 
-describe('S3-30T1 ① 缺 context / 回调 / 结果字段的旧调用仍兼容', () => {
+describe('S89-01 ① 缺 context / 结果字段的旧调用仍兼容', () => {
   it('旧 ProviderRequest 不带 context 仍是合法请求对象', () => {
     const legacy: ProviderRequest = {
       settings,
@@ -135,16 +121,16 @@ describe('S3-30T1 ① 缺 context / 回调 / 结果字段的旧调用仍兼容',
     expect(legacy.messages).toHaveLength(1)
   })
 
-  it('旧 StreamCallbacks 只实现 onChunk 仍能工作，onServiceTier 缺省不参与', () => {
+  it('旧 StreamCallbacks 只实现 onChunk 仍能工作', () => {
     const chunks: string[] = []
     const legacy: StreamCallbacks = { onChunk: (text) => chunks.push(text) }
     legacy.onChunk('增')
     legacy.onChunk('量')
     expect(chunks.join('')).toBe('增量')
-    expect(legacy.onServiceTier).toBeUndefined()
+    expect('onServiceTier' in legacy).toBe(false)
   })
 
-  it('旧 AgentChatResult / AgentLoopResult 不填 serviceTier 时字段保持缺失', () => {
+  it('结果与消息事实不再声明服务档字段', () => {
     const chat: AgentChatResult = { text: '回答', toolCalls: [], usage: null, usageComplete: true }
     const loop: AgentLoopResult = {
       output: '回答',
@@ -153,20 +139,31 @@ describe('S3-30T1 ① 缺 context / 回调 / 结果字段的旧调用仍兼容',
       terminal: { state: 'completed' },
       usageComplete: true
     }
+    const payload: ChatDonePayload = { usage: null, usageComplete: true }
     expect('serviceTier' in chat).toBe(false)
     expect('serviceTier' in loop).toBe(false)
+    expect('serviceTier' in payload).toBe(false)
     expect(chat.text).toBe('回答')
     expect(loop.stopReason).toBe('completed')
+  })
+
+  it('ChatMessage 的本地运行事实只剩 requestId', () => {
+    const msg: ChatMessage = {
+      role: 'assistant',
+      content: '答',
+      requestId: '00000000-0000-4000-8000-000000000000'
+    }
+    expect('requestPolicy' in msg).toBe(false)
+    expect('serviceTier' in msg).toBe(false)
   })
 })
 
 // ── ② 八类 purpose 与输入边界 ─────────────────────────────────────────────
 
-describe('S3-30T1 ② 八类 purpose 冻结，非法目的与坏版本明确拒绝', () => {
+describe('S89-01 ② 八类 purpose 冻结，非法目的与坏版本明确拒绝', () => {
   it('八类目的常量与冻结清单逐字一致', async () => {
     const p = await factory()
     expect([...p.PROVIDER_CALL_PURPOSES]).toEqual([...PURPOSES])
-    expect([...p.AUXILIARY_PROVIDER_CALL_PURPOSES]).toEqual([...AUXILIARY])
     for (const purpose of PURPOSES) expect(p.isProviderCallPurpose(purpose)).toBe(true)
   })
 
@@ -211,15 +208,27 @@ describe('S3-30T1 ② 八类 purpose 冻结，非法目的与坏版本明确拒�
   })
 
   it('policy 结构损坏时拒绝，不把脏值带进运行态', async () => {
-    for (const policy of [undefined, null, {}, { ...FAST_POLICY, mode: 'turbo' }, { ...FAST_POLICY, tierSupport: 'yes' }, { ...FAST_POLICY, maxLocalReadConcurrency: 3 }]) {
+    for (const policy of [
+      undefined,
+      null,
+      {},
+      { maxLocalReadConcurrency: 3 },
+      { maxLocalReadConcurrency: 0 },
+      { maxLocalReadConcurrency: '2' }
+    ]) {
       await expect(make({ policy })).rejects.toThrow(TypeError)
     }
+  })
+
+  it('旧策略对象夹带的档位字段被忽略，不进入运行态快照', async () => {
+    const ctx = await make({ policy: { maxLocalReadConcurrency: 2, mode: 'fast', tierSupport: 'supported' } })
+    expect(Object.keys(ctx.policy)).toEqual(['maxLocalReadConcurrency'])
   })
 })
 
 // ── ③ 随机运行键 ─────────────────────────────────────────────────────────
 
-describe('S3-30T1 ③ 运行键随机、对象内稳定、跨上下文隔离', () => {
+describe('S89-01 ③ 运行键随机、对象内稳定、跨上下文隔离', () => {
   const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
   it('同一上下文连续读取键不变，operation 与 session 是两个不同的值', async () => {
@@ -281,147 +290,73 @@ describe('S3-30T1 ③ 运行键随机、对象内稳定、跨上下文隔离', (
   })
 })
 
-// ── ④ 冻结、复制与五类辅助固定 normal ─────────────────────────────────────
+// ── ④ 冻结、复制与策略形状 ────────────────────────────────────────────────
 
-describe('S3-30T1 ④ 顶层与 policy 冻结，辅助目的固定 normal', () => {
+describe('S89-01 ④ 顶层与 policy 冻结，策略只含并发上限', () => {
   it('顶层与 policy 均冻结，严格模式写入抛 TypeError 且值不变', async () => {
     const ctx = await make()
     const mutableCtx = ctx as unknown as { clientVersion: string }
-    const mutablePolicy = ctx.policy as unknown as { mode: string }
+    const mutablePolicy = ctx.policy as unknown as { maxLocalReadConcurrency: number }
     expect(Object.isFrozen(ctx)).toBe(true)
     expect(Object.isFrozen(ctx.policy)).toBe(true)
     expect(() => {
       mutableCtx.clientVersion = '9.9.9'
     }).toThrow(TypeError)
     expect(() => {
-      mutablePolicy.mode = 'normal'
+      mutablePolicy.maxLocalReadConcurrency = 1
     }).toThrow(TypeError)
     expect(ctx.clientVersion).toBe(VERSION)
-    expect(ctx.policy.mode).toBe('fast')
+    expect(ctx.policy.maxLocalReadConcurrency).toBe(2)
   })
 
   it('创建后修改输入 policy，不影响已创建上下文', async () => {
-    const input: Record<string, unknown> = { ...FAST_POLICY }
+    const input: Record<string, unknown> = { ...PARALLEL_POLICY }
     const ctx = await make({ policy: input })
-    input.mode = 'normal'
-    input.requestedServiceTier = null
     input.maxLocalReadConcurrency = 1
-    expect(ctx.policy).toEqual(FAST_POLICY)
+    expect(ctx.policy).toEqual(PARALLEL_POLICY)
   })
 
-  it('五类辅助目的即使传 FAST 也固定 normal，且不请求非默认服务档', async () => {
-    for (const purpose of AUXILIARY) {
-      const ctx = await make({ purpose, policy: { ...FAST_POLICY } })
-      expect(ctx.policy).toEqual({
-        mode: 'normal',
-        maxLocalReadConcurrency: 1,
-        requestedServiceTier: null,
-        tierSupport: 'supported'
-      })
-    }
-  })
-
-  it('主聊与一次性任务保留显式快照（fast + supported 仍为 priority）', async () => {
-    for (const purpose of ['main-chat', 'one-shot']) {
-      const ctx = await make({ purpose, policy: { ...FAST_POLICY } })
-      expect(ctx.policy).toEqual(FAST_POLICY)
-      expect(ctx.policy.requestedServiceTier).toBe('priority')
+  it('辅助目的与主调用共用同一份策略（不再有档位压回分支）', async () => {
+    for (const purpose of PURPOSES) {
+      const ctx = await make({ purpose, policy: { ...PARALLEL_POLICY } })
+      expect(ctx.policy).toEqual(PARALLEL_POLICY)
     }
   })
 
   it('子代理传入父 policy 内容不变，得到独立冻结副本', async () => {
-    const parent = await make({ purpose: 'main-chat', policy: { ...FAST_POLICY } })
+    const parent = await make({ purpose: 'main-chat', policy: { ...PARALLEL_POLICY } })
     const child = await make({ purpose: 'subagent', policy: { ...parent.policy } })
     expect(child.policy).toEqual(parent.policy)
     expect(child.policy).not.toBe(parent.policy)
     expect(Object.isFrozen(child.policy)).toBe(true)
   })
 
-  it('策略只含合同四字段，不夹带省 token 档位或持久模型设置', async () => {
+  it('收紧策略被原样保留（1 路仍是合法上限）', async () => {
+    const ctx = await make({ policy: SERIAL_POLICY })
+    expect(ctx.policy).toEqual(SERIAL_POLICY)
+  })
+
+  it('策略只含并发上限，不夹带档位、省 token 或持久模型设置', async () => {
     const ctx = await make()
-    expect(Object.keys(ctx.policy).sort()).toEqual([
-      'maxLocalReadConcurrency',
+    expect(Object.keys(ctx.policy)).toEqual(['maxLocalReadConcurrency'])
+    for (const key of [
       'mode',
       'requestedServiceTier',
-      'tierSupport'
-    ])
-    for (const key of ['readLines', 'outputDiscipline', 'reasoningEffortOverride', 'settings', 'model']) {
+      'tierSupport',
+      'readLines',
+      'outputDiscipline',
+      'reasoningEffortOverride',
+      'settings',
+      'model'
+    ]) {
       expect(key in ctx.policy).toBe(false)
     }
   })
 })
 
-// ── ⑤ 服务档结果兄弟字段：观测与用量/终态相互独立 ────────────────────────
+// ── ⑤ 结构守卫：无 electron / 无 Node 导入 / 不落持久层 / 无 headers 入口 ──
 
-describe('S3-30T1 ⑤ serviceTier 观测独立于用量、终态与正文', () => {
-  it('requested=priority 但 actual 缺失时保持 null / observed=false，不回填', () => {
-    const missing = observeServiceTier('priority', undefined)
-    expect(missing).toEqual({ requested: 'priority', actual: null, observed: false })
-    const chat: AgentChatResult = { text: '正文', toolCalls: [], serviceTier: missing, usageComplete: true }
-    expect(chat.serviceTier).toEqual({ requested: 'priority', actual: null, observed: false })
-    expect(chat.usageComplete).toBe(true)
-    expect(chat.text).toBe('正文')
-  })
-
-  it('actual=priority / default 都是真实观测，服务端降级不被丢弃', () => {
-    const priority = observeServiceTier('priority', 'priority')
-    const downgraded = observeServiceTier('priority', 'default')
-    expect(priority).toEqual({ requested: 'priority', actual: 'priority', observed: true })
-    expect(downgraded).toEqual({ requested: 'priority', actual: 'default', observed: true })
-    expect(downgraded.actual).not.toBe(downgraded.requested)
-  })
-
-  it('usageComplete 的 true / false / 缺失与档位观测互不影响', () => {
-    const observed = observeServiceTier('priority', 'priority')
-    const chatTrue: AgentChatResult = { text: null, toolCalls: [], serviceTier: observed, usageComplete: true }
-    const chatFalse: AgentChatResult = { text: null, toolCalls: [], serviceTier: observed, usageComplete: false }
-    const chatMissing: AgentChatResult = { text: null, toolCalls: [], serviceTier: observed }
-    expect(chatTrue.serviceTier?.observed).toBe(true)
-    expect(chatFalse.serviceTier?.observed).toBe(true)
-    expect(chatMissing.serviceTier?.observed).toBe(true)
-    expect(chatTrue.usageComplete).toBe(true)
-    expect(chatFalse.usageComplete).toBe(false)
-    expect('usageComplete' in chatMissing).toBe(false)
-  })
-
-  it('终态完成与用量齐全都不推断服务档：缺字段仍保持缺失', () => {
-    const loop: AgentLoopResult = {
-      output: '完成',
-      rounds: 2,
-      stopReason: 'completed',
-      terminal: { state: 'completed' },
-      // T1-N2 补正：AgentLoopResult 没有 `usage` 字段（用量载体是 AgentRunResult），
-      // 旧夹具多挂一个未声明属性只是被 Vitest 转译放过，不能当作类型证明。
-      usageComplete: true
-    }
-    expect('serviceTier' in loop).toBe(false)
-    expect(loop.serviceTier).toBeUndefined()
-  })
-
-  it('AgentLoopResult 同样承载观测；失败终态也不改变 actual=null / observed=false', () => {
-    const missing = observeServiceTier('priority', null)
-    const loop: AgentLoopResult = {
-      output: '',
-      rounds: 1,
-      stopReason: 'max-rounds',
-      terminal: { state: 'failed', code: 'upstream-error' },
-      usageComplete: false,
-      serviceTier: missing
-    }
-    expect(loop.serviceTier).toEqual({ requested: 'priority', actual: null, observed: false })
-    expect(loop.terminal?.state).toBe('failed')
-    expect(loop.usageComplete).toBe(false)
-  })
-
-  it('结果类型声明处真的把 serviceTier 作为可选兄弟字段（两处）', () => {
-    const source = readSource('src/shared/agent.ts')
-    expect(source.match(/serviceTier\?: ServiceTierObservation/g) ?? []).toHaveLength(2)
-  })
-})
-
-// ── ⑥ 结构守卫：无 electron / 无 Node 导入 / 不落持久层 / 无 headers 入口 ──
-
-describe('S3-30T1 ⑥ 结构守卫', () => {
+describe('S89-01 ⑤ 结构守卫', () => {
   const NODE_BUILTINS = new Set([
     'fs',
     'path',
@@ -477,12 +412,11 @@ describe('S3-30T1 ⑥ 结构守卫', () => {
     }
   })
 
-  it('providers/types 只以类型方式引用运行态上下文与观测，不增加运行时依赖', () => {
+  it('providers/types 只以类型方式引用运行态上下文，不增加运行时依赖', () => {
     const source = readSource('src/main/providers/types.ts')
     expect(source).toMatch(/import type \{[^}]*ProviderExecutionContext[^}]*\} from '@shared\/request-policy'/)
     expect(source).toMatch(/context\?: ProviderExecutionContext/)
-    expect(source).toMatch(/onServiceTier\?: \(observation: ServiceTierObservation\) => void/)
-    expect(/\bheaders\b/.test(source)).toBe(false)
+    expect(source).not.toMatch(/onServiceTier|ServiceTierObserver/)
   })
 
   it('运行态上下文不进入持久 ModelSettings，也不被持久层引用', () => {

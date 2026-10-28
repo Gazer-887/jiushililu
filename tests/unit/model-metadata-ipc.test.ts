@@ -12,9 +12,6 @@ const existing: ModelMetadata = {
     official: { value: 131072, observedAt: 1000 },
     catalog: { value: 999999, observedAt: 2000 },
     user: { value: 262144, observedAt: 3000 }
-  },
-  serviceTiers: {
-    official: { value: ['default', 'standard_only'], observedAt: 1000 }
   }
 }
 
@@ -44,12 +41,17 @@ describe('S3-10C2A applyUserMetadataPatch · 用户覆盖语义', () => {
   it('clear 唯一来源后字段消失；全部字段消失时 metadata 为 undefined', () => {
     const onlyUser: ModelMetadata = {
       contextWindow: { user: { value: 1, observedAt: 1 } },
-      serviceTiers: { user: { value: ['default'], observedAt: 1 } }
+      pricing: {
+        user: {
+          value: [{ category: 'public-api', amount: 0.5, currency: 'USD', unit: '1M' }],
+          observedAt: 1
+        }
+      }
     }
     const afterOne = applyUserMetadataPatch(onlyUser, { clear: ['contextWindow'] }, 5)
     expect(afterOne?.contextWindow).toBeUndefined()
-    expect(afterOne?.serviceTiers).toBeDefined()
-    const afterAll = applyUserMetadataPatch(afterOne as ModelMetadata, { clear: ['serviceTiers'] }, 5)
+    expect(afterOne?.pricing).toBeDefined()
+    const afterAll = applyUserMetadataPatch(afterOne as ModelMetadata, { clear: ['pricing'] }, 5)
     expect(afterAll).toBeUndefined()
   })
 
@@ -127,7 +129,7 @@ describe('S3-10C2A patch 输入合同（modelMetadataPatchInputSchema）', () =>
     expect(modelMetadataPatchInputSchema.safeParse({ ...lookup, patch: { clear: ['pricing'] } }).success).toBe(true)
     const withLimitations = modelMetadataPatchInputSchema.safeParse({
       ...lookup,
-      patch: { set: { serviceTiers: { user: { value: ['default'], limitations: ['限流未知'] } } } } }
+      patch: { set: { pricing: { user: { value: [{ category: 'public-api', amount: 1, currency: 'USD', unit: '1M' }], limitations: ['限流未知'] } } } } }
     )
     expect(withLimitations.success).toBe(true)
   })
@@ -190,19 +192,19 @@ describe('S3-10C2A-R1 补丁边界与规范落盘', () => {
   const allFields = [
     'contextWindow', 'maxOutputTokens', 'reasoningLevels', 'nativeInputModalities',
     'nativeExtendedInputs', 'attachmentParsing', 'pricing', 'subscriptionPlan',
-    'serviceTiers', 'catalogPolicy'
+    'catalogPolicy'
   ] as const
 
-  it('C2A-M1：超长 clear 数组（>10）被 schema 拒绝', () => {
+  it('C2A-M1：超长 clear 数组（>字段总数）被 schema 拒绝', () => {
     const overlong = [...allFields, 'contextWindow']
-    expect(overlong).toHaveLength(11)
+    expect(overlong).toHaveLength(10)
     const r = modelMetadataPatchInputSchema.safeParse({ ...lookup, patch: { clear: overlong } })
     expect(r.success).toBe(false)
     // C2A-M1 静态绑定：schema 源码含显式限长（先限长再到重复/语义检查）
     expect(read('src/shared/model-metadata.ts')).toContain('.max(MODEL_METADATA_FIELDS.length)')
   })
 
-  it('C2A-M1：十个唯一字段 clear 合法（上限=字段总数）', () => {
+  it('C2A-M1：九个唯一字段 clear 合法（上限=字段总数）', () => {
     const r = modelMetadataPatchInputSchema.safeParse({ ...lookup, patch: { clear: [...allFields] } })
     expect(r.success).toBe(true)
   })

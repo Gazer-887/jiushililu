@@ -19,9 +19,7 @@ import type { InputModality } from './content-parts'
 import { AUTH_CHOICES, BUDGET_ENCODINGS, OFF_ENCODINGS, REQUEST_IDENTITY_MODES } from './ipc'
 import { REASONING_KINDS } from './ipc'
 import { modalitiesFromLegacyFlag, normalizeModalities } from './content-parts'
-import { normalizeModelMetadata, resolveMetadata, type ModelMetadata } from './model-metadata'
-import type { TierSupport } from './request-policy'
-import { isSpeedMode, type SpeedMode } from './request-policy'
+import { normalizeModelMetadata, type ModelMetadata } from './model-metadata'
 
 /** 来源标签：界面显示"内置来源 / 用户自定义"（不参与任何逻辑判断） */
 export type ModelSource = 'deepseek' | 'custom'
@@ -49,11 +47,6 @@ export interface ModelEntry {
    * 单一档案字段——不建 metadataByEntry/第二配置库；读盘容错走 normalizeModelMetadata。
    */
   metadata?: ModelMetadata
-  /**
-   * S3-20A：模型默认速度档。缺字段 = 旧行为（等价 `normal`），读盘保持缺失、不补写；
-   * 会话级覆盖属 S3-20B，不落在条目上。
-   */
-  speedMode?: SpeedMode
 }
 
 /** 探测缓存有效期：7 天（B3 定案）。过期不断网重探的 quiet 失败，只降级显示与报因 */
@@ -170,43 +163,6 @@ export function settingsOf(profile: ModelProfile, entry: ModelEntry): ModelSetti
   }
 }
 
-/**
- * 服务档声明 → 本协议的 FAST 支持位（S3-30F）。输入只有 `metadata.serviceTiers`
- * （user > official > catalog 的既有单真源），**不按厂商名/模型名/网关广告猜**。
- * - 缺声明 / 空列表 / 全是读不懂的值 → `unknown`（不知道就不发非默认档）
- * - 命中本协议的快速档值 → `supported`
- * - 全部是明确的标准档值 → `unsupported`（声明了只有标准容量）
- * ⚠️ 跨协议的值不算数（OpenAI 的 fast/priority 与 Anthropic 的 auto 不共用）；
- * 本函数只决定"能不能发"，具体出站值仍由各协议自己的映射决定。
- */
-export function tierSupportFromServiceTiers(
-  protocol: ProviderType,
-  metadata: ModelMetadata | undefined
-): TierSupport {
-  const resolved = resolveMetadata(metadata?.serviceTiers)
-  const declared = (resolved?.value ?? [])
-    .map((value) => (typeof value === 'string' ? value.trim().toLowerCase() : ''))
-    .filter((value) => value.length > 0)
-  if (declared.length === 0) return 'unknown'
-  const fast = FAST_CAPABLE_DECLARATIONS[protocol]
-  if (declared.some((value) => fast.includes(value))) return 'supported'
-  if (declared.every((value) => STANDARD_ONLY_DECLARATIONS.includes(value))) return 'unsupported'
-  return 'unknown'
-}
-
-/** 各协议里能兑现 FAST 意图的声明值（出站请求值必须落在其中） */
-const FAST_CAPABLE_DECLARATIONS: Readonly<Record<ProviderType, readonly string[]>> = Object.freeze({
-  'openai-compatible': Object.freeze(['priority', 'fast']),
-  anthropic: Object.freeze(['priority', 'auto'])
-})
-
-/** 明确的"只有标准容量"声明：列表**全部**落在这里才判 unsupported */
-const STANDARD_ONLY_DECLARATIONS: readonly string[] = Object.freeze([
-  'standard',
-  'standard_only',
-  'default'
-])
-
 /** 用户没写名就用模型 ID（列表里不留空白） */
 export function entryLabel(entry: ModelEntry): string {
   const name = (entry.name ?? '').trim()
@@ -220,7 +176,6 @@ export function makeEntry(input: {
   name?: string
   settings?: Partial<ModelSettings>
   metadata?: ModelMetadata
-  speedMode?: SpeedMode
 }): ModelEntry {
   return {
     id: input.id,
@@ -228,9 +183,7 @@ export function makeEntry(input: {
     ...(input.name && input.name.trim() ? { name: input.name.trim().slice(0, PROFILE_NAME_MAX) } : {}),
     ...(input.settings && Object.keys(input.settings).length > 0 ? { settings: input.settings } : {}),
     // S3-10C1：metadata 与 settings 同级保留——普通编辑不传入也不得丢掉已有 metadata
-    ...(input.metadata ? { metadata: input.metadata } : {}),
-    // S3-20A：只写合法档位；未传 / 脏值不产生该键（缺字段 = 旧行为 normal）
-    ...(isSpeedMode(input.speedMode) ? { speedMode: input.speedMode } : {})
+    ...(input.metadata ? { metadata: input.metadata } : {})
   }
 }
 
@@ -429,7 +382,7 @@ export function mergeEntrySettings(
 }
 
 /**
- * 条目级补丁合并：只换 `settings`，`speedMode` / `metadata` / id / name 原样保留。
+ * 条目级补丁合并：只换 `settings`，`metadata` / id / name 原样保留。
  * 纯函数，store 落盘与单测共用这一份，防"单字段补丁把条目级字段冲掉"。
  */
 export function applyEntrySettingsPatch(entry: ModelEntry, patch: EntrySettingsPatch): ModelEntry {
@@ -551,16 +504,13 @@ function normalizeEntry(raw: unknown, fallbackId: string): ModelEntry | null {
     settings.authentication = s.authentication as AuthenticationChoice
   }
   const metadata = normalizeModelMetadata(e.metadata)
-  // S3-20A：合法档位读回；缺字段保持缺失、非法值丢弃（有效值仍是 normal，不改写行为）
-  const speedMode = isSpeedMode(e.speedMode) ? e.speedMode : undefined
   return {
     id,
     model,
     ...(name ? { name } : {}),
     ...(Object.keys(settings).length > 0 ? { settings } : {}),
     // S3-10C1：metadata 容错读回（fail-closed 白名单重建）；旧档案无该键则结果不含
-    ...(metadata ? { metadata } : {}),
-    ...(speedMode ? { speedMode } : {})
+    ...(metadata ? { metadata } : {})
   }
 }
 

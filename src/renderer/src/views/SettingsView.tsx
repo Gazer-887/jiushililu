@@ -12,7 +12,6 @@ import type {
   ComputerUseServerStatus
 } from '@shared/ipc'
 import { entryLabel, sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
-import { normalizeSpeedMode, type SpeedMode } from '@shared/request-policy'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
 import ProviderPresetPicker, { type PresetSelection } from '../components/ProviderPresetPicker'
 import {
@@ -349,12 +348,14 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     if (!useAppStore.getState().settingsLoaded) void loadSettings()
   }, [loadSettings])
 
+  // plan89 启动/设置页优化：仅当进入故障排查区时才扫描日志目录，不拖慢设置页与主窗口首屏
   useEffect(() => {
+    if (section !== 'trouble') return
     window.api
       .getLogsInfo()
       .then(setLogs)
       .catch(() => setLogs({ dir: null, files: [] }))
-  }, [])
+  }, [section])
 
   useEffect(() => {
     window.api
@@ -813,14 +814,6 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     setDraftAuth('')
     setAuthTouched(false)
     if (settings) setDraft({ ...settings, apiKey: '' })
-  }
-
-  /**
-   * 模型默认速度（S3-20C）：只改**当前草稿里这一条**的 `ModelEntry.speedMode`，
-   * 随既有 saveModel 链落盘。⚠️ 不写进 settings（那里没有这个字段），也不动其他条目。
-   */
-  const patchDraftSpeedMode = (entryId: string, mode: SpeedMode): void => {
-    setDraftModels((prev) => prev.map((m) => (m.id === entryId ? { ...m, speedMode: mode } : m)))
   }
 
   const useProfile = async (id: string): Promise<void> => {
@@ -1519,41 +1512,6 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                     })
                   }}
                 />
-
-                {/* 模型默认速度（S3-20C）：逐条写 ModelEntry.speedMode，随既有保存链落盘。
-                    文案只说明会话未覆盖时的默认值与请求策略，不做效果或费用承诺。 */}
-                <div className="model-speed" role="group" aria-label="模型默认速度">
-                  <div className="model-speed-head">
-                    <span className="model-speed-title">模型默认速度</span>
-                    <span className="hint">
-                      会话未覆盖时使用。FAST 仅为请求策略，是否实际使用快速服务档由厂商能力声明与响应决定。
-                    </span>
-                  </div>
-                  {draftModels.map((m) => {
-                    const label = entryLabel(m) || '未命名模型'
-                    return (
-                      <label
-                        className="model-speed-row"
-                        key={m.id}
-                        title={`${label}：会话未覆盖时使用的模型默认值`}
-                      >
-                        <span className="model-speed-name">{label}</span>
-                        <select
-                          className="model-speed-select"
-                          aria-label={`${label} 的默认速度`}
-                          value={normalizeSpeedMode(m.speedMode)}
-                          onChange={(e) =>
-                            patchDraftSpeedMode(m.id, e.target.value === 'fast' ? 'fast' : 'normal')
-                          }
-                        >
-                          <option value="normal">普通</option>
-                          <option value="fast">FAST 策略</option>
-                        </select>
-                      </label>
-                    )
-                  })}
-                </div>
-                {/* 模型默认速度（S3-20C）结束 */}
 
                 <label>
                   协议类型

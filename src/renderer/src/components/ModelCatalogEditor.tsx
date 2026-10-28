@@ -76,7 +76,6 @@ const FACT_LABELS: Record<ModelMetadataField, string> = {
   attachmentParsing: '附件解析',
   pricing: '价格',
   subscriptionPlan: '订阅套餐',
-  serviceTiers: '服务档',
   catalogPolicy: '目录策略'
 }
 
@@ -192,7 +191,6 @@ export function buildMetadataFacts(metadata: ModelMetadata | undefined): FactFie
     factField('attachmentParsing', resolveMetadata(metadata?.attachmentParsing), formatAttachment),
     factField('pricing', resolveMetadata(metadata?.pricing), (v) => `${v.length} 条（按类别分列）`),
     factField('subscriptionPlan', resolveMetadata(metadata?.subscriptionPlan), formatPlan),
-    factField('serviceTiers', resolveMetadata(metadata?.serviceTiers), (v) => v.join('、')),
     factField('catalogPolicy', resolveMetadata(metadata?.catalogPolicy), (v) => CATALOG_POLICY_LABELS[v])
   ]
 }
@@ -656,7 +654,7 @@ function ModelFacts({ metadata }: { metadata: ModelMetadata | undefined }): JSX.
         />
       </div>
       <div className="mc-facts-grid">
-        {(['contextWindow', 'maxOutputTokens', 'reasoningLevels', 'serviceTiers', 'catalogPolicy'] as const).map(
+        {(['contextWindow', 'maxOutputTokens', 'reasoningLevels', 'catalogPolicy'] as const).map(
           (key) => (
             <FactRow key={key} fact={row(key)} />
           )

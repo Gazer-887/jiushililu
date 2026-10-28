@@ -13,17 +13,12 @@ import type {
   ToolImageRef
 } from '@shared/agent'
 import {
-  FAST_SERVICE_TIER,
   createProviderExecutionContext,
   isPermissionGenerationCurrent,
-  normalizeTierSupport,
   resolveRequestPolicy,
   type PermissionStateSnapshot,
   type ProviderCallPurpose,
-  type ProviderExecutionContext,
-  type RequestPolicySnapshot,
-  type ServiceTierObservation,
-  type TierSupport
+  type ProviderExecutionContext
 } from '@shared/request-policy'
 import type { TodoItem } from '@shared/todo'
 import { ToolGate, type PathAccess } from './guard'
@@ -729,24 +724,11 @@ export interface RunAgentArgs {
   requestPolicy?: RunRequestPolicy
   /**
    * 真实客户端版本（S3-30T2）。由组合根注入 `app.getVersion()` —— runner 不读 package、不导入 electron。
-   * ⚠️ 缺省 = 旧兼容路径：**不创建运行上下文**，也就没有身份头与服务档字段（不伪造版本）。
+   * ⚠️ 缺省 = 旧兼容路径：**不创建运行上下文**，也就没有身份头（不伪造版本）。
    */
   clientVersion?: string
   /** 本次 run 的真实调用目的（S3-30T2）：主聊天 / 一次性任务；缺省按主聊天。 */
   purpose?: 'main-chat' | 'one-shot'
-  /**
-   * 端点各模型的只读 FAST 服务档支持快照（S3-30T2）：模型 → supported/unsupported/unknown。
-   * 由组合根（30F）注入；runner 不做 IO、不建第二份配置真源。缺失/未知一律保守省略服务档。
-   */
-  tierSupportForModel?: (model: string) => TierSupport | undefined
-  /**
-   * 单请求服务档观察出口（S3-30T2）。两个域**分开**：子代理观察绝不写进主请求展示值。
-   * 失败请求也能收到（provider 在抛错前已交出已观测事实），供 30C 错误信封消费。
-   */
-  serviceTierReports?: {
-    onMain?: (observation: ServiceTierObservation) => void
-    onSubagent?: (observation: ServiceTierObservation, agentName: string) => void
-  }
   /**
    * 记忆注入段（plan19 批 1）。**由组合根组装好传进来** —— runner 不知道记忆库在哪，也不该知道。
    * `null` / 缺省 = 这一段不出现。
@@ -825,59 +807,19 @@ export type AgentRunResult = AgentLoopResult & {
 }
 
 /**
- * 实际请求模型的能力位（S3-30T2）：定义覆盖了模型时，父模型的 `supported` **不能**当作子模型证据。
- * 未覆盖 = 实际模型就是父模型，沿用父快照；覆盖后按只读快照解析，缺失/未声明一律 unknown。
- */
-export function resolveModelTierSupport(input: {
-  requestModel: string
-  baseModel: string
-  baseTierSupport: TierSupport
-  tierSupportForModel?: (model: string) => TierSupport | undefined
-}): TierSupport {
-  if (input.requestModel === input.baseModel) return input.baseTierSupport
-  return normalizeTierSupport(input.tierSupportForModel?.(input.requestModel))
-}
-
-/**
- * 按实际模型派生请求策略（S3-30T2）：**只重解析协议能力位**，速度意图与本地并发上限原样继承父快照。
- * ⚠️ 刻意不调用 `resolveRequestPolicy`：那个函数是「run 起点重新读取用户设置」的唯一入口，
- * 结构守卫按调用次数钉住它（每 run 至多一次）；这里是从父快照做纯派生，不是重新解析设置。
- * `fast + supported ⇒ FAST_SERVICE_TIER` 这条规则的常量仍取自 shared，不另抄一份字面值。
- */
-export function derivePolicyForModel(
-  parent: RunRequestPolicy,
-  tierSupport: TierSupport
-): RequestPolicySnapshot {
-  return {
-    mode: parent.mode,
-    maxLocalReadConcurrency: parent.maxLocalReadConcurrency,
-    requestedServiceTier: parent.mode === 'fast' && tierSupport === 'supported' ? FAST_SERVICE_TIER : null,
-    tierSupport
-  }
-}
-
-/**
  * 一次真实运行的运行上下文（S3-30T2）：版本缺省 → undefined（旧请求，不伪造版本）。
  * ⚠️ 只在内存里作为函数参数传递；不进 messages / 系统提示 / 存档 / 事件 / 日志。
  */
-export function createModelScopedContext(input: {
+export function createRunContext(input: {
   clientVersion?: string
   purpose: ProviderCallPurpose
-  parentPolicy: RunRequestPolicy
-  /** 父层实际在用的模型（子任务未声明 model 时就是它） */
-  baseModel: string
-  /** 父层实际生效的能力位（已经按父模型解析过） */
-  baseTierSupport: TierSupport
-  /** 本次真实请求用的模型 */
-  requestModel: string
-  tierSupportForModel?: (model: string) => TierSupport | undefined
+  policy: RunRequestPolicy
 }): ProviderExecutionContext | undefined {
   if (input.clientVersion === undefined) return undefined
-  const tierSupport = resolveModelTierSupport(input)
   return createProviderExecutionContext({
     clientVersion: input.clientVersion,
     purpose: input.purpose,
-    policy: derivePolicyForModel(input.parentPolicy, tierSupport)
+    policy: input.policy
   })
 }
 
@@ -943,15 +885,11 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
         },
         // S3-30T2：每个真实子任务在 scheduler 的作业边界建**一次**上下文 ——
         // 兄弟/父子随机键互相隔离；同一子任务的所有模型轮共用这一份（不按轮重键）。
-        contextFactory: (d) =>
-          createModelScopedContext({
+        contextFactory: () =>
+          createRunContext({
             clientVersion: args.clientVersion,
             purpose: 'subagent',
-            parentPolicy: requestPolicy,
-            baseModel: effective.model,
-            baseTierSupport: mainTierSupport,
-            requestModel: d.model ?? effective.model,
-            tierSupportForModel: args.tierSupportForModel
+            policy: requestPolicy
           }),
         // 子代理按**自己的 def.model** 建通道（缺省沿用当前会话模型），输出不上屏（只回流给主代理）
         chatFactory: (d, tools, jobContext) => {
@@ -960,11 +898,6 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
           // schema 取**scheduler 同一次装配**的 jobTools（修正 C）：早前这里再调一次 toolsForSubagent，
           // 浏览器工具按 job 重建后两次求值会各建一份适配器 —— schema 与执行工具就此分岔
           const schemas = tools.map((t) => t.schema)
-          // S3-30T2：子请求域的观察单独走一条出口，绝不写进主请求展示值
-          const notifySubagent = args.serviceTierReports?.onSubagent
-          const onSubagentTier = notifySubagent
-            ? (observation: ServiceTierObservation): void => notifySubagent(observation, d.name)
-            : undefined
           return (messages: AgentMessage[]) => {
             // 子代理**不再自带整轮墙钟**（plan29 D-090）：原来这里在父 signal 缺席时给一个
             // `AbortSignal.timeout(model.timeoutMs)`，而子代理是并发跑的 —— 等于每个子代理各拿一个
@@ -979,8 +912,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
                   () => {},
                   args.signal,
                   undefined,
-                  jobContext,
-                  onSubagentTier
+                  jobContext
                 )
               : streamWithToolsOpenAI(
                   model,
@@ -991,14 +923,13 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
                   args.signal,
                   undefined,
                   undefined,
-                  jobContext,
-                  onSubagentTier
+                  jobContext
                 )
           }
         },
         ...(args.onSubagentEvent ? { onJobEvent: args.onSubagentEvent } : {}),
         ...(args.policy ? { policy: args.policy } : {}),
-        // S3-20D1：子代理**继承父 run 的同一个冻结快照**，不按各自 def.model 另算速度档。
+        // S3-20D1：子代理**继承父 run 的同一个冻结快照**
         requestPolicy,
         // 输出纪律（§七③）：与主代理**同一份** —— 子代理的输出同样计费，纪律不该只约束一半
         ...(discipline ? { systemSuffix: discipline } : {}),
@@ -1418,24 +1349,11 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
   const toolSchemas = tools.map((t) => t.schema)
   // ── 运行上下文（S3-30T2）── 检查点之后、首次模型调用之前**只建一次**；
   // 本 run 的每一轮（流式/非流式、各工具轮与续请求）都复用这一份，session 键不随轮次漂移。
-  // 定义覆盖了模型时，能力位按**实际模型**重解析（父模型的 supported 不是子模型的证据）。
-  const mainTierSupport = resolveModelTierSupport({
-    requestModel: effective.model,
-    baseModel: args.settings.model,
-    baseTierSupport: requestPolicy.tierSupport,
-    tierSupportForModel: args.tierSupportForModel
+  const mainContext = createRunContext({
+    clientVersion: args.clientVersion,
+    purpose: args.purpose ?? 'main-chat',
+    policy: requestPolicy
   })
-  const mainContext =
-    args.clientVersion === undefined
-      ? undefined
-      : createModelScopedContext({
-          clientVersion: args.clientVersion,
-          purpose: args.purpose ?? 'main-chat',
-          parentPolicy: requestPolicy,
-          baseModel: effective.model,
-          baseTierSupport: mainTierSupport,
-          requestModel: effective.model
-        })
 /** 本轮累计的真实用量（plan8 R9）：一轮里**可能调好几次模型**，每次的 usage 都要加起来 —— 只记最后一次会让账面少一大半；
  *  `null` = 厂商一次都没报（**不是**"用量为 0"，两者必须分得清）。 */
   let usageAcc: TokenUsage | null = null
@@ -1471,8 +1389,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
               onText,
               signal,
               undefined,
-              mainContext,
-              args.serviceTierReports?.onMain
+              mainContext
             )
           : await streamWithToolsOpenAI(
               effective,
@@ -1483,8 +1400,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
               signal,
               args.onReasoning,
               undefined,
-              mainContext,
-              args.serviceTierReports?.onMain
+              mainContext
             )
     } catch (error) {
       if (error instanceof ProviderError && error.facts?.scope === 'request') {
@@ -1500,7 +1416,7 @@ export async function runAgent(ctx: AgentRuntimeContext, args: RunAgentArgs): Pr
 
   /**
    * 摘要通道（S3-30T2）：辅助请求固定普通档（`reflection` 在生产工厂里被强制 normal），
-   * 每次调用建一份**独立 operation 上下文**，不复用带 FAST 的主 run 上下文及其随机键。
+   * 每次调用建一份**独立 operation 上下文**，不复用主 run 上下文及其随机键。
    * 独立成函数：让 `summarize` 闭包只保留业务步骤，也保证摘要永远不带工具（空 schema）。
    */
   const chatSummary = async (

@@ -10,7 +10,6 @@ import {
 } from '@shared/content-parts'
 import { AUTH_CHOICES, BUDGET_ENCODINGS, OFF_ENCODINGS, REASONING_KINDS, REQUEST_IDENTITY_MODES } from '@shared/ipc'
 import { modelMetadataSchema } from '@shared/model-metadata'
-import { FAST_SERVICE_TIER, SPEED_MODES, TIER_SUPPORTS } from '@shared/request-policy'
 import { RUN_RESULT_STATES, OUTCOME_CODES } from '@shared/execution-outcome'
 
 // 入参 schema 独立成文件：纯 zod、不 import electron，可脱离主进程单测。
@@ -183,8 +182,6 @@ export const modelSaveSchema = z.object({
         id: z.string().min(1).max(64),
         model: z.string().min(1).max(200),
         name: z.string().max(60).optional(),
-        // S3-20A：模型默认速度档（可选；缺省 = 旧行为 normal，非法值拒绝而非静默剥离）
-        speedMode: z.enum(SPEED_MODES).optional(),
         // 模型级"高级设置"：只存改过的字段，故整体可选
         settings: z
           .object({
@@ -352,80 +349,14 @@ export const runTerminalSchema = z.object({
 /** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */
 export const MAX_STORED_CHARS = 2_000_000
 
-/** 有界、非空白、无控制字符的服务档字符串（不枚举供应商取值：未知容量名也必须能存）。 */
-const tierTextSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .refine((value) => value.trim().length > 0, '服务档不能为空白')
-  // 与原来的控制字符正则等义：逐字符按码点判断，避开 no-control-regex（不改变校验口径）
-  .refine(
-    (value) =>
-      ![...value].some((char) => {
-        const code = char.codePointAt(0) ?? 0
-        return code <= 0x1f || code === 0x7f
-      }),
-    '服务档不得包含控制字符'
-  )
-
-/**
- * 本地请求策略快照（仅随消息存档）：形状 + **工厂不变量**一起收口，**不进模型请求**。
- * - mode 决定本地并发：normal → 1，fast → 2；
- * - 只有 fast 且能力位 supported 才请求非默认服务档（值与 resolveRequestPolicy 同一常量）。
- * 语义上只表达"本 run 当时要什么"，不是实际档位。
- */
-const requestPolicySnapshotSchema = z
-  .object({
-    mode: z.enum(SPEED_MODES),
-    maxLocalReadConcurrency: z.union([z.literal(1), z.literal(2)]),
-    requestedServiceTier: tierTextSchema.nullable(),
-    tierSupport: z.enum(TIER_SUPPORTS)
-  })
-  .superRefine((value, ctx) => {
-    const expectedConcurrency = value.mode === 'fast' ? 2 : 1
-    if (value.maxLocalReadConcurrency !== expectedConcurrency) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '本地并发与速度档不一致' })
-    }
-    const expectedTier =
-      value.mode === 'fast' && value.tierSupport === 'supported' ? FAST_SERVICE_TIER : null
-    if (value.requestedServiceTier !== expectedTier) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '服务档意图与速度档 / 能力位不一致' })
-    }
-  })
-
-/** 服务档观测：observed 与 actual 必须一致；矛盾数据一律拒收，不用断言绕过。 */
-const serviceTierObservationSchema = z
-  .object({
-    requested: tierTextSchema.nullable(),
-    actual: tierTextSchema.nullable(),
-    observed: z.boolean()
-  })
-  .superRefine((value, ctx) => {
-    if (value.observed && value.actual === null) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'observed=true 必须带 actual' })
-    }
-    if (!value.observed && value.actual !== null) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'observed=false 时 actual 必须为 null' })
-    }
-  })
-
 /**
  * 消息上的本地运行事实（IPC 白名单、落盘校验与 conversations-core 直调共用同一份规则）：
- * 身份必须是规范 UUID；策略 / 档位必须能归属到 requestId。
+ * 身份必须是规范 UUID。历史存档里的 `requestPolicy` / `serviceTier` 字段不再声明，
+ * 由 zod 默认 strip 语义忽略，绝不因旧字段报错。
  */
 export const runFactsSchema = z
   .object({
-    requestId: z.string().uuid().optional(),
-    requestPolicy: requestPolicySnapshotSchema.optional(),
-    serviceTier: serviceTierObservationSchema.optional()
-  })
-  .superRefine((value, ctx) => {
-    if (
-      (value.requestPolicy !== undefined || value.serviceTier !== undefined) &&
-      value.requestId === undefined
-    ) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '缺少 requestId 的运行事实无法归属' })
-    }
+    requestId: z.string().uuid().optional()
   })
 
 /**
@@ -451,9 +382,7 @@ export const incomingMessagesSchema = z.array(
      */
     terminal: runTerminalSchema.optional(),
     // 本地运行事实同理：未声明就会被 IPC 入口静默剥离，落盘侧根本看不到。
-    requestId: z.string().uuid().optional(),
-    requestPolicy: requestPolicySnapshotSchema.optional(),
-    serviceTier: serviceTierObservationSchema.optional()
+    requestId: z.string().uuid().optional()
   })
 )
 
@@ -504,10 +433,8 @@ export const storedMessageSchema = z
     createdAt: z.number().int().nonnegative().optional(),
     /** E26b：本地执行终态（仅本地 assistant 记录，不发给模型） */
     terminal: runTerminalSchema.optional(),
-    /** 本地轮次身份 / 冻结策略 / 真实观测档位（仅本地 assistant 运行事实，不发给模型） */
-    requestId: z.string().uuid().optional(),
-    requestPolicy: requestPolicySnapshotSchema.optional(),
-    serviceTier: serviceTierObservationSchema.optional()
+    /** 本地轮次身份（仅本地 assistant 运行事实，不发给模型） */
+    requestId: z.string().uuid().optional()
   })
   .superRefine((m, ctx) => {
     if (m.segments && m.role !== 'assistant') {
@@ -516,16 +443,13 @@ export const storedMessageSchema = z
     if (m.terminal && m.role !== 'assistant') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'terminal 只允许挂在 assistant 上' })
     }
-    const hasRunFacts =
-      m.requestId !== undefined || m.requestPolicy !== undefined || m.serviceTier !== undefined
+    const hasRunFacts = m.requestId !== undefined
     if (hasRunFacts && m.role !== 'assistant') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: '运行事实只允许挂在 assistant 上' })
     }
     // 字段级形状已由上方的子 schema 审过；这里补跨界归属（与 core 直调共用同一份规则）
     const facts = runFactsSchema.safeParse({
-      requestId: m.requestId,
-      requestPolicy: m.requestPolicy,
-      serviceTier: m.serviceTier
+      requestId: m.requestId
     })
     if (!facts.success) {
       ctx.addIssue({

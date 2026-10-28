@@ -12,7 +12,6 @@ import type {
   TrustedReadCapability
 } from '@shared/agent'
 import type { RunTerminal } from '@shared/execution-outcome'
-import { resolveToolBatchConcurrency, type ServiceTierObservation } from '@shared/request-policy'
 import { toolCallDetail, toolArtifactPaths } from '@shared/tool-detail'
 import { windowToolOutput } from '@shared/tool-window'
 import { createLogger } from '../log'
@@ -193,12 +192,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   const windowEnabled = opts.toolWindow === false ? false : policy.windowEnabled
   /** 这一轮靠窗口化省下的估算 token（plan8 R9.1 记账用） */
   let avoidedTokens = 0
-  /**
-   * 本 run **最后一次真实观测**的服务档（S3-30E）。只认 observed=true 的回值：
-   * 后续轮次缺报（observed=false）不清空它，也不从 usage / 终态 / requested 推断。
-   * 纯 run 局部状态——没有全局 latest，也没有跨会话串扰。
-   */
-  let lastServiceTier: ServiceTierObservation | undefined
 
   // ── 执行事件流（plan26 D-077）：run_start / run_end（finally 补发，error 路径不丢）──
   const startedAt = Date.now()
@@ -239,8 +232,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         rounds,
         stopReason: 'max-rounds',
         avoidedTokens,
-        terminal: { state: 'max-rounds', code: 'token-limit' },
-        ...(lastServiceTier ? { serviceTier: lastServiceTier } : {})
+        terminal: { state: 'max-rounds', code: 'token-limit' }
       }
     }
     rounds++
@@ -288,8 +280,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     const res = await opts.chat(sent, emitText)
     opts.signal?.throwIfAborted()
     if (res.text) lastText = res.text
-    // S3-30E：有真实回值就更新；缺报（observed=false / 无字段）**不清空**已观测事实
-    if (res.serviceTier && res.serviceTier.observed === true) lastServiceTier = res.serviceTier
     // plan57 K52 B2：本轮请求已把转交图片发出 → 摘掉，不让 base64 在后续轮次里重放
     stripForwardedImageParts(messages)
 
@@ -301,8 +291,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         rounds,
         stopReason: 'completed',
         avoidedTokens,
-        terminal: { state: 'completed' },
-        ...(lastServiceTier ? { serviceTier: lastServiceTier } : {})
+        terminal: { state: 'completed' }
       }
     }
 
@@ -317,11 +306,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       }))
     })
 
-    // 可信内建读取批（S3-40B）：仅 FAST 且整批合格时走"私有暂存 → 同门提交"；
-    // 普通模式、混合读写、同名冒充与同文件别名继续走下面的原串行路径。
-    const batchEligible =
-      opts.requestPolicy?.maxLocalReadConcurrency === 2 &&
-      resolveToolBatchConcurrency({ mode: opts.requestPolicy?.mode, eligible: true }) === 2
+    // 可信内建读取批（S3-40B → S89-01）：本地并行默认开启，整批合格才走"私有暂存 → 同门提交"；
+    // 混合读写、同名冒充与同文件别名不产生 readPlan，继续走下面的原串行路径。
+    const batchEligible = opts.requestPolicy?.maxLocalReadConcurrency === 2
     const readPlan =
       batchEligible && opts.signal?.aborted !== true ? await planTrustedReadBatch(res.toolCalls, toolMap) : null
     let stagedReads: Map<string, StagedToolRead> | null = null
@@ -340,8 +327,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       batchStartedAt = Date.now()
       const batch = await runToolBatch<ToolCall, StagedToolRead>({
         items: res.toolCalls,
-        mode: opts.requestPolicy?.mode,
-        eligible: true,
+        eligible: readPlan !== null,
         signal: opts.signal,
         leasePhase: 'tool:read_file',
         canStart: (tc) => (opts.canStart ? opts.canStart(tc.name) === true : true),

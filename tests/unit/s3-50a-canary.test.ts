@@ -52,7 +52,7 @@ describe('S3-50A Canary：未授权出站 0、日志/错误事实泄漏 0', () =
     const context = createProviderExecutionContext({
       clientVersion: CANARY,
       purpose: 'connection-check',
-      policy: resolveRequestPolicy({ modelDefault: 'normal', tierSupport: 'unknown' }),
+      policy: resolveRequestPolicy(),
       randomUUID: (() => {
         let calls = 0
         return () => (calls++ === 0 ? CANARY_ID : CANARY_ID + '-2')

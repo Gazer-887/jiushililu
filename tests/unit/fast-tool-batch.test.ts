@@ -55,28 +55,26 @@ afterEach(() => {
   stopWatchdog()
 })
 
-describe('S3-40A 批并发纯策略', () => {
-  it('普通 1、FAST 合格 2；缺省/未知/非法一律保守回 1', () => {
-    expect(resolveToolBatchConcurrency({ mode: 'normal', eligible: true })).toBe(1)
-    expect(resolveToolBatchConcurrency({ mode: 'fast', eligible: true })).toBe(2)
-    expect(resolveToolBatchConcurrency({ mode: 'fast' })).toBe(1)
-    expect(resolveToolBatchConcurrency({ mode: 'fast', eligible: 'true' })).toBe(1)
-    expect(resolveToolBatchConcurrency({ mode: 'fast', eligible: 1 })).toBe(1)
-    expect(resolveToolBatchConcurrency({ mode: 'turbo', eligible: true })).toBe(1)
+describe('S89-01 批并发纯策略', () => {
+  it('整批合格 2、其余一律保守回 1', () => {
+    expect(resolveToolBatchConcurrency({ eligible: true })).toBe(2)
+    expect(resolveToolBatchConcurrency({ eligible: false })).toBe(1)
+    expect(resolveToolBatchConcurrency({})).toBe(1)
+    expect(resolveToolBatchConcurrency({ eligible: 'true' })).toBe(1)
+    expect(resolveToolBatchConcurrency({ eligible: 1 })).toBe(1)
     expect(resolveToolBatchConcurrency()).toBe(1)
   })
 })
 
-describe('S3-40A 有界峰值与顺序', () => {
-  it('普通模式峰值 1，结果按输入顺序回灌', async () => {
+describe('S89-01 有界峰值与顺序', () => {
+  it('不合格批峰值 1，结果按输入顺序回灌', async () => {
     let active = 0
     let peak = 0
     const started: number[] = []
     const gates = [deferred(), deferred(), deferred()]
     const pending = runToolBatch({
       items: [0, 1, 2],
-      mode: 'normal',
-      eligible: true,
+      eligible: false,
       run: async (_item, index) => {
         active += 1
         peak = Math.max(peak, active)
@@ -102,14 +100,13 @@ describe('S3-40A 有界峰值与顺序', () => {
     expect(result.aborted).toBe(false)
   })
 
-  it('FAST 合格模式峰值 2；后发先完成不改变结果顺序', async () => {
+  it('合格批峰值 2（默认并行）；后发先完成不改变结果顺序', async () => {
     let active = 0
     let peak = 0
     const started: number[] = []
     const gates = [deferred(), deferred(), deferred()]
     const pending = runToolBatch({
       items: [0, 1, 2],
-      mode: 'fast',
       eligible: true,
       run: async (_item, index) => {
         active += 1
@@ -135,10 +132,10 @@ describe('S3-40A 有界峰值与顺序', () => {
 
   it('超限/非法配置不能放宽成无界起跑', async () => {
     const configs = [
-      { mode: 'normal', eligible: true },
-      { mode: 'fast' },
-      { mode: 'fast', eligible: 'yes' },
-      { mode: 'turbo', eligible: true },
+      { eligible: false },
+      { eligible: 'yes' },
+      { eligible: 1 },
+      { eligible: null },
       {}
     ]
     for (const config of configs) {
@@ -174,7 +171,6 @@ describe('S3-40A 取消、失败与启动守卫', () => {
     const started: number[] = []
     const pending = runToolBatch({
       items: [0, 1, 2],
-      mode: 'normal',
       signal: controller.signal,
       run: async (_item, index) => {
         started.push(index)
@@ -203,7 +199,6 @@ describe('S3-40A 取消、失败与启动守卫', () => {
     const calls = new Map<number, number>()
     const result = await runToolBatch({
       items: [0, 1, 2],
-      mode: 'normal',
       run: async (_item, index) => {
         calls.set(index, (calls.get(index) ?? 0) + 1)
         if (index === 1) throw new Error('boom')
@@ -225,7 +220,6 @@ describe('S3-40A 取消、失败与启动守卫', () => {
     const events: string[] = []
     const result = await runToolBatch({
       items: ['a', 'b', 'c'],
-      mode: 'normal',
       canStart: (item, index) => {
         events.push(`can:${index}`)
         return item !== 'b'
@@ -243,7 +237,6 @@ describe('S3-40A 取消、失败与启动守卫', () => {
   it('canStart 抛错按不许启动处理，不把异常当已执行', async () => {
     const result = await runToolBatch({
       items: [0, 1],
-      mode: 'normal',
       canStart: () => {
         throw new Error('guard failed')
       },
@@ -260,7 +253,6 @@ describe('S3-40C2-R1 提交标记初值', () => {
     const insideCommit: unknown[] = []
     const committed = await runToolBatch({
       items: [0, 1],
-      mode: 'normal',
       guard: (results) => {
         // 全部在途项已结算、提交门尚未通过：此前的启动对象必须已带 committed: false
         for (const r of results) beforeCommit.push(r.committed)
@@ -280,7 +272,6 @@ describe('S3-40C2-R1 提交标记初值', () => {
     const beforeDiscard: unknown[] = []
     const discarded = await runToolBatch({
       items: [0],
-      mode: 'normal',
       guard: () => false,
       discard: (results) => {
         for (const r of results) beforeDiscard.push(r.committed)
@@ -297,7 +288,6 @@ describe('S3-40A 看门狗所有权', () => {
     const gates = [deferred(), deferred()]
     const pending = runToolBatch({
       items: [0, 1],
-      mode: 'fast',
       eligible: true,
       run: async (_item, index) => {
         await gates[index]!.promise
@@ -315,7 +305,6 @@ describe('S3-40A 看门狗所有权', () => {
   it('单项抛错也释放自己的租约', async () => {
     const result = await runToolBatch({
       items: [0, 1],
-      mode: 'fast',
       eligible: true,
       run: async (_item, index) => {
         if (index === 0) throw new Error('boom')
@@ -335,11 +324,8 @@ const readCall = (id: string, path: string): ToolCall => ({
   arguments: JSON.stringify({ path })
 })
 
-const FAST_POLICY = {
-  mode: 'fast' as const,
-  maxLocalReadConcurrency: 2 as const,
-  requestedServiceTier: 'priority',
-  tierSupport: 'supported' as const
+const BATCH_POLICY = {
+  maxLocalReadConcurrency: 2 as const
 }
 
 const roots: string[] = []
@@ -383,7 +369,6 @@ describe('S3-40B 取消边界补强（40A 回归）', () => {
     let runs = 0
     const result = await runToolBatch({
       items: [0, 1],
-      mode: 'normal',
       signal: controller.signal,
       canStart: () => {
         controller.abort()
@@ -439,7 +424,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
     const committed: string[] = []
     const result = await runToolBatch<string, StagedToolRead>({
       items: ['a.txt', 'b.txt'],
-      mode: 'fast',
       eligible: true,
       run: (path) => read.trustedRead!.stage({ path }, controller.signal),
       guard: () => {
@@ -476,7 +460,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
 
     const result = await runToolBatch<string, StagedToolRead>({
       items: ['ok.txt', 'bin.dat'],
-      mode: 'fast',
       eligible: true,
       run: (path) => read.trustedRead!.stage({ path }),
       commit: (results) => {
@@ -526,7 +509,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
     const controller = new AbortController()
     const pending = runToolBatch<string, StagedToolRead>({
       items: ['late.txt'],
-      mode: 'fast',
       eligible: true,
       signal: controller.signal,
       run: (path) => cap.stage({ path }, controller.signal),
@@ -566,7 +548,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
     const controller = new AbortController()
     const pending = runToolBatch<string, StagedToolRead>({
       items: ['a.txt', 'b.txt'],
-      mode: 'fast',
       eligible: true,
       signal: controller.signal,
       run: (path) => cap.stage({ path }, controller.signal),
@@ -663,7 +644,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
     let current = ''
     const result = await runToolBatch<string, StagedToolRead>({
       items: ['a.txt', 'b.txt'],
-      mode: 'fast',
       eligible: true,
       run: (path) => {
         current = path
@@ -692,7 +672,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
     writeText(root, 'b.txt', 'B')
     const result = await runToolBatch<string, StagedToolRead>({
       items: ['a.txt', 'b.txt'],
-      mode: 'fast',
       eligible: true,
       canStart: (path) => path !== 'b.txt',
       run: (path) => read.trustedRead!.stage({ path }),
@@ -716,7 +695,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
     let commitCalls = 0
     const result = await runToolBatch<string, StagedToolRead>({
       items: ['a.txt', 'b.txt'],
-      mode: 'fast',
       eligible: true,
       signal: controller.signal,
       run: (path) => read.trustedRead!.stage({ path }, controller.signal),
@@ -748,7 +726,6 @@ describe('S3-40B 可信读取：暂存、提交门与真实版本', () => {
     writeText(root, 'b.txt', 'guard-throw-b')
     const result = await runToolBatch<string, StagedToolRead>({
       items: ['a.txt', 'b.txt'],
-      mode: 'fast',
       eligible: true,
       run: (path) => read.trustedRead!.stage({ path }),
       guard: () => {
@@ -862,7 +839,7 @@ describe('S3-40B 资格：canonical key 与真实对象身份', () => {
 })
 
 describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
-  it('FAST 双读真实执行：完成逆序但工具 ID/消息顺序不变，版本提交后可用', async () => {
+  it('并行双读真实执行：完成逆序但工具 ID/消息顺序不变，版本提交后可用', async () => {
     const root = tempRoot()
     const { read, write, tools } = toolsFor(root)
     writeText(root, 'a.txt', 'A-content')
@@ -889,7 +866,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       systemPrompt: '',
       history: [],
       tools,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       maxRounds: 3,
       onToolEvent: (e) => events.push(e),
       chat: async (messages): Promise<AgentChatResult> => {
@@ -924,7 +901,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
     expect(await write.execute({ path: 'a.txt', content: 'A2' })).toContain('已写入')
   })
 
-  it('普通模式仍走原串行 execute：不调用 stage，读版本照常成立', async () => {
+  it('运行策略收紧为 1 路时仍走原串行 execute：不调用 stage，读版本照常成立', async () => {
     const root = tempRoot()
     const { read, write, tools } = toolsFor(root)
     writeText(root, 'a.txt', 'A')
@@ -942,7 +919,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: { ...FAST_POLICY, mode: 'normal', maxLocalReadConcurrency: 1, requestedServiceTier: null },
+      requestPolicy: { maxLocalReadConcurrency: 1 },
       chat: async (messages): Promise<AgentChatResult> => {
         chatCalls++
         if (chatCalls === 1) return { text: null, toolCalls: [readCall('n1', 'a.txt'), readCall('n2', 'b.txt')] }
@@ -972,7 +949,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       chat: async (messages): Promise<AgentChatResult> => {
         chatCalls++
         if (chatCalls === 1) {
@@ -1026,7 +1003,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools: [fake],
       maxRounds: 3,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       chat: async (): Promise<AgentChatResult> => {
         chatCalls++
         if (chatCalls === 1) return { text: null, toolCalls: [readCall('f1', 'a.txt'), readCall('f2', 'b.txt')] }
@@ -1052,7 +1029,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       chat: async (messages): Promise<AgentChatResult> => {
         chatCalls++
         if (chatCalls === 1) return { text: null, toolCalls: [readCall('r1', 'ok.txt'), readCall('r2', 'bin.dat')] }
@@ -1104,7 +1081,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       signal: controller.signal,
       canStart,
       chat: async (messages): Promise<AgentChatResult> => {
@@ -1146,7 +1123,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       canStart: () => !deny,
       chat: async (): Promise<AgentChatResult> => {
         chatCalls++
@@ -1183,7 +1160,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: { ...FAST_POLICY, mode: 'normal', maxLocalReadConcurrency: 1, requestedServiceTier: null },
+      requestPolicy: { maxLocalReadConcurrency: 1 },
       canStart: () => false,
       chat: async (): Promise<AgentChatResult> => {
         chatCalls++
@@ -1208,7 +1185,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       signal: controller.signal,
       chat: async (): Promise<AgentChatResult> => {
         chatCalls++
@@ -1243,7 +1220,7 @@ describe('S3-40B loop 入口：有序回灌、版本、租约与取消', () => {
       history: [],
       tools,
       maxRounds: 3,
-      requestPolicy: FAST_POLICY,
+      requestPolicy: BATCH_POLICY,
       canStart: () => allowed,
       chat: async (): Promise<AgentChatResult> => {
         chatCalls++

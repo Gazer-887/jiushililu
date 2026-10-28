@@ -1,14 +1,12 @@
 /**
- * 服务档 / 窄身份 / 认证的唯一纯出口（S3-30A）。
+ * 协议出站接线（S89-01 由 service-tier.ts 拆出）：认证头、窄身份头与目录 URL 的唯一纯出口。
  * OpenAI 与 Anthropic 两条链共用；只做判定，不发请求、不读配置、不导入 electron。
  * ⚠️ 身份只输出真实 UA 与 opencode-v1 的会话头；不开放任意 headers 旁路，不冒充其他客户端。
  */
 
 import type { ModelSettings } from '@shared/ipc'
-import type { ProviderExecutionContext, ServiceTierObservation } from '@shared/request-policy'
-import { isAuxiliaryProviderCallPurpose, observeServiceTier } from '@shared/request-policy'
+import type { ProviderExecutionContext } from '@shared/request-policy'
 import { listProviderPresets, resolvePresetAuth } from '@shared/provider-presets'
-import type { ServiceTierObserver } from './types'
 import { normalizeBaseURL, resolveApiUrl } from './url'
 
 /** 真实客户端名称：用于 self-ua / opencode-v1 的 User-Agent，不伪装成其他工具 */
@@ -22,114 +20,6 @@ export const LEGACY_AUTH_DEFAULTS: Readonly<Record<ProviderProtocol, 'bearer' | 
     'openai-compatible': 'bearer',
     anthropic: 'x-api-key'
   })
-
-/** 协议缺省值，不是厂商值：显式请求这两个等于没提要求，一律不发 */
-const NON_REQUESTED_TIERS = new Set(['auto', 'default'])
-
-/**
- * 本请求要发送的 service_tier：只有不可变策略同时为 fast + supported 才发。
- * `requestedServiceTier` 必须是明确的非默认值；辅助调用的 policy 已被工厂固定为 normal。
- */
-export function serviceTierForRequest(context?: ProviderExecutionContext): string | null {
-  if (!context) return null
-  // 五类辅助调用固定普通：即使调用方交来一份伪造的 fast policy，也不发收费档
-  if (isAuxiliaryProviderCallPurpose(context.purpose)) return null
-  const policy = context.policy
-  if (policy.mode !== 'fast' || policy.tierSupport !== 'supported') return null
-  const tier = policy.requestedServiceTier
-  if (typeof tier !== 'string') return null
-  const trimmed = tier.trim()
-  if (trimmed.length === 0 || NON_REQUESTED_TIERS.has(trimmed)) return null
-  return trimmed
-}
-
-/** 在既有请求体上附加服务档字段；普通模式/缺 context 时原对象一个键都不动。 */
-export function withServiceTierField(
-  body: Record<string, unknown>,
-  context?: ProviderExecutionContext
-): Record<string, unknown> {
-  const tier = serviceTierForRequest(context)
-  if (tier !== null) body['service_tier'] = tier
-  return body
-}
-
-/**
- * Anthropic 的容量选择值（S3-30B 冻结映射）：FAST 只请求「可选用优先容量」，
- * 不保证拿到优先容量，也绝不等于已经购买。协议只接受 `auto` / `standard_only`，
- * 因此不能把 OpenAI 的 `priority` / `fast` 原样发过去。
- */
-export const ANTHROPIC_SERVICE_TIER_AUTO = 'auto'
-
-/**
- * 本请求要发送的 Anthropic `service_tier`：门控与 OpenAI 完全同一条
- * （辅助五类固定普通、必须 fast + supported、明确非默认值），值翻译成本协议的 `auto`。
- */
-export function anthropicServiceTierForRequest(context?: ProviderExecutionContext): string | null {
-  if (serviceTierForRequest(context) === null) return null
-  return ANTHROPIC_SERVICE_TIER_AUTO
-}
-
-/** 在既有 Anthropic 请求体上附加容量选择字段；普通模式/缺 context 时原对象一个键都不动。 */
-export function withAnthropicServiceTierField(
-  body: Record<string, unknown>,
-  context?: ProviderExecutionContext
-): Record<string, unknown> {
-  const tier = anthropicServiceTierForRequest(context)
-  if (tier !== null) body['service_tier'] = tier
-  return body
-}
-
-/** 只认真实回值：非空字符串以外（缺失 / 空串 / 非字符串）一律 null，绝不以 requested 回填。 */
-export function readServiceTierValue(payload: unknown): string | null {
-  if (payload === null || typeof payload !== 'object') return null
-  const value = (payload as { service_tier?: unknown }).service_tier
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-/**
- * 结果里的服务档观测：缺 context 且服务端也没回值时**省略字段**（旧调用者形状不变）；
- * 其余情况一律给 `ServiceTierObservation`，缺报保持 actual=null / observed=false。
- */
-export function serviceTierForResult(
-  requested: string | null,
-  actual: string | null,
-  context?: ProviderExecutionContext
-): ServiceTierObservation | undefined {
-  if (context === undefined && actual === null) return undefined
-  return observeServiceTier(requested, actual)
-}
-
-/**
- * 单请求服务档观察器（S3-30A-R1）：每次调用各建一个，不跨请求共享，不提供全局 latest。
- * observe 只在真实回值时通知且不清空已知值；finalize 仅在从未观测时补 observed=false。
- * 两者共同保证：失败前已知档位不丢，缺报事件不覆盖先前 observed=true 的事实。
- */
-export interface ServiceTierEmitter {
-  observe(actual: string | null): void
-  finalize(): void
-}
-
-export function createServiceTierEmitter(
-  requested: string | null,
-  observer?: ServiceTierObserver
-): ServiceTierEmitter {
-  let lastActual: string | null = null
-  return {
-    observe(actual: string | null): void {
-      if (!observer) return
-      const observation = observeServiceTier(requested, actual)
-      if (observation.actual === null || observation.actual === lastActual) return
-      lastActual = observation.actual
-      observer(observation)
-    },
-    finalize(): void {
-      if (!observer || lastActual !== null) return
-      observer(observeServiceTier(requested, null))
-    }
-  }
-}
 
 export interface ResolvedProviderAuth {
   header: 'Authorization' | 'x-api-key'

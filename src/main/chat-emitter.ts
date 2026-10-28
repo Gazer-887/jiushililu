@@ -20,7 +20,6 @@ import type { Goal } from '@shared/goal'
 import type { SubagentJobEvent } from '@shared/agent'
 import type { TokenUsage } from '@shared/usage'
 import type { TokenSaverTier } from '@shared/token-tier'
-import type { RequestPolicySnapshot, ServiceTierObservation } from '@shared/request-policy'
 
 /** 允许出现在这一层的通道（类型上收口：别的通道想从这儿发也发不出去） */
 type StreamChannel =
@@ -56,9 +55,7 @@ export interface ChatEmitter {
     tier?: TokenSaverTier,
     memoryTokens?: number,
     usageComplete?: boolean,
-    terminal?: RunTerminal,
-    /** S3-30E：只传真实观测（observed=true）；不传 = 本次没有可披露的档位事实 */
-    serviceTier?: ServiceTierObservation
+    terminal?: RunTerminal
   ): void
   /** E26a：`details` 缺省 = 旧字符串路径；有 details 才发结构化 `ChatErrorPayload`。 */
   error(message: string, details?: ChatErrorDetails): void
@@ -74,17 +71,15 @@ export interface ChatEmitter {
 
 /**
  * 造一个"绑定到某条会话 + 某个窗口"的发送器：`conversationId` 只在这里进闭包，之后所有发送自动带上它。
- * 第三 / 第四参数可选：本地轮次身份与本 run 冻结策略，仅在提供时写进信封；旧双参调用方形状不变。
+ * 第三参数可选：本地轮次身份，仅在提供时写进信封；旧双参调用方形状不变。
  */
 export function createChatEmitter(
   win: WebContents,
   conversationId: string,
-  requestId?: string,
-  requestPolicy?: Readonly<RequestPolicySnapshot>
+  requestId?: string
 ): ChatEmitter {
   // ⚠️ 只有显式提供本地身份才附加字段：后台待办 / 检查点等旧调用者不得被绑到某次聊天轮
-  const identity: { requestId?: string; requestPolicy?: Readonly<RequestPolicySnapshot> } =
-    requestId !== undefined ? { requestId, ...(requestPolicy ? { requestPolicy } : {}) } : {}
+  const identity: { requestId?: string } = requestId !== undefined ? { requestId } : {}
   const send = <T>(channel: StreamChannel, payload: T): void => {
     // 窗口可能已经关了（用户中途关窗）—— 静默跳过，绝不因为发不出去而炸掉这一轮
     if (win.isDestroyed()) return
@@ -112,7 +107,7 @@ export function createChatEmitter(
     goal: (goal) => send(IPC.goalChanged, goal),
     subagents: (list) => send(IPC.subagentChanged, list),
     checkpoint: (runId) => send(IPC.checkpointChanged, runId),
-    done: (usage, avoided = 0, tier, memoryTokens, usageComplete, terminal, serviceTier) =>
+    done: (usage, avoided = 0, tier, memoryTokens, usageComplete, terminal) =>
       settle(IPC.chatDone, {
         usage,
         avoided,
@@ -120,9 +115,7 @@ export function createChatEmitter(
         // 注入税（plan19 §5.2）：**本地估算**，只在真有记忆段时才带 —— 没有就不带，界面也就不显示
         ...(memoryTokens && memoryTokens > 0 ? { memoryTokens } : {}),
         ...(tier ? { tier } : {}),
-        ...(terminal ? { terminal } : {}),
-        // S3-30E：只带真实回值；缺报（observed=false）与旧调用者都不带，不补默认
-        ...(serviceTier && serviceTier.observed === true ? { serviceTier } : {})
+        ...(terminal ? { terminal } : {})
       }),
     error: (message, details) => {
       if (!details) {
@@ -137,11 +130,7 @@ export function createChatEmitter(
         // 未知就不带：不造 0、不造默认档（合同 V2 §3.2）
         ...(details.avoided !== undefined ? { avoided: details.avoided } : {}),
         ...(details.tier ? { tier: details.tier } : {}),
-        ...(details.memoryTokens && details.memoryTokens > 0 ? { memoryTokens: details.memoryTokens } : {}),
-        // S3-30E：失败前已观测的真实档位才带；未知不带（单结算语义不变）
-        ...(details.serviceTier && details.serviceTier.observed === true
-          ? { serviceTier: details.serviceTier }
-          : {})
+        ...(details.memoryTokens && details.memoryTokens > 0 ? { memoryTokens: details.memoryTokens } : {})
       }
       settle(IPC.chatError, payload)
     },

@@ -1,4 +1,4 @@
-// S3-50A 配对测量：同一任务仅切换普通/FAST，用屏障证明峰值，不用固定毫秒阈值。
+// S89-01 配对测量：同一任务仅切换默认并行 / 收紧串行，用屏障证明峰值，不用固定毫秒阈值。
 // 真实 runAgentLoop + 真实 file tools + 真实 trustedRead.stage/execute；本地假 provider 不发外网。
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,17 +10,11 @@ import { createWorkspaceWriter } from '@main/workspace-write'
 import { peekWatchdogLeases, startWatchdog, stopWatchdog } from '@main/watchdog'
 import type { AgentChatResult, AgentMessage, AgentTool, StagedToolRead, ToolCall } from '@shared/agent'
 
-const FAST_POLICY = {
-  mode: 'fast' as const,
-  maxLocalReadConcurrency: 2 as const,
-  requestedServiceTier: 'priority',
-  tierSupport: 'supported' as const
+const PARALLEL_POLICY = {
+  maxLocalReadConcurrency: 2 as const
 }
-const NORMAL_POLICY = {
-  ...FAST_POLICY,
-  mode: 'normal' as const,
-  maxLocalReadConcurrency: 1 as const,
-  requestedServiceTier: null
+const SERIAL_POLICY = {
+  maxLocalReadConcurrency: 1 as const
 }
 
 interface Deferred<T> {
@@ -54,7 +48,7 @@ function tempRoot(): string {
 
 interface Sample {
   pair: number
-  mode: 'normal' | 'fast'
+  mode: 'serial' | 'parallel'
   peak: number
   modelCalls: number
   terminal: string
@@ -76,11 +70,11 @@ function writeFile(root: string, name: string, text: string): void {
 }
 
 async function runOne(
-  mode: 'normal' | 'fast',
+  mode: 'serial' | 'parallel',
   pair: number,
   root: string,
   calls: ToolCall[],
-  barrier: 'parallel' | 'serial' = mode === 'fast' ? 'parallel' : 'serial'
+  barrier: 'parallel' | 'serial' = mode === 'parallel' ? 'parallel' : 'serial'
 ): Promise<{ sample: Sample; result: { stopReason: string } }> {
   const tools: AgentTool[] = createFileTools(createWorkspaceWriter(root, { trash: async () => {} }))
   const read = tools[0]!
@@ -123,7 +117,7 @@ async function runOne(
     history: [],
     tools,
     maxRounds: 3,
-    requestPolicy: mode === 'fast' ? FAST_POLICY : NORMAL_POLICY,
+    requestPolicy: mode === 'parallel' ? PARALLEL_POLICY : SERIAL_POLICY,
     chat: async (messages): Promise<AgentChatResult> => {
       chatCalls += 1
       const t0 = performance.now()
@@ -139,17 +133,17 @@ async function runOne(
     }
   })
 
-  // 屏障：普通/回退串行逐项释放，FAST 合格批同时释放两项；释放前先记录峰值。
+  // 屏障：串行逐项释放，默认并行合格批同时释放两项；释放前先记录峰值。
   if (barrier === 'serial') {
     await waitUntil(() => started.length === 1)
-    expect(peak, '普通模式启动第一项时峰值应为 1').toBe(1)
-    expect(gates[0], '普通模式第一项应持有闸门').toBeTruthy()
+    expect(peak, '串行策略启动第一项时峰值应为 1').toBe(1)
+    expect(gates[0], '串行策略第一项应持有闸门').toBeTruthy()
     gates[0]!.resolve()
     await waitUntil(() => started.length === 2)
     gates[1]!.resolve()
   } else {
     await waitUntil(() => started.length === 2)
-    expect(peak, 'FAST 合格批应同时启动两项，峰值 2').toBe(2)
+    expect(peak, '默认并行合格批应同时启动两项，峰值 2').toBe(2)
     gates[0]!.resolve()
     gates[1]!.resolve()
   }
@@ -197,8 +191,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-describe('S3-50A 50 次配对测量（屏障证据）', () => {
-  it('普通峰值 1 / FAST 峰值 2；结果、读版本、终态、模型调用次数相同', async () => {
+describe('S89-01 50 对默认并行测量（屏障证据）', () => {
+  it('默认并行峰值 2 / 收紧串行峰值 1；结果、读版本、终态、模型调用次数相同', async () => {
     const pairs: PairResult[] = []
     for (let i = 0; i < 50; i += 1) {
       const root = tempRoot()
@@ -206,10 +200,10 @@ describe('S3-50A 50 次配对测量（屏障证据）', () => {
       writeFile(root, 'a.txt', `alpha-${i}`)
       writeFile(root, 'b.txt', `beta-${i}`)
       const calls = [readCall('a', 'a.txt'), readCall('b', 'b.txt')]
-      const normal = await runOne('normal', i, root, calls)
-      const fast = await runOne('fast', i, root, calls)
-      expect(normal.sample.peak, `第 ${i + 1} 对普通峰值`).toBe(1)
-      expect(fast.sample.peak, `第 ${i + 1} 对 FAST 峰值`).toBe(2)
+      const normal = await runOne('serial', i, root, calls)
+      const fast = await runOne('parallel', i, root, calls)
+      expect(normal.sample.peak, `第 ${i + 1} 对串行峰值`).toBe(1)
+      expect(fast.sample.peak, `第 ${i + 1} 对默认并行峰值`).toBe(2)
       expect(fast.sample.modelCalls, `第 ${i + 1} 对模型调用次数`).toBe(normal.sample.modelCalls)
       expect(fast.sample.terminal, `第 ${i + 1} 对终态`).toBe(normal.sample.terminal)
       expect(fast.sample.toolContents, `第 ${i + 1} 对读取结果/版本`).toEqual(normal.sample.toolContents)
@@ -272,7 +266,7 @@ describe('S3-50A 50 次配对测量（屏障证据）', () => {
   }, 60_000)
 })
 
-describe('S3-50A 不合格批仍串行', () => {
+describe('S89-01 不合格批仍串行', () => {
   it('同文件、大小写/junction 别名、混合工具、MCP 冒名一律 plan=null', async () => {
     const root = tempRoot()
     roots.push(root)
@@ -333,7 +327,7 @@ describe('S3-50A 不合格批仍串行', () => {
     roots.push(root)
     writeFile(root, 'a.txt', 'alpha')
     const { sample } = await runOne(
-      'fast',
+      'parallel',
       0,
       root,
       [readCall('s1', 'a.txt'), readCall('s2', 'a.txt')],

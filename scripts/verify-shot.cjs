@@ -281,14 +281,6 @@ const FAKE_PROFILE_BASE = {
 }
 
 /**
- * 模型默认速度的桩状态（S3-20V）：按条目 id 查表。
- * 为什么挂在 `fakeEndpoint` 里而不是各调用点逐次传：m1 会在 `models:list` / patch /
- * set-entry 三处被重建，逐处传必然漏一处；按 id 查表则"重建几次都同值"。
- * e3 刻意**不配** ⇒ 旧档案缺字段的存量形态，界面必须显示普通（不补 FAST）。
- */
-const STUB_SPEED_BY_ENTRY = { 'm1-e1': 'fast', 'm1-e2': 'normal' }
-
-/**
  * 一条假端点：端点 + 模型目录（一把 Key 能调好几个模型），三条模型只描述一次。
  *
  * `settingsByModel`：**可选**，给某条模型挂模型级高级设置（plan58 片① 用它造
@@ -317,7 +309,7 @@ function fakeEndpoint(id, name, firstModel, source, hasApiKey, settingsByModel =
         model: `${firstModel}-vision`,
         ...(settingsByModel.e3 ? { settings: settingsByModel.e3 } : {})
       }
-    ].map((m) => (STUB_SPEED_BY_ENTRY[m.id] ? { ...m, speedMode: STUB_SPEED_BY_ENTRY[m.id] } : m)),
+    ],
     activeModelId: `${id}-e1`
   }
 }
@@ -503,9 +495,7 @@ let uiPrefsStub = {
   fontScale: 'md',
   uiFont: '',
   workbench: { schemaVersion: 1, panes: [] },
-  workbenchSizes: { paneWidths: [] },
-  // S3-20B1：会话级速度覆盖（键 = 真实 conversationId）；S3-20V 验界面读写与"无会话不写"
-  conversationSpeedOverrides: {}
+  workbenchSizes: { paneWidths: [] }
 }
 const uiPrefsSetCalls = []
 // ── 工作区桩（plan7 批 F4）改**有状态**：恢复默认的断言要看"切过去又切回来"，无状态桩只能验返回值 ──
@@ -856,40 +846,17 @@ const chatSendCalls = []
  */
 const chatRunIdentities = new Map()
 /** 最近一次真正发给渲染端的聊天信封 —— 冻结策略反例直接读它（它是发送前的最终形状）。 */
-let lastChatEnvelope = null
 
 function rememberChatIdentity(payload) {
   const cid = payload && payload.conversationId
   const rid = payload && payload.requestId
   if (typeof cid === 'string' && typeof rid === 'string' && rid.length > 0) {
-    // ⚠️ 策略在 **chat:send 起点** 冻结，之后运行期改速度覆盖 / 模型默认都不得影响本轮事件
-    chatRunIdentities.set(cid, { requestId: rid, requestPolicy: stubFrozenPolicy(cid) })
+    chatRunIdentities.set(cid, { requestId: rid })
   }
   return undefined
 }
 
-/**
- * 预览桩的冻结策略（契约副本）：夹具 m1-e1 默认 FAST，且没有任何模型声明 serviceTiers。
- * 按真实 resolveRequestPolicy 的不变量 ⇒ 能力位 unknown 时不请求非默认档，requestedServiceTier 为 null。
- * ⚠️ 夹具若新增能力声明，这里必须同步，否则信封策略会与真主进程不一致。
- */
-function stubFrozenPolicy(conversationId) {
-  const view = stubModelsView()
-  const profile = view.profiles.find((p) => p.id === view.activeId)
-  const entry = profile ? profile.models.find((m) => m.id === profile.activeModelId) : undefined
-  const modelDefault = entry && entry.speedMode === 'fast' ? 'fast' : 'normal'
-  const overrides = uiPrefsStub && uiPrefsStub.conversationSpeedOverrides
-  const override = overrides ? overrides[conversationId] : undefined
-  const mode = override === 'normal' || override === 'fast' ? override : modelDefault
-  return {
-    mode,
-    maxLocalReadConcurrency: mode === 'fast' ? 2 : 1,
-    requestedServiceTier: null,
-    tierSupport: 'unknown'
-  }
-}
-
-/** 聊天出站信封装饰：只补本地身份与冻结策略，不伪造实际档位（缺报就该保持未知）。 */
+/** 聊天出站信封装饰：只补本次 run 的本地 requestId，不伪造其它事实。 */
 function decorateChatEnvelope(channel, envelope) {
   if (typeof channel !== 'string' || !channel.startsWith('chat:')) return envelope
   if (!envelope || typeof envelope !== 'object') return envelope
@@ -897,18 +864,10 @@ function decorateChatEnvelope(channel, envelope) {
   if (typeof conversationId !== 'string') return envelope
   const record = chatRunIdentities.get(conversationId)
   const requestId = record ? record.requestId : undefined
-  // 优先保留事件自带策略；否则复用 chat:send 时冻结的副本，绝不现读当前设置
-  const requestPolicy = envelope.requestPolicy
-    ? envelope.requestPolicy
-    : record
-      ? record.requestPolicy
-      : stubFrozenPolicy(conversationId)
-  lastChatEnvelope = {
+  return {
     ...envelope,
-    ...(envelope.requestId || !requestId ? {} : { requestId }),
-    ...(envelope.requestPolicy ? {} : { requestPolicy })
+    ...(envelope.requestId || !requestId ? {} : { requestId })
   }
-  return lastChatEnvelope
 }
 /** models:set-entry 的调用流水 —— 模型分组下拉「点模型即切」要断言真的发起了切换 */
 const modelEntryCalls = []
@@ -916,10 +875,6 @@ const modelEntryCalls = []
 // patch 要能"改了再读回来"（回显主进程真值的纪律），所以 m1-e2 的设置必须挂在可变变量上，
 // `models:list` 每次现读它。stubActiveModelId 供探针切形态（effort / toggle / budget / 未声明）。
 const modelPatchCalls = []
-/** S3-20V：models:save 的载荷流水 —— 只改速度下拉时**不许**触发保存（选择与落盘是两步） */
-const modelSaveCalls = []
-/** S3-20V：conv:create 的调用流水 —— 新建任务页伪造速度事件不许顺手建会话 */
-const convCreateCalls = []
 const stubE2Settings = { reasoningEffort: 'default', reasoning: { kind: 'effort', levels: ['high', 'low'] } }
 let stubActiveModelId = 'm1-e1'
 let modelBroadcast = () => 0
@@ -1757,7 +1712,6 @@ const STUBS = {
     return withStubMetadata(stubModelsView())
   },
   'models:save': (input) => {
-    modelSaveCalls.push(input)
     return {
       ...FAKE_PROFILE_BASE,
       id: input?.id ?? 'm-new',
@@ -1766,7 +1720,6 @@ const STUBS = {
       source: 'custom',
       hasApiKey: Boolean(input?.apiKey),
       apiKeyMasked: input?.apiKey ? 'sk-…new' : '',
-      // S3-20V：保存链必须把模型目录（含 speedMode）原样交回，否则"保存后重开读回"是空的
       models: Array.isArray(input?.models) ? input.models : []
     }
   },
@@ -1895,7 +1848,6 @@ const STUBS = {
     }
   },
   'conv:create': (input) => {
-    convCreateCalls.push(input)
     return {
       id: 'x',
       // ⚠️ 契约副本（真源 `conversations-core.ts` 的 createConversation）：firstMessage 会**播种成
@@ -2128,8 +2080,7 @@ const STUBS = {
       fontScale: 'md',
       uiFont: '',
       workbench: { schemaVersion: 1, panes: [] },
-      workbenchSizes: { paneWidths: [] },
-      conversationSpeedOverrides: {}
+      workbenchSizes: { paneWidths: [] }
     }
     return { ...uiPrefsStub }
   },
@@ -2646,7 +2597,7 @@ app.whenReady().then(async () => {
     }
   })
 
-  // 聊天信封装饰（S3-V30）：所有出站 chat:* 事件统一补本 run 的本地 requestId 与冻结策略。
+  // 聊天信封装饰：所有出站 chat:* 事件统一补本 run 的本地 requestId。
   // ⚠️ 只在预览进程内包裹发送口：不触碰产品代码，也不改变非聊天通道的参数形状。
   const rawWebContentsSend = win.webContents.send.bind(win.webContents)
   win.webContents.send = (channel, ...rest) => {
@@ -12647,535 +12598,6 @@ app.whenReady().then(async () => {
     { back: langFlow.back, switchedBack: langFlow.switchedBack }
   )
 
-  // ══ S3-20V：模型默认速度 + 会话速度覆盖的真实渲染门 ══════════════════════
-  // 判据全部量真实几何 / 真实 React 状态 / 真实 ui-prefs 桩，不读源码推断：
-  //   ① 设置页逐模型默认速度：值、提示、选项、行内不重叠、不横向溢出；
-  //   ② 窄窗（<560px）换行、选择器占满整行、焦点环规则真实在样式表里；
-  //   ③ 输入区会话速度：活动会话可操作，切会话互不影响；
-  //   ④ 新建任务页：选择器禁用、显示当前模型默认、伪造事件不写覆盖也不建会话；
-  //   ⑤ FAST 只作策略意图：文案里不冒充厂商已提供的服务档。
-  uiPrefsStub = { ...uiPrefsStub, conversationSpeedOverrides: {} }
-  broadcastUIPrefsStub()
-  await new Promise((r) => setTimeout(r, 400))
-
-  /** 主窗口速度控件读数（含几何、选项、溢出与焦点环规则） */
-  const readSpeedMain = () => win.webContents.executeJavaScript(`
-    (() => {
-      const rect = (el) => {
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
-          right: Math.round(r.right), bottom: Math.round(r.bottom) };
-      };
-      const chip = document.querySelector('.speed-chip');
-      const sel = document.querySelector('.speed-select');
-      const eff = document.querySelector('.speed-effective');
-      const src = document.querySelector('.speed-source');
-      const next = document.querySelector('.speed-next');
-      const bar = document.querySelector('.console-toolbar');
-      const left = document.querySelector('.tb-left');
-      const right = document.querySelector('.tb-right');
-      const texts = [document.querySelector('.speed-chip-label'), eff, src, next];
-      const textOverflow = texts
-        .filter((el) => el && el.scrollWidth > el.clientWidth + 1)
-        .map((el) => (el.textContent || '').trim());
-      const rules = [];
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            const t = rule.cssText || '';
-            if (t.indexOf('.speed-select:focus-visible') >= 0) rules.push(t);
-          }
-        } catch (err) { /* 同源样式表读得了；跨域读不了也不影响本条判据 */ }
-      }
-      return {
-        view: document.querySelector('.chat-view') ? 'chat'
-          : (document.querySelector('.new-task') ? 'new-task' : '?'),
-        chip: rect(chip), select: rect(sel), effective: rect(eff), bar: rect(bar),
-        left: rect(left), right: rect(right),
-        disabled: sel ? sel.disabled : null,
-        value: sel ? sel.value : null,
-        options: sel ? Array.from(sel.options).map((o) => ({ value: o.value, label: (o.textContent || '').trim() })) : [],
-        chipText: chip ? (chip.textContent || '').trim() : '',
-        effectiveText: eff ? (eff.textContent || '').trim() : '',
-        chipTitle: chip ? (chip.getAttribute('title') || '') : '',
-        textOverflow: textOverflow,
-        focusRule: rules,
-        barOverflow: bar ? bar.scrollWidth - bar.clientWidth : null,
-        fontSizes: [chip, sel, eff, src].filter(Boolean).map((el) => parseFloat(getComputedStyle(el).fontSize)),
-        flexWrap: chip ? getComputedStyle(chip).flexWrap : null
-      };
-    })()
-  `)
-  /** 把某个元素的矩形交给 capturePage 截局部图（不截整窗，避免把与判据无关的真实路径带进证据） */
-  const shotRect = async (wc, rectLike, file) => {
-    if (!rectLike || rectLike.w <= 0 || rectLike.h <= 0) return false
-    const png = await wc.capturePage({
-      x: Math.max(0, rectLike.x),
-      y: Math.max(0, rectLike.y),
-      width: rectLike.w,
-      height: rectLike.h
-    })
-    writeFileSync(join(SHOTS, file), png.toPNG())
-    return true
-  }
-
-  // —— ① 活动会话（c1）：模型默认 FAST（桩里 m1-e1 = fast），控件可操作 ——
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const items = Array.from(document.querySelectorAll('.conv-item'));
-      const hit = items.find((el) => ((el.querySelector('.conv-title') || {}).textContent || '').trim() === '打个招呼') || items[0];
-      if (hit) hit.click();
-      return !!hit;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 900))
-  const speedChat = await readSpeedMain()
-  console.log('S3V20_SPEED_CHAT=' + JSON.stringify(speedChat))
-  checkTrue('S3-20V①：活动会话里速度控件可见且可操作（未禁用、默认 inherit）',
-    speedChat.view === 'chat' && speedChat.disabled === false && speedChat.value === 'inherit' &&
-      speedChat.chip !== null && speedChat.chip.w > 0 && speedChat.chip.h > 0 &&
-      speedChat.select !== null && speedChat.select.w > 0 && speedChat.select.h > 0,
-    speedChat)
-  checkTrue('S3-20V①：有效档显示模型默认 FAST + 来源「模型默认」（不是自报会话覆盖）',
-    speedChat.effectiveText.indexOf('FAST') >= 0 && speedChat.effectiveText.indexOf('模型默认') >= 0,
-    speedChat.effectiveText)
-  checkTrue('S3-20V①：选项只有 inherit / normal / fast 三档，不多造档位',
-    speedChat.options.map((o) => o.value).join(',') === 'inherit,normal,fast',
-    speedChat.options)
-  // ⚠️ 工具条的 scrollWidth 含隐藏菜单等绝对定位后代（既有布局），量它会把与速度无关的
-  //    旧行为算成红；本条只量**速度控件自己**：文字不溢出、字号达标、chip 完整落在工具条内。
-  checkTrue('S3-20V①：速度控件文字不横向溢出、字号不小于 10.5px、chip 完整落在工具条内且可换行',
-    speedChat.textOverflow.length === 0 &&
-      Math.min.apply(null, speedChat.fontSizes) >= 10.5 &&
-      speedChat.flexWrap === 'wrap' &&
-      speedChat.chip.x >= speedChat.bar.x - 1 &&
-      speedChat.chip.right <= speedChat.bar.right + 1,
-    {
-      overflow: speedChat.textOverflow,
-      fonts: speedChat.fontSizes,
-      flexWrap: speedChat.flexWrap,
-      chip: speedChat.chip,
-      bar: speedChat.bar
-    })
-  checkTrue('S3-20V①：速度选择器完整落在 chip 内（不掉出边框、不被邻居挤错位）',
-    speedChat.select.x >= speedChat.chip.x - 1 && speedChat.select.right <= speedChat.chip.right + 1,
-    { chip: speedChat.chip, select: speedChat.select })
-  checkTrue('S3-20V①：左右工具簇不重叠（换行也整组走，不压字）',
-    !(speedChat.left && speedChat.right &&
-      Math.min(speedChat.left.right, speedChat.right.right) - Math.max(speedChat.left.x, speedChat.right.x) > 1 &&
-      Math.min(speedChat.left.bottom, speedChat.right.bottom) - Math.max(speedChat.left.y, speedChat.right.y) > 1),
-    { left: speedChat.left, right: speedChat.right })
-  checkTrue('S3-20V①：速度选择器有 :focus-visible 焦点环规则（真实样式表里查，不靠源码信念）',
-    speedChat.focusRule.length > 0 && speedChat.focusRule.join('|').indexOf('outline') >= 0,
-    speedChat.focusRule)
-
-  // 键盘可达：从输入框按 Tab 走到速度选择器（不是只能靠脚本 focus）
-  win.focus()
-  await new Promise((r) => setTimeout(r, 250))
-  await win.webContents.executeJavaScript("(() => { const ta = document.querySelector('.console-input'); if (ta) ta.focus(); return !!ta; })()")
-  const tabTrail = []
-  let tabReached = false
-  for (let i = 0; i < 24; i += 1) {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Tab' })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Tab' })
-    await new Promise((r) => setTimeout(r, 60))
-    const cls = await win.webContents.executeJavaScript(
-      "(() => (document.activeElement && document.activeElement.className) ? String(document.activeElement.className) : '')()"
-    )
-    tabTrail.push(cls)
-    if (cls.split(' ').indexOf('speed-select') >= 0) { tabReached = true; break }
-  }
-  checkTrue('S3-20V①：速度选择器可 Tab 到达（键盘可达，不是只有鼠标）', tabReached === true, tabTrail)
-
-  // 键盘切档：inherit -> normal（原生 select 的 ArrowDown），并断言真的写进 ui-prefs
-  const speedSetBefore = uiPrefsSetCalls.length
-  win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Down' })
-  win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Down' })
-  await new Promise((r) => setTimeout(r, 700))
-  const speedChatNormal = await readSpeedMain()
-  const lastSpeedSet = uiPrefsSetCalls[uiPrefsSetCalls.length - 1]
-  console.log('S3V20_SPEED_KEY=' + JSON.stringify({ state: speedChatNormal, setCall: lastSpeedSet || null }))
-  checkTrue('S3-20V①：键盘 ArrowDown 把会话覆盖切到普通，界面显示「普通 / 会话覆盖」',
-    speedChatNormal.value === 'normal' &&
-      speedChatNormal.effectiveText.indexOf('普通') >= 0 &&
-      speedChatNormal.effectiveText.indexOf('会话覆盖') >= 0,
-    speedChatNormal)
-  checkTrue('S3-20V①：切档走唯一写入点落盘（ui-prefs:set 载荷按真实会话 id 记 normal）',
-    uiPrefsSetCalls.length === speedSetBefore + 1 &&
-      !!lastSpeedSet && !!lastSpeedSet.conversationSpeedOverrides &&
-      lastSpeedSet.conversationSpeedOverrides.c1 === 'normal',
-    lastSpeedSet || null)
-  checkTrue('S3-20V①：桩状态真的记住了覆盖（不是只改界面）',
-    uiPrefsStub.conversationSpeedOverrides && uiPrefsStub.conversationSpeedOverrides.c1 === 'normal',
-    uiPrefsStub.conversationSpeedOverrides)
-
-  // —— ② 切到 c2：继承模型默认，c1 的覆盖不串台 ——
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const items = Array.from(document.querySelectorAll('.conv-item'));
-      const hit = items.find((el) => ((el.querySelector('.conv-title') || {}).textContent || '').trim() === '查点资料');
-      if (hit) hit.click();
-      return !!hit;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 900))
-  const speedOther = await readSpeedMain()
-  checkTrue('S3-20V①：另一会话继承模型默认 FAST（不沾 c1 的覆盖，也不给它伪造成会话覆盖）',
-    speedOther.value === 'inherit' &&
-      speedOther.effectiveText.indexOf('FAST') >= 0 &&
-      speedOther.effectiveText.indexOf('模型默认') >= 0 &&
-      !uiPrefsStub.conversationSpeedOverrides.c2,
-    { state: speedOther, prefs: uiPrefsStub.conversationSpeedOverrides })
-
-  // —— ③ 新建任务页：禁用、显示当前模型默认、伪造事件不写覆盖也不建会话 ——
-  await win.webContents.executeJavaScript("(() => { const n = document.querySelector('.sidebar .new-task-btn'); if (n) n.click(); return !!n; })()")
-  await new Promise((r) => setTimeout(r, 900))
-  const speedNew = await readSpeedMain()
-  const createBefore = convCreateCalls.length
-  const setBeforeForged = uiPrefsSetCalls.length
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const sel = document.querySelector('.speed-select');
-      if (!sel) return false;
-      // 走原型 setter 绕过 React 的 value tracker，再派发 change —— 这才是"真的伪造成功"的形态
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-      setter.call(sel, 'normal');
-      sel.dispatchEvent(new Event('input', { bubbles: true }));
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 500))
-  const speedNewAfterForged = await readSpeedMain()
-  console.log('S3V20_SPEED_NEWTASK=' + JSON.stringify({ before: speedNew, after: speedNewAfterForged }))
-  checkTrue('S3-20V③：新建任务页（无活动会话）选择器禁用，值恒为 inherit',
-    speedNew.view === 'new-task' && speedNew.disabled === true && speedNew.value === 'inherit',
-    speedNew)
-  checkTrue('S3-20V③：新建任务页明确显示当前模型默认 FAST（来源「模型默认」），并说明尚无会话可覆盖',
-    speedNew.effectiveText.indexOf('FAST') >= 0 &&
-      speedNew.effectiveText.indexOf('模型默认') >= 0 &&
-      speedNew.chipTitle.indexOf('新建任务尚未创建会话') >= 0,
-    { effective: speedNew.effectiveText, title: speedNew.chipTitle })
-  checkTrue('S3-20V③：对禁用选择器伪造 change 事件 → 不写 ui-prefs、不建会话、有效档仍是模型默认',
-    uiPrefsSetCalls.length === setBeforeForged &&
-      convCreateCalls.length === createBefore &&
-      speedNewAfterForged.effectiveText.indexOf('FAST') >= 0 &&
-      !Object.prototype.hasOwnProperty.call(uiPrefsStub.conversationSpeedOverrides, 'x'),
-    {
-      setCalls: uiPrefsSetCalls.length - setBeforeForged,
-      createCalls: convCreateCalls.length - createBefore,
-      prefs: uiPrefsStub.conversationSpeedOverrides,
-      after: speedNewAfterForged.effectiveText
-    })
-
-  // —— ④ 设置页逐模型默认速度：值 / 提示 / 选项 / 几何 / 窄窗 / 焦点环 ——
-  const settingsWinNow = getSettingsWin() || (await openSettingsWin())
-  checkTrue('S3-20V④：设置独立窗口在位（速度面板必须在真实设置窗里量）', !!settingsWinNow, {
-    opened: !!settingsWinNow
-  })
-  await sevalRaw(`
-    (() => {
-      const b = document.querySelector('.settings-nav-item[data-nav="model"]');
-      if (b) b.click();
-      return !!b;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 700))
-  const modelListReady = await sevalRaw("(() => !!document.querySelector('.model-row'))()")
-  checkTrue('S3-20V④：设置页模型分区可进入（否则下面整批会在错的分区上空转）', modelListReady === true, modelListReady)
-  await sevalRaw(`
-    (() => {
-      const btn = Array.from(document.querySelectorAll('.model-row .model-act'))
-        .find((b) => (b.getAttribute('title') || '').indexOf('编辑') >= 0);
-      if (btn) btn.click();
-      return !!btn;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 700))
-
-  const readSpeedSettings = () => sevalRaw(`
-    (() => {
-      const rect = (el) => {
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
-          right: Math.round(r.right), bottom: Math.round(r.bottom) };
-      };
-      const block = document.querySelector('.model-speed');
-      if (!block) return { open: false };
-      const rows = Array.from(block.querySelectorAll('.model-speed-row'));
-      const head = block.querySelector('.model-speed-head');
-      const title = block.querySelector('.model-speed-title');
-      const hint = block.querySelector('.model-speed-head .hint');
-      const body = document.querySelector('.settings-body');
-      const rowData = rows.map((r) => {
-        const nameEl = r.querySelector('.model-speed-name');
-        const sel = r.querySelector('.model-speed-select');
-        const texts = [nameEl, sel].filter(Boolean);
-        return {
-          label: nameEl ? (nameEl.textContent || '').trim() : '',
-          name: rect(nameEl),
-          select: rect(sel),
-          value: sel ? sel.value : null,
-          disabled: sel ? sel.disabled : null,
-          options: sel ? Array.from(sel.options).map((o) => ({ value: o.value, label: (o.textContent || '').trim() })) : [],
-          overflow: texts.filter((el) => el.scrollWidth > el.clientWidth + 1).length,
-          fontSizes: texts.map((el) => parseFloat(getComputedStyle(el).fontSize)),
-          title: r.getAttribute('title') || ''
-        };
-      });
-      const rules = [];
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            const t = rule.cssText || '';
-            if (t.indexOf('.model-speed-select:focus-visible') >= 0) rules.push(t);
-          }
-        } catch (err) { /* 同上：同源样式表读得到 */ }
-      }
-      return {
-        open: true,
-        block: rect(block), head: rect(head), title: rect(title), hint: rect(hint),
-        titleText: title ? (title.textContent || '').trim() : '',
-        hintText: hint ? (hint.textContent || '').trim() : '',
-        blockText: (block.textContent || '').trim(),
-        rows: rowData,
-        body: rect(body),
-        blockOverflow: block.scrollWidth - block.clientWidth,
-        bodyOverflow: body ? body.scrollWidth - body.clientWidth : null,
-        hintOverflow: hint ? hint.scrollWidth - hint.clientWidth : null,
-        focusRule: rules,
-        rowWrap: rows.length ? getComputedStyle(rows[0]).flexWrap : null,
-        rowDirection: rows.length ? getComputedStyle(rows[0]).flexDirection : null
-      };
-    })()
-  `)
-
-  const speedSettings = await readSpeedSettings()
-  console.log('S3V20_SPEED_SETTINGS=' + JSON.stringify(speedSettings))
-  checkTrue('S3-20V④：设置页逐模型默认速度控件在位（三条模型各一行）',
-    speedSettings.open === true && speedSettings.rows.length === 3,
-    speedSettings.open ? { rows: speedSettings.rows.length } : speedSettings)
-  checkTrue('S3-20V④：标题与提示文字就位，且明确 FAST 只是请求策略（不冒充厂商服务档）',
-    speedSettings.titleText === '模型默认速度' &&
-      speedSettings.hintText.indexOf('会话未覆盖时使用') >= 0 &&
-      speedSettings.hintText.indexOf('请求策略') >= 0 &&
-      speedSettings.hintText.indexOf('由厂商能力声明与响应决定') >= 0 &&
-      speedSettings.blockText.indexOf('priority') < 0 &&
-      speedSettings.blockText.indexOf('已启用') < 0 &&
-      speedSettings.blockText.indexOf('折扣') < 0 &&
-      speedSettings.blockText.indexOf('价格') < 0 &&
-      speedSettings.blockText.indexOf('优惠') < 0,
-    { title: speedSettings.titleText, hint: speedSettings.hintText })
-  checkTrue('S3-20V④：逐模型值读回正确（e1=FAST、e2=普通、e3 缺字段回落普通）',
-    speedSettings.rows[0].value === 'fast' &&
-      speedSettings.rows[1].value === 'normal' &&
-      speedSettings.rows[2].value === 'normal' &&
-      speedSettings.rows[0].options.map((o) => o.label).join('|') === '普通|FAST 策略',
-    speedSettings.rows.map((r) => ({ label: r.label, value: r.value, options: r.options })))
-  checkTrue('S3-20V④：模型名与选择器不重叠、行间不重叠、整块不横向溢出、文字不截断',
-    speedSettings.rows.every((r) => r.name && r.select &&
-      !(Math.min(r.name.right, r.select.right) - Math.max(r.name.x, r.select.x) > 1 &&
-        Math.min(r.name.bottom, r.select.bottom) - Math.max(r.name.y, r.select.y) > 1)) &&
-      speedSettings.rows.every((r, i) => i === 0 || r.name.y >= speedSettings.rows[i - 1].select.bottom - 1) &&
-      speedSettings.rows.every((r) => r.overflow === 0) &&
-      speedSettings.blockOverflow <= 2 &&
-      (speedSettings.bodyOverflow === null || speedSettings.bodyOverflow <= 2) &&
-      speedSettings.hintOverflow <= 1,
-    {
-      rows: speedSettings.rows.map((r) => ({ name: r.name, select: r.select, overflow: r.overflow })),
-      blockOverflow: speedSettings.blockOverflow,
-      bodyOverflow: speedSettings.bodyOverflow,
-      hintOverflow: speedSettings.hintOverflow
-    })
-  checkTrue('S3-20V④：控件尺寸为真（非零）、字号不小于 10.5px、整块横向落在设置内容区内',
-    speedSettings.rows.every((r) => r.name.w > 0 && r.name.h > 0 && r.select.w > 0 && r.select.h > 0) &&
-      Math.min.apply(null, speedSettings.rows.flatMap((r) => r.fontSizes)) >= 10.5 &&
-      speedSettings.block.x >= speedSettings.body.x - 1 &&
-      speedSettings.block.right <= speedSettings.body.right + 1,
-    { rows: speedSettings.rows.map((r) => ({ n: r.name, s: r.select })), body: speedSettings.body })
-  checkTrue('S3-20V④：设置页速度选择器有 :focus-visible 焦点环规则（真实样式表）',
-    speedSettings.focusRule.length > 0 && speedSettings.focusRule.join('|').indexOf('outline') >= 0,
-    speedSettings.focusRule)
-
-  // 截图（只截速度区块，不截整窗：证据里不带与判据无关的路径/Key）。
-  // ⚠️ 设置内容区是**独立滚动容器**（.settings-body），且设置窗是隐藏窗：先滚到块、
-  //    等一拍，再单独读 rect；同一 tick 里读 rect 可能还是滚动前的位置（截到表单顶部）。
-  // ⚠️ 截图必须放在键盘改档**之前**：隐藏窗的合成器对后续状态变更不一定立刻重绘，
-  //    先截"从主进程读回的原值"，才是这张图要证明的东西。
-  const scrollSettingsToSpeed = () => sevalRaw(`
-    (() => {
-      const el = document.querySelector('.model-speed');
-      const body = document.querySelector('.settings-body');
-      if (!el || !body) return false;
-      const br = body.getBoundingClientRect();
-      const er = el.getBoundingClientRect();
-      body.scrollTop += Math.round(er.top - br.top) - 16;
-      return true;
-    })()
-  `)
-  await scrollSettingsToSpeed()
-  // 隐藏窗的合成器不会因为脚本滚动就重绘；用 1px 尺寸变更逼它走一次 layout+paint，
-  // 否则 capturePage 拿到的是滚动前的旧帧（实测会截成模型列表）。
-  const forceSettingsRepaint = async () => {
-    const w = getSettingsWin()
-    const size = w.getSize()
-    w.setSize(size[0] + 1, size[1])
-    await new Promise((r) => setTimeout(r, 250))
-    w.setSize(size[0], size[1])
-    await new Promise((r) => setTimeout(r, 400))
-  }
-  await forceSettingsRepaint()
-  await scrollSettingsToSpeed()
-  await new Promise((r) => setTimeout(r, 350))
-  const blockForShot = await sevalRaw(`
-    (() => {
-      const el = document.querySelector('.model-speed');
-      if (!el) return null;
-      const r = el.getBoundingClientRect();
-      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
-        viewportH: window.innerHeight };
-    })()
-  `)
-  const blockVisible = !!blockForShot && blockForShot.y >= 0 &&
-    blockForShot.y + blockForShot.h <= blockForShot.viewportH + 1
-  checkTrue('S3-20V④：截图前速度区块已滚入视口（否则 capturePage 会截到别的区域）',
-    blockVisible === true, blockForShot)
-  const settingsShot = blockVisible
-    ? await shotRect(getSettingsWin().webContents, blockForShot, 'verify-s3v20-speed-settings.png')
-    : false
-  checkTrue('S3-20V④：设置页速度区块截图产出（只截该区块）', settingsShot === true, blockForShot)
-
-  // 键盘切档（草稿）：e2 普通 -> FAST；选择本身不得触发 models:save（保存是独立动作）
-  const saveCallsBefore = modelSaveCalls.length
-  getSettingsWin().focus()
-  await new Promise((r) => setTimeout(r, 250))
-  await sevalRaw("(() => { const rows = Array.from(document.querySelectorAll('.model-speed-row')); const sel = rows[1] ? rows[1].querySelector('.model-speed-select') : null; if (sel) sel.focus(); return !!sel; })()")
-  getSettingsWin().webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Down' })
-  getSettingsWin().webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Down' })
-  await new Promise((r) => setTimeout(r, 600))
-  const speedSettingsKey = await readSpeedSettings()
-  checkTrue('S3-20V④：设置页键盘 ArrowDown 能改草稿（e2 普通 -> FAST），但不触发保存',
-    speedSettingsKey.rows[1].value === 'fast' && modelSaveCalls.length === saveCallsBefore,
-    { values: speedSettingsKey.rows.map((r) => r.value), saveCalls: modelSaveCalls.length - saveCallsBefore })
-  // 还原草稿值，避免把"未保存的 FAST"留给后续探针
-  // 还原也走**真实键盘**（ArrowUp）：脚本改 DOM 值只能改界面、改不动 React 草稿，
-  // 下一次渲染就会弹回 FAST —— 那会让后续探针看到未保存的假状态。
-  await sevalRaw("(() => { const rows = Array.from(document.querySelectorAll('.model-speed-row')); const sel = rows[1] ? rows[1].querySelector('.model-speed-select') : null; if (sel) sel.focus(); return !!sel; })()")
-  getSettingsWin().webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Up' })
-  getSettingsWin().webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Up' })
-  await new Promise((r) => setTimeout(r, 600))
-  const restored = await readSpeedSettings()
-  checkTrue('S3-20V④：键盘改档后能还原草稿（e2 回到普通，避免未保存值污染后续探针）',
-    restored.rows[1].value === 'normal', restored.rows.map((r) => r.value))
-
-  // 窄窗：<560px 时行内换行、选择器占满整行、仍不重叠不溢出
-  const settingsSizeBefore = getSettingsWin().getSize()
-  getSettingsWin().setSize(540, 660)
-  await new Promise((r) => setTimeout(r, 700))
-  const speedSettingsNarrow = await readSpeedSettings()
-  console.log('S3V20_SPEED_SETTINGS_NARROW=' + JSON.stringify(speedSettingsNarrow))
-  checkTrue('S3-20V④：窄窗（540px）下速度行改为换行、选择器占满整行（不挤成一团）',
-    speedSettingsNarrow.open === true &&
-      speedSettingsNarrow.rowWrap === 'wrap' &&
-      speedSettingsNarrow.rows.every((r) => r.select.w >= r.name.w - 2) &&
-      speedSettingsNarrow.rows.every((r) => r.name.bottom <= r.select.y + 1),
-    {
-      wrap: speedSettingsNarrow.rowWrap,
-      rows: speedSettingsNarrow.rows.map((r) => ({ name: r.name, select: r.select }))
-    })
-  checkTrue('S3-20V④：窄窗下仍不重叠、不横向溢出、文字不被裁切',
-    speedSettingsNarrow.rows.every((r) => r.overflow === 0) &&
-      speedSettingsNarrow.blockOverflow <= 2 &&
-      (speedSettingsNarrow.bodyOverflow === null || speedSettingsNarrow.bodyOverflow <= 2) &&
-      speedSettingsNarrow.hintOverflow <= 1,
-    {
-      blockOverflow: speedSettingsNarrow.blockOverflow,
-      bodyOverflow: speedSettingsNarrow.bodyOverflow,
-      hintOverflow: speedSettingsNarrow.hintOverflow,
-      overflowRows: speedSettingsNarrow.rows.map((r) => r.overflow)
-    })
-  await scrollSettingsToSpeed()
-  await forceSettingsRepaint()
-  await scrollSettingsToSpeed()
-  await new Promise((r) => setTimeout(r, 350))
-  const narrowForShot = await sevalRaw(`
-    (() => {
-      const el = document.querySelector('.model-speed');
-      if (!el) return null;
-      const r = el.getBoundingClientRect();
-      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
-        viewportH: window.innerHeight };
-    })()
-  `)
-  const narrowVisible = !!narrowForShot && narrowForShot.y >= 0 &&
-    narrowForShot.y + narrowForShot.h <= narrowForShot.viewportH + 1
-  checkTrue('S3-20V④：窄窗截图前速度区块已滚入视口', narrowVisible === true, narrowForShot)
-  const narrowShot = narrowVisible
-    ? await shotRect(getSettingsWin().webContents, narrowForShot, 'verify-s3v20-speed-settings-narrow.png')
-    : false
-  checkTrue('S3-20V④：窄窗速度区块截图产出', narrowShot === true, narrowForShot)
-  getSettingsWin().setSize(settingsSizeBefore[0], settingsSizeBefore[1])
-  await new Promise((r) => setTimeout(r, 500))
-
-  // 主窗口两张局部图：活动会话工具条 / 新建任务页速度 chip
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const items = Array.from(document.querySelectorAll('.conv-item'));
-      const hit = items.find((el) => ((el.querySelector('.conv-title') || {}).textContent || '').trim() === '打个招呼') || items[0];
-      if (hit) hit.click();
-      return !!hit;
-    })()
-  `)
-  await new Promise((r) => setTimeout(r, 800))
-  const chatForShot = await readSpeedMain()
-  const chatShot = await shotRect(win.webContents, chatForShot.bar, 'verify-s3v20-speed-chat.png')
-  checkTrue('S3-20V①：活动会话工具条截图产出', chatShot === true, chatForShot.bar)
-  await win.webContents.executeJavaScript("(() => { const n = document.querySelector('.sidebar .new-task-btn'); if (n) n.click(); return !!n; })()")
-  await new Promise((r) => setTimeout(r, 800))
-  const newForShot = await readSpeedMain()
-  const newShot = await shotRect(win.webContents, newForShot.chip, 'verify-s3v20-speed-newtask.png')
-  checkTrue('S3-20V③：新建任务页速度 chip 截图产出', newShot === true, newForShot.chip)
-
-  // 证据落点：门禁只在失败时逐条打印，这里把本卡的断言名与结果单独汇总一行，
-  // 报告可据此逐条核对（不新增断言，只把已有 checks 投影出来）。
-  const s3v20Gate = checks.filter((c) => c.name.indexOf('S3-20V') === 0)
-  console.log('S3V20_CHECKS=' + JSON.stringify({
-    total: s3v20Gate.length,
-    failed: s3v20Gate.filter((c) => !c.pass).length,
-    items: s3v20Gate.map((c) => ({ name: c.name, pass: c.pass }))
-  }))
-
   await runM02Evidence()
-  // ── S3-V30：冻结策略反例（预览桩契约）──────────────────────────────
-  // 发起后改速度覆盖 / 模型默认时，结算事件仍必须回传 chat:send 起点的策略与身份。
-  const freezeId = '00000000-0000-4000-8000-00000000f30d'
-  await win.webContents.executeJavaScript(
-    'window.api.chatSend({ conversationId: "c1", messages: [{ role: "user", content: "freeze" }], requestId: ' +
-      JSON.stringify(freezeId) +
-      ' })'
-  )
-  await new Promise((r) => setTimeout(r, 200))
-  const frozenAtStart = chatRunIdentities.get('c1')
-  const startMode = frozenAtStart && frozenAtStart.requestPolicy ? frozenAtStart.requestPolicy.mode : null
-  const flippedMode = startMode === 'fast' ? 'normal' : 'fast'
-  const savedSpeedOverrides = uiPrefsStub.conversationSpeedOverrides
-  uiPrefsStub = { ...uiPrefsStub, conversationSpeedOverrides: { ...savedSpeedOverrides, c1: flippedMode } }
-  // 自证"现读会变"：运行期按当前设置重算应得到相反档；随后断言 done 用的仍是起点副本
-  const liveModeAfterChange = stubFrozenPolicy('c1').mode
-  win.webContents.send('chat:done', { conversationId: 'c1', payload: null })
-  await new Promise((r) => setTimeout(r, 200))
-  checkTrue(
-    'S3-V30 冻结策略：发起后改速度覆盖，done 仍回传发起时的身份与策略',
-    Boolean(lastChatEnvelope) &&
-      lastChatEnvelope.requestId === freezeId &&
-      lastChatEnvelope.requestPolicy &&
-      lastChatEnvelope.requestPolicy.mode === startMode &&
-      liveModeAfterChange === flippedMode,
-    { frozenAtStart, liveModeAfterChange, last: lastChatEnvelope }
-  )
-  uiPrefsStub = { ...uiPrefsStub, conversationSpeedOverrides: savedSpeedOverrides }
-
   reportAndExit()
 })
