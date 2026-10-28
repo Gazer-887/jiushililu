@@ -1,11 +1,8 @@
 import type { ChatMessage, ModelSettings, ReasoningEffort, TestResult } from '@shared/ipc'
 import { anthropicThinkingBudget } from '@shared/reasoning'
-import type { ProviderExecutionContext } from '@shared/request-policy'
 import { createSSEParser } from './sse'
 import {
   createAnthropicUsageAccumulator,
-  serviceTierFromAnthropicEvent,
-  serviceTierFromAnthropicMessage,
   usageFromAnthropicMessage
 } from './usage-parsers'
 import { ProviderError, isAbortError, mapHttpError, mapListModelsError, LIST_MODELS_NETWORK_ERROR } from './errors'
@@ -13,12 +10,7 @@ import { resolveApiUrl } from './url'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
 import { attachmentTextForModel } from '@shared/attachment-block'
-import {
-  anthropicServiceTierForRequest,
-  buildAnthropicHeaders,
-  createServiceTierEmitter,
-  withAnthropicServiceTierField
-} from './service-tier'
+import { buildAnthropicHeaders } from './wire'
 
 // 思考强度 → Anthropic extended thinking 预算（方言映射）
 // ⚠️ 键**不再穷举** `ReasoningEffort`：plan58 R6 把它改成开放字符串后，官方值
@@ -74,9 +66,7 @@ export function mapAnthropicMessages(
 export function buildAnthropicBody(
   settings: ModelSettings,
   messages: ChatMessage[],
-  stream: boolean,
-  /** 运行态上下文（S3-30B）：缺省 = 旧请求，一个容量/身份字段都不加 */
-  context?: ProviderExecutionContext
+  stream: boolean
 ): Record<string, unknown> {
   const { system, messages: rest } = mapAnthropicMessages(messages)
   const budget = thinkingBudgetForSettings(settings)
@@ -89,19 +79,16 @@ export function buildAnthropicBody(
       : settings.temperature != null
         ? { temperature: settings.temperature }
         : {}
-  return withAnthropicServiceTierField(
-    {
-      model: settings.model,
-      max_tokens: settings.maxTokens,
-      ...sampling,
-      stream,
-      ...(system ? { system } : {}),
-      ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
-      ...(settings.topK != null ? { top_k: settings.topK } : {}),
-      messages: rest
-    },
-    context
-  )
+  return {
+    model: settings.model,
+    max_tokens: settings.maxTokens,
+    ...sampling,
+    stream,
+    ...(system ? { system } : {}),
+    ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
+    ...(settings.topK != null ? { top_k: settings.topK } : {}),
+    messages: rest
+  }
 }
 
 async function throwHttpError(res: Response): Promise<never> {
@@ -119,67 +106,54 @@ export class AnthropicProvider implements IProvider {
 
   async streamChat(req: ProviderRequest, cb: StreamCallbacks): Promise<void> {
     const { settings, apiKey, signal } = req
-    const requestedTier = anthropicServiceTierForRequest(req.context)
-    // 单请求观察出口（S3-30B）：真实容量一出现就交出，随后断流/取消也不丢已观测事实
-    const tierEmitter = createServiceTierEmitter(requestedTier, cb.onServiceTier)
-    try {
-      const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
-        method: 'POST',
-        headers: buildAnthropicHeaders(settings, apiKey, req.context),
-        body: JSON.stringify(buildAnthropicBody(settings, req.messages, settings.stream, req.context)),
-        signal
-      })
-      if (!res.ok) await throwHttpError(res)
+    const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
+      method: 'POST',
+      headers: buildAnthropicHeaders(settings, apiKey, req.context),
+      body: JSON.stringify(buildAnthropicBody(settings, req.messages, settings.stream)),
+      signal
+    })
+    if (!res.ok) await throwHttpError(res)
 
-      if (!settings.stream || !res.body) {
-        const json = (await res.json()) as {
-          content?: Array<{ type?: string; text?: string }>
-          usage?: unknown
-        }
-        const text = (json.content ?? [])
-          .filter((b) => b.type === 'text')
-          .map((b) => b.text ?? '')
-          .join('')
-        if (text) cb.onChunk(text)
-        // 非流式也是一次真调用：不在这儿报，`stream: false` 的档案就永远没有用量（格子空着、不报错）
-        const once = usageFromAnthropicMessage(json)
-        if (once) cb.onUsage?.(once)
-        // 容量只认 usage.service_tier；缺报保持未知，不从 requested/HTTP 200 推断
-        tierEmitter.observe(serviceTierFromAnthropicMessage(json))
-        return
+    if (!settings.stream || !res.body) {
+      const json = (await res.json()) as {
+        content?: Array<{ type?: string; text?: string }>
+        usage?: unknown
       }
-
-      const meter = createAnthropicUsageAccumulator()
-      const parser = createSSEParser((data) => {
-        try {
-          const json = JSON.parse(data) as AnthropicEvent
-          // 先交容量再收用量：两者独立，任一缺失都不影响另一个
-          const tier = serviceTierFromAnthropicEvent(json)
-          if (tier !== null) tierEmitter.observe(tier)
-          if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
-            cb.onChunk(json.delta.text)
-          }
-          meter.addEvent(json)
-        } catch {
-          // 忽略无法解析的行
-        }
-      })
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        parser.push(decoder.decode(value, { stream: true }))
-      }
-      parser.push(decoder.decode())
-      parser.end()
-      const usage = meter.getUsage()
-      if (usage) cb.onUsage?.(usage)
-    } finally {
-      // 从未见到真实容量的请求在收尾时补一条 observed=false；已见到的不再补，避免缺报覆盖已知事实
-      tierEmitter.finalize()
+      const text = (json.content ?? [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text ?? '')
+        .join('')
+      if (text) cb.onChunk(text)
+      // 非流式也是一次真调用：不在这儿报，`stream: false` 的档案就永远没有用量（格子空着、不报错）
+      const once = usageFromAnthropicMessage(json)
+      if (once) cb.onUsage?.(once)
+      return
     }
+
+    const meter = createAnthropicUsageAccumulator()
+    const parser = createSSEParser((data) => {
+      try {
+        const json = JSON.parse(data) as AnthropicEvent
+        if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta' && json.delta.text) {
+          cb.onChunk(json.delta.text)
+        }
+        meter.addEvent(json)
+      } catch {
+        // 忽略无法解析的行
+      }
+    })
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parser.push(decoder.decode(value, { stream: true }))
+    }
+    parser.push(decoder.decode())
+    parser.end()
+    const usage = meter.getUsage()
+    if (usage) cb.onUsage?.(usage)
   }
 
   async testConnection(req: ProviderRequest): Promise<TestResult> {

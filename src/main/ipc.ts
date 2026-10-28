@@ -5,21 +5,15 @@ import { ipcMain, dialog, BrowserWindow, shell, clipboard } from 'electron'
 import { z } from 'zod'
 import { isSafeRel, normalizeRel, selectChanges } from '@shared/checkpoint'
 import {
-  CONVERSATION_SPEED_KEY_MAX,
   FONT_SCALE_KEYS,
   THEME_IDS,
   UI_FONT_MAX,
-  LOCALE_KEYS,
-  deleteConversationSpeedOverride,
-  getConversationSpeedOverride
+  LOCALE_KEYS
 } from '@shared/splitter'
 import {
-  SPEED_OVERRIDES,
   createProviderExecutionContext,
   resolveRequestPolicy,
-  type ProviderExecutionContext,
-  type ServiceTierObservation,
-  type TierSupport
+  type ProviderExecutionContext
 } from '@shared/request-policy'
 import { revertOneHunk, samePath } from './revert-flow'
 import {
@@ -105,7 +99,7 @@ import {
 import { getProfileKey, hasProfileKey } from './store/settings'
 import { maskKey } from './store/mask'
 import type { ModelPatchEntryInput, ModelProfileView, ModelsView, ModelSaveInput } from '@shared/models'
-import { isDetectionFresh, mergeEntrySettings, tierSupportFromServiceTiers } from '@shared/models'
+import { isDetectionFresh, mergeEntrySettings } from '@shared/models'
 import {
   applyUserMetadataPatch,
   modelMetadataLookupSchema,
@@ -302,9 +296,8 @@ const UI_RUN_OWNER = 'ui'
 const AGENT_TASK_OWNER = 'agent-task'
 
 /**
- * 五类辅助调用的固定普通上下文（S3-30F）：缺版本 = 旧请求（不发身份头）；
- * 每次逻辑 operation 各建一份（随机键互不相同），绝不复用带 FAST 的主 run 上下文。
- * ⚠️ 策略实参只用于通过工厂的形状校验 —— 辅助用途会被工厂强制压回 normal。
+ * 五类辅助调用的固定上下文（S3-30F）：缺版本 = 旧请求（不发身份头）；
+ * 每次逻辑 operation 各建一份（随机键互不相同），绝不复用主 run 的随机键。
  */
 function auxiliaryContext(
   clientVersion: string | undefined,
@@ -316,61 +309,31 @@ function auxiliaryContext(
 }
 
 /**
- * run 起点快照（S3-30F）：settings / 实际模型 / 速度默认值 / 能力位 / 端点能力表
- * **同一时刻**从同一份档案读出，异步之后不再回读。
+ * run 起点快照（S3-30F）：settings / 实际模型 **同一时刻**从同一份档案读出，异步之后不再回读。
  */
 interface RunStartSnapshot {
   settings: SettingsView
   /** Key 引用：本 run 的 Key 只能从这个 profile 解出，不再按"当前 active"重取 */
   profileId: string
-  speedMode: RunRequestPolicy['mode'] | undefined
-  tierSupport: TierSupport
-  /** 端点内各模型的能力快照（只读）：子代理按**实际子模型**查询，查不到 = undefined → unknown */
-  tierSupportForModel?: (model: string) => TierSupport | undefined
   clientVersion?: string
 }
 
 function runStartSnapshot(clientVersion?: string): RunStartSnapshot | null {
   const binding = getActiveRunBinding()
   if (!binding) return null
-  const profile = binding.profile
   return {
     settings: binding.settings,
-    profileId: profile.id,
-    speedMode: binding.entry.speedMode,
-    tierSupport: binding.tierSupport,
-    tierSupportForModel: (model: string) => {
-      const entry = profile.models.find((m) => m.model === model)
-      return entry ? tierSupportFromServiceTiers(profile.providerType, entry.metadata) : undefined
-    },
+    profileId: binding.profile.id,
     ...(clientVersion ? { clientVersion } : {})
   }
 }
 
 /**
  * 入口侧请求策略（S3-20D2 / S3-30F）：主聊天与一次性任务共用这**一条**构造路径。
- * 每个 run 起点读一次模型默认（给定快照则不再重复读档案）与会话覆盖，再解析一次；
- * 给出 `frozen` 时直通返回同一实例 —— 同一 run 的后续调用绝不再读设置。
- * ⚠️ 无真实会话 id 时不读任何会话覆盖；能力位来自条目 metadata（user > official > catalog）。
+ * 每个 run 起点解析一次；给出 `frozen` 时直通返回同一实例 —— 同一 run 的后续调用绝不再读设置。
  */
-function entryRequestPolicy(
-  conversationId: string | undefined,
-  snapshot?: RunStartSnapshot | null,
-  frozen?: RunRequestPolicy
-): RunRequestPolicy {
-  if (frozen) return frozen
-  const active = snapshot ? null : getActiveEntry()
-  const modelDefault = snapshot ? snapshot.speedMode : active?.entry.speedMode
-  const sessionOverride = getConversationSpeedOverride(
-    getUIPrefs().conversationSpeedOverrides,
-    conversationId
-  )
-  const tierSupport = snapshot
-    ? snapshot.tierSupport
-    : active
-      ? tierSupportFromServiceTiers(active.profile.providerType, active.entry.metadata)
-      : 'unknown'
-  return resolveRequestPolicy({ modelDefault, sessionOverride, tierSupport })
+function entryRequestPolicy(frozen?: RunRequestPolicy): RunRequestPolicy {
+  return frozen ?? resolveRequestPolicy()
 }
 
 /**
@@ -495,34 +458,12 @@ export function registerIpcHandlers(deps: {
    * ⚠️ 本层不得自己读 package.json 或伪造版本。
    */
   clientVersion?: string
-  /**
-   * 单请求服务档观察（S3-30F）：主/子域分开上报，供后续错误信封消费；缺省 = 不观察。
-   * 只传内存事实，不落盘、不进日志。
-   */
-  onServiceTierObservation?: (
-    observation: ServiceTierObservation,
-    scope: 'main' | 'sub',
-    agentName?: string
-  ) => void
 }): void {
   /**
    * 滚动摘要缓存（plan26 D-080）：进程内、会话级、不落盘 —— 重启后首轮裁剪重新摘要（如实登记的取舍）。
    * 由本层创建并传给 runner（它组装 summarize 闭包）；会话删除时不清（量小，进程退出自然回收）。
    */
   const summaryCache = new Map<string, string>()
-
-  /**
-   * 服务档观察的两条窄出口（S3-30F）：主请求域与子请求域分开上报，
-   * 子代理的观察绝不会覆盖主请求展示值。没有消费者时不挂回调（旧行为不变）。
-   */
-  const serviceTierReports = deps.onServiceTierObservation
-    ? {
-        onMain: (observation: ServiceTierObservation): void =>
-          deps.onServiceTierObservation!(observation, 'main'),
-        onSubagent: (observation: ServiceTierObservation, agentName: string): void =>
-          deps.onServiceTierObservation!(observation, 'sub', agentName)
-      }
-    : undefined
 
   /**
    * 智能标题（plan26 D-080）：首答落盘后（convSave 且 messages 恰为 1 user + 1 assistant）触发一次。
@@ -662,7 +603,7 @@ export function registerIpcHandlers(deps: {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), input.timeoutMs)
     // S3-30F：连接检查是固定普通档辅助请求；身份/认证取**当前草稿**（input）本身
-    const context = auxiliaryContext(deps.clientVersion, 'connection-check', entryRequestPolicy(undefined))
+    const context = auxiliaryContext(deps.clientVersion, 'connection-check', entryRequestPolicy())
     try {
       return await provider.testConnection({
         settings: input,
@@ -710,7 +651,7 @@ export function registerIpcHandlers(deps: {
     const context = auxiliaryContext(
       deps.clientVersion,
       'model-catalog',
-      entryRequestPolicy(undefined)
+      entryRequestPolicy()
     )
     // 草稿里的身份/认证由 F0 桥带进 provider
     return fetchAvailableModels(input, { ...(context ? { context } : {}) })
@@ -809,7 +750,7 @@ export function registerIpcHandlers(deps: {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), target.settings.timeoutMs)
     // S3-30F：已存档案的连接检查同样固定普通；身份/认证取该档案实际生效值
-    const context = auxiliaryContext(deps.clientVersion, 'connection-check', entryRequestPolicy(undefined))
+    const context = auxiliaryContext(deps.clientVersion, 'connection-check', entryRequestPolicy())
     try {
       return await provider.testConnection({
         settings: target.settings,
@@ -860,21 +801,11 @@ export function registerIpcHandlers(deps: {
     const runSnapshot = runStartSnapshot(deps.clientVersion)
     const settings = runSnapshot?.settings ?? getSettingsView()
     // 冻结策略：在任何异步之前解析一次；emitter 与 runAgent 共用同一实例，发完后不再重读
-    const runPolicy = entryRequestPolicy(conversationId, runSnapshot)
-    // S3-30E1：本 run 局部保留**最后一条真实观测**（只 main 域），并继续向外部观察口转发。
-    // 子代理观察走 onSubagent 原域，绝不写进这份局部状态，因而不会污染错误信封。
-    const runTier: { last: ServiceTierObservation | undefined } = { last: undefined }
-    const runServiceTierReports = {
-      onMain: (observation: ServiceTierObservation): void => {
-        if (observation.observed === true) runTier.last = observation
-        serviceTierReports?.onMain(observation)
-      },
-      ...(serviceTierReports?.onSubagent ? { onSubagent: serviceTierReports.onSubagent } : {})
-    }
+    const runPolicy = entryRequestPolicy()
 
     // 这一轮所有事件的**唯一发送口**：会话身份在构造时进了闭包，之后不可能漏（plan11 §2.5）
-    // 本地轮次身份与冻结策略同在此定格：成功 / 早退 / 失败 / 取消的信封都带同一份
-    const emit = createChatEmitter(e.sender, conversationId, requestId, runPolicy)
+    // 本地轮次身份同在此定格：成功 / 早退 / 失败 / 取消的信封都带同一份
+    const emit = createChatEmitter(e.sender, conversationId, requestId)
 
     // IPC 层并发防护：渲染层的 streaming 标志只是软约束，这里才是硬闸（同会话重复 → 拒，跨会话 → 放行）。
     const gate = chatGate.begin(conversationId)
@@ -966,15 +897,10 @@ export function registerIpcHandlers(deps: {
         memoryRepo: memoryTurn.repo,
         settings,
         apiKey,
-        // S3-30F：run 起点定格的策略（模型默认 + 本会话覆盖 + 条目 metadata 的能力声明）
-        // 直通返回入口已解析的同一冻结实例：本 run 后续不再读设置
-        requestPolicy: entryRequestPolicy(conversationId, runSnapshot, runPolicy),
-        ...(runSnapshot?.tierSupportForModel
-          ? { tierSupportForModel: runSnapshot.tierSupportForModel }
-          : {}),
+        // S3-30F：run 起点定格的策略直通返回同一冻结实例：本 run 后续不再读设置
+        requestPolicy: entryRequestPolicy(runPolicy),
         ...(runSnapshot?.clientVersion ? { clientVersion: runSnapshot.clientVersion } : {}),
         purpose: 'main-chat',
-        serviceTierReports: runServiceTierReports,
         // 引用 → base64 只在这一刻发生（plan57 片③）：存档与内存里都只放引用，
         // 旧轮按配额折回正文 marker（D-146 C，一张被清掉的图会降级成一句人话而不是卡死会话）
         history: await materializeHistory(messages, async (ref) =>
@@ -1100,10 +1026,7 @@ export function registerIpcHandlers(deps: {
         result.tokenTier,
         sumInjectionTax(estimateMemoryTokens(memoryBlock), estimatePlaybookTokens(playbookBlock)),
         result.usageComplete,
-        result.terminal,
-        // 成功结算同样带出本 run 最后真实观测（loop 已按 run 汇聚；
-        // 无观测时是 undefined，emitter 不会补字段）
-        result.serviceTier
+        result.terminal
       )
     } catch (err) {
       // 失败留痕（plan8 R2）：这条以前只发给界面，日志里什么都没有 → 事后无从排查
@@ -1119,19 +1042,9 @@ export function registerIpcHandlers(deps: {
               usage: err.facts.usage,
               usageComplete: err.facts.usageComplete,
               ...(err.facts.avoidedTokens !== undefined ? { avoided: err.facts.avoidedTokens } : {}),
-              ...(err.facts.tokenTier ? { tier: err.facts.tokenTier } : {}),
-              // S3-30E1：失败前本 run 已观测到的真实档位（无真实观测则不带，不补 requested）
-              ...(runTier.last ? { serviceTier: runTier.last } : {})
+              ...(err.facts.tokenTier ? { tier: err.facts.tokenTier } : {})
             }
-          : runTier.last
-            ? {
-                // 极少数非 AgentRunFailure 的失败：仍按既有映射给终态，不丢已观测档位
-                terminal: { state: 'failed', code: 'upstream-error' },
-                usage: null,
-                usageComplete: false,
-                serviceTier: runTier.last
-              }
-            : undefined
+          : undefined
       emit.error(friendlyChatError(err), errorDetails)
     } finally {
       chatGate.end(conversationId)
@@ -1236,14 +1149,10 @@ export function registerIpcHandlers(deps: {
         memoryRepo: memoryTurn.repo,
         settings,
         apiKey,
-        // S3-30F：与主聊天同一条起点路径；占位 owner 用不到会话覆盖时仍是模型默认
-        requestPolicy: entryRequestPolicy(req.conversationId, runSnapshot),
-        ...(runSnapshot?.tierSupportForModel
-          ? { tierSupportForModel: runSnapshot.tierSupportForModel }
-          : {}),
+        // S3-30F：与主聊天同一条起点路径（策略已无档位字段，直接给出默认快照）
+        requestPolicy: entryRequestPolicy(),
         ...(runSnapshot?.clientVersion ? { clientVersion: runSnapshot.clientVersion } : {}),
         purpose: 'one-shot',
-        ...(serviceTierReports ? { serviceTierReports } : {}),
         history: [{ role: 'user', content: req.task }],
         signal: task.controller.signal,
         agentName: req.agentName,
@@ -1650,12 +1559,6 @@ export function registerIpcHandlers(deps: {
     deleteConversation(id)
     // 目标跟着会话一起清（plan54 #2）：目标是**跨轮次的持久状态**，会话没了它还挂在面板上 = 孤儿
     removeGoalsOf(id)
-    // 会话没了，它的速度覆盖也不能留（S3-20B2）：只清这条 id，其他会话的覆盖与次序不动
-    const current = getUIPrefs().conversationSpeedOverrides
-    if (Object.prototype.hasOwnProperty.call(current, id)) {
-      setUIPref({ conversationSpeedOverrides: deleteConversationSpeedOverride(current, id) })
-      deps.onSettingsChanged?.('ui-prefs')
-    }
   })
 
   ipcMain.handle(IPC.skillsList, (): SkillInfo[] => listSkills(deps.agent))
@@ -2408,7 +2311,7 @@ export function registerIpcHandlers(deps: {
     const provider = createProvider(settings.providerType)
     let out = ''
     // S3-30F：提示词优化固定普通档；本次 operation 独立随机键（不继承任何 run 上下文）
-    const context = auxiliaryContext(deps.clientVersion, 'prompt-polish', entryRequestPolicy(undefined))
+    const context = auxiliaryContext(deps.clientVersion, 'prompt-polish', entryRequestPolicy())
     await provider.streamChat(
       {
         settings: { ...settings, stream: false },
@@ -2648,11 +2551,7 @@ export function registerIpcHandlers(deps: {
         // 界面语言（plan52 S1）：不在这儿加就会**静默被剥掉** —— zod 默认丢弃未知键，表现成「点了没反应」
         locale: z.enum(LOCALE_KEYS).optional(),
         workbench: workbenchSchema.optional(),
-        workbenchSizes: workbenchSizesSchema.optional(),
-        // 会话级 FAST 覆盖（S3-20B2）：形状只卡 key 长度与三值枚举，控制字符 / 上限 / 次序交给 setUIPref
-        conversationSpeedOverrides: z
-          .record(z.string().min(1).max(CONVERSATION_SPEED_KEY_MAX), z.enum(SPEED_OVERRIDES))
-          .optional()
+        workbenchSizes: workbenchSizesSchema.optional()
       })
       .parse(raw)
     // 形状过了之后交给 setUIPref 做语义清洗并落盘（它返回**清洗后**的完整偏好）

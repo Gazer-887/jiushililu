@@ -7,15 +7,7 @@ import { effortToSend, openaiReasoningFields } from '@shared/reasoning'
 import type { IProvider, ProviderRequest, StreamCallbacks } from './types'
 import { httpFetch } from './http-client'
 import { attachmentTextForModel } from '@shared/attachment-block'
-import type { ProviderExecutionContext } from '@shared/request-policy'
-import {
-  buildProviderHeaders,
-  createServiceTierEmitter,
-  readServiceTierValue,
-  resolveModelsRequestUrl,
-  serviceTierForRequest,
-  withServiceTierField
-} from './service-tier'
+import { buildProviderHeaders, resolveModelsRequestUrl } from './wire'
 
 // 纯函数：构造请求体（单元测试覆盖）
 /** 只留协议字段：`parts` / `segments` / `createdAt` 是我们的扩展，漏一个给严格端点就是一个未知的 400 */
@@ -26,9 +18,7 @@ function toChatWireMessage(m: ChatMessage): { role: ChatMessage['role']; content
 export function buildOpenAIChatBody(
   settings: ModelSettings,
   messages: ChatMessage[],
-  stream: boolean,
-  /** 运行态上下文（S3-30A）：缺省 = 旧请求，一个服务档字段都不加 */
-  context?: ProviderExecutionContext
+  stream: boolean
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: settings.model,
@@ -51,7 +41,7 @@ export function buildOpenAIChatBody(
   // 片②（缺口 C）：`toggle` / `budget_tokens` 两条通道的出境字段（R15/R16）。
   // kind 非 effort 时上面那行已是 null，两边相加不会双发；未声明编码时这里返回空对象。
   Object.assign(body, openaiReasoningFields(settings))
-  return withServiceTierField(body, context)
+  return body
 }
 
 async function throwHttpError(res: Response): Promise<never> {
@@ -68,60 +58,47 @@ export class OpenAICompatibleProvider implements IProvider {
 
   async streamChat(req: ProviderRequest, cb: StreamCallbacks): Promise<void> {
     const { settings, apiKey, signal } = req
-    const requestedTier = serviceTierForRequest(req.context)
-    // 单请求观察出口（S3-30A-R1）：档位一出现就交出，随后断流/取消也不丢已观测事实
-    const tierEmitter = createServiceTierEmitter(requestedTier, cb.onServiceTier)
-    try {
-      const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
-        method: 'POST',
-        headers: buildProviderHeaders(settings, 'openai-compatible', apiKey, req.context),
-        body: JSON.stringify(buildOpenAIChatBody(settings, req.messages, settings.stream, req.context)),
-        signal
-      })
-      if (!res.ok) await throwHttpError(res)
+    const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
+      method: 'POST',
+      headers: buildProviderHeaders(settings, 'openai-compatible', apiKey, req.context),
+      body: JSON.stringify(buildOpenAIChatBody(settings, req.messages, settings.stream)),
+      signal
+    })
+    if (!res.ok) await throwHttpError(res)
 
-      if (!settings.stream || !res.body) {
-        const json = (await res.json()) as unknown
-        const text = (json as OpenAIChunk).choices?.[0]?.message?.content ?? ''
-        if (text) cb.onChunk(text)
-        // 非流式：usage 就在同一个响应里（plan8 R9）
+    if (!settings.stream || !res.body) {
+      const json = (await res.json()) as unknown
+      const text = (json as OpenAIChunk).choices?.[0]?.message?.content ?? ''
+      if (text) cb.onChunk(text)
+      // 非流式：usage 就在同一个响应里（plan8 R9）
+      const u = usageFromOpenAIChunk(json)
+      if (u) cb.onUsage?.(u)
+      return
+    }
+
+    const parser = createSSEParser((data) => {
+      if (data === '[DONE]') return
+      try {
+        const json = JSON.parse(data) as OpenAIChunk
+        const delta = json.choices?.[0]?.delta?.content
+        if (delta) cb.onChunk(delta)
+        // **流式的 usage 在最后一个 chunk**（且必须显式请求，见 `buildOpenAIChatBody`）；空 choices 那一帧就是它
         const u = usageFromOpenAIChunk(json)
         if (u) cb.onUsage?.(u)
-        // 档位只认响应里的真实 service_tier；缺报保持未知态，不从 requested/usage/终态推断
-        tierEmitter.observe(readServiceTierValue(json))
-        return
+      } catch {
+        // 心跳、注释等无法解析的行直接忽略
       }
+    })
 
-      const parser = createSSEParser((data) => {
-        if (data === '[DONE]') return
-        try {
-          const json = JSON.parse(data) as OpenAIChunk
-          const delta = json.choices?.[0]?.delta?.content
-          if (delta) cb.onChunk(delta)
-          // **流式的 usage 在最后一个 chunk**（且必须显式请求，见 `buildOpenAIChatBody`）；空 choices 那一帧就是它
-          const u = usageFromOpenAIChunk(json)
-          if (u) cb.onUsage?.(u)
-          // 档位帧与 usage 帧相互独立：任何一帧带真实值都收；无档位的后续帧不清空已知值
-          const tier = readServiceTierValue(json)
-          if (tier !== null) tierEmitter.observe(tier)
-        } catch {
-          // 心跳、注释等无法解析的行直接忽略
-        }
-      })
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        parser.push(decoder.decode(value, { stream: true }))
-      }
-      parser.push(decoder.decode())
-      parser.end()
-    } finally {
-      // 从未见到真实档位的请求在收尾时补一条 observed=false；已见到的不再补，避免缺报覆盖已知事实
-      tierEmitter.finalize()
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parser.push(decoder.decode(value, { stream: true }))
     }
+    parser.push(decoder.decode())
+    parser.end()
   }
 
   async testConnection(req: ProviderRequest): Promise<TestResult> {

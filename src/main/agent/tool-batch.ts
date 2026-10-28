@@ -1,4 +1,4 @@
-// 有界工具批执行（S3-40A/40B）：普通 1 路、FAST 合格批最多 2 路，结果按原输入顺序回灌。
+// 有界工具批执行（S3-40A/40B → S89-01）：整批合格默认最多 2 路，其余 1 路，结果按原输入顺序回灌。
 // 资格/路径规范化/读版本属于真实消费者；本模块不认识工具类别，也不发模型请求。
 // ⚠️ 四条硬约束：① 每项启动前同步核 `canStart`（与启动之间无 await）；
 // ② 取消后不启动排队项，在途等结算（中止不等于 OS I/O 结束）；
@@ -33,8 +33,6 @@ export interface ToolBatchResult<T, R> {
 
 export interface RunToolBatchInput<T, R> {
   items: readonly T[]
-  /** 速度档意图（来自本 run 冻结策略；只影响上限，不代表厂商已生效） */
-  mode?: unknown
   /** 整批是否全部合格；只有显式 true 才可能放宽到 2 路 */
   eligible?: unknown
   /**
@@ -65,8 +63,8 @@ export interface RunToolBatchInput<T, R> {
  */
 export async function runToolBatch<T, R>(input: RunToolBatchInput<T, R>): Promise<ToolBatchResult<T, R>> {
   const { items, signal, canStart, run } = input
-  // 上限只由策略纯函数给出：非法/未知模式或不合格批一律 1 路，绝不放宽成无界起跑
-  const limit = resolveToolBatchConcurrency({ mode: input.mode, eligible: input.eligible })
+  // 上限只由策略纯函数给出：不合格批一律 1 路，绝不放宽成无界起跑
+  const limit = resolveToolBatchConcurrency({ eligible: input.eligible })
   const leasePhase = input.leasePhase ?? 'tool:batch'
   const results: Array<ToolBatchItemResult<T, R>> = items.map((item, index) => ({
     index,

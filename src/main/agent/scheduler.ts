@@ -61,7 +61,7 @@ export interface SubagentRunOptions {
    *  ⚠️ 第二个参数是 **scheduler 同一次装配的 jobTools**（修正 C）：schema 与执行工具必须同源，
    *  实现里不许再自己调一次 toolsFor（浏览器工具两次求值 = 两份适配器，schema 与真工具分岔）。
    *  ⚠️ 第三个参数是**本作业唯一的运行上下文**（S3-30T2）：由 `contextFactory` 在作业边界建一次，
-   *  供该子任务的全部模型轮复用；`undefined` = 旧请求（无身份/服务档）。
+   *  供该子任务的全部模型轮复用；`undefined` = 旧请求（无身份头）。
    */
   chatFactory: (
     def: AgentDefinition,
@@ -86,7 +86,7 @@ export interface SubagentRunOptions {
   policy?: TokenPolicy
   /**
    * run 级不可变请求策略（S3-20D1）：**只能继承父 run 的快照**，本层不解析、不复制、不改写。
-   * ⚠️ 不按子代理自己的模型另算速度档 —— 同一 run 的主循环与全部子代理必须共用父 run 那一个冻结对象。
+   * ⚠️ 不按子代理自己的模型另算策略 —— 同一 run 的主循环与全部子代理必须共用父 run 那一个冻结对象。
    */
   requestPolicy?: RunRequestPolicy
   /** 输出纪律提示（§七③）：拼在子代理系统提示末尾；**与主代理同档**（不给就不加） */

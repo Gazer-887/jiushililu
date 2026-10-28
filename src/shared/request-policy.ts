@@ -1,115 +1,22 @@
 /**
- * 请求策略（S3-20A）：FAST 纯合同 —— 速度档解析、本地读并发与服务档意图的唯一出口。
+ * 请求策略（S3-20A → S89-01）：运行级本地读并发与权限代次合同的唯一出口。
  * 与省 token 四档完全正交：本文件零依赖，不读取也不修改其任一开关。
- * 不碰 electron / IO / 网络；`actual/observed` 只陈述观测事实，绝不用请求值回填成功。
+ * 不碰 electron / IO / 网络；厂商服务档位意图与观测已在 S89-01 整体移除。
  */
 
-export const SPEED_MODES = ['normal', 'fast'] as const
-export type SpeedMode = (typeof SPEED_MODES)[number]
+/** 本地只读工具批的并发上限：串行 1 路 / 并行 2 路 */
+export const TOOL_BATCH_CONCURRENCY_SERIAL = 1
+export const TOOL_BATCH_CONCURRENCY_PARALLEL = 2
 
-export const SPEED_OVERRIDES = ['inherit', 'normal', 'fast'] as const
-export type SpeedOverride = (typeof SPEED_OVERRIDES)[number]
-
-export const TIER_SUPPORTS = ['supported', 'unsupported', 'unknown'] as const
-export type TierSupport = (typeof TIER_SUPPORTS)[number]
-
-export const DEFAULT_SPEED_MODE: SpeedMode = 'normal'
-export const DEFAULT_SPEED_OVERRIDE: SpeedOverride = 'inherit'
-export const DEFAULT_TIER_SUPPORT: TierSupport = 'unknown'
-
-/** FAST 意图对应的服务档名；只有模型声明 supported 且模式为 fast 才会进请求 */
-export const FAST_SERVICE_TIER = 'priority'
-
-/** 一份请求策略快照：调用方只认这份，不自己拼"档位 → 并发 / 服务档"的规则 */
+/** 一份请求策略快照：调用方只认这份，不自己拼"并发"规则 */
 export interface RequestPolicySnapshot {
-  mode: SpeedMode
+  /** 本 run 允许的本地只读批上限；批内是否真并发出 resolveToolBatchConcurrency 逐批准入 */
   maxLocalReadConcurrency: 1 | 2
-  requestedServiceTier: string | null
-  tierSupport: TierSupport
 }
 
-/** 服务档观测：`actual` 是厂商真实回值；回值缺失时 `observed=false`，`actual` 保持 null */
-export interface ServiceTierObservation {
-  requested: string | null
-  actual: string | null
-  observed: boolean
-}
-
-/** 解析入参：所有字段都收 `unknown`，脏数据由本模块按 fail-closed 规则收口 */
-export interface RequestPolicyInput {
-  /** 模型条目默认（旧档案缺字段 = undefined，等价 normal） */
-  modelDefault?: unknown
-  /** 会话覆盖（S3-20B 注入；缺省或 inherit = 用模型默认） */
-  sessionOverride?: unknown
-  /** 模型是否声明支持 FAST 服务档（缺省 / 非法 = unknown） */
-  tierSupport?: unknown
-}
-
-export function isSpeedMode(value: unknown): value is SpeedMode {
-  return value === 'normal' || value === 'fast'
-}
-
-export function isSpeedOverride(value: unknown): value is SpeedOverride {
-  return value === 'inherit' || isSpeedMode(value)
-}
-
-export function isTierSupport(value: unknown): value is TierSupport {
-  return value === 'supported' || value === 'unsupported' || value === 'unknown'
-}
-
-/** 缺值 / 旧值 / 非法值一律回 normal：不抛错，也不悄悄升成 fast */
-export function normalizeSpeedMode(value: unknown): SpeedMode {
-  return isSpeedMode(value) ? value : DEFAULT_SPEED_MODE
-}
-
-/** 缺值 / 非法值回 inherit：坏值不得冒充"显式覆盖" */
-export function normalizeSpeedOverride(value: unknown): SpeedOverride {
-  return isSpeedOverride(value) ? value : DEFAULT_SPEED_OVERRIDE
-}
-
-/** 缺值 / 非法值回 unknown：没声明支持就不请求非默认服务档 */
-export function normalizeTierSupport(value: unknown): TierSupport {
-  return isTierSupport(value) ? value : DEFAULT_TIER_SUPPORT
-}
-
-/** 会话优先：inherit（含缺省 / 非法）取模型默认，显式 normal / fast 直接生效 */
-export function resolveSpeedMode(modelDefault: unknown, sessionOverride?: unknown): SpeedMode {
-  const override = normalizeSpeedOverride(sessionOverride)
-  return override === 'inherit' ? normalizeSpeedMode(modelDefault) : override
-}
-
-/** 本地只读工具并发：普通档 1（保守），FAST 档 2（更快，但仍是有限并发） */
-export function localReadConcurrency(mode: SpeedMode): 1 | 2 {
-  return mode === 'fast' ? 2 : 1
-}
-
-/** 唯一快照出口：速度档 → 并发与服务档意图；unsupported / unknown 永不请求非默认档 */
-export function resolveRequestPolicy(input: RequestPolicyInput = {}): RequestPolicySnapshot {
-  const mode = resolveSpeedMode(input.modelDefault, input.sessionOverride)
-  const tierSupport = normalizeTierSupport(input.tierSupport)
-  return {
-    mode,
-    maxLocalReadConcurrency: localReadConcurrency(mode),
-    requestedServiceTier: mode === 'fast' && tierSupport === 'supported' ? FAST_SERVICE_TIER : null,
-    tierSupport
-  }
-}
-
-/** 非空字符串才算值：空白串按"没给"处理，不把空串当观测成功 */
-function textOrNull(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-/**
- * 服务档观测：`actual` 有真实回值才算 observed；缺值一律 null / false，绝不回填 requested。
- * 服务端降级（actual ≠ requested）是真实观测，原样保留供界面披露。
- */
-export function observeServiceTier(requested: unknown, actual: unknown): ServiceTierObservation {
-  const requestedTier = textOrNull(requested)
-  const actualTier = textOrNull(actual)
-  return { requested: requestedTier, actual: actualTier, observed: actualTier !== null }
+/** 唯一快照出口：本地读取并行默认开启，逐批资格与串行边界仍由消费方守卫 */
+export function resolveRequestPolicy(): RequestPolicySnapshot {
+  return { maxLocalReadConcurrency: TOOL_BATCH_CONCURRENCY_PARALLEL }
 }
 
 // ── S3-30T1 运行态请求上下文 ──────────────────────────────────────────────
@@ -128,27 +35,8 @@ export const PROVIDER_CALL_PURPOSES = [
 ] as const
 export type ProviderCallPurpose = (typeof PROVIDER_CALL_PURPOSES)[number]
 
-/** 固定普通档的五类辅助调用：不落会话 FAST，也不隐式请求收费优先档。 */
-export const AUXILIARY_PROVIDER_CALL_PURPOSES = [
-  'reflection',
-  'title',
-  'prompt-polish',
-  'connection-check',
-  'model-catalog'
-] as const
-export type AuxiliaryProviderCallPurpose = (typeof AUXILIARY_PROVIDER_CALL_PURPOSES)[number]
-
 export function isProviderCallPurpose(value: unknown): value is ProviderCallPurpose {
   return typeof value === 'string' && (PROVIDER_CALL_PURPOSES as readonly string[]).includes(value)
-}
-
-export function isAuxiliaryProviderCallPurpose(
-  value: unknown
-): value is AuxiliaryProviderCallPurpose {
-  return (
-    typeof value === 'string' &&
-    (AUXILIARY_PROVIDER_CALL_PURPOSES as readonly string[]).includes(value)
-  )
 }
 
 /**
@@ -200,17 +88,8 @@ function assertPolicySnapshot(value: unknown): asserts value is RequestPolicySna
     throw new TypeError('ProviderExecutionContext.policy 必须是请求策略快照对象')
   }
   const policy = value as Partial<RequestPolicySnapshot>
-  if (!isSpeedMode(policy.mode)) {
-    throw new TypeError('ProviderExecutionContext.policy.mode 非法')
-  }
-  if (!isTierSupport(policy.tierSupport)) {
-    throw new TypeError('ProviderExecutionContext.policy.tierSupport 非法')
-  }
   if (policy.maxLocalReadConcurrency !== 1 && policy.maxLocalReadConcurrency !== 2) {
     throw new TypeError('ProviderExecutionContext.policy.maxLocalReadConcurrency 非法')
-  }
-  if (policy.requestedServiceTier !== null && typeof policy.requestedServiceTier !== 'string') {
-    throw new TypeError('ProviderExecutionContext.policy.requestedServiceTier 非法')
   }
 }
 
@@ -241,16 +120,13 @@ function runtimeKey(source: () => string): string {
 /** 复制并冻结：调用方之后再改输入对象，不会影响已创建的上下文。 */
 function frozenPolicyCopy(policy: RequestPolicySnapshot): Readonly<RequestPolicySnapshot> {
   return Object.freeze({
-    mode: policy.mode,
-    maxLocalReadConcurrency: policy.maxLocalReadConcurrency,
-    requestedServiceTier: policy.requestedServiceTier,
-    tierSupport: policy.tierSupport
+    maxLocalReadConcurrency: policy.maxLocalReadConcurrency
   })
 }
 
 /**
  * 创建运行态上下文（S3-30T1）。版本由调用方注入，本函数不读 package/全局配置、不导入 electron。
- * ⚠️ 辅助五类固定按 normal 解析（调用方传入的 FAST 意图不生效）；其余三类原样复制显式快照。
+ * 辅助调用与主调用共用同一份并发快照；身份键仍按每次真实调用独立生成。
  */
 export function createProviderExecutionContext(
   input: ProviderExecutionContextInput
@@ -263,14 +139,7 @@ export function createProviderExecutionContext(
     throw new TypeError('ProviderExecutionContext.purpose 非法')
   }
   assertPolicySnapshot(input.policy)
-  const policy = isAuxiliaryProviderCallPurpose(input.purpose)
-    ? Object.freeze(
-        resolveRequestPolicy({
-          modelDefault: DEFAULT_SPEED_MODE,
-          tierSupport: input.policy.tierSupport
-        })
-      )
-    : frozenPolicyCopy(input.policy)
+  const policy = frozenPolicyCopy(input.policy)
   const random = typeof input.randomUUID === 'function' ? input.randomUUID : defaultRandomUUID
   const operationId = runtimeKey(random)
   const sessionId = runtimeKey(random)
@@ -280,29 +149,23 @@ export function createProviderExecutionContext(
   return Object.freeze({ clientVersion, purpose: input.purpose, operationId, sessionId, policy })
 }
 
-// ── 工具批并发上限（S3-40A）──────────────────────────────────────────────
-// 只回答"这个批最多能同时在途几项"：普通 1，FAST 且本批全部合格 2。
+// ── 工具批并发上限（S3-40A → S89-01）────────────────────────────────────
+// 只回答"这个批最多能同时在途几项"：整批合格 2，其余一律 1。
 // 合格资格由真实消费者在每项启动前判定；本文件不认路径、工具身份或权限来源。
 // 缺省、未知、非法输入一律保守回收为 1 —— 不允许把配置错误解释成"可以多跑"。
 
-export const TOOL_BATCH_CONCURRENCY_SERIAL = 1
-export const TOOL_BATCH_CONCURRENCY_FAST = 2
-
 export interface ToolBatchConcurrencyInput {
-  mode?: unknown
   /** 只有真实的"整批合格"才可传 true；缺省/未知/抛错路径都按不合格 */
   eligible?: unknown
 }
 
 export function resolveToolBatchConcurrency(input: ToolBatchConcurrencyInput = {}): 1 | 2 {
-  if (input.mode !== 'fast') return TOOL_BATCH_CONCURRENCY_SERIAL
-  if (input.eligible !== true) return TOOL_BATCH_CONCURRENCY_SERIAL
-  return TOOL_BATCH_CONCURRENCY_FAST
+  return input.eligible === true ? TOOL_BATCH_CONCURRENCY_PARALLEL : TOOL_BATCH_CONCURRENCY_SERIAL
 }
 
 // ── 权限代次合同 ────────────────────────────────────────────────────────
 // 只定义"档位 + 进程内代次"的共享形状与提交门比较规则；真实来源在 store/settings。
-// 不把 FAST、模型或省 token 配置当作权限；非法代次一律判为"已变化"（fail-closed）。
+// 不把模型或省 token 配置当作权限；非法代次一律判为"已变化"（fail-closed）。
 
 export interface PermissionStateSnapshot<P extends string = string> {
   /** 当前权限档（具体枚举由调用方以泛型带入，本文件不复制权限取值） */

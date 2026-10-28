@@ -31,29 +31,6 @@ export function assistantTerminalText(m: Pick<ChatMessage, 'terminal'>): string 
   return runTerminalText(m.terminal)
 }
 
-/**
- * 本轮请求策略（冻结在 run 起点）：只表达"当时要什么"，不是已生效的服务档。
- * 旧消息没有该字段时返回空串 —— 不拿当前全局选择冒充历史。
- */
-export function requestPolicyLabel(policy: ChatMessage['requestPolicy']): string {
-  if (!policy) return ''
-  if (policy.mode === 'normal') return '请求：普通'
-  return policy.requestedServiceTier !== null ? '请求：FAST' : '请求：FAST（未请求优先档）'
-}
-
-/**
- * 实际服务档：只认厂商真实回值；缺报 / 旧档显示未知，普通回报显示普通，优先回报才显示优先。
- * 不推断已提速，也不把 FAST 意图当成生效结果。
- */
-export function observedTierLabel(tier: ChatMessage['serviceTier']): string {
-  if (!tier || tier.observed !== true || tier.actual === null) return '实际：未知'
-  const value = tier.actual
-  if (value === 'standard' || value === 'default') return '实际：普通'
-  if (value === 'priority') return '实际：优先'
-  if (value === 'batch') return '实际：批量'
-  return `实际：${value.length > 24 ? `${value.slice(0, 24)}…` : value}`
-}
-
 export default function ChatView() {
   const messages = useAppStore((s) => s.messages)
   const streaming = useAppStore((s) => s.streaming)
@@ -565,35 +542,7 @@ export default function ChatView() {
                   {assistantTerminalText(m)}
                 </span>
               )}
-              {/* 请求策略与实际档位（只读事实）：只在本条已结算且携带本地事实时显示；
-                  旧档没有字段就不显示，不拿当前全局选择冒充历史。 */}
-              {m.role === 'assistant' && m.terminal && (m.requestPolicy || m.serviceTier) && (
-                <span className="msg-run-facts" data-run-facts="1">
-                  {m.requestPolicy && (
-                    <span
-                      className="msg-run-fact msg-run-fact-request"
-                      data-run-fact="request"
-                      title="本轮起点冻结的请求策略；是否生效以实际档位为准。"
-                    >
-                      {requestPolicyLabel(m.requestPolicy)}
-                    </span>
-                  )}
-                  <span
-                    className={`msg-run-fact msg-run-fact-actual ${
-                      m.serviceTier?.observed === true && m.serviceTier.actual !== null
-                        ? ''
-                        : 'msg-run-fact-unknown'
-                    }`}
-                    data-run-fact="actual"
-                    data-observed={
-                      m.serviceTier?.observed === true && m.serviceTier.actual !== null ? 'true' : 'false'
-                    }
-                    title="厂商响应的真实回值；缺报显示未知，不推断。"
-                  >
-                    {observedTierLabel(m.serviceTier)}
-                  </span>
-                </span>
-              )}
+              {/* 请求策略与实际档位（S3-20C）已随服务档一并移除：旧存档里的字段不展示。 */}
               {m.createdAt !== undefined && (
                 <span className="msg-time" title={new Date(m.createdAt).toLocaleString()}>
                   {formatTime(m.createdAt)}

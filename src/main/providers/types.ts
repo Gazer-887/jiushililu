@@ -1,12 +1,6 @@
 import type { ChatMessage, ModelSettings, ProviderType, TestResult } from '@shared/ipc'
-import type { ProviderExecutionContext, ServiceTierObservation } from '@shared/request-policy'
+import type { ProviderExecutionContext } from '@shared/request-policy'
 import type { TokenUsage } from '@shared/usage'
-
-/**
- * 单请求服务档观察回调（S3-30A-R1）：由调用方在每次真实请求上各自提供。
- * ⚠️ 运行态内部参数：只在内存里传递，不跨请求共享（没有全局 latest），不进消息/日志/磁盘。
- */
-export type ServiceTierObserver = (observation: ServiceTierObservation) => void
 
 export interface ProviderRequest {
   settings: ModelSettings
@@ -27,12 +21,6 @@ export interface StreamCallbacks {
    * 而 usage **可能出现在流尾、也可能根本不出现**（有的厂商不报）。
    */
   onUsage?: (usage: TokenUsage) => void
-  /**
-   * 服务档观测（S3-30T1 / S3-30A-R1）：observed=true 才代表厂商真实回值；缺报保持 actual=null /
-   * observed=false 且绝不回填 requested，失败/断流前已观测的事实不丢。
-   * 单请求内部参数（每次调用各持一份，无全局 latest）；旧调用者不填 = 不观测。
-   */
-  onServiceTier?: (observation: ServiceTierObservation) => void
 }
 
 export interface IProvider {

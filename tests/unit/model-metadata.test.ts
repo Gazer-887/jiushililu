@@ -318,7 +318,6 @@ describe('S3-10C1 normalizeModelMetadata fail-closed 容错', () => {
       attachmentParsing: { user: { value: { supported: true, parsers: ['markitdown'] }, observedAt: 1700000000000 } },
       pricing: { official: { value: [{ category: 'public-api', amount: 0.5, currency: 'USD', unit: '1M-input-tokens', scope: 'input' }], observedAt: 1700000000000 } },
       subscriptionPlan: { official: { value: { quotaUnit: 'Credits', quotaAmount: 11500, resetWindow: 'monthly' }, observedAt: 1700000000000 } },
-      serviceTiers: { official: { value: ['default', 'standard_only'], observedAt: 1700000000000 } },
       catalogPolicy: { official: { value: 'fetch-or-manual', observedAt: 1700000000000 } },
       rogueTopLevel: 'must-be-dropped'
     }
@@ -327,6 +326,7 @@ describe('S3-10C1 normalizeModelMetadata fail-closed 容错', () => {
     expect(m!.contextWindow?.user?.value).toBe(262144)
     expect(m!.pricing?.official?.value[0].amount).toBe(0.5)
     expect('rogueTopLevel' in m!).toBe(false)
+    expect('serviceTiers' in m!).toBe(false)
   })
 
   it('非法来源/非法时间/负价格/非有限数字被明确丢弃', () => {
@@ -546,12 +546,6 @@ describe('S3-10C1-R1 元数据边界与同合同校验', () => {
     expect(modelSaveSchema.safeParse(mkSave({ attachmentParsing: { user: { value: { supported: true, parsers: parsers(32) }, observedAt: 1 } } })).success).toBe(true)
   })
 
-  it('serviceTiers 33 条被拒；重复值被拒；32 个唯一通过', () => {
-    expect(modelSaveSchema.safeParse(mkSave({ serviceTiers: { official: { value: levels(33, 'tier'), observedAt: 1 } } })).success).toBe(false)
-    expect(modelSaveSchema.safeParse(mkSave({ serviceTiers: { official: { value: ['fast', 'fast'], observedAt: 1 } } })).success).toBe(false)
-    expect(modelSaveSchema.safeParse(mkSave({ serviceTiers: { official: { value: levels(32, 'tier'), observedAt: 1 } } })).success).toBe(true)
-  })
-
   it('reasoningLevels/nativeInputModalities/nativeExtendedInputs 重复值被拒；modality 上限 3', () => {
     expect(modelSaveSchema.safeParse(mkSave({ reasoningLevels: { official: { value: ['high', 'high'], observedAt: 1 } } })).success).toBe(false)
     expect(modelSaveSchema.safeParse(mkSave({ nativeInputModalities: { official: { value: ['text', 'text'], observedAt: 1 } } })).success).toBe(false)
@@ -725,11 +719,10 @@ describe('S3-10D 未知态', () => {
     'attachmentParsing',
     'pricing',
     'subscriptionPlan',
-    'serviceTiers',
     'catalogPolicy'
   ]
 
-  it('没有任何已知 metadata 时，八个字段显示“未知”，不显示 0 / 空值 / 伪造默认值', () => {
+  it('没有任何已知 metadata 时，七个字段显示“未知”，不显示 0 / 空值 / 伪造默认值', () => {
     const { buildMetadataFacts, UNKNOWN_TEXT } = D()
     expect(UNKNOWN_TEXT).toBe('未知')
     const rows = buildMetadataFacts(undefined)

@@ -9,23 +9,13 @@ import { thinkingBudgetForSettings } from './anthropic'
 import { createSSEParser } from './sse'
 import {
   createAnthropicUsageAccumulator,
-  serviceTierFromAnthropicEvent,
-  serviceTierFromAnthropicMessage,
   usageFromAnthropicMessage
 } from './usage-parsers'
 import { ToolCallAccumulator, ToolCallIntegrityError } from './tool-accumulator'
 import { httpFetch } from './http-client'
 import { attachmentTextForModel } from '@shared/attachment-block'
 import { createStreamGuard, type StreamGuard, type StreamGuardOptions } from './stream-guard'
-import {
-  anthropicServiceTierForRequest,
-  buildAnthropicHeaders,
-  createServiceTierEmitter,
-  serviceTierForResult,
-  withAnthropicServiceTierField,
-  type ServiceTierEmitter
-} from './service-tier'
-import type { ServiceTierObserver } from './types'
+import { buildAnthropicHeaders } from './wire'
 
 // Anthropic tool_use 适配（plan6 → P1）：把 OpenAI 风格的 Agent 消息翻译成 Anthropic 块结构。
 // 三个纯函数（toAnthropicAgentMessages / fromAnthropicResponse / buildTools）可独立单测。
@@ -175,28 +165,18 @@ function failRequest(terminal: RunTerminal, usage: TokenUsage | null): never {
  * ⚠️ **同一响应的唯一消费点**：stream 收到 application/json 时也走它，不重新发请求。
  * ⚠️ 不改 `fromAnthropicResponse` 的旧宽松解析契约 —— 终因校验只在这里（网络入口）加。
  */
-function resultFromAnthropicJson(
-  json: {
-    content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }>
-    usage?: unknown
-    stop_reason?: string | null
-  },
-  requestedTier: string | null,
-  context?: ProviderExecutionContext,
-  /** 单请求观察出口（S3-30B）：必须在抛原失败前交出本响应已观察到的真实容量 */
-  tierEmitter?: ServiceTierEmitter
-): AgentChatResult {
+function resultFromAnthropicJson(json: {
+  content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }>
+  usage?: unknown
+  stop_reason?: string | null
+}): AgentChatResult {
   const result = fromAnthropicResponse(json)
-  // 先交出容量、再判终态：截断/拒绝的失败信封不变，但已观测事实不再丢失
-  const actualTier = serviceTierFromAnthropicMessage(json)
-  tierEmitter?.observe(actualTier)
   const usage = result.usage ?? null
   const terminal = anthropicStopReasonToTerminal(json.stop_reason)
   // 缺终因 / 未知值 / 截断 / 拒绝一律受控失败，绝不静默当成功
   if (terminal === null) failRequest({ state: 'unknown', code: 'missing-terminal' }, usage)
   if (terminal.state !== 'completed') failRequest(terminal, usage)
-  const serviceTier = serviceTierForResult(requestedTier, actualTier, context)
-  return { ...result, usageComplete: usage !== null, ...(serviceTier ? { serviceTier } : {}) }
+  return { ...result, usageComplete: usage !== null }
 }
 
 export async function chatWithToolsAnthropic(
@@ -205,61 +185,44 @@ export async function chatWithToolsAnthropic(
   messages: AgentMessage[],
   tools: ToolSchema[],
   signal?: AbortSignal,
-  /** 运行态上下文（S3-30B）：缺省 = 旧请求，不发身份/容量字段 */
-  context?: ProviderExecutionContext,
-  /** 单请求服务档观察（S3-30B）：缺省 = 不观察；旧调用者参数位置不变 */
-  onServiceTier?: ServiceTierObserver
+  /** 运行态上下文（S3-30B）：缺省 = 旧请求，不发身份头 */
+  context?: ProviderExecutionContext
 ): Promise<AgentChatResult> {
-  const requestedTier = anthropicServiceTierForRequest(context)
-  const tierEmitter = createServiceTierEmitter(requestedTier, onServiceTier)
-  try {
-    const { system, messages: anthropicMessages } = toAnthropicAgentMessages(messages)
-    // ⚠️ thinking 与 tools 互斥（交叉验证结论）：部分 Anthropic 模型 / 版本拒收二者同时下发，且带 thinking 的
-    // assistant 续轮必须回带 thinking 块（我们只回放 text/tool_use）。工具模式下内核优先保工具 → 自动降级思考。
-    const budget = tools.length === 0 ? thinkingBudgetForSettings(settings) : null
-    const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
-      method: 'POST',
-      headers: buildAnthropicHeaders(settings, apiKey, context),
-      body: JSON.stringify(
-        withAnthropicServiceTierField(
-          {
-            model: settings.model,
-            max_tokens: settings.maxTokens,
-            stream: false,
-            ...(system ? { system } : {}),
-            ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
-            ...(tools.length > 0 ? { tools: toAnthropicToolDefs(tools) } : {}),
-            messages: anthropicMessages
-          },
-          context
-        )
-      ),
-      signal
+  const { system, messages: anthropicMessages } = toAnthropicAgentMessages(messages)
+  // ⚠️ thinking 与 tools 互斥（交叉验证结论）：部分 Anthropic 模型 / 版本拒收二者同时下发，且带 thinking 的
+  // assistant 续轮必须回带 thinking 块（我们只回放 text/tool_use）。工具模式下内核优先保工具 → 自动降级思考。
+  const budget = tools.length === 0 ? thinkingBudgetForSettings(settings) : null
+  const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
+    method: 'POST',
+    headers: buildAnthropicHeaders(settings, apiKey, context),
+    body: JSON.stringify({
+      model: settings.model,
+      max_tokens: settings.maxTokens,
+      stream: false,
+      ...(system ? { system } : {}),
+      ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
+      ...(tools.length > 0 ? { tools: toAnthropicToolDefs(tools) } : {}),
+      messages: anthropicMessages
+    }),
+    signal
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    // HTTP 层失败挂结构化事实（E23-R1）；detail 只用于映射文案，绝不进 message/facts
+    throw new ProviderError(mapHttpError(res.status, detail), res.status, {
+      scope: 'request',
+      terminal: { state: 'failed', code: 'http-error', httpStatus: res.status },
+      usage: null,
+      usageComplete: false
     })
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      // HTTP 层失败挂结构化事实（E23-R1）；detail 只用于映射文案，绝不进 message/facts
-      throw new ProviderError(mapHttpError(res.status, detail), res.status, {
-        scope: 'request',
-        terminal: { state: 'failed', code: 'http-error', httpStatus: res.status },
-        usage: null,
-        usageComplete: false
-      })
-    }
-    return resultFromAnthropicJson(
-      (await res.json()) as {
-        content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }>
-        usage?: unknown
-        stop_reason?: string | null
-      },
-      requestedTier,
-      context,
-      tierEmitter
-    )
-  } finally {
-    // 同一响应只观察一次：已交出真实容量就不再补缺报事件
-    tierEmitter.finalize()
   }
+  return resultFromAnthropicJson(
+    (await res.json()) as {
+      content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown }>
+      usage?: unknown
+      stop_reason?: string | null
+    }
+  )
 }
 
 /** 构造带工具请求体（流式/非流式共用，纯函数便于单测） */
@@ -267,25 +230,20 @@ export function buildAnthropicToolsBody(
   settings: ModelSettings,
   messages: AgentMessage[],
   tools: ToolSchema[],
-  stream: boolean,
-  /** 运行态上下文（S3-30B）：缺省 = 旧请求，一个容量字段都不加 */
-  context?: ProviderExecutionContext
+  stream: boolean
 ): Record<string, unknown> {
   const { system, messages: anthropicMessages } = toAnthropicAgentMessages(messages)
   // thinking 与 tools 互斥（见上）；流式同样只保工具
   const budget = tools.length === 0 ? thinkingBudgetForSettings(settings) : null
-  return withAnthropicServiceTierField(
-    {
-      model: settings.model,
-      max_tokens: settings.maxTokens,
-      stream,
-      ...(system ? { system } : {}),
-      ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
-      ...(tools.length > 0 ? { tools: toAnthropicToolDefs(tools) } : {}),
-      messages: anthropicMessages
-    },
-    context
-  )
+  return {
+    model: settings.model,
+    max_tokens: settings.maxTokens,
+    stream,
+    ...(system ? { system } : {}),
+    ...(budget ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
+    ...(tools.length > 0 ? { tools: toAnthropicToolDefs(tools) } : {}),
+    messages: anthropicMessages
+  }
 }
 
 /**
@@ -325,38 +283,21 @@ export async function streamWithToolsAnthropic(
   signal?: AbortSignal,
   /** 两层守卫的时长（plan29 D-090）。不传 = 用默认口径；**单测传短值** */
   guardOpts?: StreamGuardOptions,
-  /** 运行态上下文（S3-30B）：缺省 = 旧请求，不发身份/容量字段 */
-  context?: ProviderExecutionContext,
-  /** 单请求服务档观察（S3-30B）：缺省 = 不观察；旧调用者参数位置不变 */
-  onServiceTier?: ServiceTierObserver
+  /** 运行态上下文（S3-30B）：缺省 = 旧请求，不发身份头 */
+  context?: ProviderExecutionContext
 ): Promise<AgentChatResult> {
-  const requestedTier = anthropicServiceTierForRequest(context)
-  // 单请求观察出口（S3-30B）：容量帧一出现就交出，后续断流/取消/缺终帧都不丢已观测事实
-  const tierEmitter = createServiceTierEmitter(requestedTier, onServiceTier)
   // 与 OpenAI 侧同款（见 stream-guard.ts）：首包 + 分片间隔两层，取代原来的整轮墙钟。
   // 结构上把"守卫的收尾"与"流本身"拆成两个函数：超时的**分型文案**只在包装层出现一次，
   // 免得日后有人往内层再加一条 return 路径时忘了报出真实原因。
   const guard = createStreamGuard(signal, guardOpts)
   try {
-    return await anthropicStreamBody(
-      settings,
-      apiKey,
-      messages,
-      tools,
-      onText,
-      guard,
-      requestedTier,
-      context,
-      tierEmitter
-    )
+    return await anthropicStreamBody(settings, apiKey, messages, tools, onText, guard, context)
   } catch (err) {
     const timedOut = guard.timeoutMessage()
     if (timedOut) throw new ProviderError(timedOut, 0)
     throw err
   } finally {
     guard.dispose()
-    // 只有从未见到真实容量才补 observed=false；已观测到的不补，避免缺报覆盖已知事实
-    tierEmitter.finalize()
   }
 }
 
@@ -368,14 +309,12 @@ async function anthropicStreamBody(
   tools: ToolSchema[],
   onText: (delta: string) => void,
   guard: StreamGuard,
-  requestedTier: string | null,
-  context: ProviderExecutionContext | undefined,
-  tierEmitter: ServiceTierEmitter
+  context: ProviderExecutionContext | undefined
 ): Promise<AgentChatResult> {
   const res = await httpFetch(resolveApiUrl(settings.baseURL, 'messages'), {
     method: 'POST',
     headers: buildAnthropicHeaders(settings, apiKey, context),
-    body: JSON.stringify(buildAnthropicToolsBody(settings, messages, tools, true, context)),
+    body: JSON.stringify(buildAnthropicToolsBody(settings, messages, tools, true)),
     signal: guard.signal
   })
   if (!res.ok) {
@@ -394,14 +333,12 @@ async function anthropicStreamBody(
   {
     const contentType = res.headers.get('content-type') ?? ''
     if (contentType.toLowerCase().includes('application/json')) {
-      return resultFromAnthropicJson((await res.json()) as never, requestedTier, context, tierEmitter)
+      return resultFromAnthropicJson((await res.json()) as never)
     }
   }
 
   const acc = new ToolCallAccumulator()
   let text = ''
-  /** 最后一次看到的真实容量（S3-30B）：缺报保持 null，绝不回填 requested */
-  let actualTier: string | null = null
   /** 这一轮的用量（plan8 R9）：Anthropic **分两处报**（message_start 输入 / message_delta 输出） */
   const usage = createAnthropicUsageAccumulator()
   /** 最后一次看到的 stop_reason（E23）：业务终态的唯一依据之一 */
@@ -434,13 +371,6 @@ async function anthropicStreamBody(
     if (evt.type === 'error' || (evt.error !== undefined && evt.error !== null)) {
       upstreamError = true
       return
-    }
-    // 容量（S3-30B）与用量/文本相互独立：官方只在 message_start.message.usage 报；
-    // 没有该字段的事件不清空已知值，也不知道就等于不知道（null，不回填 requested）
-    const tier = serviceTierFromAnthropicEvent(evt)
-    if (tier !== null) {
-      actualTier = tier
-      tierEmitter.observe(tier)
     }
     // 计量与文本/工具独立：只有基础输入及最终输出齐全才发布报告。
     usage.addEvent(evt)
@@ -530,12 +460,10 @@ async function anthropicStreamBody(
     failWith({ state: 'failed', code: 'incomplete-tool-call' })
   }
 
-  const serviceTier = serviceTierForResult(requestedTier, actualTier, context)
   return {
     text: text.length > 0 ? text : null,
     toolCalls,
     usage: knownUsage,
-    usageComplete: knownUsage !== null,
-    ...(serviceTier ? { serviceTier } : {})
+    usageComplete: knownUsage !== null
   }
 }

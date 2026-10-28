@@ -227,38 +227,10 @@ Anthropic输入是否归一为未缓存输入加缓存读写仍待裁，当前�
 
 **刷新链是广播 + 重读，不是渲染端自盖**：`models:patch-metadata` 成功后主进程广播 `models`，设置窗收到后重读 `listModels()` 真值（[[src/renderer/src/views/SettingsView.tsx]]）；渲染端 [[src/renderer/src/components/ModelCatalogEditor.tsx#submitMetadataOverride]] 只发 `{ user: { value } }`，成功后 [[src/renderer/src/components/ModelCatalogEditor.tsx#mergeMetadataFromView]] 只替换草稿里的 `metadata`，保留 Key、模板、认证与其它未保存草稿。未保存端点/条目不调用 metadata IPC（[[src/renderer/src/components/ModelCatalogEditor.tsx#canOverrideMetadata]]）——没有档案可打，发了只会拿到「条目不存在」。
 
-## 会话级速度覆盖：寄生在既有偏好表里的一张有界映射
+## 已移除的会话速度覆盖（旧字段读时忽略）
 
-`conversationSpeedOverrides` 不另立文件，就住在既有 `ui-prefs`（[[src/shared/splitter.ts#UIPrefs]]）：
-与主题、字号、语言同一条通路——主进程存、改完广播、每个窗口自己重读
-（[[src/main/store/ui-prefs.ts#getUIPrefs]]）。渲染端只提交整表补丁，落盘后回显主进程清洗过的结果，
-不做乐观更新（[[src/renderer/src/store.ts#useAppStore]] 的 `persistUIPrefs`）。
-
-**取值只有三个**：`inherit | normal | fast`（[[src/shared/request-policy.ts#SPEED_OVERRIDES]]）。
-缺键、坏值、非法 id 一律回 `inherit`（[[src/shared/splitter.ts#getConversationSpeedOverride]]）——
-坏值绝不能冒充"用户显式覆盖"。
-
-**键与会话 id 同域**：1–128 字符（[[src/shared/splitter.ts#CONVERSATION_SPEED_KEY_MAX]]），
-含 C0/C1 控制字符即丢弃；**故意不 trim**——把 `" a"` 悄悄改成 `"a"` 等于替用户丢键。上限 200 项
-（[[src/shared/splitter.ts#CONVERSATION_SPEED_OVERRIDES_MAX]]），键序就是 LRU 队列：队首最旧、队尾最近，
-超限从队首裁。清洗过程内部借 `Map` 临时保序（纯对象会把整数形键按数值重排），
-但清洗器最终经 `Object.fromEntries` 落成普通对象，下一次 `Object.entries` 会重新按整数键顺序枚举；
-真实生成的会话 id 属于非整数 id 域，当前行为不受影响。**不承诺任意整数形键经 JSON 持久化后的 LRU 保序**，
-此边界留待后续专项核验。
-
-**清洗逐项，不整表陪葬**：[[src/shared/splitter.ts#sanitizeConversationSpeedOverrides]] 丢坏键坏值、
-裁到上限；一条坏数据不该让整张覆盖表消失。读盘（`getUIPrefs`）与入参（`ui-prefs:set`）都走它。
-
-**写侧两条容易被忽略的语义**：① **脏入参不等于清空**——只有显式给 `{}` 才清空，类型不对的入参直接忽略，
-否则一次坏调用就把整张表抹掉（[[src/main/store/ui-prefs.ts#setUIPref]]）。② **按最近使用合并**——
-值没变的键沿用入参次序（纯函数的 set/touch 已把它挪到队尾），改值或新增的键统一进队尾；
-落盘前再过一次清洗与裁剪。
-
-**删除会话精确移除**：`IPC.convDelete` 先 `abort` 再删正文与目标，随后**只在该会话确有覆盖时**调用
-[[src/shared/splitter.ts#deleteConversationSpeedOverride]] 清这一条并广播；其他会话的覆盖与次序原样不动，
-没有覆盖就不写盘、不广播（[[src/main/ipc.ts]]）。**reset 清空整表**：
-[[src/main/store/ui-prefs.ts#resetUIPrefs]] 写 `{}`，渲染端用返回值覆盖内存，界面不必等重启。
-**旧档案缺字段回空映射**：字段不存在时清洗器返回 `{}`，不迁移、不补写、不生成第二份默认表。
-
-**边界**：覆盖只是一条偏好，不触发请求、不清正文、不动运行中的 run；它对请求策略的影响发生在
-下一次 run 起点（冻结规则见 `lat.md/agent-kernel.md`）。
+历史版本的 `conversationSpeedOverrides` 曾寄住在 `ui-prefs`（[[src/shared/splitter.ts#UIPrefs]]）。
+S89-01 起该功能整体移除：`UIPrefs` 不再声明该字段，读盘
+（[[src/main/store/ui-prefs.ts#getUIPrefs]]）与 `ui-prefs:set` 都按未知键忽略，
+**不报错、不迁移、不写回**；其余偏好（主题、字号、语言、栏宽、布局）行为不变。
+`conv:delete` 也不再做覆盖清理，只保留「abort → 删会话 → 清目标」的既有顺序。

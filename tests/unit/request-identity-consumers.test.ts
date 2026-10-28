@@ -9,11 +9,7 @@ import { createCheckpointStore } from '@main/store/checkpoints'
 import type { AgentDefinition } from '@main/agent/loader'
 import type { ModelSettings } from '@shared/ipc'
 import type { AgentChatResult, AgentMessage } from '@shared/agent'
-import type {
-  ProviderExecutionContext,
-  RequestPolicySnapshot,
-  ServiceTierObservation
-} from '@shared/request-policy'
+import type { ProviderExecutionContext, RequestPolicySnapshot } from '@shared/request-policy'
 
 /**
  * S3-30T2：运行态上下文在主聊天 / 一次性 / 子代理三条真实装配边界上的承载。
@@ -26,11 +22,8 @@ import type {
 const VERSION = '0.13.110-t2'
 const API_KEY = 'unit-test-key-not-a-secret'
 
-const FAST_SUPPORTED: RequestPolicySnapshot = {
-  mode: 'fast',
-  maxLocalReadConcurrency: 2,
-  requestedServiceTier: 'priority',
-  tierSupport: 'supported'
+const RUN_POLICY: RequestPolicySnapshot = {
+  maxLocalReadConcurrency: 2
 }
 
 function settings(baseURL: string, overrides: Partial<ModelSettings> = {}): ModelSettings {
@@ -182,7 +175,6 @@ function writeAgentDef(ctx: AgentRuntimeContext, name: string, model: string): v
 function messageJson(
   options: {
     text?: string
-    tier?: string
     stop?: string
     tool?: { id: string; name: string; input: Record<string, unknown> }
   } = {}
@@ -191,7 +183,6 @@ function messageJson(
   if (options.text) content.push({ type: 'text', text: options.text })
   if (options.tool) content.push({ type: 'tool_use', ...options.tool })
   const usage: Record<string, unknown> = { input_tokens: 5, output_tokens: 2 }
-  if (options.tier) usage['service_tier'] = options.tier
   return {
     content: content.length > 0 ? content : [{ type: 'text', text: '好' }],
     stop_reason: options.stop ?? (options.tool ? 'tool_use' : 'end_turn'),
@@ -199,34 +190,11 @@ function messageJson(
   }
 }
 
-interface Collector {
-  main: ServiceTierObservation[]
-  sub: ServiceTierObservation[]
-  names: string[]
-}
-
-function collector(): {
-  state: Collector
-  onMain: (o: ServiceTierObservation) => void
-  onSub: (o: ServiceTierObservation, name: string) => void
-} {
-  const state: Collector = { main: [], sub: [], names: [] }
-  return {
-    state,
-    onMain: (observation) => state.main.push(observation),
-    onSub: (observation, name) => {
-      state.sub.push(observation)
-      state.names.push(name)
-    }
-  }
-}
-
 // ── ① 主聊天 / 一次性：上下文只建一次并进入真实序列化 ──────────────────
 
-describe('S3-30T2 ① 主运行上下文进入真实请求', () => {
-  it('主聊天：身份头 + 服务档 auto 同时出现在真实序列化里，观察回调拿到真实容量', async () => {
-    const server = await startServer((_req, res) => jsonReply(res, messageJson({ text: '好', tier: 'priority' })))
-    const seen = collector()
+describe('S89-01 ① 主运行上下文进入真实请求', () => {
+  it('主聊天：身份头真实出现在序列化里，且请求体不含服务档字段', async () => {
+    const server = await startServer((_req, res) => jsonReply(res, messageJson({ text: '好' })))
     const result = await runAgent(makeRunCtx(), {
       settings: settings(server.baseURL, { requestIdentity: 'opencode-v1' }),
       apiKey: API_KEY,
@@ -234,21 +202,18 @@ describe('S3-30T2 ① 主运行上下文进入真实请求', () => {
       history: [{ role: 'user', content: '干活' }],
       clientVersion: VERSION,
       purpose: 'main-chat',
-      requestPolicy: FAST_SUPPORTED,
-      serviceTierReports: { onMain: seen.onMain, onSubagent: seen.onSub }
+      requestPolicy: RUN_POLICY
     })
     expect(result.output).toContain('好')
     expect(server.requests).toHaveLength(1)
     const captured = server.requests[0]!
-    expect(bodyJson(captured)['service_tier']).toBe('auto')
+    expect(Object.hasOwn(bodyJson(captured), 'service_tier')).toBe(false)
     expect(handleOf(captured, 'user-agent')).toBe(`jiushililu/${VERSION}`)
     expect(handleOf(captured, 'x-opencode-session').length).toBeGreaterThan(0)
-    expect(seen.state.main).toEqual([{ requested: 'auto', actual: 'priority', observed: true }])
-    expect(seen.state.names).toEqual([])
   })
 
-  it('一次性任务与主聊天各建各的上下文：双会话键不同，且都带身份与服务档', async () => {
-    const server = await startServer((_req, res) => jsonReply(res, messageJson({ tier: 'priority' })))
+  it('一次性任务与主聊天各建各的上下文：双会话键不同，且都带身份', async () => {
+    const server = await startServer((_req, res) => jsonReply(res, messageJson({})))
     const ctx = makeRunCtx()
     const run = (conversationId: string, purpose: 'main-chat' | 'one-shot'): Promise<unknown> =>
       runAgent(ctx, {
@@ -258,7 +223,7 @@ describe('S3-30T2 ① 主运行上下文进入真实请求', () => {
         history: [{ role: 'user', content: '干活' }],
         clientVersion: VERSION,
         purpose,
-        requestPolicy: FAST_SUPPORTED
+        requestPolicy: RUN_POLICY
       })
     await run('conv-a', 'main-chat')
     await run('conv-b', 'one-shot')
@@ -266,52 +231,49 @@ describe('S3-30T2 ① 主运行上下文进入真实请求', () => {
     const sessions = server.requests.map((captured) => handleOf(captured, 'x-opencode-session'))
     expect(sessions[0]).not.toBe(sessions[1])
     for (const captured of server.requests) {
-      expect(bodyJson(captured)['service_tier']).toBe('auto')
+      expect(Object.hasOwn(bodyJson(captured), 'service_tier')).toBe(false)
       expect(handleOf(captured, 'user-agent')).toBe(`jiushililu/${VERSION}`)
     }
   })
 
-  it('同一 run 多轮：session 键与策略不随轮次漂移', async () => {
+  it('同一 run 多轮：session 键不随轮次漂移，每轮都不带服务档字段', async () => {
     const server = await startServer((req, res) => {
       const body = bodyJson(req)
       if (!hasToolResult(body)) {
-        jsonReply(res, messageJson({ tool: { id: 't1', name: 'list_dir', input: { path: '.' } }, tier: 'priority' }))
+        jsonReply(res, messageJson({ tool: { id: 't1', name: 'list_dir', input: { path: '.' } } }))
         return
       }
-      jsonReply(res, messageJson({ text: '完成', tier: 'priority' }))
+      jsonReply(res, messageJson({ text: '完成' }))
     })
-    const seen = collector()
     await runAgent(makeRunCtx(), {
       settings: settings(server.baseURL, { requestIdentity: 'opencode-v1' }),
       apiKey: API_KEY,
       conversationId: 'conv-rounds',
       history: [{ role: 'user', content: '看看目录' }],
       clientVersion: VERSION,
-      requestPolicy: FAST_SUPPORTED,
-      serviceTierReports: { onMain: seen.onMain }
+      requestPolicy: RUN_POLICY
     })
     expect(server.requests).toHaveLength(2)
     const sessions = server.requests.map((captured) => handleOf(captured, 'x-opencode-session'))
     expect(sessions[0]).toBe(sessions[1])
-    for (const captured of server.requests) expect(bodyJson(captured)['service_tier']).toBe('auto')
-    expect(seen.state.main).toHaveLength(2)
+    for (const captured of server.requests) {
+      expect(Object.hasOwn(bodyJson(captured), 'service_tier')).toBe(false)
+    }
   })
 
   it('运行中改偏好不换上下文：冻结快照与 session 键都不受影响', async () => {
     const mutable: { -readonly [K in keyof RequestPolicySnapshot]: RequestPolicySnapshot[K] } = {
-      ...FAST_SUPPORTED
+      ...RUN_POLICY
     }
     const server = await startServer((req, res) => {
       const body = bodyJson(req)
       // 第一轮返回后把外部对象改掉：run 起点已复制冻结，本轮不得跟着变
-      mutable.mode = 'normal'
-      mutable.tierSupport = 'unsupported'
-      mutable.requestedServiceTier = null
+      mutable.maxLocalReadConcurrency = 1
       if (!hasToolResult(body)) {
-        jsonReply(res, messageJson({ tool: { id: 't1', name: 'list_dir', input: { path: '.' } }, tier: 'priority' }))
+        jsonReply(res, messageJson({ tool: { id: 't1', name: 'list_dir', input: { path: '.' } } }))
         return
       }
-      jsonReply(res, messageJson({ text: '完成', tier: 'priority' }))
+      jsonReply(res, messageJson({ text: '完成' }))
     })
     await runAgent(makeRunCtx(), {
       settings: settings(server.baseURL, { requestIdentity: 'opencode-v1' }),
@@ -319,22 +281,24 @@ describe('S3-30T2 ① 主运行上下文进入真实请求', () => {
       conversationId: 'conv-freeze',
       history: [{ role: 'user', content: '看看目录' }],
       clientVersion: VERSION,
-      requestPolicy: mutable,
+      requestPolicy: mutable
     })
     expect(server.requests).toHaveLength(2)
-    for (const captured of server.requests) expect(bodyJson(captured)['service_tier']).toBe('auto')
+    for (const captured of server.requests) {
+      expect(Object.hasOwn(bodyJson(captured), 'service_tier')).toBe(false)
+    }
     const sessions = server.requests.map((captured) => handleOf(captured, 'x-opencode-session'))
     expect(sessions[0]).toBe(sessions[1])
   })
 
-  it('缺 clientVersion：旧兼容路径（不发身份头、不发服务档），不伪造版本', async () => {
-    const server = await startServer((_req, res) => jsonReply(res, messageJson({ tier: 'priority' })))
+  it('缺 clientVersion：旧兼容路径（不发身份头），不伪造版本', async () => {
+    const server = await startServer((_req, res) => jsonReply(res, messageJson({})))
     await runAgent(makeRunCtx(), {
       settings: settings(server.baseURL),
       apiKey: API_KEY,
       conversationId: 'conv-legacy',
       history: [{ role: 'user', content: '干活' }],
-      requestPolicy: FAST_SUPPORTED
+      requestPolicy: RUN_POLICY
     })
     const captured = server.requests[0]!
     expect(Object.hasOwn(bodyJson(captured), 'service_tier')).toBe(false)
@@ -343,57 +307,18 @@ describe('S3-30T2 ① 主运行上下文进入真实请求', () => {
   })
 })
 
-// ── ② 失败前已观察事实沿 runner 窄回调交出 ──────────────────────────────
+// ── ③ 辅助摘要：独立 operation 上下文 ────────────────────────────────
 
-describe('S3-30T2 ② 失败前已观测容量不丢', () => {
-  it('流式先给容量与部分正文再断流：run 失败，观察回调仍拿到真实容量，请求数 1', async () => {
-    const server = await startServer((_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      res.flushHeaders()
-      res.write(
-        `data: ${JSON.stringify({
-          type: 'message_start',
-          message: { usage: { input_tokens: 5, output_tokens: 0, service_tier: 'priority' } }
-        })}\n\n`
-      )
-      res.write(
-        `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '部分' } })}\n\n`
-      )
-      res.socket?.end()
-    })
-    const seen = collector()
-    let failed: unknown = null
-    try {
-      await runAgent(makeRunCtx(), {
-        settings: settings(server.baseURL),
-        apiKey: API_KEY,
-        conversationId: 'conv-fail',
-        history: [{ role: 'user', content: '干活' }],
-        clientVersion: VERSION,
-        requestPolicy: FAST_SUPPORTED,
-        serviceTierReports: { onMain: seen.onMain }
-      })
-    } catch (err) {
-      failed = err
-    }
-    expect(failed).not.toBeNull()
-    expect(seen.state.main).toEqual([{ requested: 'auto', actual: 'priority', observed: true }])
-    expect(server.requests).toHaveLength(1)
-  })
-})
-
-// ── ③ 辅助摘要：固定普通 + 独立 operation 上下文 ────────────────────────
-
-describe('S3-30T2 ③ runner 内部摘要请求', () => {
-  it('摘要请求不带服务档，且与主请求使用不同 operation 键', async () => {
+describe('S89-01 ③ runner 内部摘要请求', () => {
+  it('摘要请求与主请求使用不同 operation 键，且都不带服务档', async () => {
     const server = await startServer((req, res) => {
       const body = bodyJson(req)
       const tools = body['tools']
       if (tools === undefined || (Array.isArray(tools) && tools.length === 0)) {
-        jsonReply(res, messageJson({ text: '摘要文本', tier: 'priority' }))
+        jsonReply(res, messageJson({ text: '摘要文本' }))
         return
       }
-      jsonReply(res, messageJson({ text: '好', tier: 'priority' }))
+      jsonReply(res, messageJson({ text: '好' }))
     })
     const history: AgentMessage[] = []
     for (let i = 0; i < 12; i++) {
@@ -405,7 +330,7 @@ describe('S3-30T2 ③ runner 内部摘要请求', () => {
       conversationId: 'conv-summary',
       history,
       clientVersion: VERSION,
-      requestPolicy: FAST_SUPPORTED,
+      requestPolicy: RUN_POLICY,
       summaryCache: new Map<string, string>()
     })
     expect(server.requests.length).toBeGreaterThanOrEqual(2)
@@ -420,15 +345,15 @@ describe('S3-30T2 ③ runner 内部摘要请求', () => {
     expect(summary).toBeTruthy()
     expect(main).toBeTruthy()
     expect(Object.hasOwn(bodyJson(summary!), 'service_tier')).toBe(false)
-    expect(bodyJson(main!)['service_tier']).toBe('auto')
+    expect(Object.hasOwn(bodyJson(main!), 'service_tier')).toBe(false)
     expect(handleOf(summary!, 'x-opencode-session')).not.toBe(handleOf(main!, 'x-opencode-session'))
   })
 })
 
 // ── ④ 父派两子：真实 runner + scheduler + 双协议函数 ────────────────────
 
-describe('S3-30T2 ④ 子任务上下文与模型能力', () => {
-  it('父子三键互异、子模型覆盖按实际模型解析、子观察不覆盖主请求展示值', async () => {
+describe('S89-01 ④ 子任务上下文与模型覆盖', () => {
+  it('父子三键互异、子模型覆盖按实际模型发请求、请求体不含服务档', async () => {
     const perModel = new Map<string, number>()
     const server = await startServer((req, res) => {
       const body = bodyJson(req)
@@ -438,21 +363,20 @@ describe('S3-30T2 ④ 子任务上下文与模型能力', () => {
       const sawToolResult = hasToolResult(body)
       if (model === 'child-alpha') {
         if (!sawToolResult) {
-          jsonReply(res, messageJson({ tool: { id: 'a1', name: 'list_dir', input: { path: '.' } }, tier: 'priority' }))
+          jsonReply(res, messageJson({ tool: { id: 'a1', name: 'list_dir', input: { path: '.' } } }))
           return
         }
-        jsonReply(res, messageJson({ text: 'alpha 完成', tier: 'priority' }))
+        jsonReply(res, messageJson({ text: 'alpha 完成' }))
         return
       }
       if (model === 'child-beta') {
-        jsonReply(res, messageJson({ text: 'beta 完成', tier: 'standard' }))
+        jsonReply(res, messageJson({ text: 'beta 完成' }))
         return
       }
       if (!sawToolResult) {
         jsonReply(
           res,
           messageJson({
-            tier: 'priority',
             tool: {
               id: 'spawn-1',
               name: 'spawn_agents',
@@ -467,21 +391,18 @@ describe('S3-30T2 ④ 子任务上下文与模型能力', () => {
         )
         return
       }
-      jsonReply(res, messageJson({ text: '都完成了', tier: 'priority' }))
+      jsonReply(res, messageJson({ text: '都完成了' }))
     })
     const ctx = makeRunCtx()
     writeAgentDef(ctx, 'alpha', 'child-alpha')
     writeAgentDef(ctx, 'beta', 'child-beta')
-    const seen = collector()
     const result = await runAgent(ctx, {
       settings: settings(server.baseURL, { requestIdentity: 'opencode-v1', maxToolRounds: 4 }),
       apiKey: API_KEY,
       conversationId: 'conv-spawn',
       history: [{ role: 'user', content: '派两个活' }],
       clientVersion: VERSION,
-      requestPolicy: FAST_SUPPORTED,
-      tierSupportForModel: (model) => (model === 'child-alpha' ? 'supported' : undefined),
-      serviceTierReports: { onMain: seen.onMain, onSubagent: seen.onSub }
+      requestPolicy: RUN_POLICY
     })
     expect(result.output).toBeTruthy()
 
@@ -502,26 +423,9 @@ describe('S3-30T2 ④ 子任务上下文与模型能力', () => {
     expect(new Set(sessionOf(parent)).size).toBe(1)
     expect(new Set(sessionOf(alpha)).size).toBe(1)
 
-    // 父 FAST + 父模型 supported → 父发 auto
-    for (const captured of parent) expect(bodyJson(captured)['service_tier']).toBe('auto')
-    // 子 alpha 在快照里 supported → 继承 FAST 意图，仍发 auto
-    for (const captured of alpha) expect(bodyJson(captured)['service_tier']).toBe('auto')
-    // 子 beta 未声明 → 不把父模型的 supported 当作子模型证据，一律不发
-    for (const captured of beta) expect(Object.hasOwn(bodyJson(captured), 'service_tier')).toBe(false)
-
-    // 子请求的观察只进子域，绝不污染主请求展示值
-    // beta 没请求容量档 → requested=null，但服务端真实回了 standard，照样如实观测
-    expect(seen.state.sub).toContainEqual({ requested: null, actual: 'standard', observed: true })
-    expect(seen.state.sub).toContainEqual({ requested: 'auto', actual: 'priority', observed: true })
-    expect(seen.state.names).toContain('beta')
-    expect(seen.state.names).toContain('alpha')
-    // 主请求域只见父自己的真实值：子代理的 standard 绝不写进主展示通道
-    expect(seen.state.main.length).toBeGreaterThan(0)
-    for (const observation of seen.state.main) {
-      expect(observation.actual).toBe('priority')
-      expect(observation.requested).toBe('auto')
+    for (const captured of [...parent, ...alpha, ...beta]) {
+      expect(Object.hasOwn(bodyJson(captured), 'service_tier')).toBe(false)
     }
-    expect(seen.state.main).not.toContainEqual({ requested: null, actual: 'standard', observed: true })
   })
 })
 
@@ -544,7 +448,7 @@ describe('S3-30T2 ⑤ scheduler 的作业上下文边界', () => {
       purpose: 'subagent',
       operationId: `op-${tag}`,
       sessionId: `sess-${tag}`,
-      policy: Object.freeze({ ...FAST_SUPPORTED })
+      policy: Object.freeze({ ...RUN_POLICY })
     }) as unknown as ProviderExecutionContext
   }
 
@@ -589,63 +493,6 @@ describe('S3-30T2 ⑤ scheduler 的作业上下文边界', () => {
       }
     })
     expect(received).toEqual([undefined])
-  })
-})
-
-// ── ⑥ 纯派生函数：能力位按实际模型解析 ──────────────────────────────────
-
-describe('S3-30T2 ⑥ 模型能力派生', () => {
-  it('未覆盖模型沿用父快照；覆盖后按快照解析，缺失一律 unknown', async () => {
-    // 新出口用动态导入：实现前逐条落点，而不是整文件一个解析错误
-    const { resolveModelTierSupport } = (await import('@main/agent/runner')) as unknown as {
-      resolveModelTierSupport(input: {
-        requestModel: string
-        baseModel: string
-        baseTierSupport: string
-        tierSupportForModel?: (model: string) => string | undefined
-      }): string
-    }
-    const lookup = (model: string): 'supported' | 'unsupported' | undefined =>
-      model === 'child-supported' ? 'supported' : model === 'child-unsupported' ? 'unsupported' : undefined
-    expect(
-      resolveModelTierSupport({
-        requestModel: 'parent-model',
-        baseModel: 'parent-model',
-        baseTierSupport: 'supported',
-        tierSupportForModel: lookup
-      })
-    ).toBe('supported')
-    expect(
-      resolveModelTierSupport({
-        requestModel: 'child-supported',
-        baseModel: 'parent-model',
-        baseTierSupport: 'supported',
-        tierSupportForModel: lookup
-      })
-    ).toBe('supported')
-    expect(
-      resolveModelTierSupport({
-        requestModel: 'child-unknown',
-        baseModel: 'parent-model',
-        baseTierSupport: 'supported',
-        tierSupportForModel: lookup
-      })
-    ).toBe('unknown')
-    expect(
-      resolveModelTierSupport({
-        requestModel: 'child-unsupported',
-        baseModel: 'parent-model',
-        baseTierSupport: 'supported',
-        tierSupportForModel: lookup
-      })
-    ).toBe('unsupported')
-    expect(
-      resolveModelTierSupport({
-        requestModel: 'child-unknown',
-        baseModel: 'parent-model',
-        baseTierSupport: 'supported'
-      })
-    ).toBe('unknown')
   })
 })
 
@@ -753,100 +600,22 @@ describe('S3-30F0 目录拉取桥：只接两项既有持久策略', () => {
 
 // ── ⑧ S3-30F 组合根版本、能力声明与八类消费者 ──────────────────────────
 
-describe('S3-30F 服务档声明映射（user > official > catalog）', () => {
-  interface MetadataModule {
-    tierSupportFromServiceTiers(protocol: 'openai-compatible' | 'anthropic', metadata: unknown): string
-  }
-  const load = async (): Promise<MetadataModule> =>
-    (await import('@shared/models')) as unknown as MetadataModule
-  const NOW = 1_700_000_000_000
-  const obs = (value: string[]): unknown => ({ value, observedAt: NOW })
-
-  it('缺 metadata / 缺声明 / 空列表 → unknown', async () => {
-    const { tierSupportFromServiceTiers } = await load()
-    expect(tierSupportFromServiceTiers('openai-compatible', undefined)).toBe('unknown')
-    expect(tierSupportFromServiceTiers('openai-compatible', {})).toBe('unknown')
-    expect(tierSupportFromServiceTiers('openai-compatible', { serviceTiers: obs([]) })).toBe('unknown')
-  })
-
-  it('各协议只认自己的快速档值（不跨协议共用）', async () => {
-    const { tierSupportFromServiceTiers } = await load()
-    expect(
-      tierSupportFromServiceTiers('openai-compatible', { serviceTiers: { official: obs(['priority']) } })
-    ).toBe('supported')
-    expect(
-      tierSupportFromServiceTiers('openai-compatible', { serviceTiers: { official: obs(['fast']) } })
-    ).toBe('supported')
-    expect(tierSupportFromServiceTiers('anthropic', { serviceTiers: { official: obs(['auto']) } })).toBe(
-      'supported'
-    )
-    expect(
-      tierSupportFromServiceTiers('anthropic', { serviceTiers: { official: obs(['priority']) } })
-    ).toBe('supported')
-    expect(tierSupportFromServiceTiers('anthropic', { serviceTiers: { official: obs(['fast']) } })).toBe(
-      'unknown'
-    )
-    expect(
-      tierSupportFromServiceTiers('openai-compatible', { serviceTiers: { official: obs(['auto']) } })
-    ).toBe('unknown')
-  })
-
-  it('标准档声明 → unsupported；混入读不懂的值 → unknown（不猜）', async () => {
-    const { tierSupportFromServiceTiers } = await load()
-    expect(
-      tierSupportFromServiceTiers('openai-compatible', { serviceTiers: { official: obs(['standard']) } })
-    ).toBe('unsupported')
-    expect(
-      tierSupportFromServiceTiers('anthropic', { serviceTiers: { official: obs(['standard_only']) } })
-    ).toBe('unsupported')
-    expect(
-      tierSupportFromServiceTiers('openai-compatible', {
-        serviceTiers: { official: obs(['standard', 'mystery-tier']) }
-      })
-    ).toBe('unknown')
-  })
-
-  it('user 覆盖优先于 official/catalog；清除 user 后回落到 official', async () => {
-    const { tierSupportFromServiceTiers } = await load()
-    const withUser = {
-      serviceTiers: { user: obs(['standard']), official: obs(['priority']), catalog: obs(['priority']) }
-    }
-    expect(tierSupportFromServiceTiers('openai-compatible', withUser)).toBe('unsupported')
-    const cleared = { serviceTiers: { official: obs(['priority']), catalog: obs(['priority']) } }
-    expect(tierSupportFromServiceTiers('openai-compatible', cleared)).toBe('supported')
-    const officialBeatsCatalog = {
-      serviceTiers: { official: obs(['standard']), catalog: obs(['priority']) }
-    }
-    expect(tierSupportFromServiceTiers('openai-compatible', officialBeatsCatalog)).toBe('unsupported')
-    const catalogOnly = { serviceTiers: { catalog: obs(['priority']) } }
-    expect(tierSupportFromServiceTiers('openai-compatible', catalogOnly)).toBe('supported')
-  })
-})
-
-describe('S3-30F 辅助请求固定普通 + 独立 operation 键（真实工厂）', () => {
-  const FAST_POLICY = {
-    mode: 'fast',
-    maxLocalReadConcurrency: 2,
-    requestedServiceTier: 'priority',
-    tierSupport: 'supported'
-  } as const
-
-  it('五类辅助 purpose 一律被工厂压回 normal，即使伪造 fast 策略', async () => {
+describe('S89-01 辅助请求与主调用共用同一策略（真实工厂）', () => {
+  it('五类辅助 purpose 不再被压回档位，原样保留并发上限', async () => {
     const { createProviderExecutionContext } = await import('@shared/request-policy')
     for (const purpose of ['reflection', 'title', 'prompt-polish', 'connection-check', 'model-catalog'] as const) {
       const context = createProviderExecutionContext({
         clientVersion: '9.9.9',
         purpose,
-        policy: { ...FAST_POLICY }
+        policy: { ...RUN_POLICY }
       })
-      expect(context.policy.mode).toBe('normal')
-      expect(context.policy.requestedServiceTier).toBeNull()
+      expect(context.policy).toEqual(RUN_POLICY)
     }
   })
 
   it('同一逻辑 operation 内键稳定；不同 operation 互不相同', async () => {
     const { createProviderExecutionContext } = await import('@shared/request-policy')
-    const policy = { ...FAST_POLICY }
+    const policy = { ...RUN_POLICY }
     const first = createProviderExecutionContext({ clientVersion: '9.9.9', purpose: 'reflection', policy })
     const second = createProviderExecutionContext({ clientVersion: '9.9.9', purpose: 'reflection', policy })
     expect(first.sessionId).not.toBe(second.sessionId)
@@ -855,7 +624,7 @@ describe('S3-30F 辅助请求固定普通 + 独立 operation 键（真实工厂�
 })
 
 describe('S3-30F 目录与连接检查的真实序列化（本地 HTTP）', () => {
-  it('目录拉取：草稿身份/认证真实出站，固定普通档不带 service_tier', async () => {
+  it('目录拉取：草稿身份/认证真实出站，不带 service_tier', async () => {
     const server = await startServer((req, res) => {
       if (req.method === 'GET') {
         jsonReply(res, { data: [{ id: 'claude-x' }] })
@@ -981,11 +750,10 @@ describe('S3-30F 八类消费者接线矩阵（真实调用点 + 源码守卫）
     expect(catalogBody).not.toContain('getDecryptedApiKey')
   })
 
-  it('能力位来自 metadata 单真源，不再固定 unknown', () => {
-    expect(ipcSource).not.toContain("tierSupport: 'unknown'")
+  it('run 起点绑定统一来自 getActiveRunBinding，不再有档位能力位', () => {
     expect(ipcSource).toContain('getActiveRunBinding()')
-    expect(ipcSource).toContain('tierSupportForModel')
-    expect(storeSource).toContain('tierSupportFromServiceTiers(')
+    expect(ipcSource).not.toContain('tierSupportForModel')
+    expect(storeSource).not.toContain('tierSupportFromServiceTiers')
   })
 })
 
@@ -1312,7 +1080,7 @@ describe('S3-30F-R1 run 起点 Key 绑定（结构顺序守卫）', () => {
     // 快照本身必须携带 Key 引用
     const snapshot = blockAfter('interface RunStartSnapshot', 700)
     expect(snapshot).toContain('profileId: string')
-    expect(ipcSource).toContain('profileId: profile.id')
+    expect(ipcSource).toContain('profileId: binding.profile.id')
   })
 })
 

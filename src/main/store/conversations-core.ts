@@ -119,19 +119,16 @@ export interface RollbackOutcome {
  *    那边要的是"发得出去"，这边要的是"存得干净"，把空串挡在模型之外由 `historyForModel` 负责。
  */
 /**
- * 运行事实归属与一致性（本地字段）：只允许 assistant 携带；形状 / 枚举 / UUID / 有界非空白 /
- * `observed` 与 `actual` 一致 / 策略工厂不变量，全部复用 main/schemas 的同一份规则（core 直调也绕不过）。
+ * 运行事实归属与一致性（本地字段）：只允许 assistant 携带；形状 / UUID 全部复用
+ * main/schemas 的同一份规则（core 直调也绕不过）。旧存档里的档位字段不参与判定。
  */
 export function assertRunFactsAttribution(messages: readonly ChatMessage[]): void {
   for (const m of messages) {
-    const hasFacts =
-      m.requestId !== undefined || m.requestPolicy !== undefined || m.serviceTier !== undefined
+    const hasFacts = m.requestId !== undefined
     if (!hasFacts) continue
     if (m.role !== 'assistant') throw new Error('运行事实只允许挂在 assistant 上')
     const parsed = runFactsSchema.safeParse({
-      requestId: m.requestId,
-      requestPolicy: m.requestPolicy,
-      serviceTier: m.serviceTier
+      requestId: m.requestId
     })
     if (!parsed.success) {
       throw new Error(`运行事实不合法：${parsed.error.issues[0]?.message ?? '形状不符'}`)
