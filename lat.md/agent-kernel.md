@@ -78,6 +78,20 @@ handler 把补丁合进现存档案**合成整表过同一道 `modelSaveSchema`*
 **已知欠账**：anthropic 侧仍是旧预算契约（`EFFORT_BUDGET` 自定四档，官方已转 `output_config.effort`，K59）；
 `toggle` 形态眼下没有真实消费者（三家端点全走档位通道）——机制先立，字段留给第一个开关型端点。
 
+## 模型接入：模板面、认证与请求身份
+
+供应商模板是**冻结名单的纯数据**（[[src/shared/provider-presets.ts#listProviderPresets]]）：12 家普通 API/聚合、6 组订阅、2 个自定义入口与 1 个本地网关连接模板；禁用五项只登记官方原因（[[src/shared/provider-presets.ts#listForbiddenPresets]]），**不提供任何生成通路**。模板只含地址、协议面、必填占位、帮助来源与身份/认证缺省，Key、模型偏好与本机清单一律无值；模块导入不联网、不写配置。
+
+**双协议面是显式选择，不是按地址猜**：同一模板可带 `openai-compatible` 与 `anthropic` 两条 `faces`，选中哪条面就决定 `baseURL`、认证缺省与身份策略（[[src/shared/provider-presets.ts#applyPresetFace]]）。切协议必须走 [[src/shared/provider-presets.ts#handleProtocolSwitch]]：目标面存在就同步草稿；模板没有目标面就**清掉不再匹配的模板**、保留用户地址转手填。切错的坏法是地址与协议面各说各话——请求打到一条不存在的面，报错还像厂商返回的。
+
+**认证缺省 unknown 必须 fail-closed**：`auto` 只在模板的逐协议 `authDefault` 非 unknown 时解析成具体头；unknown + auto 拒绝，openai-compatible + x-api-key 拒绝（[[src/shared/provider-presets.ts#resolvePresetAuth]]）。保存前 [[src/shared/provider-presets.ts#presetSaveBlockers]] 一次给全阻断原因；通过后 [[src/shared/provider-presets.ts#mergePresetIntoEntry]] 把身份策略与**已解析的具体认证**合并进条目的 `settings`，id/model/name/metadata 原样保留。**不猜 Key 前缀、不双发互斥头、失败不自动换认证重试**——猜错的坏法是静默 401/403，或把 Key 送进对方不认的头。
+
+**身份策略只落策略字段，运行键禁入档案**：`requestIdentity` 只有 `default` / `self-ua` / `opencode-v1` 三值（[[src/shared/ipc.ts#RequestIdentityMode]]），`authentication` 只有 `auto` / `bearer` / `x-api-key`（[[src/shared/ipc.ts#AuthenticationChoice]]）。两者都进条目级 `settings` 白名单（[[src/main/schemas.ts#modelSaveSchema]]、[[src/main/schemas.ts#modelPatchEntrySchema]]），`strict` 拒收 `sessionId` / `operationId` / `runId` / `headers` 等运行态键；读盘侧只收枚举内值（[[src/shared/models.ts#normalizeProfiles]]）。本包只负责**选择与持久化**；请求期如何注入不在本包写域，图谱不替它背书。
+
+**保存链只有一条**：模板/手填草稿 → `models:save` → [[src/main/schemas.ts#modelSaveSchema]] → [[src/main/store/models.ts#saveEndpoint]] 写 `models.json`；Key 仍按端点 id 单独存 settings.json，一个字节都不进模型档案。单字段补丁走 `models:patch-entry`：handler 把补丁合进现存档案后**整表再过同一道 `modelSaveSchema`**（[[src/main/schemas.ts#modelPatchEntrySchema]]），patch 与 save 的合法性口径不许漂成两份。
+
+**运行验证**：入口判据不是只测渲染字符串——e2e 从 `out/main/index.js` 真入口起，经真 preload 桥、真 IPC 与真落盘；`scripts/verify-shot.cjs` 的 `models:get-metadata` / `models:patch-metadata` 桩必须**有状态**、返回真实 `ModelsView`，`patch` 只写 user 来源并由桩自己盖 `observedAt`。桩返回固定空值或永久 unknown 时，门禁绿着，界面却永远看不到真值。
+
 ## 会话并发闸
 
 [[src/main/agent/concurrency.ts#createChatGate]] 是"这条会话能不能开始跑"的**硬闸**，渲染端的
@@ -111,6 +125,10 @@ handler 把补丁合进现存档案**合成整表过同一道 `modelSaveSchema`*
 false——运行期事件只更新顶层，不补就留下"答完了还在跑"，净效果是侧栏假标记与别条会话的假并发提示。
 收口必须在 `applyToConversation` **已算出的那份存档**上派生，回头拿旧存档再派生一遍会把刚写入的错误原文盖没。
 
+**事件归属先是本地身份匹配，再是会话归位**：`applyToConversation` 只解决"落到哪条会话"；同一会话先后两轮、或旧轮迟到帧，需要 `runMatches` 按尾部 assistant 草稿的 `requestId` 再判一次。新草稿已有身份时，无身份旧帧一律拒收（chunk / reasoning / tool / done / error）；只有目标仍是无身份的旧草稿才保留升级兼容。已删会话的事件不复活，未知会话的告警照旧留痕。`todos` / `subagents` 带身份时同样过归属门；不带身份的会话级后台刷新（一次性任务子代理进度等合法来源）按"会话现场存在"放行。
+
+`sendMessage` 的调用层迟到拒绝也只结束自己的 Promise：尾部仍是本次 `requestId` 且未结算才回滚草稿；已换轮或已结算一律不动，避免旧轮的 invoke rejection 覆盖新轮或已到终态。
+
 ## 一次性任务身份与暂停
 
 [[src/main/agent-task-registry.ts#createAgentTaskRegistry]] 为每次任务创建唯一身份与取消源，窗口所有者不能由载荷自报。
@@ -118,3 +136,63 @@ false——运行期事件只更新顶层，不补就留下"答完了还在跑"�
 停止先成为“正在停止”，内核结束并完成检查点、记忆收尾后才成为终态。
 [[src/main/agent/pause-error.ts#AgentPauseError]] 区分协作条件失效与普通工具错误；
 [[src/main/agent/loop.ts#runAgentLoop]] 不吞暂停异常，因此同帧后续工具与下一轮模型调用都不会继续。
+
+## 请求策略：速度档、并发意图与服务档声明
+
+速度档是**每个 run 一份不可变快照**，不是每轮现读的界面状态。入口解析一次，
+[[src/main/agent/runner.ts#runAgent]] 在检查点建立后、任何模型调用前冻结，同一次 run 内主循环与全部子代理共享同一引用。
+
+解析出口唯一：[[src/shared/request-policy.ts#resolveRequestPolicy]] 收下「模型默认 + 本条会话覆盖 +
+服务档支持声明」，返回后由 `runAgent` 复制并冻结（`Object.freeze({ ...snapshot })`）。
+冻结之后，主循环 [[src/main/agent/loop.ts#runAgentLoop]] 与全部子代理
+[[src/main/agent/scheduler.ts#runSubagents]] 用同一个引用；loop 只接收不解析，scheduler 也不按子代理自己的
+`def.model` 另算速度档。计划批准后的执行阶段带着**相同策略内容**二次进入 `runAgent`，不重新解析用户设置；
+但入口处的复制与冻结会生成**新的一份冻结副本**——两次进入各自持有自己的引用，策略内容相同，不承诺跨 run 共用同一对象。
+运行中改设置、换模型或改会话覆盖只影响下一次 run——中途重读会让同一条 run 前后两半按不同档位计费，
+而界面上没有任何东西能解释这笔账。
+
+**优先关系只有一条**：`inherit`（缺省与非法值都归到它）取模型条目上的 `ModelEntry.speedMode`
+（[[src/shared/models.ts#ModelEntry]]）；显式 `normal` / `fast` 直接生效
+（[[src/shared/request-policy.ts#resolveSpeedMode]]）。模型条目缺字段或值非法一律按 `normal`，
+**绝不静默升成 fast**；读盘侧缺字段保持缺失、不补写（[[src/shared/models.ts#normalizeProfiles]]）。
+会话覆盖只认**真实会话 id**：一次性任务没有 `conversationId` 时不读任何覆盖，不拿占位 owner 冒充
+（[[src/main/ipc.ts]] 的 `entryRequestPolicy`）。
+
+**快照里是策略声明，消费范围要分开读**：`mode`、`maxLocalReadConcurrency`、`requestedServiceTier`、`tierSupport` 是同一份快照的四个字段，但消费者不同。`maxLocalReadConcurrency`（normal 1 / fast 2）已由 [[src/shared/request-policy.ts#resolveToolBatchConcurrency]] 收口，并由 [[src/main/agent/tool-batch.ts#runToolBatch]] 消费：只有合格批才可能 2 路，非法/未知模式或不合格批一律回落到 1 路。
+
+`requestedServiceTier` 已由真实入口解析：`tierSupport` 来自模型条目 metadata（user > official > catalog，`tierSupportFromServiceTiers`），只有 `fast + supported` 才取 `'priority'`；协议映射各自独立——OpenAI 兼容线写 `service_tier: 'priority'`，Anthropic 线写 `service_tier: 'auto'`（多档位选择加入），unknown / unsupported 一律不发该字段。**FAST 意图不等于优先处理已生效**：是否生效只看真实回值。
+
+**服务档只记观测，不回填意图**：每次厂商调用带一个 per-request 观察器，`observeServiceTier` 只认真实回值；主聊天在 run 局部汇聚最后一条 `observed=true` 的观测，`done` / `error` 信封只带真实观测，缺报保持未知，不用 requested 回填 actual，也不把服务端降级（actual ≠ requested）改写成请求值。已观测后断流 / 取消仍保留该观测；未观测的失败只带终态与身份。
+
+**本地请求身份与供应商随机身份是两类东西**：`chat:send` 接受渲染端在发起时生成的 UUID（缺省旧调用由主进程补一个），同一 run 的每个 `StreamEnvelope` 带同一 `requestId` 与起点冻结的 `requestPolicy`。它只用于本地事件归属与消息持久关联，**不进模型请求、headers 或日志**；供应商的 `operationId` / `sessionId`（如 `x-opencode-session`）是逐请求随机键，**不得**当作本地归属或持久化身份。`requestPolicy` 是冻结的意图快照，不是实际档位。
+
+**信封与结算**：成功 `done` 与失败 `error` 都带同一个本地 `requestId`（早退、零 chunk 失败、取消同样带），`serviceTier` 只随真实观测出现；emitter 的单结算保证 done / error 只发一次，重复终态不累加用量。
+
+**与省 token 四档正交**：`request-policy.ts` 零依赖，不 import [[src/shared/token-tier.ts#resolvePolicy]]，
+也不读写四档（`rich | ultimate | balanced | light`）的任一开关。`runAgent` 分别接收 `policy`（TokenPolicy）
+与 `requestPolicy`，两条链路互不推导：切 FAST 不改窗口化阈值、输出纪律或思考档位，调省 token 档位也不改
+速度意图。两份策略一旦合并，就会造出"省钱档顺带改了速度"的隐式联动，而界面上它们是两个互不相干的控件，
+用户无法从中恢复真相。
+
+## 有界可信读取并行
+
+并行读取是**有界且按资格**的：上限只由 [[src/shared/request-policy.ts#resolveToolBatchConcurrency]] 给出，
+普通模式 1 路，FAST 且整批合格时最多 2 路；非法/未知模式或不合格批绝不无界起跑。
+资格判定在 [[src/main/agent/loop.ts#planTrustedReadBatch]]：只认工具对象身份与宿主元数据
+（[[src/main/agent/tools/file-tools.ts#isTrustedReadTool]]），不认名字或自述能力。
+同文件、大小写或 junction 别名、混合读写、MCP 冒名等不合格批必须串行；这是安全契约，不是性能回退。
+
+结果始终按原 `tool_call` 顺序回灌，完成快慢不改变顺序；读版本只经受控读取接口登记，
+调用方不得把未提交的结果当作可写资格。[[src/main/agent/loop.ts#runAgentLoop]] 负责在普通串行路径与
+合格批路径之间选择，并保证两条路径对调用方呈现同一套消息顺序与终态。
+
+## 工具批提交契约
+
+[[src/main/agent/tool-batch.ts#runToolBatch]] 的合同由 [[src/main/agent/tool-batch.ts#ToolBatchItemResult]] 表达：
+启动前同步核 `canStart`，从核验到启动之间不得有 await；取消后不再启动排队项，在途项等结算后标 stale；
+单项失败只标该项，不重试、不整批重跑；结果与副作用只在全部结算后的同一同步门提交，
+`committed` 为 true 才代表可消费；提交门失效时整批 discard，未启动项使整批失败，不得只提交已成功的项。
+
+「启动瞬间尚未提交」是接口的硬语义：启动项必须显式携带 `committed: false`，`true` 只能由提交门写入。
+[[src/main/agent/tool-batch.ts#ToolBatchResult]] 的调用方按 `index` / `item` 与原 `tool_call` 配对，
+不得用完成顺序推断归属。

@@ -8,6 +8,7 @@ import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   LOCALE_DEFAULT,
+  sanitizeConversationSpeedOverrides,
   sanitizeFontScale,
   sanitizeLocale,
   sanitizeStoredWidth,
@@ -16,6 +17,7 @@ import {
   type ThemeName,
   type UIPrefs
 } from '@shared/splitter'
+import type { SpeedOverride } from '@shared/request-policy'
 import { emptyLayout, emptySizes, sanitizeLayout, sanitizeSizes } from '@shared/workbench'
 import { createLogger } from '../log'
 
@@ -44,6 +46,8 @@ interface StoredPrefs {
   /** 盘上是**不可信**的 —— 读出来一律过 sanitizeLayout */
   workbench?: unknown
   workbenchSizes?: unknown
+  /** 会话级 FAST 覆盖（S3-20B1）。盘上不可信，读出来过 sanitizeConversationSpeedOverrides */
+  conversationSpeedOverrides?: unknown
 }
 
 const store = new Store<StoredPrefs>({ name: 'ui-prefs' })
@@ -67,8 +71,31 @@ export function getUIPrefs(): UIPrefs {
     fontScale: sanitizeFontScale(store.store.fontScale),
     uiFont: sanitizeUiFont(store.store.uiFont),
     workbench,
-    workbenchSizes: sanitizeSizes(store.store.workbenchSizes, workbench.panes.length)
+    workbenchSizes: sanitizeSizes(store.store.workbenchSizes, workbench.panes.length),
+    conversationSpeedOverrides: sanitizeConversationSpeedOverrides(
+      store.store.conversationSpeedOverrides
+    )
   }
+}
+
+/**
+ * 入参是**整张表**（缺席即删除），不是增量 patch。未变更的键沿用**入参次序** —— 纯函数的同值 touch
+ * 已经把它挪到队尾，按盘上旧序放回会丢掉这次最近使用；改值 / 新增的键仍统一挪到队尾。
+ */
+function mergeSpeedOverridesByRecency(
+  current: Record<string, SpeedOverride>,
+  incoming: Record<string, SpeedOverride>
+): Record<string, SpeedOverride> {
+  const merged = new Map<string, SpeedOverride>()
+  // 未变更：按入参次序（入参次序就是纯函数产出的 LRU 队列）
+  for (const [id, mode] of Object.entries(incoming)) {
+    if (current[id] === mode) merged.set(id, mode)
+  }
+  // 改值与新增：无论入参把它放在哪，都按最近使用进队尾
+  for (const [id, mode] of Object.entries(incoming)) {
+    if (current[id] !== mode) merged.set(id, mode)
+  }
+  return sanitizeConversationSpeedOverrides(Object.fromEntries(merged))
 }
 
 /**
@@ -126,6 +153,16 @@ export function setUIPref(patch: Partial<UIPrefs>): UIPrefs {
     next.workbenchSizes = sanitizeSizes(patch.workbenchSizes, next.workbench.panes.length)
     store.set('workbenchSizes', next.workbenchSizes)
   }
+  if (patch.conversationSpeedOverrides !== undefined) {
+    const raw: unknown = patch.conversationSpeedOverrides
+    // 脏入参不能等价于「清空」：清空必须显式给 {}，否则一次坏调用就抹掉整张表
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      const current = sanitizeConversationSpeedOverrides(store.store.conversationSpeedOverrides)
+      const clean = mergeSpeedOverridesByRecency(current, sanitizeConversationSpeedOverrides(raw))
+      store.set('conversationSpeedOverrides', clean)
+      next.conversationSpeedOverrides = clean
+    }
+  }
   return next
 }
 
@@ -142,6 +179,7 @@ export function resetUIPrefs(): UIPrefs {
   store.set('locale', LOCALE_DEFAULT)
   store.set('workbench', emptyLayout())
   store.set('workbenchSizes', emptySizes())
+  store.set('conversationSpeedOverrides', {})
   return {
     sidebarWidth: SIDEBAR_DEFAULT,
     dockWidth: DOCK_DEFAULT,
@@ -150,6 +188,7 @@ export function resetUIPrefs(): UIPrefs {
     fontScale: FONT_SCALE_DEFAULT,
     uiFont: '',
     workbench: emptyLayout(),
-    workbenchSizes: emptySizes()
+    workbenchSizes: emptySizes(),
+    conversationSpeedOverrides: {}
   }
 }

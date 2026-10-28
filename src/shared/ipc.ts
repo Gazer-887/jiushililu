@@ -5,6 +5,7 @@ import type { TodoItem } from './todo'
 import type { Goal } from './goal'
 import type { TokenUsage } from './usage'
 import type { TokenSaverTier } from './token-tier'
+import type { RequestPolicySnapshot, ServiceTierObservation } from './request-policy'
 import type { RunTerminal } from './execution-outcome'
 import type { SubagentJobEvent, MessageSegment } from './agent'
 import type { BackgroundTask } from './background'
@@ -18,7 +19,16 @@ import type { LocalFileRef } from './conversation-preview'
 import type { SystemFontsResult } from './font-names'
 import type { GitChange } from './git-status'
 
+import type { ModelMetadataPatchInput } from './model-metadata'
+
 export type ProviderType = 'openai-compatible' | 'anthropic'
+
+/** S3-10C0：窄身份策略枚举（持久化仅策略本身；运行键 sessionId/operationId/runId/headers 禁入 schema/档案） */
+export const REQUEST_IDENTITY_MODES = ['default', 'self-ua', 'opencode-v1'] as const
+export type RequestIdentityMode = (typeof REQUEST_IDENTITY_MODES)[number]
+/** S3-10C0：认证方式选择（auto=由后续消费者按精确 authDefault 解析；unknown 缺省时拒绝 auto） */
+export const AUTH_CHOICES = ['auto', 'bearer', 'x-api-key'] as const
+export type AuthenticationChoice = (typeof AUTH_CHOICES)[number]
 
 /**
  * 思考强度档名（plan58 R6）。
@@ -120,6 +130,10 @@ export interface ModelSettings {
    * `text` 恒在；未列出的模态在设置页里不出现 —— 不许放一个「勾了却没有通路」的格子（plan54 #3 同族）。
    */
   inputModalities: InputModality[]
+  /** S3-10C0：端点/条目级窄身份策略（缺省 = default；运行态键禁入本类型与持久化） */
+  requestIdentity?: RequestIdentityMode
+  /** S3-10C0：认证方式；auto 表示“由后续消费者按精确 authDefault 解析”，不静默回退 */
+  authentication?: AuthenticationChoice
 }
 
 /** 设置页看到的视图：Key 永远不明文回传，只给掩码 */
@@ -174,6 +188,15 @@ export interface ChatMessage {
   messageId?: string
   /** E26b：本地执行终态（仅本地 assistant 记录，不发给模型） */
   terminal?: RunTerminal
+  /**
+   * 本地轮次身份（仅 assistant 运行事实）：用于迟到 / 重复事件的本地归属。
+   * ⚠️ 不是供应商的 operation / session 键；可随会话存档持久关联，但不得进模型请求或日志。
+   */
+  requestId?: string
+  /** 本 run 起点冻结的请求策略：只表达"当时要什么"，不是实际档位 */
+  requestPolicy?: RequestPolicySnapshot
+  /** 本 run 最后真实观测的服务档：无观测不带（未知不造 actual） */
+  serviceTier?: ServiceTierObservation
 }
 
 export interface TestResult {
@@ -554,6 +577,8 @@ export const IPC = {
   modelsSetEntry: 'models:set-entry',
   /** 输入框 chip 的单字段补丁（plan58 R2）：只动一条模型条目的 settings，不整表提交 */
   modelsPatchEntry: 'models:patch-entry',
+  modelsGetMetadata: 'models:get-metadata',
+  modelsPatchMetadata: 'models:patch-metadata',
   // ── 子 Agent 管理（plan17）──
   /** 三层全量视图（含被覆盖条目与加载警告）；工具目录走 `@shared/agents` 静态常量，不进载荷 */
   agentsList: 'agents:list',
@@ -922,6 +947,11 @@ export interface ChatDonePayload {
   memoryTokens?: number
   /** E26a：本轮业务终态。缺字段 = 老主进程，不替它编成功/失败。 */
   terminal?: RunTerminal
+  /**
+   * 本轮服务档观测（S3-30E）：只带**真实观测**（observed=true）；缺报/旧主进程不带，
+   * 不补默认、不用 requested 回填 actual。与 usage / usageComplete / terminal 完全独立。
+   */
+  serviceTier?: ServiceTierObservation
 }
 
 /** E26a：错误结算的可选细节。缺省时仍走旧字符串路径，保证旧调用与旧消费者不变。 */
@@ -934,6 +964,8 @@ export interface ChatErrorDetails {
   /** 同上：未知不造默认档。 */
   tier?: TokenSaverTier
   memoryTokens?: number
+  /** S3-30E：失败前同请求已观测的真实档位；未知不带（接线在 S3-30E1 的 ipc catch）。 */
+  serviceTier?: ServiceTierObservation
 }
 
 /** E26a：结构化错误封套（沿补正 V2 §三）。`message` 只放固定本地映射，不放厂商正文/cause。 */
@@ -960,6 +992,13 @@ export function chatErrorMessage(payload: unknown): string {
 export interface StreamEnvelope<T> {
   conversationId: string
   payload: T
+  /**
+   * 本地轮次身份：同一 run 的所有流式信封一致，由发起端生成；旧主进程或未接线的调用缺省。
+   * ⚠️ 它不是供应商的 operation / session 键；可用于本地消息持久关联，但不得进模型请求或日志。
+   */
+  requestId?: string
+  /** 本 run 起点冻结的请求策略：只表达"当时要什么"，**不是**实际档位；actual 只能来自真实观测。 */
+  requestPolicy?: RequestPolicySnapshot
 }
 
 /** 危险操作确认请求（plan8 R5）：权限档管"能碰什么"（事先、粗粒度），它管"这一次要不要"（当场、细粒度）—— 互补关系，不是替代关系。 */
@@ -1025,6 +1064,10 @@ export interface ApiBridge {
   selectRuntime(language: string, path: string | null): Promise<Record<string, string>>
   setModel(model: string): Promise<import('./models').ModelSwitchResult>
   listModels(): Promise<import('./models').ModelsView>
+  /** S3-10C2B 已实现：读取条目元数据；无 metadata 返回 null；条目不存在抛人话错误 */
+  getModelMetadata(profileId: string, entryId: string): Promise<import('./model-metadata').ModelMetadata | null>
+  /** S3-10C2B 已实现：用户覆盖补丁（主进程盖章 observedAt；返回最新 modelsView） */
+  patchModelMetadata(input: import('./model-metadata').ModelMetadataPatchInput): Promise<import('./models').ModelsView>
   saveModel(input: import('./models').ModelSaveInput): Promise<import('./models').ModelProfileView>
   deleteModel(id: string): Promise<void>
   setActiveModel(id: string): Promise<import('./models').ModelsView>
@@ -1052,6 +1095,8 @@ export interface ApiBridge {
     messages: ChatMessage[]
     /** 本次发送用的主 Agent（plan17）：不带 = 内核默认；带了但定义不存在 → 主进程报人话错误 */
     agentName?: string
+    /** 本地轮次身份：发起端生成 UUID；缺省 = 旧调用，由主进程补一个。只用于本地信封归属。 */
+    requestId?: string
   }): Promise<void>
   chatAbort(conversationId: string): Promise<void>
   onChatChunk(cb: (e: StreamEnvelope<string>) => void): () => void

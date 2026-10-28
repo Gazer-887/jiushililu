@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { Attachment, SkillInfo } from '@shared/ipc'
 import { DRAG_PATH_MIME } from '@shared/fs-tree'
+import { activeEntry, activeProfile } from '@shared/models'
+import {
+  DEFAULT_SPEED_MODE,
+  DEFAULT_SPEED_OVERRIDE,
+  normalizeSpeedMode,
+  normalizeSpeedOverride,
+  resolveSpeedMode,
+  type SpeedMode,
+  type SpeedOverride
+} from '@shared/request-policy'
+import { getConversationSpeedOverride, setConversationSpeedOverride } from '@shared/splitter'
+import { useAppStore } from '../store'
 import PlusMenu from './PlusMenu'
 import WorkspaceChip from './WorkspaceChip'
 import FilePreviewCard from './FilePreviewCard'
@@ -46,6 +58,37 @@ function cleanError(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '')
 }
 
+/** 速度档的界面文案：控件与来源标签共用这一份，别在 JSX 里再写一遍 */
+export const SPEED_MODE_TEXT: Record<SpeedMode, string> = {
+  normal: '普通',
+  fast: 'FAST'
+}
+
+/** 速度意图：控件显示的唯一口径 —— 有效档 + 它是谁给的 */
+export interface SpeedIntent {
+  /** 本会话的覆盖原值；无活动会话时恒为 inherit（不伪造覆盖） */
+  override: SpeedOverride
+  /** 解析后的有效档：inherit 取模型默认，显式覆盖优先 */
+  mode: SpeedMode
+  /** model = 有效档来自模型默认；session = 会话覆盖生效 */
+  source: 'model' | 'session'
+}
+
+/**
+ * 解析要显示的速度意图（S3-20C）。
+ * ⚠️ 无活动会话（新建任务页）一律忽略残留覆盖：那时还没有会话可归属，显示"会话覆盖"就是假信息。
+ * ⚠️ 模型目录读不到 / 条目缺 speedMode 时模型默认按 normal —— 绝不补成 FAST。
+ */
+export function resolveSpeedIntent(input: {
+  modelSpeedMode?: unknown
+  override?: unknown
+  hasSession?: boolean
+}): SpeedIntent {
+  const override = input.hasSession === true ? normalizeSpeedOverride(input.override) : DEFAULT_SPEED_OVERRIDE
+  const mode = resolveSpeedMode(input.modelSpeedMode, override)
+  return { override, mode, source: override === 'inherit' ? 'model' : 'session' }
+}
+
 export default function InputConsole({
   value,
   onChange,
@@ -66,6 +109,63 @@ export default function InputConsole({
   const [submittingUI, setSubmittingUI] = useState(false)
   /** 落点高亮 —— 不亮用户不知道这里能放 */
   const [dragging, setDragging] = useState(false)
+
+  // ── 会话速度（S3-20C）：模型默认档 + 本会话覆盖，控件显示解析后的有效意图 ──
+  const activeId = useAppStore((s) => s.activeId)
+  const speedOverrides = useAppStore((s) => s.conversationSpeedOverrides)
+  const persistUIPrefs = useAppStore((s) => s.persistUIPrefs)
+  /**
+   * 设置视图只当"变更信号"用（每次 `loadSettings()` 都是新对象）：`setModel` 那条切换路径
+   * 不广播 `models`，只靠广播会让默认档停在旧模型上。真实默认档仍以 `listModels` 为准。
+   */
+  const settingsRevision = useAppStore((s) => s.settings)
+  /** 当前模型的默认档；目录读不到 / 条目没有 speedMode 一律按普通（不补 FAST） */
+  const [modelSpeedMode, setModelSpeedMode] = useState<SpeedMode>(DEFAULT_SPEED_MODE)
+
+  useEffect(() => {
+    let alive = true
+    const pull = (): void => {
+      void window.api
+        .listModels()
+        .then((view) => {
+          if (!alive) return
+          const profile = activeProfile(view.profiles, view.activeId)
+          setModelSpeedMode(normalizeSpeedMode(profile ? activeEntry(profile)?.speedMode : undefined))
+        })
+        .catch(() => {
+          if (alive) setModelSpeedMode(DEFAULT_SPEED_MODE)
+        })
+    }
+    pull()
+    // 模型目录或当前条目在别的窗口被改（设置页保存）→ 重读，默认档不能停在旧值
+    const off = window.api.onSettingsChanged((kind) => {
+      if (kind === 'models') pull()
+    })
+    return () => {
+      alive = false
+      off()
+    }
+  }, [settingsRevision])
+
+  const speedIntent = resolveSpeedIntent({
+    modelSpeedMode,
+    override: getConversationSpeedOverride(speedOverrides, activeId),
+    hasSession: activeId !== null
+  })
+
+  /**
+   * 会话速度覆盖的唯一写入点：整表交给共享纯函数生成（键序即最近使用），
+   * 再走既有通用桥 `persistUIPrefs` 落盘。
+   * ⚠️ 无活动会话（新建任务页）不写：那时还没有会话 id 可归属。
+   * ⚠️ 只改偏好：不发请求、不清正文、不动运行中的 run（运行冻结由 S3-20D 保证）。
+   */
+  const chooseSpeed = (next: SpeedOverride): void => {
+    if (!activeId) return
+    const current = useAppStore.getState().conversationSpeedOverrides
+    void persistUIPrefs({
+      conversationSpeedOverrides: setConversationSpeedOverride(current, activeId, next)
+    })
+  }
 
   // ── plan34 S4：「/」光标处技能浮层 ── 只列**开启的**技能（实时与设置页一致，skillsChanged 驱动）。
   // 触发：光标前的 token 以 / 开头且 / 在行首或空白后（防 URL 误触）。↑↓ 选择、Enter/Tab 插入、Esc 关。
@@ -370,6 +470,37 @@ export default function InputConsole({
           <BranchChip />
           <PermissionChip />
           <ReasoningChip />
+          {/* 速度（S3-20C）：跟随模型默认，或为本会话单独指定；只影响下一轮请求 */}
+          <label
+            className="speed-chip"
+            title={
+              activeId === null
+                ? '新建任务尚未创建会话，暂按当前模型默认速度；会话建立后可单独覆盖'
+                : '会话速度：跟随模型默认，或为本会话单独指定；只影响下一轮请求'
+            }
+          >
+            <span className="speed-chip-label">速度</span>
+            <select
+              className="speed-select"
+              aria-label="会话速度覆盖"
+              value={speedIntent.override}
+              disabled={activeId === null}
+              onChange={(event) => chooseSpeed(normalizeSpeedOverride(event.target.value))}
+            >
+              <option value="inherit">跟随模型</option>
+              <option value="normal">普通</option>
+              <option value="fast">FAST</option>
+            </select>
+            <span className={`speed-effective speed-${speedIntent.mode}`}>
+              {SPEED_MODE_TEXT[speedIntent.mode]}
+              <span className="speed-source">
+                {speedIntent.source === 'session' ? '会话覆盖' : '模型默认'}
+              </span>
+            </span>
+            {/* 输入区只代表**下一轮**的选择：历史条目各自显示自己冻结的事实 */}
+            {!busy && <span className="speed-scope">下一轮</span>}
+            {busy && activeId !== null && <span className="speed-next">下一轮生效</span>}
+          </label>
         </div>
 
         <div className="tb-group tb-right">

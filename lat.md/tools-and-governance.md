@@ -362,3 +362,14 @@ WirePart的内部ref只在进程中定位字节，不序列化进厂商HTTP字�
 [[src/main/agent/tools/shell-session.ts#createShellSession]] 在 POSIX 非交互壳中仅移除结束标记本身，
 不以整行清理吞掉与标记相邻、没有尾换行的 stdout；退出码仍取协议标记，正文不参与成功判定。
 Windows 提示符与回声清理保留原行为。真实 shell 回归同时覆盖零/非零退出、无尾换行和连续命令隔离。
+
+## 父子运行权限守卫
+
+[[src/shared/agent.ts#RunPermissionGuard]] 是父子运行共用的同步守卫合同：启动前核一次、提交前核一次，
+不携带状态。[[src/main/agent/runner.ts#runAgent]] 为父 run 建立守卫；
+[[src/main/agent/scheduler.ts#runSubagents]] 为每个子作业建立各自守卫，同时约束工具装配与子循环。
+
+约束是：父运行收紧后，子运行未启动的工具不得启动；已暂存读取在提交门因权限代次或上限变化而丢弃；
+兄弟子 run 的观察状态互相隔离，一个子 run 观察到收紧不污染另一个；工具确认等待期间撤权或取消，
+批准返回也不得启动。守卫只保证「启动前拒绝」与「提交前拒绝」，不承诺回滚已发生的文件或命令副作用。
+权限源不可读、档位非法或代次非法时保守拒绝，不按默认档放行。

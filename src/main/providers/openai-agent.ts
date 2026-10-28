@@ -11,6 +11,17 @@ import { ToolCallAccumulator, ToolCallIntegrityError } from './tool-accumulator'
 import { httpFetch } from './http-client'
 import { attachmentTextForModel } from '@shared/attachment-block'
 import { createStreamGuard, type StreamGuardOptions } from './stream-guard'
+import type { ProviderExecutionContext } from '@shared/request-policy'
+import {
+  buildProviderHeaders,
+  createServiceTierEmitter,
+  readServiceTierValue,
+  serviceTierForRequest,
+  serviceTierForResult,
+  withServiceTierField,
+  type ServiceTierEmitter
+} from './service-tier'
+import type { ServiceTierObserver } from './types'
 
 // OpenAI tool-calls 适配（plan6 → P1；D-032 增补流式）：主循环的模型通道。
 // DeepSeek / V4 全系原生兼容 OpenAI tool-calls 协议；采样字段与 chat 路径同规则（可空不发）。
@@ -46,7 +57,9 @@ export function buildToolsBody(
   settings: ModelSettings,
   messages: AgentMessage[],
   tools: ToolSchema[],
-  stream: boolean
+  stream: boolean,
+  /** 运行态上下文（S3-30A）：缺省 = 旧请求，一个服务档字段都不加 */
+  context?: ProviderExecutionContext
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: settings.model,
@@ -65,7 +78,7 @@ export function buildToolsBody(
   if (effort !== null) body['reasoning_effort'] = effort
   // 片②（缺口 C）：toggle / budget_tokens 的出境字段，与对话通路同一份判定（R15/R16）
   Object.assign(body, openaiReasoningFields(settings))
-  return body
+  return withServiceTierField(body, context)
 }
 
 async function throwHttpError(res: Response): Promise<never> {
@@ -95,17 +108,26 @@ function failRequest(terminal: RunTerminal, usage: TokenUsage | null): never {
  * ⚠️ 这是**同一响应**的唯一消费点：stream 收到 application/json 时也走它，
  * 不重新发请求 —— 自动模型重放固定为 0。
  */
-function resultFromOpenAIJson(json: {
-  choices?: Array<{
-    finish_reason?: string | null
-    message?: {
-      content?: string | null
-      tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
-    }
-  }>
-  usage?: unknown
-}): AgentChatResult {
+function resultFromOpenAIJson(
+  json: {
+    choices?: Array<{
+      finish_reason?: string | null
+      message?: {
+        content?: string | null
+        tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
+      }
+    }>
+    usage?: unknown
+    service_tier?: unknown
+  },
+  requestedTier: string | null,
+  context?: ProviderExecutionContext,
+  /** 单请求观察出口（S3-30A-R1）：必须在抛原失败前交出本响应已观察到的真实档位 */
+  tierEmitter?: ServiceTierEmitter
+): AgentChatResult {
   const usage = usageFromOpenAIChunk(json)
+  // 先交出档位、再判终态：截断/拒绝的失败信封不变，但已观测事实不再丢失
+  tierEmitter?.observe(readServiceTierValue(json))
   const choice = json.choices?.[0]
   const terminal = openaiFinishReasonToTerminal(choice?.finish_reason)
   // 缺终因 / 未知值 / 截断 / 拒绝一律受控失败，绝不静默当成功
@@ -113,6 +135,8 @@ function resultFromOpenAIJson(json: {
   if (terminal.state !== 'completed') failRequest(terminal, usage)
 
   const msg = choice?.message ?? {}
+  // 档位只认响应里的真实 service_tier；缺报保持未知态，不从 requested/usage/终态推断
+  const serviceTier = serviceTierForResult(requestedTier, readServiceTierValue(json), context)
   return {
     text: typeof msg.content === 'string' && msg.content.length > 0 ? msg.content : null,
     toolCalls: (msg.tool_calls ?? []).map((tc, i) => ({
@@ -121,7 +145,8 @@ function resultFromOpenAIJson(json: {
       arguments: tc.function?.arguments ?? '{}'
     })),
     usageComplete: usage !== null,
-    ...(usage ? { usage } : {})
+    ...(usage ? { usage } : {}),
+    ...(serviceTier ? { serviceTier } : {})
   }
 }
 
@@ -130,28 +155,43 @@ export async function chatWithToolsOpenAI(
   apiKey: string,
   messages: AgentMessage[],
   tools: ToolSchema[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 运行态上下文（S3-30A）：缺省 = 旧请求，不发身份/服务档 */
+  context?: ProviderExecutionContext,
+  /** 单请求服务档观察（S3-30A-R1）：缺省 = 不观察；旧调用者参数位置不变 */
+  onServiceTier?: ServiceTierObserver
 ): Promise<AgentChatResult> {
-  const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify(buildToolsBody(settings, messages, tools, false)),
-    signal
-  })
-  if (!res.ok) await throwHttpError(res)
+  const requestedTier = serviceTierForRequest(context)
+  const tierEmitter = createServiceTierEmitter(requestedTier, onServiceTier)
+  try {
+    const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
+      method: 'POST',
+      headers: buildProviderHeaders(settings, 'openai-compatible', apiKey, context),
+      body: JSON.stringify(buildToolsBody(settings, messages, tools, false, context)),
+      signal
+    })
+    if (!res.ok) await throwHttpError(res)
 
-  return resultFromOpenAIJson(
-    (await res.json()) as {
-      choices?: Array<{
-        finish_reason?: string | null
-        message?: {
-          content?: string | null
-          tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
-        }
-      }>
-      usage?: unknown
-    }
-  )
+    return resultFromOpenAIJson(
+      (await res.json()) as {
+        choices?: Array<{
+          finish_reason?: string | null
+          message?: {
+            content?: string | null
+            tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
+          }
+        }>
+        usage?: unknown
+        service_tier?: unknown
+      },
+      requestedTier,
+      context,
+      tierEmitter
+    )
+  } finally {
+    // 同一响应只观察一次：已交出真实档位就不再补缺报事件
+    tierEmitter.finalize()
+  }
 }
 
 /**
@@ -191,16 +231,23 @@ function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTer
   /** 思考增量（DeepSeek 系返回 `reasoning_content`）；不传 = 忽略 */
   onReasoning?: (delta: string) => void,
   /** 两层守卫的时长（plan29 D-090）。不传 = 用默认口径；**单测传短值** */
-  guardOpts?: StreamGuardOptions
+  guardOpts?: StreamGuardOptions,
+  /** 运行态上下文（S3-30A）：缺省 = 旧请求，不发身份/服务档 */
+  context?: ProviderExecutionContext,
+  /** 单请求服务档观察（S3-30A-R1）：缺省 = 不观察；旧调用者参数位置不变 */
+  onServiceTier?: ServiceTierObserver
 ): Promise<AgentChatResult> {
+  const requestedTier = serviceTierForRequest(context)
+  // 单请求观察出口（S3-30A-R1）：档位帧一出现就交出，后续断流/取消/缺终帧都不丢已观测事实
+  const tierEmitter = createServiceTierEmitter(requestedTier, onServiceTier)
   // 守卫在**这里**建、而不是由调用方传进来：首包口径是"从发起请求到第一个分片"，
   // 只有紧挨着 httpFetch 的地方才数得准；让调用方建就多了一段"还没开始请求但已经在计时"的空转。
   const guard = createStreamGuard(signal, guardOpts)
   try {
     const res = await httpFetch(resolveApiUrl(settings.baseURL, 'chat/completions'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(buildToolsBody(settings, messages, tools, true)),
+      headers: buildProviderHeaders(settings, 'openai-compatible', apiKey, context),
+      body: JSON.stringify(buildToolsBody(settings, messages, tools, true, context)),
       signal: guard.signal
     })
     if (!res.ok) await throwHttpError(res)
@@ -212,7 +259,7 @@ function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTer
     // ⚠️ E23-R1：端点忽略 stream 回退成 JSON 时，消费**同一响应**，不发新请求（hits 保持 1）。
     const contentType = res.headers.get('content-type') ?? ''
     if (contentType.toLowerCase().includes('application/json')) {
-      return resultFromOpenAIJson((await res.json()) as never)
+      return resultFromOpenAIJson((await res.json()) as never, requestedTier, context, tierEmitter)
     }
 
     const acc = new ToolCallAccumulator()
@@ -223,6 +270,8 @@ function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTer
      * 所以每个 chunk 都要试着取一次；厂商不报就留 null，上层据此退回估算并**标注**。
      */
     let usage: TokenUsage | null = null
+    /** 最后一次看到的真实 service_tier（S3-30A）：缺报保持 null，绝不回填 requested */
+    let actualTier: string | null = null
     /** 最后一次看到的 finish_reason（E23）：**业务终态的唯一依据**，`[DONE]` 不算 */
     let finishReason: string | null = null
     /** 上游在 payload 里明确报错（E23）：必须当失败，不能当"没有 delta 就跳过" */
@@ -235,6 +284,7 @@ function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTer
       let json: {
         error?: unknown
         usage?: unknown
+        service_tier?: unknown
         choices?: Array<{
           finish_reason?: string | null
           delta?: {
@@ -259,6 +309,12 @@ function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTer
       }
       const chunkUsage = usageFromOpenAIChunk(json)
       if (chunkUsage) usage = chunkUsage
+      // 档位帧与 usage 帧相互独立：任何一帧带真实值都收；无档位的后续帧不清空已知值
+      const chunkTier = readServiceTierValue(json)
+      if (chunkTier !== null) {
+        actualTier = chunkTier
+        tierEmitter.observe(chunkTier)
+      }
       const choice = json.choices?.[0]
       // finish_reason 每帧都可能出现（通常最后一帧），取最后一次非空值
       if (choice?.finish_reason !== undefined && choice.finish_reason !== null) {
@@ -342,11 +398,13 @@ function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTer
       failWith({ state: 'failed', code: 'incomplete-tool-call' })
     }
 
+    const serviceTier = serviceTierForResult(requestedTier, actualTier, context)
     return {
       text: text.length > 0 ? text : null,
       toolCalls,
       usageComplete: usage !== null,
-      ...(usage ? { usage } : {})
+      ...(usage ? { usage } : {}),
+      ...(serviceTier ? { serviceTier } : {})
     }
   } catch (err) {
     // 守卫开的枪 → 换成**说清是哪一层超时**的话（不是笼统的"请求超时"）
@@ -355,5 +413,7 @@ function openaiFinishReasonToTerminal(reason: string | null | undefined): RunTer
     throw err
   } finally {
     guard.dispose()
+    // 只有从未见到真实档位才补 observed=false；已观测到的不补，避免缺报覆盖已知事实
+    tierEmitter.finalize()
   }
 }

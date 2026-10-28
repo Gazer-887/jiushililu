@@ -6,6 +6,7 @@ import { modalitiesFromLegacyFlag } from '@shared/content-parts'
 import type { SystemSettings } from '@shared/system'
 import type { NetworkCredentials, NetworkSettings } from '@shared/network'
 import { normalizeNetwork } from '@shared/network'
+import type { PermissionStateSnapshot } from '@shared/request-policy'
 
 // 持久化设置。铁律（D-013 / AGENTS.md）：API Key 只走 safeStorage 加密落盘，绝不存明文。
 // safeStorage 在 Windows 用 DPAPI、macOS 用 Keychain（DIARY 术语词典有词条）。
@@ -117,14 +118,57 @@ interface StoredSettings extends ModelSettings {
 
 const store = new Store<StoredSettings>({ name: 'settings' })
 
+/**
+ * 权限代次：进程内单调计数，只有真实档位变化才推进。
+ * 不放盘、不进配置：重启后新进程以 0 为基线；同值重复设置保持原 setter 写盘/返回行为，但不制造假变化。
+ */
+let permissionGeneration = 0
+
 /** 当前权限档（默认「可写」：工作区内可读写，命令执行仍需显式授权） */
 export function getPermissionPreset(): PermissionPreset {
   return store.store.permissionPreset ?? 'write'
 }
 
+/** 同步读取当前档位与进程内代次（供 run 起点与提交门重核）。 */
+export function getPermissionState(): PermissionStateSnapshot<PermissionPreset> {
+  return { preset: getPermissionPreset(), generation: permissionGeneration }
+}
+
 export function setPermissionPreset(preset: PermissionPreset): PermissionPreset {
-  store.set('permissionPreset', preset)
-  return getPermissionPreset()
+  const before = getPermissionPreset()
+  const changed = preset !== before
+  const baseGeneration = permissionGeneration
+  // ⚠️ 必须先推进代次再写：Conf 在落盘后同步 emit change，监听器会在这里重入读取。
+  // 若等 set 返回后再推进，监听器会看到「新档位 + 旧代次」的危险组合。
+  if (changed) permissionGeneration = baseGeneration + 1
+  let applied: PermissionPreset
+  try {
+    store.set('permissionPreset', preset)
+    applied = getPermissionPreset()
+  } catch (err) {
+    // 写入可能已落盘、随后同步回调或读取抛错：读实际档位决定代次是否保留
+    let observed: PermissionPreset | null = null
+    try {
+      observed = getPermissionPreset()
+    } catch {
+      observed = null
+    }
+    // 确认仍是旧档且没有嵌套变化时才撤销预增；读不到实际档位则保留，提交门只能保守拒绝
+    if (
+      observed !== null &&
+      observed === before &&
+      changed &&
+      permissionGeneration === baseGeneration + 1
+    ) {
+      permissionGeneration = baseGeneration
+    }
+    throw err
+  }
+  // 写后实际档位没变（同值/归一化）：仅在本次预增且无嵌套变化时撤销
+  if (changed && applied === before && permissionGeneration === baseGeneration + 1) {
+    permissionGeneration = baseGeneration
+  }
+  return applied
 }
 
 /**

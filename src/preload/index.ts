@@ -13,6 +13,7 @@ import {
 } from '@shared/ipc'
 import type { RevertHunkInput } from '@shared/checkpoint'
 import type { FetchAvailableInput, ModelPatchEntryInput, ModelSaveInput } from '@shared/models'
+import type { ModelMetadataPatchInput } from '@shared/model-metadata'
 import type { Goal, GoalAction } from '@shared/goal'
 import type { BackgroundTask } from '@shared/background'
 import type { TodoItem } from '@shared/todo'
@@ -109,6 +110,10 @@ const api: ApiBridge = {
   setActiveModelEntry: (profileId: string, entryId: string) =>
     ipcRenderer.invoke(IPC.modelsSetEntry, { profileId, entryId }),
   patchModelEntry: (input: ModelPatchEntryInput) => ipcRenderer.invoke(IPC.modelsPatchEntry, input),
+  // S3-10C2B：条目元数据读写（白名单桥；main 侧做 schema 校验与原子落盘）
+  getModelMetadata: (profileId: string, entryId: string) =>
+    ipcRenderer.invoke(IPC.modelsGetMetadata, { profileId, entryId }),
+  patchModelMetadata: (input: ModelMetadataPatchInput) => ipcRenderer.invoke(IPC.modelsPatchMetadata, input),
   listGoals: (conversationId: string) => ipcRenderer.invoke(IPC.goalList, conversationId),
   createGoal: (input: { conversationId: string; text: string; doneWhen?: string }) =>
     ipcRenderer.invoke(IPC.goalCreate, input),

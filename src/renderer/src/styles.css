@@ -534,6 +534,37 @@ nav {
   font-variant-numeric: tabular-nums;
 }
 
+/* 本轮请求策略与实际档位（只读事实）：请求是意图，实际只认厂商回值。
+   沿用语义 token，不引蓝绿装饰色；窄窗允许整组换行。 */
+.msg-run-facts {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.msg-run-fact {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-4);
+  white-space: nowrap;
+}
+
+.msg-run-fact-request {
+  color: var(--text);
+}
+
+.msg-run-fact-actual[data-observed='true'] {
+  color: var(--text);
+}
+
+.msg-run-fact-unknown {
+  color: var(--muted);
+}
+
 .msg-act {
   display: inline-flex;
   align-items: center;
@@ -4780,6 +4811,143 @@ button.tm-shell-btn:disabled {
   color: var(--accent);
 }
 
+/* ── 模型事实与用户覆盖（S3-10D）────────────────────────────────────────
+   `>` 展开里的只读事实区：基础字段网格 + 原生输入/附件解析两栏 + 价格/套餐两块。
+   未知态用灰色与正文区分（未知不是 0）；价格一条一行，多币种不混行。 */
+.mc-facts,
+.mc-override {
+  margin-top: var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-8);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.mc-facts-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+}
+
+.mc-facts-title {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.mc-facts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-6) var(--sp-12);
+}
+
+.mc-facts-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-8);
+}
+
+.mc-facts-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.mc-facts-col-title {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.mc-facts-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding-top: var(--sp-6);
+  border-top: 1px dashed var(--border);
+}
+
+.mc-fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.mc-fact-label {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.mc-fact-value {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.mc-fact-value.is-unknown {
+  color: var(--muted);
+}
+
+.mc-fact-meta {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.mc-fact-limits {
+  margin: 0;
+  padding-left: var(--sp-12);
+  font-size: var(--fs-xs);
+  color: var(--warn-deep);
+}
+
+.mc-price-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.mc-price-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.mc-price-cat {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.mc-price-line {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.mc-override-actions {
+  display: flex;
+  gap: var(--sp-8);
+}
+
+.mc-override-err {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+}
+
+.mc-override-done {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--ok);
+}
+
 /* ── 目标面板（plan12）：输入框上方一条，摆在待办上面 ─────────────────────
    形态对齐 DSH：图标 + 文字 + 暂停/继续 · 编辑 · 完成 · 删除。
    没有目标时**整条不占位**（空着占一行是最招人烦的设计）；最多显示 3 条，多的折起来。 */
@@ -8187,3 +8355,188 @@ body[data-resizing] {
   color: var(--muted);
   font-size: var(--fs-xs);
 }
+
+/* ── S3-10A 供应商模板选择器 ── */
+.preset-picker { margin: 12px 0; padding: 12px; border: 1px solid var(--border-color, #ccc); border-radius: 4px; }
+.preset-picker h3 { margin: 0 0 6px; font-size: 14px; }
+.preset-picker-note { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary, #666); }
+.preset-group { border: 1px solid var(--border-color, #ddd); border-radius: 3px; margin: 8px 0; padding: 6px 10px; }
+.preset-group legend { font-size: 12px; padding: 0 4px; }
+.preset-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; }
+.preset-btn, .preset-face-btn { font-size: 12px; }
+.preset-name { min-width: 160px; font-size: 13px; }
+.preset-dual { flex-wrap: wrap; }
+.preset-forbidden-item { opacity: 0.55; cursor: not-allowed; flex-direction: column; align-items: flex-start; }
+.preset-forbidden-name { color: var(--text-secondary, #888); }
+.preset-forbidden-reason { font-size: 11px; color: var(--text-secondary, #999); }
+.preset-reopen { margin: 6px 0; font-size: 12px; }
+
+/* ── S3-10A-R1 认证选择控件 ── */
+.authentication-choice { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.auth-label { font-size: 12px; min-width: 64px; }
+.auth-btn { font-size: 12px; }
+.auth-btn.auth-active { border-color: var(--accent, #333); font-weight: bold; }
+.auth-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.auth-warning { color: var(--warn, #b00); font-size: 11px; }
+.preset-note { font-size: 11px; color: var(--text-secondary, #999); }
+.preset-notes-group { display: flex; flex-direction: column; font-size: 11px; }
+
+/* ── S3-10A-R2A2 模板帮助链接与已选模板标识（只用语义 token，不引裸色值） ── */
+.preset-help-link { font-size: var(--fs-xs); color: var(--accent); text-decoration: underline; }
+.preset-selection { display: flex; align-items: center; gap: var(--sp-8); margin: var(--sp-6) 0; font-size: var(--fs-sm); }
+.preset-selection-name { color: var(--text); }
+
+/* ══ 速度控件（S3-20C）：输入区会话覆盖 + 设置页模型默认 ══════════════
+   两处共用既有语义 token（无裸色值）；窄窗靠换行与收缩避让，不叠字。 */
+
+.speed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+  flex-wrap: wrap;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-6);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.speed-chip-label {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.speed-select {
+  min-width: 0;
+  max-width: 108px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.speed-select:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.speed-select:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+.speed-effective {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.speed-fast {
+  color: var(--accent);
+}
+
+.speed-source,
+.speed-next,
+.speed-scope {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.speed-scope {
+  border-left: 1px solid var(--border);
+  padding-left: var(--sp-6);
+  white-space: nowrap;
+}
+
+.speed-next {
+  border-left: 1px solid var(--border);
+  padding-left: var(--sp-6);
+}
+
+.model-speed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin-top: var(--sp-12);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-12);
+}
+
+.model-speed-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.model-speed-title {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.model-speed-head .hint {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+/* ⚠️ 必须带 `.settings-view` 前缀：`.settings-view label` 的 (0,1,1) 会把单类名的
+   行布局压回 column（设置页所有 label 默认竖排），省略号与窄窗换行就全部失效。 */
+.settings-view .model-speed-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.model-speed-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.settings-view .model-speed-select {
+  flex-shrink: 0;
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.settings-view .model-speed-select:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+@media (max-width: 560px) {
+  .speed-chip-label {
+    display: none;
+  }
+
+  .settings-view .model-speed-row {
+    flex-wrap: wrap;
+  }
+
+  .settings-view .model-speed-select {
+    width: 100%;
+  }
+}
+
+/* ══ 速度控件（S3-20C）结束 ══ */

@@ -1,8 +1,10 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
 import type {
+  AuthenticationChoice,
   LogsInfo,
   PermissionPreset,
   ProviderType,
+  RequestIdentityMode,
   SettingsSaveInput,
   StorageLocationInfo,
   TestResult,
@@ -10,7 +12,18 @@ import type {
   ComputerUseServerStatus
 } from '@shared/ipc'
 import { entryLabel, sourceLabel, type ModelEntry, type ModelProfileView, type ModelsView } from '@shared/models'
+import { normalizeSpeedMode, type SpeedMode } from '@shared/request-policy'
 import ModelCatalogEditor from '../components/ModelCatalogEditor'
+import ProviderPresetPicker, { type PresetSelection } from '../components/ProviderPresetPicker'
+import {
+  applyPresetFace,
+  getProviderPreset,
+  handleProtocolSwitch,
+  mergePresetIntoEntry,
+  presetSaveBlockers,
+  resolvePresetAuth,
+  type AuthChoice
+} from '@shared/provider-presets'
 import AgentManager from '../components/AgentManager'
 import VoiceSettingsPanel from '../components/VoiceSettingsPanel'
 import DevEnvSettings from '../components/DevEnvSettings'
@@ -302,18 +315,35 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   const [draftModels, setDraftModels] = useState<ModelEntry[]>([])
   const [modelBusy, setModelBusy] = useState<string | null>(null)
   const [modelNotice, setModelNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  // S3-10A：模板选择器状态——true=显示模板列表；选中后存连接草稿供 save 合并
+  const [showPresetPicker, setShowPresetPicker] = useState(false)
+  const [presetSelection, setPresetSelection] = useState<PresetSelection | null>(null)
+  // S3-10A-R1：认证选择状态——''=未选择（阻断）
+  const [draftAuth, setDraftAuth] = useState<'' | 'bearer' | 'x-api-key'>('')
+  // S3-10A-R2A2：认证是否被用户显式触碰——false 时编辑既有端点逐条保留各模型自己的认证
+  const [authTouched, setAuthTouched] = useState(false)
 
-  const refreshModels = async (): Promise<void> => {
+  // S3-10C2B：useCallback 稳定引用——广播订阅 effect 依赖它，StrictMode 重挂不累积监听
+  const refreshModels = useCallback(async (): Promise<void> => {
     try {
       setModels(await window.api.listModels())
     } catch {
       setModels(null)
     }
-  }
+  }, [])
 
   useEffect(() => {
     void refreshModels()
-  }, [])
+  }, [refreshModels])
+
+  // S3-10C2B：主进程广播 models 变更（含 metadata 补丁）→ 重读真值；其他 kind 不动模型列表。
+  // onSettingsChanged 返回退订函数，effect 卸载即退订（StrictMode 双挂不留双监听）。
+  useEffect(() => {
+    const offModels = window.api.onSettingsChanged((kind) => {
+      if (kind === 'models') void refreshModels()
+    })
+    return offModels
+  }, [refreshModels])
 
   useEffect(() => {
     if (!useAppStore.getState().settingsLoaded) void loadSettings()
@@ -494,6 +524,35 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     setNotice(null)
     try {
       if (editingModel) {
+        // S3-10A-R2A2：认证只认用户显式选择或模板缺省；不读通用 settings 的 authentication 兜底
+        const preset = presetSelection ? getProviderPreset(presetSelection.presetId) : undefined
+        const protocol = draft.providerType
+        const authChoice: AuthChoice = authTouched && draftAuth ? draftAuth : 'auto'
+        if (preset) {
+          const gate = presetSaveBlockers({
+            preset, protocol, baseURL: draft.baseURL,
+            authChoice,
+            modelId: draftModels.map((m) => m.model.trim()).find(Boolean) ?? '',
+            apiKey, isNewEndpoint: !editingModel.id
+          })
+          if (!gate.ok) {
+            setNotice({ ok: false, text: gate.blockers.join('；') })
+            return
+          }
+        }
+        const auth = preset ? resolvePresetAuth(preset, protocol, authChoice) : undefined
+        const concreteAuth = auth?.ok ? auth.auth : undefined
+        // 模板可解析：全部模型按模板统一合并；无模板：只改认证字段，或原样保留每条自己的认证
+        const mergedModels = draftModels.map((m) => {
+          if (preset && concreteAuth) {
+            const merged = mergePresetIntoEntry(preset, m, concreteAuth)
+            return { ...m, settings: merged.settings as unknown as ModelEntry['settings'] }
+          }
+          if (!preset && authTouched && draftAuth) {
+            return { ...m, settings: { ...(m.settings ?? {}), authentication: draftAuth } }
+          }
+          return m
+        })
         const saved = await window.api.saveModel({
           ...(editingModel.id ? { id: editingModel.id } : {}),
           name: draftName,
@@ -501,7 +560,7 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
           baseURL: draft.baseURL,
           timeoutMs: draft.timeoutMs,
           stream: draft.stream,
-          models: draftModels,
+          models: mergedModels,
           apiKey
         })
         await refreshModels()
@@ -523,6 +582,51 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     } finally {
       setSaving(false)
     }
+  }
+
+  /** S3-10A：模板选中→只填连接级草稿字段；Key/模型 ID/名称/settings/metadata 均不动 */
+  const handlePresetSelect = (sel: PresetSelection): void => {
+    const preset = getProviderPreset(sel.presetId)
+    if (!preset) return
+    const face = applyPresetFace(preset, sel.protocol)
+    if (!face) return
+    setPresetSelection(sel)
+    // 已知缺省写具体值并标记已触碰；unknown 清空，保存前必须显式选择
+    setDraftAuth(sel.authDefault === 'unknown' ? '' : sel.authDefault)
+    setAuthTouched(sel.authDefault !== 'unknown')
+    setShowPresetPicker(false)
+    setDraft((d) => (d ? { ...d, providerType: face.providerType, baseURL: face.baseURL } : d))
+    setModelNotice(null)
+  }
+
+  /** S3-10A-R2A2：协议切换唯一处理函数——有对应协议面同步模板面，否则清模板转手填 */
+  const handleProtocolChange = (next: ProviderType): void => {
+    const preset = presetSelection ? getProviderPreset(presetSelection.presetId) : undefined
+    const result = handleProtocolSwitch(preset, next, draft.baseURL)
+    if (result.changed && preset && presetSelection) {
+      const face = preset.faces.find((f) => f.protocol === result.protocol)
+      setPresetSelection({
+        ...presetSelection,
+        protocol: result.protocol,
+        baseURL: result.baseURL,
+        requestIdentity: result.requestIdentity,
+        authDefault: result.authDefault,
+        notes: face?.notes ?? presetSelection.notes
+      })
+      // 已知缺省写具体值并标记已触碰；unknown 清空，保存前必须显式选择
+      setDraftAuth(result.authDefault === 'unknown' ? '' : result.authDefault)
+      setAuthTouched(result.authDefault !== 'unknown')
+    } else if (presetSelection) {
+      // 模板不含目标协议面：清除不再匹配的模板，保留当前 baseURL 走手填
+      setPresetSelection(null)
+      setDraftAuth('')
+      setAuthTouched(false)
+    } else if (next === 'openai-compatible' && draftAuth === 'x-api-key') {
+      // 无模板手填：旧认证与新协议不兼容时清空，要求重新选择
+      setDraftAuth('')
+      setAuthTouched(false)
+    }
+    setDraft((d) => (d ? { ...d, providerType: result.protocol, baseURL: result.baseURL } : d))
   }
 
   /** 编辑态的 Key 状态取**这条端点自己的**（models 列表真值）；新增态没有档案 → undefined → 显示「尚未保存」 */
@@ -651,17 +755,33 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
   /** 新增端点：连接信息沿用当前设置当模板；**模型目录从空的一条起步** */
   const startCreate = (): void => {
     if (!settings) return
-    setDraft({ ...settings, apiKey: '' })
+    // S3-10A：新增端点不再从全局设置复制连接残留——只取超时/流式骨架，
+    // 连接字段（协议/地址）由模板选择器或用户显式填写。
+    setDraft({
+      ...settings,
+      apiKey: '',
+      baseURL: '',
+      providerType: 'openai-compatible',
+      model: ''
+    })
     setDraftName('')
     setDraftModels([{ id: `m-${Date.now().toString(36)}`, model: '' }])
     setApiKey('')
     setNotice(null)
     setModelNotice(null)
     setEditingModel({})
+    setShowPresetPicker(true)
+    setPresetSelection(null)
+    setDraftAuth('')
+    setAuthTouched(false)
   }
 
   /** 编辑端点：连接信息进表单，**整份模型目录进编辑器**（一行一个模型，各自带高级设置） */
   const startEdit = (p: ModelProfileView): void => {
+    setShowPresetPicker(false)
+    setPresetSelection(null)
+    setDraftAuth('')
+    setAuthTouched(false)
     // 表单只管**连接级**四项（协议 / 地址 / 超时 / 流式）；采样、输出上限、上下文窗口那些
     // "模型级"参数归目录里每个模型自己的高级设置（F5.1）。
     setDraft((prev) =>
@@ -688,7 +808,19 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
     setEditingModel(null)
     setApiKey('')
     setNotice(null)
+    setShowPresetPicker(false)
+    setPresetSelection(null)
+    setDraftAuth('')
+    setAuthTouched(false)
     if (settings) setDraft({ ...settings, apiKey: '' })
+  }
+
+  /**
+   * 模型默认速度（S3-20C）：只改**当前草稿里这一条**的 `ModelEntry.speedMode`，
+   * 随既有 saveModel 链落盘。⚠️ 不写进 settings（那里没有这个字段），也不动其他条目。
+   */
+  const patchDraftSpeedMode = (entryId: string, mode: SpeedMode): void => {
+    setDraftModels((prev) => prev.map((m) => (m.id === entryId ? { ...m, speedMode: mode } : m)))
   }
 
   const useProfile = async (id: string): Promise<void> => {
@@ -1204,6 +1336,44 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
             </div>
             )}
 
+            {editingModel && showPresetPicker && (
+              <ProviderPresetPicker
+                onSelect={handlePresetSelect}
+                onCancel={() => setShowPresetPicker(false)}
+              />
+            )}
+
+            {editingModel && !showPresetPicker && presetSelection && (
+              <p className="preset-selection">
+                <span className="preset-selection-name">{presetSelection.presetName}</span>
+                {presetSelection.helpUrl && (
+                  <a className="preset-help-link" href={presetSelection.helpUrl} target="_blank" rel="noreferrer noopener">
+                    官方文档
+                  </a>
+                )}
+              </p>
+            )}
+
+            {editingModel && !showPresetPicker && (
+              <div className="authentication-choice">
+                <label className="auth-label">认证方式</label>
+                <button type="button" className={'btn-secondary auth-btn' + (draftAuth === 'bearer' ? ' auth-active' : '')} onClick={() => { setDraftAuth('bearer'); setAuthTouched(true) }}>Bearer</button>
+                {draft.providerType === 'anthropic' && (
+                  <button type="button" className={'btn-secondary auth-btn' + (draftAuth === 'x-api-key' ? ' auth-active' : '')} onClick={() => { setDraftAuth('x-api-key'); setAuthTouched(true) }}>x-api-key</button>
+                )}
+                {draft.providerType === 'openai-compatible' && (
+                  <button type="button" className="btn-secondary auth-btn" disabled>x-api-key（openai-compatible 不可用）</button>
+                )}
+                {presetSelection && !draftAuth && <span className="hint auth-warning">请选择认证方式</span>}
+              </div>
+            )}
+
+            {editingModel && !showPresetPicker && (
+              <button type="button" className="btn-secondary preset-reopen" onClick={() => setShowPresetPicker(true)}>
+                切换模板
+              </button>
+            )}
+
             {!editingModel && models && models.profiles.length === 0 && (
               <p className="hint">尚未添加模型。</p>
             )}
@@ -1316,25 +1486,80 @@ export default function SettingsView({ onClose: _onClose }: { onClose?: () => vo
                 <ModelCatalogEditor
                   models={draftModels}
                   onChange={setDraftModels}
+                  /* S3-10D：元数据覆盖只对已保存端点/条目开放 —— 新增端点与未保存草稿没有可打的档案，
+                     传 id 与已保存条目表，编辑器据此一个 metadata IPC 都不发 */
+                  profileId={editingModel?.id}
+                  savedEntryIds={editingProfile?.models.map((m) => m.id) ?? []}
                   onFetch={async () => {
                     // 免保存拉取（plan47 S1）：协议 + 地址 + Key 三样对即可拉，不再要求先保存。
                     // Key 留空且是编辑已存端点 → 主进程回落那把已存密文；都没有 → 报「请先填写 API Key」。
                     if (!draft) return { ok: false, message: '表单尚未就绪，请稍候再试', models: [] }
+                    // S3-30F0：目录拉取也送**当前草稿**的两项持久策略——本次模板声明的身份优先，
+                    // 其次草稿里已声明的值。⚠️ 只读本条草稿与本次模板选择，不扫描其他已存端点；
+                    // 这里不建运行上下文、不伪造版本、不附带任意 headers。
+                    const presetIdentity: RequestIdentityMode | undefined =
+                      presetSelection && presetSelection.requestIdentity !== 'default'
+                        ? presetSelection.requestIdentity
+                        : undefined
+                    const draftIdentity = draftModels.find((m) => m.settings?.requestIdentity)?.settings
+                      ?.requestIdentity
+                    const draftStoredAuth = draftModels.find((m) => m.settings?.authentication)?.settings
+                      ?.authentication
+                    const identityForFetch: RequestIdentityMode | undefined = presetIdentity ?? draftIdentity
+                    const authForFetch: AuthenticationChoice | undefined =
+                      authTouched && draftAuth ? draftAuth : draftStoredAuth
                     return window.api.fetchAvailableModels({
                       id: editingModel?.id,
                       providerType: draft.providerType,
                       baseURL: draft.baseURL,
                       timeoutMs: draft.timeoutMs,
-                      apiKey: apiKey.length > 0 ? apiKey : undefined
+                      apiKey: apiKey.length > 0 ? apiKey : undefined,
+                      ...(identityForFetch ? { requestIdentity: identityForFetch } : {}),
+                      ...(authForFetch ? { authentication: authForFetch } : {})
                     })
                   }}
                 />
+
+                {/* 模型默认速度（S3-20C）：逐条写 ModelEntry.speedMode，随既有保存链落盘。
+                    文案只说明会话未覆盖时的默认值与请求策略，不做效果或费用承诺。 */}
+                <div className="model-speed" role="group" aria-label="模型默认速度">
+                  <div className="model-speed-head">
+                    <span className="model-speed-title">模型默认速度</span>
+                    <span className="hint">
+                      会话未覆盖时使用。FAST 仅为请求策略，是否实际使用快速服务档由厂商能力声明与响应决定。
+                    </span>
+                  </div>
+                  {draftModels.map((m) => {
+                    const label = entryLabel(m) || '未命名模型'
+                    return (
+                      <label
+                        className="model-speed-row"
+                        key={m.id}
+                        title={`${label}：会话未覆盖时使用的模型默认值`}
+                      >
+                        <span className="model-speed-name">{label}</span>
+                        <select
+                          className="model-speed-select"
+                          aria-label={`${label} 的默认速度`}
+                          value={normalizeSpeedMode(m.speedMode)}
+                          onChange={(e) =>
+                            patchDraftSpeedMode(m.id, e.target.value === 'fast' ? 'fast' : 'normal')
+                          }
+                        >
+                          <option value="normal">普通</option>
+                          <option value="fast">FAST 策略</option>
+                        </select>
+                      </label>
+                    )
+                  })}
+                </div>
+                {/* 模型默认速度（S3-20C）结束 */}
 
                 <label>
                   协议类型
                   <select
                     value={draft.providerType}
-                    onChange={(e) => update('providerType', e.target.value as ProviderType)}
+                    onChange={(e) => handleProtocolChange(e.target.value as ProviderType)}
                   >
                     <option value="openai-compatible">
                       OpenAI 兼容（DeepSeek / 通义 / 智谱 / Ollama / vLLM 等）

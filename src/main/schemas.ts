@@ -8,7 +8,9 @@ import {
   OUTBOUND_IMAGE_MIMES,
   OUTBOUND_VIDEO_MIMES
 } from '@shared/content-parts'
-import { BUDGET_ENCODINGS, OFF_ENCODINGS, REASONING_KINDS } from '@shared/ipc'
+import { AUTH_CHOICES, BUDGET_ENCODINGS, OFF_ENCODINGS, REASONING_KINDS, REQUEST_IDENTITY_MODES } from '@shared/ipc'
+import { modelMetadataSchema } from '@shared/model-metadata'
+import { FAST_SERVICE_TIER, SPEED_MODES, TIER_SUPPORTS } from '@shared/request-policy'
 import { RUN_RESULT_STATES, OUTCOME_CODES } from '@shared/execution-outcome'
 
 // 入参 schema 独立成文件：纯 zod、不 import electron，可脱离主进程单测。
@@ -71,8 +73,15 @@ export const settingsSchema = z.object({
   reasoning: reasoningConfigSchema.optional(),
   maxToolRounds: z.number().int().min(1).max(10000),
   inputModalities: z.array(z.enum(INPUT_MODALITIES)).min(1),
+  // S3-10C0：身份/认证持久字段（settings:save 旧路径）
+  requestIdentity: z.enum(REQUEST_IDENTITY_MODES).optional(),
+  authentication: z.enum(AUTH_CHOICES).optional(),
   apiKey: z.string().max(400).optional()
 })
+  // S3-10C0-R1（主脑复核 C0-M1）：strict = 运行态键（sessionId/operationId/runId/headers）
+  // 与其他未知键一律拒绝，不静默剥离；.shape 仍可用（Zod 3 的 .strict() 返回 ZodObject）
+  // 供 modelSaveSchema/fetchAvailable 复用 baseURL 归一。
+  .strict();
 
 /**
  * 存档与出境里的多模态块（plan57 片③）：**只收引用，不收 base64**。
@@ -150,7 +159,9 @@ export const chatSendInputSchema = z.object({
   conversationId: conversationIdSchema,
   messages: chatMessagesSchema,
   // 主 Agent（plan17 G2）：不带 = 内核默认；带了但定义不存在 → runAgent 抛人话错误走 chat:error
-  agentName: z.string().max(64).optional()
+  agentName: z.string().max(64).optional(),
+  // 本地轮次身份：必须是规范 UUID；空值 / 超长 / 非法形状在网络前拒绝。缺省 = 旧调用，由主进程补。
+  requestId: z.string().uuid().optional()
 })
 
 /**
@@ -172,6 +183,8 @@ export const modelSaveSchema = z.object({
         id: z.string().min(1).max(64),
         model: z.string().min(1).max(200),
         name: z.string().max(60).optional(),
+        // S3-20A：模型默认速度档（可选；缺省 = 旧行为 normal，非法值拒绝而非静默剥离）
+        speedMode: z.enum(SPEED_MODES).optional(),
         // 模型级"高级设置"：只存改过的字段，故整体可选
         settings: z
           .object({
@@ -183,9 +196,16 @@ export const modelSaveSchema = z.object({
             reasoningEffort: effortNameSchema.optional(),
             reasoning: reasoningConfigSchema.optional(),
             maxToolRounds: z.number().int().min(1).max(1000).optional(),
-            inputModalities: z.array(z.enum(INPUT_MODALITIES)).min(1).optional()
+            inputModalities: z.array(z.enum(INPUT_MODALITIES)).min(1).optional(),
+            // S3-10C0：身份/认证持久字段（枚举内才收；strict 拒绝运行态键与未知键）
+            requestIdentity: z.enum(REQUEST_IDENTITY_MODES).optional(),
+            authentication: z.enum(AUTH_CHOICES).optional()
           })
-          .optional()
+          // S3-10C0：strict = 未知键（sessionId/operationId/runId/headers 等运行态键）一律拒绝，不静默剥离
+          .strict()
+          .optional(),
+          // S3-10C1：metadata 为独立一级字段（不落 settings 白名单；模型级合同同源持久化）
+          metadata: modelMetadataSchema.optional()
       })
     )
     .min(1)
@@ -209,10 +229,20 @@ export const modelPatchEntrySchema = z.object({
       reasoningEffort: effortNameSchema.optional(),
       reasoning: reasoningConfigSchema.optional(),
       // 片③：上下文窗口（客户端元数据，不发厂商）—— 边界与整表保存同一档
-      contextWindow: z.number().int().min(1000).max(10_000_000).optional()
+      contextWindow: z.number().int().min(1000).max(10_000_000).optional(),
+      // S3-10C0：身份/认证持久字段（patch 单字段补丁；运行态键见 superRefine）
+      requestIdentity: z.enum(REQUEST_IDENTITY_MODES).optional(),
+      authentication: z.enum(AUTH_CHOICES).optional()
     })
+    // S3-10C0：strict = 运行态键与其他未知键一律拒绝（fail-closed）
+    .strict()
     .refine(
-      (p) => p.reasoningEffort !== undefined || p.reasoning !== undefined || p.contextWindow !== undefined,
+      (p) =>
+        p.reasoningEffort !== undefined ||
+        p.reasoning !== undefined ||
+        p.contextWindow !== undefined ||
+        p.requestIdentity !== undefined ||
+        p.authentication !== undefined,
       { message: '补丁为空：至少要带一个要改的字段' }
     )
 })
@@ -286,7 +316,11 @@ export const modelFetchAvailableSchema = z.object({
   providerType: z.enum(['openai-compatible', 'anthropic']),
   baseURL: settingsSchema.shape.baseURL,
   timeoutMs: z.number().int().min(1000).max(600_000).optional(),
-  apiKey: z.string().max(500).optional()
+  apiKey: z.string().max(500).optional(),
+  // S3-30F0：只接已有的两项持久策略；运行 context / sessionId / operationId / 任意 headers
+  // **不在本 schema 内**（未知键被 zod 剥掉），渲染端不得把运行态键送进主进程。
+  requestIdentity: z.enum(REQUEST_IDENTITY_MODES).optional(),
+  authentication: z.enum(AUTH_CHOICES).optional()
 })
 
 /** 新建目标（plan12）：正文与"怎么算做到"都限长 —— 目标是"一句话意图"，不是任务书 */
@@ -318,6 +352,82 @@ export const runTerminalSchema = z.object({
 /** 落盘消息的**总字数**上限（约 4MB；IPC 结构化克隆按 UTF-16 算，故不能只看条数） */
 export const MAX_STORED_CHARS = 2_000_000
 
+/** 有界、非空白、无控制字符的服务档字符串（不枚举供应商取值：未知容量名也必须能存）。 */
+const tierTextSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((value) => value.trim().length > 0, '服务档不能为空白')
+  // 与原来的控制字符正则等义：逐字符按码点判断，避开 no-control-regex（不改变校验口径）
+  .refine(
+    (value) =>
+      ![...value].some((char) => {
+        const code = char.codePointAt(0) ?? 0
+        return code <= 0x1f || code === 0x7f
+      }),
+    '服务档不得包含控制字符'
+  )
+
+/**
+ * 本地请求策略快照（仅随消息存档）：形状 + **工厂不变量**一起收口，**不进模型请求**。
+ * - mode 决定本地并发：normal → 1，fast → 2；
+ * - 只有 fast 且能力位 supported 才请求非默认服务档（值与 resolveRequestPolicy 同一常量）。
+ * 语义上只表达"本 run 当时要什么"，不是实际档位。
+ */
+const requestPolicySnapshotSchema = z
+  .object({
+    mode: z.enum(SPEED_MODES),
+    maxLocalReadConcurrency: z.union([z.literal(1), z.literal(2)]),
+    requestedServiceTier: tierTextSchema.nullable(),
+    tierSupport: z.enum(TIER_SUPPORTS)
+  })
+  .superRefine((value, ctx) => {
+    const expectedConcurrency = value.mode === 'fast' ? 2 : 1
+    if (value.maxLocalReadConcurrency !== expectedConcurrency) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '本地并发与速度档不一致' })
+    }
+    const expectedTier =
+      value.mode === 'fast' && value.tierSupport === 'supported' ? FAST_SERVICE_TIER : null
+    if (value.requestedServiceTier !== expectedTier) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '服务档意图与速度档 / 能力位不一致' })
+    }
+  })
+
+/** 服务档观测：observed 与 actual 必须一致；矛盾数据一律拒收，不用断言绕过。 */
+const serviceTierObservationSchema = z
+  .object({
+    requested: tierTextSchema.nullable(),
+    actual: tierTextSchema.nullable(),
+    observed: z.boolean()
+  })
+  .superRefine((value, ctx) => {
+    if (value.observed && value.actual === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'observed=true 必须带 actual' })
+    }
+    if (!value.observed && value.actual !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'observed=false 时 actual 必须为 null' })
+    }
+  })
+
+/**
+ * 消息上的本地运行事实（IPC 白名单、落盘校验与 conversations-core 直调共用同一份规则）：
+ * 身份必须是规范 UUID；策略 / 档位必须能归属到 requestId。
+ */
+export const runFactsSchema = z
+  .object({
+    requestId: z.string().uuid().optional(),
+    requestPolicy: requestPolicySnapshotSchema.optional(),
+    serviceTier: serviceTierObservationSchema.optional()
+  })
+  .superRefine((value, ctx) => {
+    if (
+      (value.requestPolicy !== undefined || value.serviceTier !== undefined) &&
+      value.requestId === undefined
+    ) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '缺少 requestId 的运行事实无法归属' })
+    }
+  })
+
 /**
  * **从渲染进程进来的**消息数组（还没规整）—— 比落盘要求**松一档**：`content` 允许为空
  * （流式占位是合法中间状态）；`segments` 只按松结构收下、**不逐字段审**（审是 storedMessagesSchema 的事）。
@@ -339,7 +449,11 @@ export const incomingMessagesSchema = z.array(
      * E30：本地执行终态必须随存档入站。zod 默认 strip 未声明字段——缺这行时
      * 0 正文失败轮的 terminal 会在 IPC 入口被静默剥掉，随后被 normalizeHistory 整条丢弃。
      */
-    terminal: runTerminalSchema.optional()
+    terminal: runTerminalSchema.optional(),
+    // 本地运行事实同理：未声明就会被 IPC 入口静默剥离，落盘侧根本看不到。
+    requestId: z.string().uuid().optional(),
+    requestPolicy: requestPolicySnapshotSchema.optional(),
+    serviceTier: serviceTierObservationSchema.optional()
   })
 )
 
@@ -389,7 +503,11 @@ export const storedMessageSchema = z
     /** plan46：消息时间戳（可选 —— 旧存档无此字段，渲染层无则不显示时间，不编造） */
     createdAt: z.number().int().nonnegative().optional(),
     /** E26b：本地执行终态（仅本地 assistant 记录，不发给模型） */
-    terminal: runTerminalSchema.optional()
+    terminal: runTerminalSchema.optional(),
+    /** 本地轮次身份 / 冻结策略 / 真实观测档位（仅本地 assistant 运行事实，不发给模型） */
+    requestId: z.string().uuid().optional(),
+    requestPolicy: requestPolicySnapshotSchema.optional(),
+    serviceTier: serviceTierObservationSchema.optional()
   })
   .superRefine((m, ctx) => {
     if (m.segments && m.role !== 'assistant') {
@@ -397,6 +515,23 @@ export const storedMessageSchema = z
     }
     if (m.terminal && m.role !== 'assistant') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'terminal 只允许挂在 assistant 上' })
+    }
+    const hasRunFacts =
+      m.requestId !== undefined || m.requestPolicy !== undefined || m.serviceTier !== undefined
+    if (hasRunFacts && m.role !== 'assistant') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '运行事实只允许挂在 assistant 上' })
+    }
+    // 字段级形状已由上方的子 schema 审过；这里补跨界归属（与 core 直调共用同一份规则）
+    const facts = runFactsSchema.safeParse({
+      requestId: m.requestId,
+      requestPolicy: m.requestPolicy,
+      serviceTier: m.serviceTier
+    })
+    if (!facts.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: facts.error.issues[0]?.message ?? '运行事实不合法'
+      })
     }
     const hasSegments = m.role === 'assistant' && (m.segments?.length ?? 0) > 0
     const hasTerminal = m.role === 'assistant' && !!m.terminal
